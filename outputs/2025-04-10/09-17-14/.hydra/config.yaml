@@ -1,0 +1,9 @@
+train_config:
+  train:
+    batch_size: 32
+    rec_results_freq: 32
+    max_epochs: 128
+infer_config:
+  infer:
+    batch_size: 32
+gpu_id: 0

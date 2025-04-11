@@ -6,11 +6,21 @@
     "configurations": [
 
         {
-            "name": "default",
+            "name": "main train",
             "type": "debugpy",
             "request": "launch",
             "program": "main.py",
             "console": "integratedTerminal"
+        },
+        // default
+        {
+            "name": "Python: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "justMyCode": true,
+            // add current file
+            "program": "${file}", 
+            "console": "integratedTerminal",
         }
-    ]
+            ]
 }
