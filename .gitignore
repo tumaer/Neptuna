@@ -3,3 +3,4 @@ data/
 *.h5
 *.ipynb
 outputs/
+*.pyc
