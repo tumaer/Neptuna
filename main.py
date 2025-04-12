@@ -19,41 +19,40 @@ def main(config: DictConfig):
     print(OmegaConf.to_yaml(config))
     print("#" * 79)
 
-    
-    train_dataset = fetch_dataset(dataset_name=config["dataset_name"],
-                                dataset_directory_path=config["dataset_directory_path"],
+    train_dataset = fetch_dataset(dataset_name=config["data_config"]["dataset_name"],
+                                dataset_directory_path=config["data_config"]["dataset_directory_path"],
                                 mode="train",
-                                sequence_info=config["sequence_info"],
-                                filter_frame=config["filter_frame"],
-                                #groups=cfg.groups,
-                                #fields=cfg.fields,
+                                sequence_info=config["data_config"]["sequence_info"],
+                                filter_frame=config["data_config"]["filter_frame"],
+                                groups=config["data_config"]["groups"],
+                                fields=config["data_config"]["fields"],
                                 transform=None, #TODO: add transform
                                 )
 
     train_config = TrainingArguments(
         output_dir="./",
         overwrite_output_dir=True,  #! OVERWRITE THIS DIRECTORY IN CASE, also for resuming training
-        evaluation_strategy="epoch", #The evaluation strategy to adopt during training. Possible values are:
-        per_device_train_batch_size=config["batch_size"],
-        per_device_eval_batch_size=config["batch_size"],
+        eval_strategy="no", #TODO: change it to epochs laterThe evaluation strategy to adopt during training (also change the save_strategy). Possible values are:
+        per_device_train_batch_size=config['train_config']["batch_size"],
+        per_device_eval_batch_size=config['train_config']["batch_size"],
         eval_accumulation_steps=16, #Number of predictions steps to accumulate the output tensors for, before moving the results to the CPU. If
                                     #left unset, the whole predictions are accumulated on GPU/TPU before being moved to the CPU (faster but
                                     #requires more memory).
-        max_grad_norm=config["max_grad_norm"], #defalt = 1.0 (set to 5.0 in poseidon)  Maximum gradient norm (for gradient clipping)
-        num_train_epochs=config["num_epochs"], 
+        max_grad_norm=1.0, #defalt = 1.0 (set to 5.0 in poseidon)  Maximum gradient norm (for gradient clipping)
+        num_train_epochs=config['train_config']["num_epochs"], 
         optim="adamw_torch", #The optimizer to use: adamw_hf, adamw_torch, adamw_torch_fused, adamw_apex_fused, adamw_anyprecision or adafactor.
-        learning_rate=config["lr"], #The initial learning rate for [`AdamW`] optimizer.
-        weight_decay=config["weight_decay"], # The weight decay to apply (if not zero) to all layers except all bias and LayerNorm weights in [`AdamW`] optimizer.
+        learning_rate=config["scheduler_config"]["lr"], #The initial learning rate for [`AdamW`] optimizer.
+        weight_decay=config["scheduler_config"]["weight_decay"], # The weight decay to apply (if not zero) to all layers except all bias and LayerNorm weights in [`AdamW`] optimizer.
         adam_beta1=0.9,  # default
         adam_beta2=0.999,  # default
         adam_epsilon=1e-8,  # default
-        lr_scheduler_type=config["lr_scheduler"], #linear by default
-        warmup_ratio=config["warmup_ratio"], #Ratio of total training steps used for a linear warmup from 0 to `learning_rate`
+        lr_scheduler_type=config["scheduler_config"]["lr_scheduler"], #linear by default
+        warmup_ratio=config["scheduler_config"]["warmup_ratio"], #Ratio of total training steps used for a linear warmup from 0 to `learning_rate`
         log_level="passive", #default
         logging_strategy="steps", # (set to epochs later)The logging strategy to adopt during training. (either steps or epochs)
         logging_steps=5, #Number of update ste ps between two logs if `logging_strategy="steps" 
         logging_nan_inf_filter=False, #Whether to filter `nan` and `inf` losses for logging.
-        save_strategy="epoch", #When 'load_best_model_at_end' set to `True`, the parameters `save_strategy` needs to be the same as `evaluation_strategy`
+        save_strategy="no", #TODO: Change it to epoch when validation dataset is present. When 'load_best_model_at_end' set to `True`, the parameters `save_strategy` needs to be the same as `evaluation_strategy`
         save_total_limit=1, #If a value is passed, will limit the total amount of checkpoints. Deletes the older checkpoints in`output_dir`.
         seed=SEED,
         fp16=False, # Whether to use fp16 16-bit (mixed) precision training instead of 32-bit training.
@@ -70,10 +69,7 @@ def main(config: DictConfig):
         #run_name=params.wandb_run_name, # Typically used for [wandb] and [mlflow]logging.
     )
 
-    model = fetch_model(model_name=config["model_name"],
-                        model_directory_path=config["model_directory_path"],
-                        model_config=config["model_config"],
-                        )
+    model = fetch_model(model_config=config["model_config"])
 
     trainer = Trainer(
         model=model,
