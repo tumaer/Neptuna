@@ -8,7 +8,7 @@ from .fno_utils import Conv1dFCLayer, SpectralConv1d
 from .fno_utils import Conv2dFCLayer, SpectralConv2d 
 from .fno_utils import Conv3dFCLayer, SpectralConv3d
 from .fno_utils import FullyConnected
-from ...utils import activation_func
+from utils import activation_func
 from transformers.utils import ModelOutput
 from typing import Optional, Union, Tuple, List
 
@@ -18,7 +18,7 @@ from typing import Optional, Union, Tuple, List
 # nD FNO main class
 # ===================================================================
 # ===================================================================
-class FNO():
+class FNO(nn.Module):
     """Fourier neural operator (FNO) model.
 
     Note
@@ -95,7 +95,7 @@ class FNO():
         activation_fn: str = "gelu",
         coord_features: bool = True,
     ) -> None:
-
+        super().__init__()
         self.num_fno_layers = num_fno_layers
         self.num_fno_modes = num_fno_modes
         self.padding = padding

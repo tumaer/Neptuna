@@ -3,7 +3,7 @@ from typing import List, Optional, Union
 import torch
 import torch.nn as nn
 from torch import Tensor
-
+from utils.activation_func import get_activation
 #from modulus>models>layers>fully_connected_layers.py
 class ConvFCLayer(nn.Module):
     """Base class for 1x1 Conv layer for image channels
@@ -580,7 +580,7 @@ class FullyConnected():
             activation_fn = activation_fn + [activation_fn[-1]] * (
                 num_layers - len(activation_fn)
             )
-        activation_fn = [activation_fn.get_activation(a) for a in activation_fn]
+        activation_fn = [get_activation(a) for a in activation_fn]
 
         self.layers = nn.ModuleList()
 
