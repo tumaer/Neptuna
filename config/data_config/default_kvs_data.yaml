@@ -1,0 +1,6 @@
+dataset_name: KarmanVortexStreet
+dataset_directory_path: ./data/fluids/KVS/
+sequence_info: [[8, 4, 1, 1]]
+filter_frame: [[100, 500]]
+groups: ["Re_100", "Re_300", "Re_400"]
+fields: ["velocity", "density"]

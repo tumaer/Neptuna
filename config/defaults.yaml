@@ -1,8 +1,8 @@
 defaults:
-  #- data: default_config
-  #- arch: default_arch
+  - data_config: default_kvs_data
+  - model_config: default_fno
   #- output: default_output
-  #- scheduler: default_scheduler
+  - scheduler_config: default_scheduler
   - train_config: default_training
   - infer_config: default_infer
   #- hydra: default_hydra_config
