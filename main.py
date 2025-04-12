@@ -2,9 +2,11 @@ import hydra
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 from transformers.trainer import *
-from transformers import Trainer
+from train.trainer import Trainer
 from transformers import TrainingArguments
 import numpy as np
+from utils.load_data import fetch_dataset
+from utils.load_model import fetch_model
 
 SEED=0
 torch.manual_seed(SEED)
@@ -12,13 +14,21 @@ np.random.seed(SEED)
 random.seed(SEED)
 
 @hydra.main(version_base="1.3", config_path="./config", config_name="defaults.yaml")
-def main(cfg: DictConfig):
+def main(config: DictConfig):
     print("#" * 79, "\nStarting a benchmarking run with the following config:")
-    print(OmegaConf.to_yaml(cfg))
+    print(OmegaConf.to_yaml(config))
     print("#" * 79)
 
     
-    
+    train_dataset = fetch_dataset(dataset_name=config["dataset_name"],
+                                dataset_directory_path=config["dataset_directory_path"],
+                                mode="train",
+                                sequence_info=config["sequence_info"],
+                                filter_frame=config["filter_frame"],
+                                #groups=cfg.groups,
+                                #fields=cfg.fields,
+                                transform=None, #TODO: add transform
+                                )
 
     train_config = TrainingArguments(
         output_dir="./",
@@ -41,7 +51,7 @@ def main(cfg: DictConfig):
         warmup_ratio=config["warmup_ratio"], #Ratio of total training steps used for a linear warmup from 0 to `learning_rate`
         log_level="passive", #default
         logging_strategy="steps", # (set to epochs later)The logging strategy to adopt during training. (either steps or epochs)
-        logging_steps=5, #Number of update steps between two logs if `logging_strategy="steps" 
+        logging_steps=5, #Number of update ste ps between two logs if `logging_strategy="steps" 
         logging_nan_inf_filter=False, #Whether to filter `nan` and `inf` losses for logging.
         save_strategy="epoch", #When 'load_best_model_at_end' set to `True`, the parameters `save_strategy` needs to be the same as `evaluation_strategy`
         save_total_limit=1, #If a value is passed, will limit the total amount of checkpoints. Deletes the older checkpoints in`output_dir`.
@@ -56,9 +66,14 @@ def main(cfg: DictConfig):
         auto_find_batch_size=False, #can be set to true, requires accelerate libraray
         full_determinism=False, #set to false, only required for debugging distributed training
         torch_compile=False, #check if setting it to true helps
-        report_to="none", #cahnge to wandb later  
+        report_to="none", #change to wandb later  
         #run_name=params.wandb_run_name, # Typically used for [wandb] and [mlflow]logging.
     )
+
+    model = fetch_model(model_name=config["model_name"],
+                        model_directory_path=config["model_directory_path"],
+                        model_config=config["model_config"],
+                        )
 
     trainer = Trainer(
         model=model,

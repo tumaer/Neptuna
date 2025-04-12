@@ -9,6 +9,9 @@ from .fno_utils import Conv2dFCLayer, SpectralConv2d
 from .fno_utils import Conv3dFCLayer, SpectralConv3d
 from .fno_utils import FullyConnected
 from ...utils import activation_func
+from transformers.utils import ModelOutput
+from typing import Optional, Union, Tuple, List
+
 
 # ===================================================================
 # ===================================================================

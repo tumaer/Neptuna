@@ -4,6 +4,7 @@
 # many2many (includes many2one and one2many)
 # many2all ?
 # autoregressive??
+# downsampling the data automatically to a specific resolution
 #####
 """
 Each dataset inside the .h5 file should have the following format:
@@ -17,6 +18,20 @@ import os
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+
+
+def fetch_dataset(dataset_name: str, 
+                  **kwargs):
+    """
+    Factory function to create a dataset instance based on the dataset name.
+    """
+    if dataset_name == "KarmanVortexStreet":
+        from ..data.fluids.incompressible import KarmanVortexStreetDataset as LoadedDataset
+        return LoadedDataset(dataset_name=dataset_name, **kwargs)
+    else:
+        raise ValueError(f"Dataset {dataset_name} is not implemented yet.")
+
+
 
 class BaseDataset(Dataset):
     def __init__(self, 
@@ -55,6 +70,8 @@ class BaseDataset(Dataset):
         self.label_seq_len = sequence_info[0][1] #number of future steps to be predicted
         self.input_seq_stride = sequence_info[0][2] #stride for the input sequence
         self.label_seq_stride = sequence_info[0][3] #stride for the output sequence
+        
+        #TODO There hs to be some assert statement between input sequence and input stride.
         self.strategy = strategy    
 
         # Compute total number of frames required per sample
@@ -119,22 +136,19 @@ class BaseDataset(Dataset):
             }
 
             if self.transform:
-                sample = self.transform(sample) #TODO
+                sample = self.transform(sample) #TODO: add transform
 
             return sample
 
         else:
             raise NotImplementedError("The specified strategy is not implemented.")
 
-class KarmanVortexStreetDataset(BaseDataset):
-    def __init__(self, *args, **kwargs):    
-        super().__init__(*args, **kwargs)
-
     #maybe in this child class one can write the code for conditioning the data
         
 ####testing
 if __name__ == "__main__":
-
+    from ..data.fluids.incompressible import KarmanVortexStreetDataset
+    
     kvs_ds = KarmanVortexStreetDataset(
         dataset_directory_path="./data/KVS/",
         mode="train",
@@ -144,7 +158,7 @@ if __name__ == "__main__":
         fields=["velocity", "density"],
         sequence_info=[[8, 4, 1, 1]], #input_seq_len, label_seq_len, input_sequence_stride, label_sequence_stride
         filter_frame=[[100, 500]], #min_frame, max_frame
-        transform=None #TODO: add transform
+        transform=None 
 
     )
 
