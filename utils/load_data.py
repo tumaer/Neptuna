@@ -26,7 +26,7 @@ def fetch_dataset(dataset_name: str,
     Factory function to create a dataset instance based on the dataset name.
     """
     if dataset_name == "KarmanVortexStreet":
-        from ..data.fluids.incompressible import KarmanVortexStreetDataset as LoadedDataset
+        from data.fluids.incompressible import KarmanVortexStreetDataset as LoadedDataset
         return LoadedDataset(dataset_name=dataset_name, **kwargs)
     else:
         raise ValueError(f"Dataset {dataset_name} is not implemented yet.")
