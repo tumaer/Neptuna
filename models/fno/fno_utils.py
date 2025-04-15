@@ -23,7 +23,7 @@ class ConvFCLayer(nn.Module):
     ) -> None:
         super().__init__()
         if activation_fn is None:
-            self.activation_fn = nn.Identity
+            self.activation_fn = nn.Identity()
         else:
             self.activation_fn = activation_fn
         self.activation_par = activation_par
@@ -483,7 +483,7 @@ class FCLayer(nn.Module):
         super().__init__()
 
         if activation_fn is None:
-            self.activation_fn = nn.Identity
+            self.activation_fn = nn.Identity()
         else:
             self.activation_fn = activation_fn
         self.weight_norm = weight_norm
@@ -521,7 +521,7 @@ class FCLayer(nn.Module):
         return x
 
 # from modulus>models>mlp>fully_connected.py
-class FullyConnected():
+class FullyConnected(nn.Module):
     """A densely-connected MLP architecture
 
     Parameters
@@ -566,7 +566,7 @@ class FullyConnected():
         weight_norm: bool = False,
         weight_fact: bool = False,
     ) -> None:
-
+        super().__init__()
         self.skip_connections = skip_connections
 
         if adaptive_activations:
