@@ -17,8 +17,6 @@ from typing import Optional
 import os
 import numpy as np
 import torch
-from torch.utils.data import DataLoader
-
 
 def fetch_dataset(dataset_name: str, 
                   **kwargs):
@@ -57,7 +55,6 @@ class BaseDataset(Dataset):
         if dataset_name is None: #infer dataset name from the directory path
             dataset_name = os.path.basename(os.path.normpath(dataset_directory_path))
             print("dataset_name:", dataset_name)
-        
         if self.mode == "train" or self.mode == "val":
             self.h5file_path = os.path.abspath(dataset_directory_path+"/train.h5")
             print("h5_file_path:", self.h5file_path)
@@ -131,15 +128,13 @@ class BaseDataset(Dataset):
 
             sample = {
                 "group": group_name, #can be used to condition the model
-                "inputs": torch.from_numpy(inputs).float(),
-                "labels": torch.from_numpy(labels).float()
+                "input_data": torch.from_numpy(inputs).float(),
+                "labels": torch.from_numpy(labels).float()  #NOTE: the key should be named "labels" 
             }
-
             if self.transform:
                 sample = self.transform(sample) #TODO: add transform
 
-            return sample
-
+            return  sample
         else:
             raise NotImplementedError("The specified strategy is not implemented.")
 
