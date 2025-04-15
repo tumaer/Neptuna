@@ -115,6 +115,8 @@ class FNO(nn.Module):
 
         FNOModel = self.getFNOEncoder()
 
+        #modify the input channels to accomodate the historic steps and predict also a group of future steps
+
         self.spec_encoder = FNOModel(
             in_channels,
             num_fno_layers=self.num_fno_layers,
@@ -139,9 +141,17 @@ class FNO(nn.Module):
                 "Invalid dimensionality. Only 1D ,2D and 3D FNO implemented"
             )
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, 
+                input_data: Tensor,
+                labels: Tensor) -> Tensor: #NOTE: Vimp: forward SHOULD always have the arguments EXACTLY named as "input_data" and "labels", else the collator will remove them. 
+        
+        #reshape input into [batch, in_channels, grid_x, grid_y, ...]
+        b, s, c, *spatial = input_data.shape
+        input_data=input_data.reshape(b, s * c, *spatial)
+
+        
         # Fourier encoder
-        y_latent = self.spec_encoder(x)
+        y_latent = self.spec_encoder(input_data)
 
         # Reshape to pointwise inputs if not a conv FC model
         y_shape = y_latent.shape
@@ -153,7 +163,10 @@ class FNO(nn.Module):
         # Convert back into grid
         y = self.spec_encoder.points_to_grid(y, y_shape)
 
-        return y
+        # Reshape to original input shape
+        y = y.reshape(b, s, c, *spatial)
+
+        return y,labels
 # ===================================================================
 # ===================================================================
 
@@ -423,7 +436,7 @@ class FNO2DEncoder(nn.Module):
                 "Only 4D tensors [batch, in_channels, grid_x, grid_y] accepted for 2D FNO"
             )
 
-        if self.coord_features:
+        if self.coord_features: #TODO: Do this for ALL the models
             coord_feat = self.meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
 
