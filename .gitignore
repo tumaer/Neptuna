@@ -4,3 +4,4 @@ data/
 *.ipynb
 outputs/
 *.pyc
+.DS_Store
