@@ -83,6 +83,7 @@ class FNO(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
+        sequence_info: Optional[List[List[int]]] = [[1,1,1,1]],
         decoder_layers: int = 1,
         decoder_layer_size: int = 32,
         decoder_activation_fn: str = "silu",
@@ -103,12 +104,12 @@ class FNO(nn.Module):
         self.activation_fn = activation_func.get_activation(activation_fn)
         self.coord_features = coord_features
         self.dimension = dimension
-
+        self.sequence_info = sequence_info
         # decoder net
         self.decoder_net = FullyConnected(
             in_features=latent_channels,
             layer_size=decoder_layer_size,
-            out_features=out_channels,
+            out_features=out_channels*self.sequence_info[0][1],
             num_layers=decoder_layers,
             activation_fn=decoder_activation_fn,
         )
@@ -118,7 +119,7 @@ class FNO(nn.Module):
         #modify the input channels to accomodate the historic steps and predict also a group of future steps
 
         self.spec_encoder = FNOModel(
-            in_channels,
+            in_channels=in_channels*self.sequence_info[0][0],
             num_fno_layers=self.num_fno_layers,
             fno_layer_size=latent_channels,
             num_fno_modes=self.num_fno_modes,
@@ -143,13 +144,14 @@ class FNO(nn.Module):
 
     def forward(self, 
                 input_data: Tensor,
-                labels: Tensor) -> Tensor: #NOTE: Vimp: forward SHOULD always have the arguments EXACTLY named as "input_data" and "labels", else the collator will remove them. 
+                labels: Tensor) -> Tensor: #NOTE: Vimp: forward SHOULD always have the arguments EXACTLY named as "input_data" and "labels", 
+                                           #else the data collator will remove them. 
         
-        #reshape input into [batch, in_channels, grid_x, grid_y, ...]
-        b, s, c, *spatial = input_data.shape
-        input_data=input_data.reshape(b, s * c, *spatial)
+        #reshape input into [batch, in_channel, grid_x, grid_y, ...]
+        #NOTE: input and output fields need not be necessarily the same.
+        batch, input_seq, input_fields, *spatial = input_data.shape
+        input_data=input_data.reshape(batch, input_seq * input_fields, *spatial)
 
-        
         # Fourier encoder
         y_latent = self.spec_encoder(input_data)
 
@@ -163,8 +165,9 @@ class FNO(nn.Module):
         # Convert back into grid
         y = self.spec_encoder.points_to_grid(y, y_shape)
 
-        # Reshape to original input shape
-        y = y.reshape(b, -1, c, *spatial)
+        # Reshape the prediction to match the labels shape
+        batch, output_seq, output_fields, *spatial = labels.shape
+        y = y.reshape(batch, output_seq, output_fields, *spatial)
 
         return y,labels
 # ===================================================================
