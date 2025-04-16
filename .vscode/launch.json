@@ -12,6 +12,14 @@
             "program": "main.py",
             "console": "integratedTerminal",
             "justMyCode": false,
+            "args": [
+                "hydra.run.dir=.",
+                "hydra.output_subdir=null"
+              ],
+            "env": {
+                "HYDRA_FULL_ERROR": "1",
+                "HYDRA_MAIN_DISABLE_RUN": "1"
+                }
 
         },
         // default
