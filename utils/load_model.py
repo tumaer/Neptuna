@@ -13,8 +13,8 @@ def fetch_model(model_config: Dict,
         from models.fno.fno import FNO
         model = FNO(
                     dimension=model_config['dimension'],
-                    in_channels=model_config['in_channels'],#right now no historic steps will work
-                    out_channels=model_config['out_channels'], #currently only 1 step ahead prediction
+                    in_channels=model_config['in_channels'],
+                    out_channels=model_config['out_channels'], 
                     sequence_info=data_config["sequence_info"],
                     latent_channels=model_config['latent_channels'],
                     num_fno_modes=eval(model_config['fno_modes']),
