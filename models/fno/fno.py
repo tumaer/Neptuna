@@ -164,7 +164,7 @@ class FNO(nn.Module):
         y = self.spec_encoder.points_to_grid(y, y_shape)
 
         # Reshape to original input shape
-        y = y.reshape(b, s, c, *spatial)
+        y = y.reshape(b, -1, c, *spatial)
 
         return y,labels
 # ===================================================================
