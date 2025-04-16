@@ -69,7 +69,8 @@ def main(config: DictConfig):
         #run_name=params.wandb_run_name, # Typically used for [wandb] and [mlflow]logging.
     )
 
-    model = fetch_model(model_config=config["model_config"])
+    model = fetch_model(model_config=config["model_config"], 
+                        data_config=config["data_config"])
 
     trainer = Trainer(
         model=model,
