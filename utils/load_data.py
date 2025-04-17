@@ -68,7 +68,6 @@ class BaseDataset(Dataset):
         self.input_seq_stride = sequence_info[0][2] #stride for the input sequence
         self.label_seq_stride = sequence_info[0][3] #stride for the output sequence
         
-        #TODO There hs to be some assert statement between input sequence and input stride.
         self.strategy = strategy    
 
         # Compute total number of frames required per sample
@@ -87,16 +86,27 @@ class BaseDataset(Dataset):
 
             for group_name in self.groups:
                 group = f[group_name]
-                num_samples = group[self.fields[0]].shape[0]
-
                 # Apply t_min and t_max bounds
-                self.min_frame = 0 if filter_frame is None else filter_frame[0][0]
+                self.min_frame = 0 if filter_frame is None else filter_frame[0][0] #selecting specific timesteps from the whole trajectory
+                num_samples = group[self.fields[0]].shape[0]
                 self.max_frame = num_samples if filter_frame is None else min(filter_frame[0][1], num_samples)
 
                 # Last valid starting index to keep the sample within range
-                max_start_idx = self.max_frame - self.total_span + 1
+                #max_start_idx = self.max_frame - self.total_span + 1
+                # for i in range(self.min_frame, max_start_idx):
+                #     self.index_map.append((group_name, i))
 
-                for i in range(self.min_frame, max_start_idx):
+                half_input = (self.input_seq_len - 1) * self.input_seq_stride # Compute how far back we need to go from the center index to collect the full input sequence
+                half_label = (self.label_seq_len - 1) * self.label_seq_stride # Compute how far forward we need to go from the center index to collect the full label sequence
+
+                # The earliest valid center index must be far enough from the start (min_frame) so that we can extract all input frames to the left
+                min_valid_idx = self.min_frame + half_input
+                # The latest valid center index must be far enough from the end (max_frame)
+                # so that we can extract all label frames to the right
+                # We subtract 1 to ensure we don’t index beyond the available range
+                max_valid_idx = self.max_frame - half_label - 1  
+
+                for i in range(min_valid_idx, max_valid_idx + 1):
                     self.index_map.append((group_name, i))
 
     def __len__(self):
@@ -113,9 +123,14 @@ class BaseDataset(Dataset):
 
                 for field in self.fields:
                     # Time indices for inputs and labels
-                    input_indices = [start_idx + i * self.input_seq_stride for i in range(self.input_seq_len)]
-                    label_start = input_indices[-1] + 1
-                    label_indices = [label_start + i * self.label_seq_stride for i in range(self.label_seq_len)]
+                    # input_indices = [start_idx + i * self.input_seq_stride for i in range(self.input_seq_len)]
+                    # label_start = input_indices[-1] + 1
+                    # label_indices = [label_start + i * self.label_seq_stride for i in range(self.label_seq_len)]
+
+                    center_idx = start_idx
+                    input_indices = [center_idx - (self.input_seq_len - 1 - i) * self.input_seq_stride for i in range(self.input_seq_len)]
+                    label_indices = [center_idx + (i + 1) * self.label_seq_stride for i in range(self.label_seq_len)]
+
 
                     input_seq = np.stack([group[field][i] for i in input_indices], axis=0)
                     label_seq = np.stack([group[field][i] for i in label_indices], axis=0)
