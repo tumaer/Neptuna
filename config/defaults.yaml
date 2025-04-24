@@ -1,6 +1,6 @@
 defaults:
   - data_config: default_kvs_data
-  - model_config: default_fno
+  - model_config: default_resnet
   #- output: default_output
   - scheduler_config: default_scheduler
   - train_config: default_training

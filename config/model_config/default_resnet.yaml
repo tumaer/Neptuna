@@ -1,0 +1,9 @@
+#model_config:
+model_name: resnet
+in_fields: 3 #rho,u,v
+out_fields: 3
+num_blocks: [1, 1, 1, 1]
+block: BasicBlock
+dimension: 2
+hidden_channels: 256
+norm: True
