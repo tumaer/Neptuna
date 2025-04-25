@@ -1,6 +1,6 @@
 defaults:
   - data_config: default_kvs_data
-  - model_config: default_resnet
+  - model_config: default_dilresnet
   #- output: default_output
   - scheduler_config: default_scheduler
   - train_config: default_training

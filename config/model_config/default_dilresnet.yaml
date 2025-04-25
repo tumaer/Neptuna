@@ -1,9 +1,8 @@
-#model_config:
-model_name: resnet
+model_name: dilresnet
 in_fields: 3 #rho,u,v
 out_fields: 3
-num_blocks: [3, 1, 1, 1]
-block: BasicBlock2D
+num_blocks: [1, 1, 1, 1]
+block: DilatedBasicBlock2D
 dimension: 2
 hidden_channels: 256
 norm: True

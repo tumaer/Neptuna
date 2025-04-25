@@ -4,16 +4,16 @@ import torch.nn.functional as F
 from torch import Tensor
 from utils import activation_func
 from typing import Optional, Union, Tuple, List, Callable
-from .resnet_utils import BasicBlock
+from .resnet_utils import BasicBlock2D, DilatedBasicBlock2D
 
 class ResNet(nn.Module):
     """Class to support ResNet like feedforward architectures
 
     Args:
-        in_channels : int
+        in_fields : int
             Number of input fields
-        out_channels : int
-            Number of output channels
+        out_fields : int
+            Number of output fields
         block (Callable): 
             BasicBlock only for now
         num_blocks (List[int]): 
@@ -55,8 +55,10 @@ class ResNet(nn.Module):
         self.dimension = dimension
         
         if isinstance(block, str):
-            if block == "BasicBlock":
-                block = BasicBlock
+            if block == "BasicBlock2D":
+                block = BasicBlock2D
+            elif block == "DilatedBasicBlock2D":
+                block = DilatedBasicBlock2D
         else:
             raise ValueError(f"Unknown block type: {block}")
         
@@ -261,8 +263,6 @@ class ResNet2DDecoder(nn.Module):
             Number of channels in the hidden layers
         activation_fn : nn.Module, optional
             Activation function, by default nn.GELU
-        coord_features : bool, optional
-            Use coordinate grid as additional feature map, by default True
     """
     def __init__(
         self,

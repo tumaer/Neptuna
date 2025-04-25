@@ -22,9 +22,8 @@ def fetch_model(model_config: Dict,
                     padding=model_config['padding'],
                     decoder_layers=model_config['decoder_layers'],
                     decoder_layer_size=model_config['decoder_layer_size'],
-                    ) 
-        
-    if model_name == "resnet":
+                    )         
+    elif model_name == "resnet":
         from models.resnet.resnet import ResNet
         model = ResNet(
                 in_fields=model_config['in_fields'],
@@ -35,5 +34,20 @@ def fetch_model(model_config: Dict,
                 hidden_channels=model_config['hidden_channels'],
                 norm=model_config['norm'],
                 sequence_info=data_config["sequence_info"],
-                )                    
+                )
+    elif model_name == "dilresnet":
+        from models.resnet.resnet import ResNet
+        model = ResNet(
+                in_fields=model_config['in_fields'],
+                out_fields=model_config['out_fields'],
+                num_blocks=model_config['num_blocks'],
+                block=model_config['block'],
+                dimension=model_config['dimension'],
+                hidden_channels=model_config['hidden_channels'],
+                norm=model_config['norm'],
+                sequence_info=data_config["sequence_info"],
+                )
+    else:
+        raise ValueError(f"Model {model_name} is not implemented yet.")                      
+    
     return model
