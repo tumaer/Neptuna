@@ -60,6 +60,59 @@ class BasicBlock2D(nn.Module):
         out = out + self.shortcut(x)
         return out
     
+class BasicBlock3D(nn.Module):
+    """Including two 3x3x3 convolutions layers with normalization and activation for 3D input.
+
+    Parameters
+    ----------
+    in_planes : int
+        Size of hidden channels
+    planes : int
+        Size of output channels, normally equal to in_planes
+    stride : int
+        Stride for 3D Conv
+    activation_fn : nn.Module
+        Activation function, by default nn.GELU
+    norm : bool
+        Whether to use normalization, by default True
+    num_groups : int
+        Number of groups for GroupNorm, by default 1
+    """
+
+    expansion: int = 1
+
+    def __init__(
+        self,
+        in_planes: int,
+        planes: int,
+        stride: int = 1,
+        activation_fn: nn.Module = nn.GELU(),
+        norm: bool = True,
+        num_groups: int = 1,
+    ) -> None:
+        super().__init__()
+
+        self.conv1 = nn.Conv3d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=True)
+        self.bn1 = nn.GroupNorm(num_groups, num_channels=planes) if norm else nn.Identity()
+
+        self.conv2 = nn.Conv3d(planes, planes, kernel_size=3, stride=1, padding=1, bias=True)
+        self.bn2 = nn.GroupNorm(num_groups, num_channels=planes) if norm else nn.Identity()
+
+        self.activation = activation_fn
+
+        # Shortcut connection
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion * planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv3d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
+                nn.GroupNorm(num_groups, self.expansion * planes) if norm else nn.Identity(),
+            )
+
+    def forward(self, x: Tensor) -> Tensor:
+        out = self.activation(self.bn1(self.conv1(x)))
+        out = self.activation(self.bn2(self.conv2(out)))
+        out = out + self.shortcut(x)
+        return out
 
 class BasicBlock1D(nn.Module):
     """Including two 3x3 convolution layers with normalization and activation for 1D input.
@@ -111,8 +164,6 @@ class BasicBlock1D(nn.Module):
         out = self.activation(self.bn2(self.conv2(out)))
         out = out + self.shortcut(x)
         return out
-
- 
 
 class DilatedBasicBlock2D(nn.Module):
     """Basic block for Dilated ResNet (2D)
@@ -173,7 +224,64 @@ class DilatedBasicBlock2D(nn.Module):
             out = self.activation(layer(norm(out)))
         return out + x
     
+class DilatedBasicBlock3D(nn.Module):
+    """Basic block for Dilated ResNet (3D)
 
+    Parameters
+    ----------
+    in_planes : int
+        Size of hidden channels 
+    planes : int
+        Size of output channels, normally equal to in_planes
+    stride : int
+        Stride for 3D CNN
+    activation_fn : nn.Module
+        Activation function, by default nn.GELU
+    norm : bool
+        Whether to use normalization, by default True
+    num_groups : int
+        Number of groups for GroupNorm, by default 1 (equivalent with LayerNorm)
+    """
+
+    expansion = 1
+
+    def __init__(
+        self,
+        in_planes: int,
+        planes: int,
+        stride: int = 1,
+        activation_fn: nn.Module = nn.GELU(),
+        norm: bool = True,
+        num_groups: int = 1,
+    ) -> None:
+        super().__init__()
+
+        self.dilation = [1, 2, 4, 8, 4, 2, 1]
+        dilation_layers = []
+        for dil in self.dilation:
+            dilation_layers.append(
+                nn.Conv3d(
+                    in_planes,
+                    planes,
+                    kernel_size=3,
+                    stride=stride,
+                    dilation=dil,
+                    padding=dil,
+                    bias=True,
+                )
+            )
+        self.dilation_layers = nn.ModuleList(dilation_layers)
+        self.norm_layers = nn.ModuleList(
+            nn.GroupNorm(num_groups, num_channels=planes) if norm else nn.Identity() for _ in self.dilation
+        )
+        self.activation = activation_fn
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = x
+        for layer, norm in zip(self.dilation_layers, self.norm_layers): 
+            out = self.activation(layer(norm(out)))
+        return out + x
+    
 class DilatedBasicBlock1D(nn.Module):
     """Basic block for Dilated ResNet (1D).
 
