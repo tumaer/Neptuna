@@ -11,7 +11,7 @@ from .fno_utils import FullyConnected
 from utils import activation_func
 from typing import Optional, Union, Tuple, List
 
-
+from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 # ===================================================================
 # ===================================================================
 # nD FNO main class
@@ -273,7 +273,7 @@ class FNO1DEncoder(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         if self.coord_features:
-            coord_feat = self.meshgrid(list(x.shape), x.device)
+            coord_feat = oned_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
 
         x = self.lift_network(x)
@@ -289,26 +289,6 @@ class FNO1DEncoder(nn.Module):
 
         x = x[..., : self.ipad[0]]
         return x
-
-    def meshgrid(self, shape: List[int], device: torch.device) -> Tensor:
-        """Creates 1D meshgrid feature
-
-        Parameters
-        ----------
-        shape : List[int]
-            Tensor shape
-        device : torch.device
-            Device model is on
-
-        Returns
-        -------
-        Tensor
-            Meshgrid tensor
-        """
-        bsize, size_x = shape[0], shape[2]
-        grid_x = torch.linspace(0, 1, size_x, dtype=torch.float32, device=device)
-        grid_x = grid_x.unsqueeze(0).unsqueeze(0).repeat(bsize, 1, 1)
-        return grid_x
 
     def grid_to_points(self, value: Tensor) -> Tuple[Tensor, List[int]]:
         """converting from grid based (image) to point based representation
@@ -446,7 +426,7 @@ class FNO2DEncoder(nn.Module):
             )
 
         if self.coord_features: #TODO: Do this for ALL the models
-            coord_feat = self.meshgrid(list(x.shape), x.device)
+            coord_feat = twod_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
 
         x = self.lift_network(x)
@@ -464,29 +444,6 @@ class FNO2DEncoder(nn.Module):
         x = x[..., : self.ipad[0], : self.ipad[1]]
 
         return x
-
-    def meshgrid(self, shape: List[int], device: torch.device) -> Tensor:
-        """Creates 2D meshgrid feature
-
-        Parameters
-        ----------
-        shape : List[int]
-            Tensor shape
-        device : torch.device
-            Device model is on
-
-        Returns
-        -------
-        Tensor
-            Meshgrid tensor
-        """
-        bsize, size_x, size_y = shape[0], shape[2], shape[3]
-        grid_x = torch.linspace(0, 1, size_x, dtype=torch.float32, device=device)
-        grid_y = torch.linspace(0, 1, size_y, dtype=torch.float32, device=device)
-        grid_x, grid_y = torch.meshgrid(grid_x, grid_y, indexing="ij")
-        grid_x = grid_x.unsqueeze(0).unsqueeze(0).repeat(bsize, 1, 1, 1)
-        grid_y = grid_y.unsqueeze(0).unsqueeze(0).repeat(bsize, 1, 1, 1)
-        return torch.cat((grid_x, grid_y), dim=1)
 
     def grid_to_points(self, value: Tensor) -> Tuple[Tensor, List[int]]:
         """converting from grid based (image) to point based representation
@@ -625,7 +582,7 @@ class FNO3DEncoder(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         if self.coord_features:
-            coord_feat = self.meshgrid(list(x.shape), x.device)
+            coord_feat = threed_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
 
         x = self.lift_network(x)
@@ -645,31 +602,6 @@ class FNO3DEncoder(nn.Module):
 
         x = x[..., : self.ipad[0], : self.ipad[1], : self.ipad[2]]
         return x
-
-    def meshgrid(self, shape: List[int], device: torch.device) -> Tensor:
-        """Creates 3D meshgrid feature
-
-        Parameters
-        ----------
-        shape : List[int]
-            Tensor shape
-        device : torch.device
-            Device model is on
-
-        Returns
-        -------
-        Tensor
-            Meshgrid tensor
-        """
-        bsize, size_x, size_y, size_z = shape[0], shape[2], shape[3], shape[4]
-        grid_x = torch.linspace(0, 1, size_x, dtype=torch.float32, device=device)
-        grid_y = torch.linspace(0, 1, size_y, dtype=torch.float32, device=device)
-        grid_z = torch.linspace(0, 1, size_z, dtype=torch.float32, device=device)
-        grid_x, grid_y, grid_z = torch.meshgrid(grid_x, grid_y, grid_z, indexing="ij")
-        grid_x = grid_x.unsqueeze(0).unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
-        grid_y = grid_y.unsqueeze(0).unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
-        grid_z = grid_z.unsqueeze(0).unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
-        return torch.cat((grid_x, grid_y, grid_z), dim=1)
 
     def grid_to_points(self, value: Tensor) -> Tuple[Tensor, List[int]]:
         """converting from grid based (image) to point based representation
