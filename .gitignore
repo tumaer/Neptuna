@@ -5,6 +5,6 @@ __pycache__/
 outputs/
 *.pyc
 .DS_Store
-*.txt
+#*.txt
 *.npy
 outputs/
