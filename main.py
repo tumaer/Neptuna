@@ -24,8 +24,8 @@ def main(config: DictConfig):
                                 mode="train",
                                 sequence_info=config["data_config"]["sequence_info"],
                                 filter_frame=config["data_config"]["filter_frame"],
-                                groups=config["data_config"]["groups"],
-                                fields=config["data_config"]["fields"],
+                                groups=config["data_config"]["filter_groups"],
+                                fields=config["data_config"]["filter_fields"],
                                 transform=None, #TODO: add transform
                                 )
 
