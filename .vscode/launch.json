@@ -6,7 +6,7 @@
     "configurations": [
 
         {
-            "name": "main train",
+            "name": "main train fno",
             "type": "debugpy",
             "request": "launch",
             "program": "main.py",
@@ -15,6 +15,24 @@
             "args": [
                 "hydra.run.dir=.",
                 "hydra.output_subdir=null"
+              ],
+            "env": {
+                "HYDRA_FULL_ERROR": "1",
+                "HYDRA_MAIN_DISABLE_RUN": "1"
+                }
+
+        },
+        {
+            "name": "main train unet",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "hydra.run.dir=.",
+                "hydra.output_subdir=null",
+                "model_config=unet_attn"
               ],
             "env": {
                 "HYDRA_FULL_ERROR": "1",
