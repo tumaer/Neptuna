@@ -9,7 +9,6 @@ from .fno_utils import Conv2dFCLayer, SpectralConv2d
 from .fno_utils import Conv3dFCLayer, SpectralConv3d
 from .fno_utils import FullyConnected
 from utils import activation_func
-from transformers.utils import ModelOutput
 from typing import Optional, Union, Tuple, List
 
 
@@ -93,7 +92,7 @@ class FNO(nn.Module):
         num_fno_modes: Union[int, List[int]] = 16,
         padding: int = 8,
         padding_type: str = "constant",
-        activation_fn: str = "gelu",
+        activation_fn_name: str = "gelu",
         coord_features: bool = True,
     ) -> None:
         super().__init__()
@@ -101,15 +100,22 @@ class FNO(nn.Module):
         self.num_fno_modes = num_fno_modes
         self.padding = padding
         self.padding_type = padding_type
-        self.activation_fn = activation_func.get_activation(activation_fn)
+        self.activation_fn = activation_func.get_activation(activation_fn_name)
+        if self.activation_fn is None:
+            raise NotImplementedError(f"Activation {activation_fn_name} not implemented")
+        
         self.coord_features = coord_features
         self.dimension = dimension
         self.sequence_info = sequence_info
+        
+        model_in_channels= in_channels*sequence_info[0][0]
+        model_out_channels= out_channels*self.sequence_info[0][1]
+        
         # decoder net
         self.decoder_net = FullyConnected(
             in_features=latent_channels,
             layer_size=decoder_layer_size,
-            out_features=out_channels*self.sequence_info[0][1],
+            out_features=model_out_channels,
             num_layers=decoder_layers,
             activation_fn=decoder_activation_fn,
         )
@@ -119,7 +125,7 @@ class FNO(nn.Module):
         #modify the input channels to accomodate the historic steps and predict also a group of future steps
 
         self.spec_encoder = FNOModel(
-            in_channels=in_channels*self.sequence_info[0][0],
+            in_channels=model_in_channels,
             num_fno_layers=self.num_fno_layers,
             fno_layer_size=latent_channels,
             num_fno_modes=self.num_fno_modes,
@@ -132,7 +138,7 @@ class FNO(nn.Module):
     def getFNOEncoder(self):
         """Get the FNO encoder based on the model dimensionality"""
         if self.dimension == 1:
-            raise FNO1DEncoder
+            return FNO1DEncoder
         elif self.dimension == 2:
             return FNO2DEncoder
         elif self.dimension == 3:
