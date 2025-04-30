@@ -26,6 +26,10 @@ def fetch_dataset(dataset_name: str,
     if dataset_name == "KarmanVortexStreet":
         from data.fluids.incompressible import KarmanVortexStreetDataset as LoadedDataset
         return LoadedDataset(dataset_name=dataset_name, **kwargs)
+    elif dataset_name == "KuramotoSivashinsky":
+        from data.fluids.incompressible import KuramotoSivashinskyDataset as LoadedDataset
+        return LoadedDataset(dataset_name=dataset_name, **kwargs)
+    
     else:
         raise ValueError(f"Dataset {dataset_name} is not implemented yet.")
 

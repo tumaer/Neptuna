@@ -1,0 +1,6 @@
+dataset_name: KuramotoSivashinsky
+dataset_directory_path: ./data/fluids/KS/2D
+sequence_info: [[6, 7, 1, 1]]
+filter_frame: null 
+filter_groups: null
+filter_fields: null 
