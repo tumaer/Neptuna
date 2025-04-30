@@ -40,6 +40,44 @@
                 }
 
         },
+        {
+            "name": "test KS: all Ds",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "hydra.run.dir=.",
+                "hydra.output_subdir=null",
+                "data_config=KS/default_ks_data",
+                "model_config=FNO/default_fno"
+              ],
+            "env": {
+                "HYDRA_FULL_ERROR": "1",
+                "HYDRA_MAIN_DISABLE_RUN": "1"
+                }
+
+        },
+        {
+            "name": "test KVS only 2D",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "hydra.run.dir=.",
+                "hydra.output_subdir=null",
+                "data_config=KVS/default_kvs_data",
+                "model_config=FNO/default_fno"
+              ],
+            "env": {
+                "HYDRA_FULL_ERROR": "1",
+                "HYDRA_MAIN_DISABLE_RUN": "1"
+                }
+
+        },
         // default
         {
             "name": "Python: Current File",
