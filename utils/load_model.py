@@ -10,7 +10,7 @@ def fetch_model(model_config: Dict,
 
 
     if model_name == "fno":
-        from models.fno.fno import FNO
+        from models.FNO.fno import FNO
         model = FNO(
                     dimension=model_config['dimension'],
                     in_channels=model_config['in_channels'],
@@ -26,7 +26,7 @@ def fetch_model(model_config: Dict,
                     ) 
     
     elif model_name == "unet-attn":
-        from models.unet.unet import Unet
+        from models.UNet.unet import Unet
         model= Unet(
             dimension=model_config['dimension'],
             in_channels=model_config['in_channels'],
