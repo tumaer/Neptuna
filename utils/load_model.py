@@ -22,6 +22,17 @@ def fetch_model(model_config: Dict,
                     padding=model_config['padding'],
                     decoder_layers=model_config['decoder_layers'],
                     decoder_layer_size=model_config['decoder_layer_size'],
+                    #TODO: more arguments like act. fn name etc to be added
                     ) 
+    
+    elif model_name == "unet-attn":
+        from models.unet.unet import Unet
+        model= Unet(
+            dimension=model_config['dimension'],
+            in_channels=model_config['in_channels'],
+            out_channels=model_config['out_channels'], 
+            hidden_channels=model_config['hidden_channels'],
+            sequence_info=data_config["sequence_info"], #TODO: more arguments to be added
+        )
     
     return model
