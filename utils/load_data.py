@@ -89,7 +89,7 @@ class BaseDataset(Dataset):
                 # Apply t_min and t_max bounds
                 self.min_frame = 0 if filter_frame is None else filter_frame[0][0] #selecting specific timesteps from the whole trajectory
                 num_samples = group[self.fields[0]].shape[0]
-                self.max_frame = num_samples if filter_frame is None else min(filter_frame[0][1], num_samples)
+                self.max_frame = num_samples-1 if filter_frame is None else min(filter_frame[0][1], num_samples)
 
                 # Last valid starting index to keep the sample within range
                 #max_start_idx = self.max_frame - self.total_span + 1
@@ -108,10 +108,10 @@ class BaseDataset(Dataset):
 
                 for i in range(min_valid_idx, max_valid_idx + 1):
                     self.index_map.append((group_name, i))
+            print("Index map built")
 
     def __len__(self):
         return len(self.index_map)
-
 
     def __getitem__(self, idx):
         if self.strategy == "many2many":
@@ -130,7 +130,6 @@ class BaseDataset(Dataset):
                     center_idx = start_idx
                     input_indices = [center_idx - (self.input_seq_len - 1 - i) * self.input_seq_stride for i in range(self.input_seq_len)]
                     label_indices = [center_idx + (i + 1) * self.label_seq_stride for i in range(self.label_seq_len)]
-
 
                     input_seq = np.stack([group[field][i] for i in input_indices], axis=0)
                     label_seq = np.stack([group[field][i] for i in label_indices], axis=0)
