@@ -1,11 +1,11 @@
 #model_config:
 model_name: fno
 dimension: 2
-in_channels: 3 #rho,u,v
+in_channels: 3 
 out_channels: 3
 latent_channels: 32   #number of channels in the latent space after lifting.
 fno_layers: 7
-fno_modes: '[32,32]'
+fno_modes: '8' #can also be a list of integers, e.g. '[32, 64, 32]' for 3d. #TODO: put an assert somewhere as this is dataset resolution dependent
 padding: 9
 decoder_layers: 2
 decoder_layer_size: 128
