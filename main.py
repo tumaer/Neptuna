@@ -66,6 +66,7 @@ def main(config: DictConfig):
         full_determinism=False, #set to false, only required for debugging distributed training
         torch_compile=False, #check if setting it to true helps
         report_to="none", #change to wandb later  
+        use_cpu=False, #Whether to not use CUDA even when it is available.
         #run_name=params.wandb_run_name, # Typically used for [wandb] and [mlflow]logging.
     )
 
