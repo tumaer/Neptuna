@@ -4,7 +4,6 @@ import torch
 from torch import Tensor
 import torch.nn as nn
 from utils import activation_func
-from models.unet.unet_utils import SpectralConv2d
 
 class ResidualBlock2D(nn.Module):
     """Wide Residual Blocks used in modern Unet architectures.
@@ -291,11 +290,10 @@ class Unet(nn.Module):
 
         insize = in_channels*sequence_info[0][0]
         outsize = out_channels*sequence_info[0][1]
-        n_channels = hidden_channels
         
         self.unet = self.getUnet()(insize, 
                                    outsize, 
-                                   n_channels, 
+                                   hidden_channels, 
                                    n_resolutions, 
                                    ch_mults, 
                                    is_attn, 
@@ -341,7 +339,7 @@ class Unet2D(nn.Module):
     def __init__(self, 
                  insize, 
                  outsize,
-                 n_channels, 
+                 hidden_channels, 
                  n_resolutions, 
                  ch_mults, 
                  is_attn, 
@@ -355,14 +353,14 @@ class Unet2D(nn.Module):
         self.activation = activation_func.get_activation(activation_fn_name)
         # Project image into feature map
         if use1x1: #false by default
-            self.image_proj = nn.Conv2d(insize, n_channels, kernel_size=1)
+            self.image_proj = nn.Conv2d(insize, hidden_channels, kernel_size=1)
         else:
-            self.image_proj = nn.Conv2d(insize, n_channels, kernel_size=(3, 3), padding=(1, 1))
+            self.image_proj = nn.Conv2d(insize, hidden_channels, kernel_size=(3, 3), padding=(1, 1))
 
         # #### First half of U-Net - decreasing resolution
         down = []
         # Number of channels
-        out_channels = in_channels = n_channels
+        out_channels = in_channels = hidden_channels
         # For each resolution
         for i in range(n_resolutions):
             # Number of output channels at this resolution
@@ -418,7 +416,7 @@ class Unet2D(nn.Module):
         self.up = nn.ModuleList(up)
 
         if norm:
-            self.norm = nn.GroupNorm(8, n_channels)
+            self.norm = nn.GroupNorm(8, hidden_channels)
         else:
             self.norm = nn.Identity()
 
