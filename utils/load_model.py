@@ -31,7 +31,7 @@ def fetch_model(model_config: Dict,
             dimension=model_config['dimension'],
             in_channels=model_config['in_channels'],
             out_channels=model_config['out_channels'], 
-            hidden_channels=model_config['hidden_channels'],
+            latent_channels=model_config['latent_channels'],
             sequence_info=data_config["sequence_info"], #TODO: more arguments to be added
         )
     

@@ -266,7 +266,7 @@ class Unet(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        hidden_channels: int,
+        latent_channels: int,
         activation_fn_name: str="gelu",
         sequence_info: Optional[List[List[int]]] = [[1,1,1,1]],
         dimension: int = 2,
@@ -280,7 +280,6 @@ class Unet(nn.Module):
         
         super().__init__()
         self.dimension = dimension
-        self.hidden_channels = hidden_channels
 
         self.activation = activation_func.get_activation(activation_fn_name)
         if self.activation is None:
@@ -293,7 +292,7 @@ class Unet(nn.Module):
         
         self.unet = self.getUnet()(insize, 
                                    outsize, 
-                                   hidden_channels, 
+                                   latent_channels, 
                                    n_resolutions, 
                                    ch_mults, 
                                    is_attn, 
