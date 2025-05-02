@@ -12,9 +12,9 @@ def fetch_model(model_config: Dict,
     if model_name == "fno":
         from models.FNO.fno import FNO
         model = FNO(
-                    dimension=model_config['dimension'],
-                    in_channels=model_config['in_channels'],
-                    out_channels=model_config['out_channels'], 
+                    dimension=data_config['dimension'],
+                    in_channels=data_config['in_channels'],
+                    out_channels=data_config['out_channels'], 
                     sequence_info=data_config["sequence_info"],
                     latent_channels=model_config['latent_channels'],
                     num_fno_modes=eval(model_config['fno_modes']),
@@ -25,14 +25,15 @@ def fetch_model(model_config: Dict,
                     #TODO: more arguments like act. fn name etc to be added
                     ) 
     
-    elif model_name == "unet-attn":
-        from models.UNet.unet import Unet
-        model= Unet(
-            dimension=model_config['dimension'],
-            in_channels=model_config['in_channels'],
-            out_channels=model_config['out_channels'], 
-            latent_channels=model_config['latent_channels'],
-            sequence_info=data_config["sequence_info"], #TODO: more arguments to be added
+    elif model_name == "unet":
+        from models.UNet.unet import UNet
+        model= UNet(
+                    dimension=data_config['dimension'],
+                    in_channels=data_config['in_channels'],
+                    out_channels=data_config['out_channels'], 
+                    sequence_info=data_config["sequence_info"], 
+                    latent_channels=model_config['latent_channels'],
+                    #TODO: more arguments to be added
         )
     
     return model
