@@ -1016,7 +1016,7 @@ class Unet3D(nn.Module):
         if use1x1:
             self.final = nn.Conv3d(in_channels, outsize, kernel_size=1)
         else:
-            self.final = nn.Conv3d(in_channels, outsize, kernel_size=(3, 3), padding=(1, 1))
+            self.final = nn.Conv3d(in_channels, outsize, kernel_size=(3, 3, 3), padding=(1, 1, 1))
 
     def forward(self, x: torch.Tensor):
 
