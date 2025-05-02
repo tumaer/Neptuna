@@ -112,7 +112,7 @@ class FNO(nn.Module):
         model_in_channels= in_channels*sequence_info[0][0]
         model_out_channels= out_channels*self.sequence_info[0][1]
         
-        self.fno = self.getFNO()(
+        self.fno = self.build_FNO()(
             in_channels=model_in_channels,
             out_channels=model_out_channels,
             num_fno_layers=self.num_fno_layers,
@@ -127,7 +127,7 @@ class FNO(nn.Module):
             decoder_layer_size=decoder_layer_size,
         )
 
-    def getFNO(self):
+    def build_FNO(self):
         """Get the FNO encoder based on the model dimensionality"""
         if self.dimension == 1:
             return FNO1D

@@ -57,7 +57,7 @@ class UNet(nn.Module):
         insize = in_channels*sequence_info[0][0]
         outsize = out_channels*sequence_info[0][1]
         
-        self.unet = self.getUnet()(insize, 
+        self.unet = self.build_UNet()(insize, 
                                    outsize, 
                                    latent_channels, 
                                    n_resolutions, 
@@ -69,7 +69,7 @@ class UNet(nn.Module):
                                    norm, 
                                    use1x1)
        
-    def getUnet(self):
+    def build_UNet(self):
         """Get the appropriate upsampler based on the dimension."""
         if self.dimension == 1:
             return UNet1D
