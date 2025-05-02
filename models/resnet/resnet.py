@@ -5,6 +5,7 @@ from torch import Tensor
 from utils import activation_func
 from typing import Optional, Union, Tuple, List, Callable
 from .resnet_utils import BasicBlock1D,BasicBlock2D,BasicBlock3D,DilatedBasicBlock1D,DilatedBasicBlock2D,DilatedBasicBlock3D
+from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 
 class ResNet(nn.Module):
     """Class to support ResNet like feedforward architectures
@@ -55,18 +56,22 @@ class ResNet(nn.Module):
         self.dimension = dimension
         
         if isinstance(block, str):
-            if block == "BasicBlock2D":
-                block = BasicBlock2D
-            elif block == "BasicBlock1D":
-                block = BasicBlock1D
-            elif block == "BasicBlock3D":
-                block = BasicBlock3D
-            elif block == "DilatedBasicBlock2D":
-                block = DilatedBasicBlock2D
-            elif block == "DilatedBasicBlock1D":
-                block = DilatedBasicBlock1D
-            elif block == "DilatedBasicBlock3D":
-                block = DilatedBasicBlock3D
+            if block == "BasicBlock":
+                if self.dimension == 2:
+                    block = BasicBlock2D
+                elif self.dimension == 1:
+                    block = BasicBlock1D
+                elif self.dimension == 3:
+                    block = BasicBlock3D
+            elif block == "DilatedBasicBlock":
+                if self.dimension == 2:
+                    block = DilatedBasicBlock2D
+                elif self.dimension == 1:
+                    block = DilatedBasicBlock1D
+                elif self.dimension == 3:
+                    block = DilatedBasicBlock3D
+            else:
+                raise NotImplementedError(f"Unknown block: {block}")
         else:
             raise ValueError(f"Unknown block type: {block}")
         
@@ -180,6 +185,67 @@ class ResNet(nn.Module):
 
         return y,labels
                                                    
+class ResNet1DEncoder(nn.Module):
+    """1D ResNet encoder for ResNet
+
+    Args:
+        in_channels : int
+            Number of input channels
+        hidden_channels (int): 
+            Number of channels in the hidden layers
+        activation_fn : nn.Module, optional
+            Activation function, by default nn.GELU
+        coord_features : bool, optional
+            Use coordinate grid as additional feature map, by default True
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_channels: int = 64,
+        activation_fn: nn.Module = nn.GELU(),
+        coord_features: bool = True,
+    ) -> None:
+        super().__init__()
+        self.in_channels = in_channels
+        self.in_planes = hidden_channels
+        self.activation = activation_fn                
+        self.coord_features = coord_features
+        self.padding = 9   #TODO: add padding to the model, hard code for now
+        
+        # Add relative coordinate feature
+        if self.coord_features:
+            self.in_channels = self.in_channels + 1
+            
+        self.conv_in1 = nn.Conv1d(
+            self.in_channels,
+            self.in_planes,
+            kernel_size=1,
+            bias=True,
+        )
+        self.conv_in2 = nn.Conv1d(
+            self.in_planes,
+            self.in_planes,
+            kernel_size=1,
+            bias=True,
+        )   
+    
+    def forward(self, x: Tensor) -> Tensor:
+        if x.dim() != 3:
+            raise ValueError(
+                "Only 3D tensors [batch, in_channels, grid_x accepted for 1D ResNet"
+            )
+        
+        if self.coord_features: 
+            coord_feat = oned_meshgrid(list(x.shape), x.device)
+            x = torch.cat((x, coord_feat), dim=1)
+            
+        x = self.activation(self.conv_in1(x.float())) #x[8, 128, 128, 128]
+        x = self.activation(self.conv_in2(x.float())) #x[8, 128, 128, 128]
+        if self.padding > 0:
+            x = F.pad(x, [0, self.padding])
+                        
+        return x
 
 
 class ResNet2DEncoder(nn.Module):
@@ -226,30 +292,6 @@ class ResNet2DEncoder(nn.Module):
             kernel_size=1,
             bias=True,
         )
-
-            
-    def meshgrid(self, shape: List[int], device: torch.device) -> Tensor:
-        """Creates 2D meshgrid feature
-
-        Parameters
-        ----------
-        shape : List[int]
-            Tensor shape
-        device : torch.device
-            Device model is on
-
-        Returns
-        -------
-        Tensor
-            Meshgrid tensor
-        """
-        bsize, size_x, size_y = shape[0], shape[2], shape[3]
-        grid_x = torch.linspace(0, 1, size_x, dtype=torch.float32, device=device)
-        grid_y = torch.linspace(0, 1, size_y, dtype=torch.float32, device=device)
-        grid_x, grid_y = torch.meshgrid(grid_x, grid_y, indexing="ij")
-        grid_x = grid_x.unsqueeze(0).unsqueeze(0).repeat(bsize, 1, 1, 1)
-        grid_y = grid_y.unsqueeze(0).unsqueeze(0).repeat(bsize, 1, 1, 1) 
-        return torch.cat((grid_x, grid_y), dim=1)
     
     
     def forward(self, x: Tensor) -> Tensor:
@@ -259,7 +301,7 @@ class ResNet2DEncoder(nn.Module):
             )
         
         if self.coord_features: 
-            coord_feat = self.meshgrid(list(x.shape), x.device)
+            coord_feat = twod_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
             
         x = self.activation(self.conv_in1(x.float())) #x[8, 128, 128, 128]
@@ -311,31 +353,6 @@ class ResNet3DEncoder(nn.Module):
             kernel_size=1,
             bias=True,
         )
-
-    def meshgrid(self, shape: List[int], device: torch.device) -> Tensor:
-        """Creates 3D meshgrid feature
-
-        Parameters
-        ----------
-        shape : List[int]
-            Tensor shape
-        device : torch.device
-            Device model is on
-
-        Returns
-        -------
-        Tensor
-            Meshgrid tensor
-        """
-        bsize, size_x, size_y, size_z = shape[0], shape[2], shape[3], shape[4]
-        grid_x = torch.linspace(0, 1, size_x, dtype=torch.float32, device=device)
-        grid_y = torch.linspace(0, 1, size_y, dtype=torch.float32, device=device)
-        grid_z = torch.linspace(0, 1, size_z, dtype=torch.float32, device=device)
-        grid_x, grid_y, grid_z = torch.meshgrid(grid_x, grid_y, grid_z, indexing="ij")
-        grid_x = grid_x.unsqueeze(0).unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
-        grid_y = grid_y.unsqueeze(0).unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
-        grid_z = grid_z.unsqueeze(0).unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
-        return torch.cat((grid_x, grid_y, grid_z), dim=1)
     
     def forward(self, x: Tensor) -> Tensor:
         if x.dim() != 5:
@@ -344,7 +361,7 @@ class ResNet3DEncoder(nn.Module):
             )
 
         if self.coord_features:
-            coord_feat = self.meshgrid(list(x.shape), x.device)
+            coord_feat = threed_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
 
         x = self.activation(self.conv_in1(x.float()))
@@ -354,91 +371,54 @@ class ResNet3DEncoder(nn.Module):
             x = F.pad(x, (0, self.padding, 0, self.padding, 0, self.padding))
 
         return x
-    
-class ResNet1DEncoder(nn.Module):
-    """1D ResNet encoder for ResNet
+
+class ResNet1DDecoder(nn.Module):
+    """1D ResNet decoder for ResNet
 
     Args:
-        in_channels : int
-            Number of input channels
+        out_channels : int
+            Number of output channels
         hidden_channels (int): 
             Number of channels in the hidden layers
         activation_fn : nn.Module, optional
             Activation function, by default nn.GELU
-        coord_features : bool, optional
-            Use coordinate grid as additional feature map, by default True
     """
-
     def __init__(
         self,
-        in_channels: int,
+        out_channels: int,
         hidden_channels: int = 64,
         activation_fn: nn.Module = nn.GELU(),
-        coord_features: bool = True,
     ) -> None:
-        super().__init__()
-        self.in_channels = in_channels
+        super().__init__()        
+        self.out_channels = out_channels
         self.in_planes = hidden_channels
-        self.activation = activation_fn                
-        self.coord_features = coord_features
+        self.activation = activation_fn
         self.padding = 9   #TODO: add padding to the model, hard code for now
+       
+        self.conv_out1 = nn.Conv1d(
+            self.in_planes,
+            self.in_planes,
+            kernel_size=1,
+            bias=True,
+        )
+        self.conv_out2 = nn.Conv1d(
+            self.in_planes,
+            self.out_channels,
+            kernel_size=1,
+            bias=True,
+        )
+
         
-        # Add relative coordinate feature
-        if self.coord_features:
-            self.in_channels = self.in_channels + 1
-            
-        self.conv_in1 = nn.Conv1d(
-            self.in_channels,
-            self.in_planes,
-            kernel_size=1,
-            bias=True,
-        )
-        self.conv_in2 = nn.Conv1d(
-            self.in_planes,
-            self.in_planes,
-            kernel_size=1,
-            bias=True,
-        )
-
-            
-    def meshgrid(self, shape: List[int], device: torch.device) -> Tensor:
-        """Creates 1D meshgrid feature
-
-        Parameters
-        ----------
-        shape : List[int]
-            Tensor shape
-        device : torch.device
-            Device model is on
-
-        Returns
-        -------
-        Tensor
-            Meshgrid tensor
-        """
-        bsize, size_x = shape[0], shape[2]
-        grid_x = torch.linspace(0, 1, size_x, dtype=torch.float32, device=device)
-        grid_x = grid_x.unsqueeze(0).unsqueeze(0).repeat(bsize, 1, 1)
-        return grid_x
-    
-    
     def forward(self, x: Tensor) -> Tensor:
-        if x.dim() != 3:
-            raise ValueError(
-                "Only 3D tensors [batch, in_channels, grid_x accepted for 1D ResNet"
-            )
-        
-        if self.coord_features: 
-            coord_feat = self.meshgrid(list(x.shape), x.device)
-            x = torch.cat((x, coord_feat), dim=1)
             
-        x = self.activation(self.conv_in1(x.float())) #x[8, 128, 128, 128]
-        x = self.activation(self.conv_in2(x.float())) #x[8, 128, 128, 128]
         if self.padding > 0:
-            x = F.pad(x, [0, self.padding])
+            x = x[..., : -self.padding]
+
+        x = self.activation(self.conv_out1(x))
+        x = self.conv_out2(x)
                         
         return x
-    
+            
         
 class ResNet2DDecoder(nn.Module):
     """2D ResNet decoder for ResNet
@@ -487,54 +467,6 @@ class ResNet2DDecoder(nn.Module):
                         
         return x
 
-
-class ResNet1DDecoder(nn.Module):
-    """1D ResNet decoder for ResNet
-
-    Args:
-        out_channels : int
-            Number of output channels
-        hidden_channels (int): 
-            Number of channels in the hidden layers
-        activation_fn : nn.Module, optional
-            Activation function, by default nn.GELU
-    """
-    def __init__(
-        self,
-        out_channels: int,
-        hidden_channels: int = 64,
-        activation_fn: nn.Module = nn.GELU(),
-    ) -> None:
-        super().__init__()        
-        self.out_channels = out_channels
-        self.in_planes = hidden_channels
-        self.activation = activation_fn
-        self.padding = 9   #TODO: add padding to the model, hard code for now
-       
-        self.conv_out1 = nn.Conv1d(
-            self.in_planes,
-            self.in_planes,
-            kernel_size=1,
-            bias=True,
-        )
-        self.conv_out2 = nn.Conv1d(
-            self.in_planes,
-            self.out_channels,
-            kernel_size=1,
-            bias=True,
-        )
-
-        
-    def forward(self, x: Tensor) -> Tensor:
-            
-        if self.padding > 0:
-            x = x[..., : -self.padding]
-
-        x = self.activation(self.conv_out1(x))
-        x = self.conv_out2(x)
-                        
-        return x
-    
 class ResNet3DDecoder(nn.Module):
     """3D ResNet decoder for ResNet
 

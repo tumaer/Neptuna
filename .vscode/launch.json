@@ -4,9 +4,8 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
-
         {
-            "name": "main train",
+            "name": "train 1D_KS_UNet:",
             "type": "debugpy",
             "request": "launch",
             "program": "main.py",
@@ -14,7 +13,9 @@
             "justMyCode": false,
             "args": [
                 "hydra.run.dir=.",
-                "hydra.output_subdir=null"
+                "hydra.output_subdir=null",
+                "data_config=fluids/KS/1d_ks_data.yaml",
+                "model_config=UNet/default_unet"
               ],
             "env": {
                 "HYDRA_FULL_ERROR": "1",
@@ -22,6 +23,296 @@
                 }
 
         },
+        {
+            "name": "train 2D_KS_UNet:",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "hydra.run.dir=.",
+                "hydra.output_subdir=null",
+                "data_config=fluids/KS/2d_ks_data_default.yaml",
+                "model_config=UNet/default_unet"
+              ],
+            "env": {
+                "HYDRA_FULL_ERROR": "1",
+                "HYDRA_MAIN_DISABLE_RUN": "1"
+                }
+
+        },
+        {
+            "name": "train 3D_KS_UNet:",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "hydra.run.dir=.",
+                "hydra.output_subdir=null",
+                "data_config=fluids/KS/3d_ks_data.yaml",
+                "model_config=UNet/default_unet"
+              ],
+            "env": {
+                "HYDRA_FULL_ERROR": "1",
+                "HYDRA_MAIN_DISABLE_RUN": "1"
+                }
+
+        },
+        //-------------------------------------------------------------------------------
+        {
+            "name": "train 1D_KS_ResNet:",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "hydra.run.dir=.",
+                "hydra.output_subdir=null",
+                "data_config=fluids/KS/1d_ks_data.yaml",
+                "model_config=ResNet/default_resnet"
+              ],
+            "env": {
+                "HYDRA_FULL_ERROR": "1",
+                "HYDRA_MAIN_DISABLE_RUN": "1"
+                }
+
+        },
+        {
+            "name": "train 2D_KS_ResNet:",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "hydra.run.dir=.",
+                "hydra.output_subdir=null",
+                "data_config=fluids/KS/2d_ks_data_default.yaml",
+                "model_config=ResNet/default_resnet"
+              ],
+            "env": {
+                "HYDRA_FULL_ERROR": "1",
+                "HYDRA_MAIN_DISABLE_RUN": "1"
+                }
+
+        },
+        {
+            "name": "train 3D_KS_ResNet:",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "hydra.run.dir=.",
+                "hydra.output_subdir=null",
+                "data_config=fluids/KS/3d_ks_data.yaml",
+                "model_config=ResNet/default_resnet"
+              ],
+            "env": {
+                "HYDRA_FULL_ERROR": "1",
+                "HYDRA_MAIN_DISABLE_RUN": "1"
+                }
+
+        },
+        //-------------------------------------------------------------------------------
+        {
+          "name": "train 1D_KS_dilResNet:",
+          "type": "debugpy",
+          "request": "launch",
+          "program": "main.py",
+          "console": "integratedTerminal",
+          "justMyCode": false,
+          "args": [
+              "hydra.run.dir=.",
+              "hydra.output_subdir=null",
+              "data_config=fluids/KS/1d_ks_data.yaml",
+              "model_config=ResNet/default_dilresnet"
+            ],
+          "env": {
+              "HYDRA_FULL_ERROR": "1",
+              "HYDRA_MAIN_DISABLE_RUN": "1"
+              }
+
+      },
+      {
+          "name": "train 2D_KS_dilResNet:",
+          "type": "debugpy",
+          "request": "launch",
+          "program": "main.py",
+          "console": "integratedTerminal",
+          "justMyCode": false,
+          "args": [
+              "hydra.run.dir=.",
+              "hydra.output_subdir=null",
+              "data_config=fluids/KS/2d_ks_data_default.yaml",
+              "model_config=ResNet/default_dilresnet"
+            ],
+          "env": {
+              "HYDRA_FULL_ERROR": "1",
+              "HYDRA_MAIN_DISABLE_RUN": "1"
+              }
+
+      },
+      {
+          "name": "train 3D_KS_dilResNet:",
+          "type": "debugpy",
+          "request": "launch",
+          "program": "main.py",
+          "console": "integratedTerminal",
+          "justMyCode": false,
+          "args": [
+              "hydra.run.dir=.",
+              "hydra.output_subdir=null",
+              "data_config=fluids/KS/3d_ks_data.yaml",
+              "model_config=ResNet/default_dilresnet"
+            ],
+          "env": {
+              "HYDRA_FULL_ERROR": "1",
+              "HYDRA_MAIN_DISABLE_RUN": "1"
+              }
+
+      },
+      //-------------------------------------------------------------------------------
+        {
+          "name": "train 1D_KS_FNO:",
+          "type": "debugpy",
+          "request": "launch",
+          "program": "main.py",
+          "console": "integratedTerminal",
+          "justMyCode": false,
+          "args": [
+              "hydra.run.dir=.",
+              "hydra.output_subdir=null",
+              "data_config=fluids/KS/1d_ks_data.yaml",
+              "model_config=FNO/default_fno"
+            ],
+          "env": {
+              "HYDRA_FULL_ERROR": "1",
+              "HYDRA_MAIN_DISABLE_RUN": "1"
+              }
+
+      },
+      {
+        "name": "train 2D_KS_FNO:",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "main.py",
+        "console": "integratedTerminal",
+        "justMyCode": false,
+        "args": [
+            "hydra.run.dir=.",
+            "hydra.output_subdir=null",
+            "data_config=fluids/KS/2d_ks_data_default.yaml",
+            "model_config=FNO/default_fno"
+          ],
+        "env": {
+            "HYDRA_FULL_ERROR": "1",
+            "HYDRA_MAIN_DISABLE_RUN": "1"
+            }
+
+    },
+    {
+        "name": "train 3D_KS_FNO:",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "main.py",
+        "console": "integratedTerminal",
+        "justMyCode": false,
+        "args": [
+            "hydra.run.dir=.",
+            "hydra.output_subdir=null",
+            "data_config=fluids/KS/3d_ks_data.yaml",
+            "model_config=FNO/default_fno"
+          ],
+        "env": {
+            "HYDRA_FULL_ERROR": "1",
+            "HYDRA_MAIN_DISABLE_RUN": "1"
+            }
+
+    },
+        //###################################################################
+        {
+            "name": "train 2D_KVS_Unet",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "hydra.run.dir=.",
+                "hydra.output_subdir=null",
+                "data_config=fluids/KVS/2d_kvs_data_default",
+                "model_config=UNet/default_unet"
+              ],
+            "env": {
+                "HYDRA_FULL_ERROR": "1",
+                "HYDRA_MAIN_DISABLE_RUN": "1"
+                }
+
+        },
+        {
+            "name": "train 2D_KVS_FNO",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "hydra.run.dir=.",
+                "hydra.output_subdir=null",
+                "data_config=fluids/KVS/2d_kvs_data_default",
+                "model_config=FNO/default_fno"
+              ],
+            "env": {
+                "HYDRA_FULL_ERROR": "1",
+                "HYDRA_MAIN_DISABLE_RUN": "1"
+                }
+
+        },
+        {
+          "name": "train 2D_KVS_ResNet",
+          "type": "debugpy",
+          "request": "launch",
+          "program": "main.py",
+          "console": "integratedTerminal",
+          "justMyCode": false,
+          "args": [
+              "hydra.run.dir=.",
+              "hydra.output_subdir=null",
+              "data_config=fluids/KVS/2d_kvs_data_default",
+              "model_config=ResNet/default_resnet"
+            ],
+          "env": {
+              "HYDRA_FULL_ERROR": "1",
+              "HYDRA_MAIN_DISABLE_RUN": "1"
+              }
+
+      },
+      {
+        "name": "train 2D_KVS_DilResNet",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "main.py",
+        "console": "integratedTerminal",
+        "justMyCode": false,
+        "args": [
+            "hydra.run.dir=.",
+            "hydra.output_subdir=null",
+            "data_config=fluids/KVS/2d_kvs_data_default",
+            "model_config=ResNet/default_dilresnet"
+          ],
+        "env": {
+            "HYDRA_FULL_ERROR": "1",
+            "HYDRA_MAIN_DISABLE_RUN": "1"
+            }
+
+    },
+        //###################################################################
         // default
         {
             "name": "Python: Current File",
@@ -31,6 +322,24 @@
             // add current file
             "program": "${file}", 
             "console": "integratedTerminal",
-        }
+        },
+        {
+            "name": "main train_ks",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "hydra.run.dir=.",
+                "hydra.output_subdir=null",
+                "data_config=ks_data",
+                "model_config=default_resnet_2d_ks",
+              ],
+            "env": {
+                "HYDRA_FULL_ERROR": "1",
+                "HYDRA_MAIN_DISABLE_RUN": "1"
+                }
+        },
             ]
 }

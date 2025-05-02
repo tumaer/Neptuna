@@ -1,3 +1,5 @@
+#import os
+#os.environ["CUDA_VISIBLE_DEVICES"] = "" #set the GPU to use
 import hydra
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
@@ -13,6 +15,7 @@ torch.manual_seed(SEED)
 np.random.seed(SEED)
 random.seed(SEED)
 
+
 @hydra.main(version_base="1.3", config_path="./config", config_name="defaults.yaml")
 def main(config: DictConfig):
     print("#" * 79, "\nStarting a benchmarking run with the following config:")
@@ -24,8 +27,8 @@ def main(config: DictConfig):
                                 mode="train",
                                 sequence_info=config["data_config"]["sequence_info"],
                                 filter_frame=config["data_config"]["filter_frame"],
-                                groups=config["data_config"]["groups"],
-                                fields=config["data_config"]["fields"],
+                                groups=config["data_config"]["filter_groups"],
+                                fields=config["data_config"]["filter_fields"],
                                 transform=None, #TODO: add transform
                                 )
 
@@ -66,6 +69,7 @@ def main(config: DictConfig):
         full_determinism=False, #set to false, only required for debugging distributed training
         torch_compile=False, #check if setting it to true helps
         report_to="none", #change to wandb later  
+        use_cpu=False, #Whether to not use CUDA even when it is available.
         #run_name=params.wandb_run_name, # Typically used for [wandb] and [mlflow]logging.
     )
 

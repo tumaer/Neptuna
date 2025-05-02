@@ -1,8 +1,0 @@
-model_name: dilresnet
-in_fields: 3 #rho,u,v
-out_fields: 3
-num_blocks: [1,1,1,1]
-block: DilatedBasicBlock3D
-dimension: 3
-hidden_channels: 256
-norm: True

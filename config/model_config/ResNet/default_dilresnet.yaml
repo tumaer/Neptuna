@@ -1,0 +1,5 @@
+model_name: dilresnet
+num_blocks: [1,1,1,1]
+block: DilatedBasicBlock
+hidden_channels: 256
+norm: True
