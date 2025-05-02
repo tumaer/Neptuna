@@ -126,7 +126,7 @@ class ResidualBlock3D(nn.Module):
         # Add the shortcut connection and return
         return h + self.shortcut(x)
 
-class AttentionBlock2D(nn.Module):
+class AttentionBlock(nn.Module):
     """Attention block This is similar to [transformer multi-head
     attention]
 
@@ -156,32 +156,59 @@ class AttentionBlock2D(nn.Module):
         self.n_heads = n_heads
         self.d_k = d_k
 
+
     def forward(self, x: torch.Tensor):
         # Get shape
-        batch_size, n_channels, height, width = x.shape
-        # Change `x` to shape `[batch_size, seq, n_channels]`
-        x = x.view(batch_size, n_channels, -1).permute(0, 2, 1)
-        # Get query, key, and values (concatenated) and shape it to `[batch_size, seq, n_heads, 3 * d_k]`
-        qkv = self.projection(x).view(batch_size, -1, self.n_heads, 3 * self.d_k)
-        # Split query, key, and values. Each of them will have shape `[batch_size, seq, n_heads, d_k]`
-        q, k, v = torch.chunk(qkv, 3, dim=-1)
-        # Calculate scaled dot-product $\frac{Q K^\top}{\sqrt{d_k}}$
+        batch_size, n_channels, *spatial_dims = x.shape  # Works for 1D, 2D, or 3D
+        seq_len = int(torch.prod(torch.tensor(spatial_dims)))
+
+        # Flatten spatial dims: [B, C, D1, D2, ...] -> [B, seq_len, C]
+        x = x.view(batch_size, n_channels, seq_len).permute(0, 2, 1)  # [B, seq, C]
+
+        # Project and split qkv: [B, seq, C] -> [B, seq, H, 3*d_k]
+        qkv = self.projection(x).view(batch_size, seq_len, self.n_heads, 3 * self.d_k)
+        q, k, v = torch.chunk(qkv, 3, dim=-1)  # Each: [B, seq, H, d_k]
+
+        # Attention: [B, I, H, D] × [B, J, H, D] → [B, I, J, H]
         attn = torch.einsum("bihd,bjhd->bijh", q, k) * self.scale
-        # Softmax along the sequence dimension $\underset{seq}{softmax}\Bigg(\frac{Q K^\top}{\sqrt{d_k}}\Bigg)$
-        attn = attn.softmax(dim=1)
-        # Multiply by values
+        attn = attn.softmax(dim=1)  # Softmax over queries (axis=1)
+
+        # Output: [B, I, J, H] × [B, J, H, D] → [B, I, H, D]
         res = torch.einsum("bijh,bjhd->bihd", attn, v)
-        # Reshape to `[batch_size, seq, n_heads * d_k]`
-        res = res.view(batch_size, -1, self.n_heads * self.d_k)
-        # Transform to `[batch_size, seq, n_channels]`
-        res = self.output(res)
+        res = res.view(batch_size, seq_len, self.n_heads * self.d_k)  # [B, seq, C']
+        res = self.output(res)  # [B, seq, C]
+        res += x  # Residual connection
 
-        # Add skip connection
-        res += x
-
-        # Change to shape `[batch_size, in_channels, height, width]`
-        res = res.permute(0, 2, 1).view(batch_size, n_channels, height, width)
+        # Reshape back to original: [B, seq, C] -> [B, C, *spatial_dims]
+        res = res.permute(0, 2, 1).view(batch_size, n_channels, *spatial_dims)
         return res
+
+    # def forward(self, x: torch.Tensor):
+    #     # Get shape
+    #     batch_size, n_channels, height, width = x.shape
+    #     # Change `x` to shape `[batch_size, seq, n_channels]`
+    #     x = x.view(batch_size, n_channels, -1).permute(0, 2, 1)
+    #     # Get query, key, and values (concatenated) and shape it to `[batch_size, seq, n_heads, 3 * d_k]`
+    #     qkv = self.projection(x).view(batch_size, -1, self.n_heads, 3 * self.d_k)
+    #     # Split query, key, and values. Each of them will have shape `[batch_size, seq, n_heads, d_k]`
+    #     q, k, v = torch.chunk(qkv, 3, dim=-1)
+    #     # Calculate scaled dot-product $\frac{Q K^\top}{\sqrt{d_k}}$
+    #     attn = torch.einsum("bihd,bjhd->bijh", q, k) * self.scale
+    #     # Softmax along the sequence dimension $\underset{seq}{softmax}\Bigg(\frac{Q K^\top}{\sqrt{d_k}}\Bigg)$
+    #     attn = attn.softmax(dim=1)
+    #     # Multiply by values
+    #     res = torch.einsum("bijh,bjhd->bihd", attn, v)
+    #     # Reshape to `[batch_size, seq, n_heads * d_k]`
+    #     res = res.view(batch_size, -1, self.n_heads * self.d_k)
+    #     # Transform to `[batch_size, seq, n_channels]`
+    #     res = self.output(res)
+
+    #     # Add skip connection
+    #     res += x
+
+    #     # Change to shape `[batch_size, in_channels, height, width]`
+    #     res = res.permute(0, 2, 1).view(batch_size, n_channels, height, width)
+    #     return res
 
 class DownBlock1D(nn.Module):
     """Down block This combines [`ResidualBlock`][pdearena.modules.twod_unet.ResidualBlock] and [`AttentionBlock`][pdearena.modules.twod_unet.AttentionBlock].
@@ -207,7 +234,7 @@ class DownBlock1D(nn.Module):
         super().__init__()
         self.res = ResidualBlock1D(in_channels, out_channels, activation_fn_name=activation, norm=norm)
         if has_attn:
-            self.attn = AttentionBlock1D(out_channels)
+            self.attn = AttentionBlock(out_channels)
         else:
             self.attn = nn.Identity()
 
@@ -240,7 +267,7 @@ class DownBlock2D(nn.Module):
         super().__init__()
         self.res = ResidualBlock2D(in_channels, out_channels, activation_fn_name=activation, norm=norm)
         if has_attn:
-            self.attn = AttentionBlock2D(out_channels)
+            self.attn = AttentionBlock(out_channels)
         else:
             self.attn = nn.Identity()
 
@@ -273,7 +300,7 @@ class DownBlock3D(nn.Module):
         super().__init__()
         self.res = ResidualBlock3D(in_channels, out_channels, activation_fn_name=activation, norm=norm)
         if has_attn:
-            self.attn = AttentionBlock3D(out_channels)
+            self.attn = AttentionBlock(out_channels)
         else:
             self.attn = nn.Identity()
 
@@ -308,7 +335,7 @@ class UpBlock1D(nn.Module):
         # from the first half of the U-Net
         self.res = ResidualBlock1D(in_channels + out_channels, out_channels, activation_fn_name=activation, norm=norm)
         if has_attn:
-            self.attn = AttentionBlock1D(out_channels)
+            self.attn = AttentionBlock(out_channels)
         else:
             self.attn = nn.Identity()
 
@@ -343,7 +370,7 @@ class UpBlock2D(nn.Module):
         # from the first half of the U-Net
         self.res = ResidualBlock2D(in_channels + out_channels, out_channels, activation_fn_name=activation, norm=norm)
         if has_attn:
-            self.attn = AttentionBlock2D(out_channels)
+            self.attn = AttentionBlock(out_channels)
         else:
             self.attn = nn.Identity()
 
@@ -378,7 +405,7 @@ class UpBlock3D(nn.Module):
         # from the first half of the U-Net
         self.res = ResidualBlock3D(in_channels + out_channels, out_channels, activation_fn_name=activation, norm=norm)
         if has_attn:
-            self.attn = AttentionBlock3D(out_channels)
+            self.attn = AttentionBlock(out_channels)
         else:
             self.attn = nn.Identity()
 
@@ -405,7 +432,7 @@ class MiddleBlock1D(nn.Module):
     def __init__(self, n_channels: int, has_attn: bool = False, activation: str = "gelu", norm: bool = False):
         super().__init__()
         self.res1 = ResidualBlock1D(n_channels, n_channels, activation_fn_name=activation, norm=norm)
-        self.attn = AttentionBlock1D(n_channels) if has_attn else nn.Identity() #for now it is identity
+        self.attn = AttentionBlock(n_channels) if has_attn else nn.Identity() #for now it is identity
         self.res2 = ResidualBlock1D(n_channels, n_channels, activation_fn_name=activation, norm=norm)
 
     def forward(self, x: torch.Tensor):
@@ -432,7 +459,7 @@ class MiddleBlock2D(nn.Module):
     def __init__(self, n_channels: int, has_attn: bool = False, activation: str = "gelu", norm: bool = False):
         super().__init__()
         self.res1 = ResidualBlock2D(n_channels, n_channels, activation_fn_name=activation, norm=norm)
-        self.attn = AttentionBlock2D(n_channels) if has_attn else nn.Identity() #for now it is identity
+        self.attn = AttentionBlock(n_channels) if has_attn else nn.Identity() #for now it is identity
         self.res2 = ResidualBlock2D(n_channels, n_channels, activation_fn_name=activation, norm=norm)
 
     def forward(self, x: torch.Tensor):
@@ -459,7 +486,7 @@ class MiddleBlock3D(nn.Module):
     def __init__(self, n_channels: int, has_attn: bool = False, activation: str = "gelu", norm: bool = False):
         super().__init__()
         self.res1 = ResidualBlock3D(n_channels, n_channels, activation_fn_name=activation, norm=norm)
-        self.attn = AttentionBlock3D(n_channels) if has_attn else nn.Identity() #for now it is identity
+        self.attn = AttentionBlock(n_channels) if has_attn else nn.Identity() #for now it is identity
         self.res2 = ResidualBlock3D(n_channels, n_channels, activation_fn_name=activation, norm=norm)
 
     def forward(self, x: torch.Tensor):
@@ -576,7 +603,7 @@ class Downsample3D(nn.Module):
     def forward(self, x: torch.Tensor):
         return self.conv(x)
 
-class Unet(nn.Module): 
+class UNet(nn.Module): 
     """Modern U-Net architecture
 
     This is a modern U-Net architecture with wide-residual blocks and spatial attention blocks
@@ -691,7 +718,7 @@ class Unet1D(nn.Module):
         if use1x1: #false by default
             self.image_proj = nn.Conv1d(insize, hidden_channels, kernel_size=1)
         else:
-            self.image_proj = nn.Conv1d(insize, hidden_channels, kernel_size=(3, 3), padding=(1, 1))
+            self.image_proj = nn.Conv1d(insize, hidden_channels, kernel_size=(3, ), padding=(1, ))
 
         # #### First half of U-Net - decreasing resolution
         down = []
@@ -759,7 +786,7 @@ class Unet1D(nn.Module):
         if use1x1:
             self.final = nn.Conv1d(in_channels, outsize, kernel_size=1)
         else:
-            self.final = nn.Conv1d(in_channels, outsize, kernel_size=(3, 3), padding=(1, 1))
+            self.final = nn.Conv1d(in_channels, outsize, kernel_size=(3,), padding=(1,))
 
     def forward(self, x: torch.Tensor):
 
@@ -900,7 +927,6 @@ class Unet2D(nn.Module):
 
         return x
     
-
 class Unet3D(nn.Module):
     """3D U-Net"""
     def __init__(self, 
@@ -922,7 +948,7 @@ class Unet3D(nn.Module):
         if use1x1: #false by default
             self.image_proj = nn.Conv3d(insize, hidden_channels, kernel_size=1)
         else:
-            self.image_proj = nn.Conv3d(insize, hidden_channels, kernel_size=(3, 3), padding=(1, 1))
+            self.image_proj = nn.Conv3d(insize, hidden_channels, kernel_size=(3, 3, 3), padding=(1, 1, 1))
 
         # #### First half of U-Net - decreasing resolution
         down = []
