@@ -72,11 +72,11 @@ class UNet(nn.Module):
     def getUnet(self):
         """Get the appropriate upsampler based on the dimension."""
         if self.dimension == 1:
-            return Unet1D
+            return UNet1D
         elif self.dimension == 2:
-            return Unet2D
+            return UNet2D
         elif self.dimension == 3:
-            return Unet3D
+            return UNet3D
         else:
             raise NotImplementedError(f"Upsampler not implemented for dimension {self.dimension}")
 
@@ -100,7 +100,7 @@ class UNet(nn.Module):
         return x
 
 #Unet based on the dimension
-class Unet1D(nn.Module):
+class UNet1D(nn.Module):
     """1D U-Net"""
     def __init__(self, 
                  insize, 
@@ -217,7 +217,7 @@ class Unet1D(nn.Module):
 
         return x
 
-class Unet2D(nn.Module):
+class UNet2D(nn.Module):
     """2D U-Net"""
     def __init__(self, 
                  insize, 
@@ -334,7 +334,7 @@ class Unet2D(nn.Module):
 
         return x
     
-class Unet3D(nn.Module):
+class UNet3D(nn.Module):
     """3D U-Net"""
     def __init__(self, 
                  insize, 
