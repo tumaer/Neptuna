@@ -85,7 +85,7 @@ class FNO(nn.Module):
         sequence_info: Optional[List[List[int]]] = [[1,1,1,1]],
         decoder_layers: int = 1,
         decoder_layer_size: int = 32,
-        decoder_activation_fn: str = "silu",
+        decoder_activation_fn_name: str = "silu",
         dimension: int = 2,
         latent_channels: int = 32,
         num_fno_layers: int = 4,
@@ -101,9 +101,10 @@ class FNO(nn.Module):
         self.padding = padding
         self.padding_type = padding_type
         self.activation_fn = activation_func.get_activation(activation_fn_name)
+
         if self.activation_fn is None:
             raise NotImplementedError(f"Activation {activation_fn_name} not implemented")
-        
+
         self.coord_features = coord_features
         self.dimension = dimension
         self.sequence_info = sequence_info
@@ -111,21 +112,9 @@ class FNO(nn.Module):
         model_in_channels= in_channels*sequence_info[0][0]
         model_out_channels= out_channels*self.sequence_info[0][1]
         
-        # decoder net
-        self.decoder_net = FullyConnected(
-            in_features=latent_channels,
-            layer_size=decoder_layer_size,
-            out_features=model_out_channels,
-            num_layers=decoder_layers,
-            activation_fn=decoder_activation_fn,
-        )
-
-        FNOModel = self.getFNOEncoder()
-
-        #modify the input channels to accomodate the historic steps and predict also a group of future steps
-
-        self.spec_encoder = FNOModel(
+        self.fno = self.getFNO()(
             in_channels=model_in_channels,
+            out_channels=model_out_channels,
             num_fno_layers=self.num_fno_layers,
             fno_layer_size=latent_channels,
             num_fno_modes=self.num_fno_modes,
@@ -133,16 +122,19 @@ class FNO(nn.Module):
             padding_type=self.padding_type,
             activation_fn=self.activation_fn,
             coord_features=self.coord_features,
+            decoder_activation_fn_name=decoder_activation_fn_name,
+            decoder_layers=decoder_layers,
+            decoder_layer_size=decoder_layer_size,
         )
 
-    def getFNOEncoder(self):
+    def getFNO(self):
         """Get the FNO encoder based on the model dimensionality"""
         if self.dimension == 1:
-            return FNO1DEncoder
+            return FNO1D
         elif self.dimension == 2:
-            return FNO2DEncoder
+            return FNO2D
         elif self.dimension == 3:
-            return FNO3DEncoder
+            return FNO3D
         else:
             raise NotImplementedError(
                 "Invalid dimensionality. Only 1D ,2D and 3D FNO implemented"
@@ -159,17 +151,18 @@ class FNO(nn.Module):
         input_data=input_data.reshape(batch, input_seq * input_fields, *spatial)
 
         # Fourier encoder
-        y_latent = self.spec_encoder(input_data)
+        y_latent = self.fno(input_data)
 
         # Reshape to pointwise inputs if not a conv FC model
         y_shape = y_latent.shape
-        y_latent, y_shape = self.spec_encoder.grid_to_points(y_latent)
+        y_latent, y_shape = self.fno.grid_to_points(y_latent)
 
         # Decoder
-        y = self.decoder_net(y_latent)
+        decoder_net = (self.fno.decoder_net()).to(y_latent.device)
+        y = decoder_net(y_latent)
 
         # Convert back into grid
-        y = self.spec_encoder.points_to_grid(y, y_shape)
+        y = self.fno.points_to_grid(y, y_shape)
 
         # Reshape the prediction to match the labels shape
         batch, output_seq, output_fields, *spatial = labels.shape
@@ -179,12 +172,11 @@ class FNO(nn.Module):
 # ===================================================================
 # ===================================================================
 
-# Encoder classes
 # ===================================================================
-# 1D FNO Encoder
+# 1D FNO 
 # ===================================================================
-class FNO1DEncoder(nn.Module):
-    """1D Spectral encoder for FNO
+class FNO1D(nn.Module):
+    """1D FNO
 
     Parameters
     ----------
@@ -209,6 +201,7 @@ class FNO1DEncoder(nn.Module):
     def __init__(
         self,
         in_channels: int = 1,
+        out_channels: int = 1,
         num_fno_layers: int = 4,
         fno_layer_size: int = 32,
         num_fno_modes: Union[int, List[int]] = 16,
@@ -216,13 +209,20 @@ class FNO1DEncoder(nn.Module):
         padding_type: str = "constant",
         activation_fn: nn.Module = nn.GELU(),
         coord_features: bool = True,
+        decoder_activation_fn_name: str = "silu",
+        decoder_layers: int = 1,
+        decoder_layer_size: int = 32,
     ) -> None:
         super().__init__()
 
         self.in_channels = in_channels
+        self.out_channels = out_channels
         self.num_fno_layers = num_fno_layers
         self.fno_width = fno_layer_size
         self.activation_fn = activation_fn
+        self.decoder_activation_fn_name = decoder_activation_fn_name
+        self.decoder_layers = decoder_layers
+        self.decoder_layer_size = decoder_layer_size
 
         # Add relative coordinate feature
         self.coord_features = coord_features
@@ -242,6 +242,15 @@ class FNO1DEncoder(nn.Module):
         # build lift
         self.build_lift_network()
         self.build_fno(num_fno_modes)
+
+    def decoder_net(self) -> None:
+        return FullyConnected(
+            in_features=self.fno_width,
+            layer_size=self.decoder_layer_size,
+            out_features=self.out_channels,
+            num_layers=self.decoder_layers,
+            activation_fn=self.decoder_activation_fn_name,
+        )
 
     def build_lift_network(self) -> None:
         """construct network for lifting variables to latent space."""
@@ -328,7 +337,7 @@ class FNO1DEncoder(nn.Module):
 # ===================================================================
 # 2D FNO Encoder
 # ===================================================================
-class FNO2DEncoder(nn.Module):
+class FNO2D(nn.Module):
     """2D Spectral encoder for FNO
 
     Parameters
@@ -354,6 +363,7 @@ class FNO2DEncoder(nn.Module):
     def __init__(
         self,
         in_channels: int = 1,
+        out_channels: int = 1,
         num_fno_layers: int = 4,
         fno_layer_size: int = 32,
         num_fno_modes: Union[int, List[int]] = 16,
@@ -361,15 +371,23 @@ class FNO2DEncoder(nn.Module):
         padding_type: str = "constant",
         activation_fn: nn.Module = nn.GELU(),
         coord_features: bool = True,
+        decoder_activation_fn_name: str = "silu",
+        decoder_layers: int = 1,
+        decoder_layer_size: int = 32,
     ) -> None:
         super().__init__()
         self.in_channels = in_channels
+        self.out_channels = out_channels
         self.num_fno_layers = num_fno_layers
         self.fno_width = fno_layer_size
-        self.coord_features = coord_features
+        
         self.activation_fn = activation_fn
-
+        self.decoder_activation_fn_name = decoder_activation_fn_name
+        self.decoder_layers = decoder_layers
+        self.decoder_layer_size = decoder_layer_size
+        
         # Add relative coordinate feature
+        self.coord_features = coord_features
         if self.coord_features:
             self.in_channels = self.in_channels + 2
 
@@ -387,6 +405,15 @@ class FNO2DEncoder(nn.Module):
         # build lift
         self.build_lift_network()
         self.build_fno(num_fno_modes)
+
+    def decoder_net(self) -> None:
+        return FullyConnected(
+            in_features=self.fno_width,
+            layer_size=self.decoder_layer_size,
+            out_features=self.out_channels,
+            num_layers=self.decoder_layers,
+            activation_fn=self.decoder_activation_fn_name,
+        )
 
     def build_lift_network(self) -> None:
         """construct network for lifting variables to latent space."""
@@ -483,8 +510,7 @@ class FNO2DEncoder(nn.Module):
 # ===================================================================
 # 3D FNO Encoder
 # ===================================================================
-
-class FNO3DEncoder(nn.Module):
+class FNO3D(nn.Module):
     """3D Spectral encoder for FNO
 
     Parameters
@@ -510,6 +536,7 @@ class FNO3DEncoder(nn.Module):
     def __init__(
         self,
         in_channels: int = 1,
+        out_channels: int = 1,
         num_fno_layers: int = 4,
         fno_layer_size: int = 32,
         num_fno_modes: Union[int, List[int]] = 16,
@@ -517,16 +544,23 @@ class FNO3DEncoder(nn.Module):
         padding_type: str = "constant",
         activation_fn: nn.Module = nn.GELU(),
         coord_features: bool = True,
+        decoder_activation_fn_name: str = "silu",
+        decoder_layers: int = 1,
+        decoder_layer_size: int = 32,
     ) -> None:
         super().__init__()
 
         self.in_channels = in_channels
+        self.out_channels = out_channels
         self.num_fno_layers = num_fno_layers
         self.fno_width = fno_layer_size
-        self.coord_features = coord_features
+        
         self.activation_fn = activation_fn
-
+        self.decoder_activation_fn_name = decoder_activation_fn_name
+        self.decoder_layers = decoder_layers
+        self.decoder_layer_size = decoder_layer_size
         # Add relative coordinate feature
+        self.coord_features = coord_features
         if self.coord_features:
             self.in_channels = self.in_channels + 3
 
@@ -544,6 +578,15 @@ class FNO3DEncoder(nn.Module):
         # build lift
         self.build_lift_network()
         self.build_fno(num_fno_modes)
+
+    def decoder_net(self) -> None:
+        return FullyConnected(
+            in_features=self.fno_width,
+            layer_size=self.decoder_layer_size,
+            out_features=self.out_channels,
+            num_layers=self.decoder_layers,
+            activation_fn=self.decoder_activation_fn_name,
+        )
 
     def build_lift_network(self) -> None:
         """construct network for lifting variables to latent space."""
