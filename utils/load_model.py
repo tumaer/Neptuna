@@ -26,8 +26,8 @@ def fetch_model(model_config: Dict,
     elif model_name == "resnet":
         from models.resnet.resnet import ResNet
         model = ResNet(
-                    in_fields=data_config['in_channels'],
-                    out_fields=data_config['out_channels'], 
+                    in_channels=data_config['in_channels'],
+                    out_channels=data_config['out_channels'], 
                     sequence_info=data_config["sequence_info"],
                     dimension=data_config['dimension'],
                     num_blocks=model_config['num_blocks'],
@@ -38,8 +38,8 @@ def fetch_model(model_config: Dict,
     elif model_name == "dilresnet":
         from models.resnet.resnet import ResNet
         model = ResNet(
-                    in_fields=data_config['in_channels'],
-                    out_fields=data_config['out_channels'], 
+                    in_channels=data_config['in_channels'],
+                    out_channels=data_config['out_channels'], 
                     sequence_info=data_config["sequence_info"],
                     dimension=data_config['dimension'],
                     num_blocks=model_config['num_blocks'],
