@@ -1,6 +1,0 @@
-dataset_name: KarmanVortexStreet
-dataset_directory_path: ./data/fluids/KVS/KS/
-sequence_info: [[6, 7, 1, 1]]
-filter_frame: null
-groups: null
-fields: null
