@@ -97,7 +97,7 @@ class UNet(nn.Module):
         batch, output_seq, output_fields, *spatial = labels.shape
         x = x.reshape(
             batch, output_seq, output_fields, *spatial)
-        return x
+        return x, labels
 
 #Unet based on the dimension
 class UNet1D(nn.Module):

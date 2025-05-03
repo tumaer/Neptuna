@@ -24,7 +24,7 @@ def fetch_model(model_config: Dict,
                     decoder_layer_size=model_config['decoder_layer_size'],
                     )         
     elif model_name == "resnet":
-        from models.resnet.resnet import ResNet
+        from models.ResNet.resnet import ResNet
         model = ResNet(
                     in_channels=data_config['in_channels'],
                     out_channels=data_config['out_channels'], 
@@ -36,7 +36,7 @@ def fetch_model(model_config: Dict,
                     norm=model_config['norm'],
                     )
     elif model_name == "dilresnet":
-        from models.resnet.resnet import ResNet
+        from models.ResNet.resnet import ResNet
         model = ResNet(
                     in_channels=data_config['in_channels'],
                     out_channels=data_config['out_channels'], 
