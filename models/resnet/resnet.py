@@ -4,8 +4,20 @@ import torch.nn.functional as F
 from torch import Tensor
 from utils import activation_func
 from typing import Optional, Union, Tuple, List, Callable
-from .resnet_utils import BasicBlock1D,BasicBlock2D,BasicBlock3D,DilatedBasicBlock1D,DilatedBasicBlock2D,DilatedBasicBlock3D
+from .resnet_utils import BasicBlockND,DilatedBasicBlockND
 from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
+
+def getblock(block):
+    """Get the ResNet block"""
+    if isinstance(block, str):
+        if block == "BasicBlock":
+                return BasicBlockND
+        elif block == "DilatedBasicBlock":
+                return DilatedBasicBlockND
+        else:
+            raise NotImplementedError(f"Unknown block: {block}")
+    else:
+        raise ValueError(f"Unknown block type: {block}")           
 
 def make_layer(
     block: Callable,
@@ -13,8 +25,10 @@ def make_layer(
     out_planes: int,
     num_blocks: int,
     stride: int,
+    dimension: int,
     activation_fn: nn.Module = nn.GELU(),
     norm: bool = True,
+    num_groups: int = 1,
 ) -> nn.Sequential:
     strides = [stride] + [1] * (num_blocks - 1)
     layers = []
@@ -23,9 +37,11 @@ def make_layer(
             block(
                 in_planes,
                 out_planes,
+                dimension,
                 stride,
                 activation_fn,
                 norm,
+                num_groups,
             )
         )
         in_planes = out_planes * block.expansion
@@ -49,13 +65,15 @@ class ResNet(nn.Module):
         hidden_channels (int): 
             Number of channels in the hidden layers
         dimension : int
-            Model dimensionality (supports 2)
+            Model dimensionality (supports 1,2,3)
         activation_fn : str
             Activation function, by default "gelu"
         coord_features : bool, optional
             Use coordinate grid as additional feature map, by default True
         norm (bool): 
             Whether to use normalization
+        num_groups : int
+            Number of groups for GroupNorm, by default 1 (equivalent with LayerNorm)
     """
 
     def __init__(
@@ -64,13 +82,14 @@ class ResNet(nn.Module):
         out_channels: int,
         block: str,
         num_blocks: list,
+        dimension: int,
         sequence_info: Optional[List[List[int]]] = [[1,1,1,1]],
         hidden_channels: int = 64,
-        dimension: int = 2,
         activation_fn: str = "gelu",
         coord_features: bool = True,
         norm: bool = True,
         padding: int = 9,
+        num_groups: int = 1,
     ) -> None:
         super().__init__()
         self.in_channels = in_channels * sequence_info[0][0] 
@@ -94,6 +113,7 @@ class ResNet(nn.Module):
             coord_features=self.coord_features,
             norm=self.normalization,
             padding=padding,
+            num_groups=num_groups,
         )
            
     def build_resnet(self):
@@ -146,6 +166,8 @@ class ResNet1D(nn.Module):
             Padding for the input tensor
         norm (bool): 
             Whether to use normalization
+        num_groups : int
+            Number of groups for GroupNorm, by default 1 (equivalent with LayerNorm)
     """
     def __init__(
         self,
@@ -158,6 +180,7 @@ class ResNet1D(nn.Module):
         coord_features: bool = True,
         padding: int = 9,
         norm: bool = True,
+        num_groups: int = 1,
         ) -> None:
         super().__init__()
         self.in_channels = in_channels
@@ -186,7 +209,7 @@ class ResNet1D(nn.Module):
             bias=True,
         )
         
-        self.block = self.getblock(block)
+        self.block = getblock(block)
         
         self.layers = nn.ModuleList(
             [
@@ -196,8 +219,10 @@ class ResNet1D(nn.Module):
                     self.hidden_channels,
                     num_blocks[i],
                     stride = 1,
+                    dimension = 1,
                     activation_fn = self.activation,
                     norm = self.normalization,
+                    num_groups = num_groups,
                 )
                 for i in range(len(num_blocks))
             ]
@@ -214,20 +239,7 @@ class ResNet1D(nn.Module):
             self.out_channels,
             kernel_size=1,
             bias=True,
-        )       
-    
-    def getblock(self,block):
-        """Get the ResNet block based on the model dimensionality"""
-        if isinstance(block, str):
-            if block == "BasicBlock":
-                    return BasicBlock1D
-            elif block == "DilatedBasicBlock":
-                    return DilatedBasicBlock1D
-            else:
-                raise NotImplementedError(f"Unknown block: {block}")
-        else:
-            raise ValueError(f"Unknown block type: {block}")
-           
+        )           
 
     def forward(self, x: Tensor) -> Tensor:
         if x.dim() != 3:
@@ -262,13 +274,25 @@ class ResNet1D(nn.Module):
 class ResNet2D(nn.Module):
     """    Args:
         in_channels : int
-            Number of input channels
+            Number of input fields
+        out_channels : int
+            Number of output fields
+        block : str
+            BasicBlock,Dilblock only for now
+        num_blocks (List[int]): 
+            Number of blocks in each stage
         hidden_channels (int): 
             Number of channels in the hidden layers
-        activation_fn : nn.Module, optional
-            Activation function, by default nn.GELU
+        activation_fn : str
+            Activation function, by default "gelu"
         coord_features : bool, optional
             Use coordinate grid as additional feature map, by default True
+        padding : int
+            Padding for the input tensor
+        norm (bool): 
+            Whether to use normalization
+        num_groups : int
+            Number of groups for GroupNorm, by default 1 (equivalent with LayerNorm)
     """
     def __init__(
         self,
@@ -281,6 +305,7 @@ class ResNet2D(nn.Module):
         coord_features: bool = True,
         padding: int = 9,
         norm: bool = True,
+        num_groups: int = 1,
         ) -> None:
         super().__init__()
         self.in_channels = in_channels
@@ -309,7 +334,7 @@ class ResNet2D(nn.Module):
             bias=True,
         )
         
-        self.block = self.getblock(block)
+        self.block = getblock(block)
         
         self.layers = nn.ModuleList(
             [
@@ -319,8 +344,10 @@ class ResNet2D(nn.Module):
                     self.hidden_channels,
                     num_blocks[i],
                     stride = 1,
+                    dimension = 2,
                     activation_fn = self.activation,
                     norm = self.normalization,
+                    num_groups = num_groups,
                 )
                 for i in range(len(num_blocks))
             ]
@@ -337,19 +364,7 @@ class ResNet2D(nn.Module):
             self.out_channels,
             kernel_size=1,
             bias=True,
-        )       
-    
-    def getblock(self,block):
-        """Get the ResNet block based on the model dimensionality"""
-        if isinstance(block, str):
-            if block == "BasicBlock":
-                    return BasicBlock2D
-            elif block == "DilatedBasicBlock":
-                    return DilatedBasicBlock2D
-            else:
-                raise NotImplementedError(f"Unknown block: {block}")
-        else:
-            raise ValueError(f"Unknown block type: {block}")
+        )           
            
 
     def forward(self, x: Tensor) -> Tensor:
@@ -385,13 +400,25 @@ class ResNet2D(nn.Module):
 class ResNet3D(nn.Module):
     """    Args:
         in_channels : int
-            Number of input channels
+            Number of input fields
+        out_channels : int
+            Number of output fields
+        block : str
+            BasicBlock,Dilblock only for now
+        num_blocks (List[int]): 
+            Number of blocks in each stage
         hidden_channels (int): 
             Number of channels in the hidden layers
-        activation_fn : nn.Module, optional
-            Activation function, by default nn.GELU
+        activation_fn : str
+            Activation function, by default "gelu"
         coord_features : bool, optional
             Use coordinate grid as additional feature map, by default True
+        padding : int
+            Padding for the input tensor
+        norm (bool): 
+            Whether to use normalization
+        num_groups : int
+            Number of groups for GroupNorm, by default 1 (equivalent with LayerNorm)
     """
     def __init__(
         self,
@@ -404,6 +431,7 @@ class ResNet3D(nn.Module):
         coord_features: bool = True,
         padding: int = 9,
         norm: bool = True,
+        num_groups: int = 1,
         ) -> None:
         super().__init__()
         self.in_channels = in_channels
@@ -432,7 +460,7 @@ class ResNet3D(nn.Module):
             bias=True,
         )
         
-        self.block = self.getblock(block)
+        self.block = getblock(block)
         
         self.layers = nn.ModuleList(
             [
@@ -442,8 +470,10 @@ class ResNet3D(nn.Module):
                     self.hidden_channels,
                     num_blocks[i],
                     stride = 1,
+                    dimension = 3,
                     activation_fn = self.activation,
                     norm = self.normalization,
+                    num_groups = num_groups,
                 )
                 for i in range(len(num_blocks))
             ]
@@ -460,19 +490,7 @@ class ResNet3D(nn.Module):
             self.out_channels,
             kernel_size=1,
             bias=True,
-        )       
-    
-    def getblock(self,block):
-        if isinstance(block, str):
-            if block == "BasicBlock":
-                    return BasicBlock3D
-            elif block == "DilatedBasicBlock":
-                    return DilatedBasicBlock3D
-            else:
-                raise NotImplementedError(f"Unknown block: {block}")
-        else:
-            raise ValueError(f"Unknown block type: {block}")
-           
+        )                  
 
     def forward(self, x: Tensor) -> Tensor:
         if x.dim() != 5:
