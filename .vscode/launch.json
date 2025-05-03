@@ -341,5 +341,26 @@
                 "HYDRA_MAIN_DISABLE_RUN": "1"
                 }
         },
+        {
+          "name": "test_accelerate",
+          "type": "debugpy",
+          "request": "launch",
+          "console": "integratedTerminal",
+          "module": "accelerate.commands.launch",
+          "justMyCode": false,
+          "args": [
+              "--num_cpu_threads_per_process=8",
+              "main.py",
+              "hydra.run.dir=.",
+              "hydra.output_subdir=null",
+              "data_config=fluids/KS/1d_ks_data.yaml",
+              "model_config=ResNet/default_resnet",
+            ],
+          "env": {
+              "HYDRA_FULL_ERROR": "1",
+              "HYDRA_MAIN_DISABLE_RUN": "1"
+              }
+
+      },
             ]
 }
