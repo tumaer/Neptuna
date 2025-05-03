@@ -324,24 +324,6 @@
             "console": "integratedTerminal",
         },
         {
-            "name": "main train_ks",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "main.py",
-            "console": "integratedTerminal",
-            "justMyCode": false,
-            "args": [
-                "hydra.run.dir=.",
-                "hydra.output_subdir=null",
-                "data_config=ks_data",
-                "model_config=default_resnet_2d_ks",
-              ],
-            "env": {
-                "HYDRA_FULL_ERROR": "1",
-                "HYDRA_MAIN_DISABLE_RUN": "1"
-                }
-        },
-        {
           "name": "test_accelerate",
           "type": "debugpy",
           "request": "launch",
