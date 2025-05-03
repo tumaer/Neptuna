@@ -1,0 +1,5 @@
+#scheduler_config:
+lr: 0.00005
+weight_decay: 0.000001
+lr_scheduler: "cosine"
+warmup_ratio: 0.0

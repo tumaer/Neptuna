@@ -1,0 +1,10 @@
+*.log
+__pycache__/
+*.h5
+*.ipynb
+outputs/
+*.pyc
+.DS_Store
+#*.txt
+*.npy
+outputs/

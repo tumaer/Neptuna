@@ -1,0 +1,35 @@
+{
+    "name": "2d_diff_ks__num_spatial_dims=2",
+    "info": {
+      "num_spatial_dims": 2,
+      "num_points": 160,
+      "num_channels": 1,
+      "ic_config": "fourier;5;true;true",
+      "num_warmup_steps": 500,
+      "num_train_samples": 50,
+      "train_temporal_horizon": 50,
+      "train_seed": 0,
+      "num_test_samples": 30,
+      "test_temporal_horizon": 200,
+      "test_seed": 773,
+      "optim_config": "adam;10_000;warmup_cosine;0.0;1e-3;2_000",
+      "batch_size": 20,
+      "num_trjs_returned": 1,
+      "record_loss_every": 100,
+      "vlim": [-6.5, 6.5],
+      "report_metrics": "mean_nRMSE,mean_correlation",
+      "callbacks": "",
+      "gammas": [0.0, 0.0, -1.2, 0.0, -15.0],
+      "deltas": [0.0, 0.0, -6.0],
+      "num_substeps": 1,
+      "coarse_proportion": 0.5,
+      "order": 2,
+      "dealiasing_fraction": 0.6666666666666666,
+      "num_circle_points": 16,
+      "circle_radius": 1.0,
+      "gradient_norm_delta": -6.0,
+      "diffusion_gamma": -1.2,
+      "hyp_diffusion_gamma": -15.0
+    }
+  }
+  

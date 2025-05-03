@@ -1,0 +1,3 @@
+#model_config:
+model_name: UNet
+latent_channels: 64

@@ -1,0 +1,4 @@
+#train_config
+batch_size: 2        
+rec_results_freq : 32 
+num_epochs: 128
