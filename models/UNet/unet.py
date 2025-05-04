@@ -6,7 +6,7 @@ import torch.nn as nn
 from utils import activation_func
 
 from .unet_utils import DownBlockND, UpBlockND, MiddleBlockND, DownsampleND, UpsampleND
-
+from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 class UNet(nn.Module): 
     """Modern U-Net architecture
 
@@ -103,20 +103,26 @@ class UNet(nn.Module):
 class UNet1D(nn.Module):
     """1D U-Net"""
     def __init__(self, 
-                 insize, 
-                 outsize,
-                 hidden_channels, 
+                 insize: int, 
+                 outsize: int,
+                 hidden_channels: int, 
                  n_resolutions, 
                  ch_mults, 
                  is_attn, 
                  mid_attn, 
                  n_blocks, 
-                 activation_fn_name,
+                 activation_fn_name: str,
                  norm, 
-                 use1x1):
+                 use1x1,
+                 coord_features: bool = True
+                 ):
         super().__init__()
 
         self.activation = activation_func.get_activation(activation_fn_name)
+        self.coord_features = coord_features
+        if self.coord_features:
+            insize = insize + 1
+        
         # Project image into feature map
         if use1x1: #false by default
             self.image_proj = nn.Conv1d(insize, hidden_channels, kernel_size=1)
@@ -194,7 +200,15 @@ class UNet1D(nn.Module):
             self.final = nn.Conv1d(in_channels, outsize, kernel_size=(3,), padding=(1,))
 
     def forward(self, x: torch.Tensor):
-
+        if x.dim() != 3:
+            raise ValueError(
+                "Only 3D tensors [batch, in_channels, grid_x] accepted for 1D UNet"
+            )
+        #add coord features
+        if self.coord_features: 
+            coord_feat = oned_meshgrid(list(x.shape), x.device)
+            x = torch.cat((x, coord_feat), dim=1)
+        
         x = self.image_proj(x)
 
         h = [x]
@@ -230,10 +244,16 @@ class UNet2D(nn.Module):
                  n_blocks, 
                  activation_fn_name,
                  norm, 
-                 use1x1):
+                 use1x1,
+                 coord_features: bool = True):
         super().__init__()
 
         self.activation = activation_func.get_activation(activation_fn_name)
+        
+        self.coord_features = coord_features
+        if self.coord_features:
+            insize = insize + 2
+        
         # Project image into feature map
         if use1x1: #false by default
             self.image_proj = nn.Conv2d(insize, hidden_channels, kernel_size=1)
@@ -311,6 +331,14 @@ class UNet2D(nn.Module):
             self.final = nn.Conv2d(in_channels, outsize, kernel_size=(3, 3), padding=(1, 1))
 
     def forward(self, x: torch.Tensor):
+        if x.dim() != 4:
+            raise ValueError(
+                "Only 4D tensors [batch, in_channels, grid_x, grid_y] accepted for 2D UNet"
+            )
+
+        if self.coord_features: 
+            coord_feat = twod_meshgrid(list(x.shape), x.device)
+            x = torch.cat((x, coord_feat), dim=1)
 
         x = self.image_proj(x)
 
@@ -347,10 +375,16 @@ class UNet3D(nn.Module):
                  n_blocks, 
                  activation_fn_name,
                  norm, 
-                 use1x1):
+                 use1x1,
+                 coord_features: bool = True):
         super().__init__()
 
         self.activation = activation_func.get_activation(activation_fn_name)
+        self.coord_features = coord_features
+        # Add relative coordinate feature
+        if self.coord_features:
+            insize = insize + 3
+        
         # Project image into feature map
         if use1x1: #false by default
             self.image_proj = nn.Conv3d(insize, hidden_channels, kernel_size=1)
@@ -428,6 +462,15 @@ class UNet3D(nn.Module):
             self.final = nn.Conv3d(in_channels, outsize, kernel_size=(3, 3, 3), padding=(1, 1, 1))
 
     def forward(self, x: torch.Tensor):
+        if x.dim() != 5:
+            raise ValueError(
+                "Only 5D tensors [batch, in_channels, grid_x, grid_y, grid_z] accepted for 3D ResNet"
+            )
+        
+        #add feature map
+        if self.coord_features: 
+            coord_feat = threed_meshgrid(list(x.shape), x.device)
+            x = torch.cat((x, coord_feat), dim=1)
 
         x = self.image_proj(x)
 
