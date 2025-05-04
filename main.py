@@ -1,3 +1,5 @@
+#import os
+#os.environ["CUDA_VISIBLE_DEVICES"] = "" #set the GPU to use
 import hydra
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
@@ -7,11 +9,13 @@ from transformers import TrainingArguments
 import numpy as np
 from utils.load_data import fetch_dataset
 from utils.load_model import fetch_model
+import time
 
 SEED=0
 torch.manual_seed(SEED)
 np.random.seed(SEED)
 random.seed(SEED)
+
 
 @hydra.main(version_base="1.3", config_path="./config", config_name="defaults.yaml")
 def main(config: DictConfig):
@@ -31,6 +35,7 @@ def main(config: DictConfig):
 
     train_config = TrainingArguments(
         output_dir="./",
+        #fsdp_config=config.get("fsdp_config", None),
         overwrite_output_dir=True,  #! OVERWRITE THIS DIRECTORY IN CASE, also for resuming training
         eval_strategy="no", #TODO: change it to epochs laterThe evaluation strategy to adopt during training (also change the save_strategy). Possible values are:
         per_device_train_batch_size=config['train_config']["batch_size"],
@@ -81,8 +86,11 @@ def main(config: DictConfig):
         #compute_metrics=compute_metrics, # The function that will be used to compute metrics at evaluation. Must take a [`EvalPrediction`] and return a dictionary string to metric values.
         #callbacks=[early_stopping],
     )
-
+    start_time = time.time()
     trainer.train()
+    end_time = time.time()
+    print(f"Total train time: {end_time - start_time:.2f} seconds")
     
 if __name__=="__main__":
     main()
+    

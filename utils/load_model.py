@@ -22,9 +22,31 @@ def fetch_model(model_config: Dict,
                     padding=model_config['padding'],
                     decoder_layers=model_config['decoder_layers'],
                     decoder_layer_size=model_config['decoder_layer_size'],
-                    #TODO: more arguments like act. fn name etc to be added
-                    ) 
-    
+                    )         
+    elif model_name == "resnet":
+        from models.ResNet.resnet import ResNet
+        model = ResNet(
+                    in_channels=data_config['in_channels'],
+                    out_channels=data_config['out_channels'], 
+                    sequence_info=data_config["sequence_info"],
+                    dimension=data_config['dimension'],
+                    num_blocks=model_config['num_blocks'],
+                    block=model_config['block'],
+                    hidden_channels=model_config['hidden_channels'],
+                    norm=model_config['norm'],
+                    )
+    elif model_name == "dilresnet":
+        from models.ResNet.resnet import ResNet
+        model = ResNet(
+                    in_channels=data_config['in_channels'],
+                    out_channels=data_config['out_channels'], 
+                    sequence_info=data_config["sequence_info"],
+                    dimension=data_config['dimension'],
+                    num_blocks=model_config['num_blocks'],
+                    block=model_config['block'],
+                    hidden_channels=model_config['hidden_channels'],
+                    norm=model_config['norm'],
+                    )
     elif model_name == "unet":
         from models.UNet.unet import UNet
         model= UNet(
@@ -35,5 +57,8 @@ def fetch_model(model_config: Dict,
                     latent_channels=model_config['latent_channels'],
                     #TODO: more arguments to be added
         )
+    else:
+        raise ValueError(f"Model {model_name} is not implemented yet.")                      
+    
     
     return model

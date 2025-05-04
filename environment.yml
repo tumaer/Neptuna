@@ -50,7 +50,7 @@ dependencies:
 #      - networkx==3.4.2
 #      - numpy==2.2.1
       # The following NVIDIA packages are Linux-specific (and/or CUDA-related).
-      # You may want to skip or selectively install them only on supported systems.
+      # You may want to skip o selectively install them only on supported systems.
       # Commented out for macOS compatibility:
       # - nvidia-cublas-cu12==12.4.5.8
       # - nvidia-cuda-cupti-cu12==12.4.127
@@ -65,21 +65,21 @@ dependencies:
       # - nvidia-nccl-cu12==2.21.5
       # - nvidia-nvjitlink-cu12==12.4.127
       # - nvidia-nvtx-cu12==12.4.127
-#      - omegaconf==2.3.0
-#      - pillow==11.1.0
-#      - propcache==0.2.1
-#      - pyparsing==3.2.1
-#      - pytorch-lightning==2.5.0.post0
-#      - pyyaml==6.0.2
-#      - regex==2024.11.6
-#      - requests==2.32.3
-#      - safetensors==0.5.3
-#      - sympy==1.13.1
-#      - tokenizers==0.21.1
-#      - torch==2.6.0
-#      - torchmetrics==1.6.1
-#      - tqdm==4.67.1
-#      - transformers==4.50.2
-#      - typing-extensions==4.12.2
-#      - urllib3==2.3.0
-#      - yarl==1.18.3"""
+      # - omegaconf==2.3.0
+      # - pillow==11.1.0
+      # - propcache==0.2.1
+      # - pyparsing==3.2.1
+      # - pytorch-lightning==2.5.0.post0
+      # - pyyaml==6.0.2
+      # - regex==2024.11.6
+      # - requests==2.32.3
+      # - safetensors==0.5.3
+      # - sympy==1.13.1
+      # - tokenizers==0.21.1
+      # - torch==2.6.0
+      # - torchmetrics==1.6.1
+      # - tqdm==4.67.1
+      # - transformers==4.50.2
+      # - typing-extensions==4.12.2
+      # - urllib3==2.3.0
+      # - yarl==1.18.3
