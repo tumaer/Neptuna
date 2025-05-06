@@ -107,7 +107,7 @@ class ResNet(nn.Module):
             in_channels=self.in_channels,
             out_channels=self.out_channels,
             block=block,
-            num_blocks=num_blocks,     #is self.xx necessary??
+            num_blocks=num_blocks,    
             hidden_channels=self.hidden_channels,
             activation_fn=self.activation,
             coord_features=self.coord_features,
