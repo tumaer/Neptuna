@@ -1,17 +1,72 @@
-from typing import  Union
 from typing import List, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from .fno_utils import Conv1dFCLayer, SpectralConv1d
-from .fno_utils import Conv2dFCLayer, SpectralConv2d 
-from .fno_utils import Conv3dFCLayer, SpectralConv3d
+from .fno_utils import ConvNdFCLayer, SpectralConvNd
 from .fno_utils import FullyConnected
 from utils import activation_func
 from typing import Optional, Union, Tuple, List
 
 from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
+
+def build_lift_network(
+    in_channels: int,
+    fno_width: int,
+    activation_fn: nn.Module,
+    dimension: int,
+    ) -> nn.Sequential:
+    """construct network for lifting variables to latent space."""
+    # Initial lift network
+    lift_network = torch.nn.Sequential()
+    lift_network.append(
+        ConvNdFCLayer(
+            in_channels = in_channels,
+            out_channels = int(fno_width / 2), 
+            dimension = dimension,
+            #activation_fn = activation_fn,
+            )
+    )
+    lift_network.append(activation_fn) #insert the activation function into ConvNdFCLayer,no need to add it here
+    lift_network.append(
+        ConvNdFCLayer(
+            in_channels=int(fno_width / 2), 
+            out_channels=fno_width,
+            dimension=dimension,
+            )
+    )
+    return lift_network
+
+def build_fno(
+    fno_width: int,
+    num_fno_modes: List[int],
+    num_fno_layers: int,
+    dimension: int,
+    ) -> Tuple[nn.ModuleList, nn.ModuleList]:
+    """construct FNO block.
+    """
+    # Build Neural Fourier Operators
+    if dimension == 1:
+        Conv = nn.Conv1d
+    elif dimension == 2:
+        Conv = nn.Conv2d
+    elif dimension == 3:
+        Conv = nn.Conv3d
+    else:
+        raise ValueError(f"Unsupported dimension: {dimension}. Must be 1, 2, or 3.")
+    spconv_layers = nn.ModuleList()
+    conv_layers = nn.ModuleList()
+    for _ in range(num_fno_layers):
+        spconv_layers.append(
+            SpectralConvNd(
+                in_channels=fno_width,
+                out_channels=fno_width,
+                modes=num_fno_modes,
+                dimension=dimension,
+            )
+        )
+        conv_layers.append(Conv(fno_width, fno_width, 1))
+    return spconv_layers, conv_layers
 # ===================================================================
 # ===================================================================
 # nD FNO main class
@@ -240,10 +295,21 @@ class FNO1D(nn.Module):
             num_fno_modes = [num_fno_modes]
 
         # build lift
-        self.build_lift_network()
-        self.build_fno(num_fno_modes)
+        self.lift_network = build_lift_network(
+            in_channels=self.in_channels,
+            fno_width=self.fno_width,
+            activation_fn=self.activation_fn,
+            dimension=1,
+        )
+        # build main part
+        self.spconv_layers,self.conv_layers = build_fno(
+            fno_width=self.fno_width,
+            num_fno_modes=num_fno_modes,
+            num_fno_layers=self.num_fno_layers,
+            dimension=1,
+        )
 
-    def decoder_net(self) -> None:
+    def decoder_net(self) -> nn.Module:
         return FullyConnected(
             in_features=self.fno_width,
             layer_size=self.decoder_layer_size,
@@ -251,34 +317,6 @@ class FNO1D(nn.Module):
             num_layers=self.decoder_layers,
             activation_fn=self.decoder_activation_fn_name,
         )
-
-    def build_lift_network(self) -> None:
-        """construct network for lifting variables to latent space."""
-        self.lift_network = torch.nn.Sequential()
-        self.lift_network.append(
-            Conv1dFCLayer(self.in_channels, int(self.fno_width / 2))
-        )
-        self.lift_network.append(self.activation_fn)
-        self.lift_network.append(
-            Conv1dFCLayer(int(self.fno_width / 2), self.fno_width)
-        )
-
-    def build_fno(self, num_fno_modes: List[int]) -> None:
-        """construct FNO block.
-        Parameters
-        ----------
-        num_fno_modes : List[int]
-            Number of Fourier modes kept in spectral convolutions
-
-        """
-        # Build Neural Fourier Operators
-        self.spconv_layers = nn.ModuleList()
-        self.conv_layers = nn.ModuleList()
-        for _ in range(self.num_fno_layers):
-            self.spconv_layers.append(
-                SpectralConv1d(self.fno_width, self.fno_width, num_fno_modes[0])
-            )
-            self.conv_layers.append(nn.Conv1d(self.fno_width, self.fno_width, 1))
 
     def forward(self, x: Tensor) -> Tensor:
         if self.coord_features:
@@ -403,10 +441,21 @@ class FNO2D(nn.Module):
             num_fno_modes = [num_fno_modes, num_fno_modes]
 
         # build lift
-        self.build_lift_network()
-        self.build_fno(num_fno_modes)
+        self.lift_network = build_lift_network(
+            in_channels=self.in_channels,
+            fno_width=self.fno_width,
+            activation_fn=self.activation_fn,
+            dimension=2,
+        )
+        # build main part
+        self.spconv_layers,self.conv_layers = build_fno(
+            fno_width=self.fno_width,
+            num_fno_modes=num_fno_modes,
+            num_fno_layers=self.num_fno_layers,
+            dimension=2,
+        )
 
-    def decoder_net(self) -> None:
+    def decoder_net(self) -> nn.Module:
         return FullyConnected(
             in_features=self.fno_width,
             layer_size=self.decoder_layer_size,
@@ -414,37 +463,6 @@ class FNO2D(nn.Module):
             num_layers=self.decoder_layers,
             activation_fn=self.decoder_activation_fn_name,
         )
-
-    def build_lift_network(self) -> None:
-        """construct network for lifting variables to latent space."""
-        # Initial lift network
-        self.lift_network = torch.nn.Sequential()
-        self.lift_network.append(
-            Conv2dFCLayer(self.in_channels, int(self.fno_width / 2))
-        )
-        self.lift_network.append(self.activation_fn)
-        self.lift_network.append(
-            Conv2dFCLayer(int(self.fno_width / 2), self.fno_width)
-        )
-
-    def build_fno(self, num_fno_modes: List[int]) -> None:
-        """construct FNO block.
-        Parameters
-        ----------
-        num_fno_modes : List[int]
-            Number of Fourier modes kept in spectral convolutions
-
-        """
-        # Build Neural Fourier Operators
-        self.spconv_layers = nn.ModuleList()
-        self.conv_layers = nn.ModuleList()
-        for _ in range(self.num_fno_layers):
-            self.spconv_layers.append(
-                SpectralConv2d(
-                    self.fno_width, self.fno_width, num_fno_modes[0], num_fno_modes[1]
-                )
-            )
-            self.conv_layers.append(nn.Conv2d(self.fno_width, self.fno_width, 1))
 
     def forward(self, x: Tensor) -> Tensor:
         if x.dim() != 4:
@@ -576,10 +594,21 @@ class FNO3D(nn.Module):
             num_fno_modes = [num_fno_modes, num_fno_modes, num_fno_modes]
 
         # build lift
-        self.build_lift_network()
-        self.build_fno(num_fno_modes)
+        self.lift_network = build_lift_network(
+            in_channels=self.in_channels,
+            fno_width=self.fno_width,
+            activation_fn=self.activation_fn,
+            dimension=3,
+        )
+        # build main part
+        self.spconv_layers,self.conv_layers = build_fno(
+            fno_width=self.fno_width,
+            num_fno_modes=num_fno_modes,
+            num_fno_layers=self.num_fno_layers,
+            dimension=3,
+        )
 
-    def decoder_net(self) -> None:
+    def decoder_net(self) -> nn.Module:
         return FullyConnected(
             in_features=self.fno_width,
             layer_size=self.decoder_layer_size,
@@ -587,41 +616,6 @@ class FNO3D(nn.Module):
             num_layers=self.decoder_layers,
             activation_fn=self.decoder_activation_fn_name,
         )
-
-    def build_lift_network(self) -> None:
-        """construct network for lifting variables to latent space."""
-        # Initial lift network
-        self.lift_network = torch.nn.Sequential()
-        self.lift_network.append(
-            Conv3dFCLayer(self.in_channels, int(self.fno_width / 2))
-        )
-        self.lift_network.append(self.activation_fn)
-        self.lift_network.append(
-            Conv3dFCLayer(int(self.fno_width / 2), self.fno_width)
-        )
-
-    def build_fno(self, num_fno_modes: List[int]) -> None:
-        """construct FNO block.
-        Parameters
-        ----------
-        num_fno_modes : List[int]
-            Number of Fourier modes kept in spectral convolutions
-
-        """
-        # Build Neural Fourier Operators
-        self.spconv_layers = nn.ModuleList()
-        self.conv_layers = nn.ModuleList()
-        for _ in range(self.num_fno_layers):
-            self.spconv_layers.append(
-                SpectralConv3d(
-                    self.fno_width,
-                    self.fno_width,
-                    num_fno_modes[0],
-                    num_fno_modes[1],
-                    num_fno_modes[2],
-                )
-            )
-            self.conv_layers.append(nn.Conv3d(self.fno_width, self.fno_width, 1))
 
     def forward(self, x: Tensor) -> Tensor:
         if self.coord_features:
