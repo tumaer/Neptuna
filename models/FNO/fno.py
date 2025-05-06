@@ -309,7 +309,7 @@ class FNO1D(nn.Module):
             dimension=1,
         )
 
-    def decoder_net(self) -> None:
+    def decoder_net(self) -> nn.Module:
         return FullyConnected(
             in_features=self.fno_width,
             layer_size=self.decoder_layer_size,
@@ -455,7 +455,7 @@ class FNO2D(nn.Module):
             dimension=2,
         )
 
-    def decoder_net(self) -> None:
+    def decoder_net(self) -> nn.Module:
         return FullyConnected(
             in_features=self.fno_width,
             layer_size=self.decoder_layer_size,
