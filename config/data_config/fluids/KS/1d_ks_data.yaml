@@ -3,10 +3,7 @@ dataset_directory_path: ./data/fluids/KS/1D
 dimension: 1
 in_channels: 1 #velocity magnitude
 out_channels: 1
-sequence_info: {
-    "train": [6, 7, 1, 1],
-    "val": [3, 5, 1, 1],
-    "test": [4, 2, 1, 1]}
+sequence_info: [[6, 7, 1, 1]]
 filter_frame: null 
 filter_groups: null
 filter_fields: null 
