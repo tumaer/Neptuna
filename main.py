@@ -23,13 +23,13 @@ def main(config: DictConfig):
     print(OmegaConf.to_yaml(config))
     print("#" * 79)
 
-    train_dataset = fetch_dataset(dataset_name=config["data_config"]["dataset_name"],
+    train_dataset, eval_dataset = fetch_dataset(dataset_name=config["data_config"]["dataset_name"],
                                 dataset_directory_path=config["data_config"]["dataset_directory_path"],
-                                mode="train",
                                 sequence_info=config["data_config"]["sequence_info"],
                                 filter_frame=config["data_config"]["filter_frame"],
                                 groups=config["data_config"]["filter_groups"],
                                 fields=config["data_config"]["filter_fields"],
+                                eval_split_ratio=config["train_config"]["eval_split_ratio"],
                                 transform=None, #TODO: add transform
                                 )
 
@@ -86,6 +86,7 @@ def main(config: DictConfig):
         #compute_metrics=compute_metrics, # The function that will be used to compute metrics at evaluation. Must take a [`EvalPrediction`] and return a dictionary string to metric values.
         #callbacks=[early_stopping],
     )
+    
     start_time = time.time()
     trainer.train()
     end_time = time.time()
