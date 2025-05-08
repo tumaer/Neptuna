@@ -13,107 +13,168 @@ Each dataset inside the .h5 file should have the following format:
 """
 import h5py
 from torch.utils.data import Dataset
-from typing import Optional
+from typing import Optional, List, Tuple
 import os
 import numpy as np
 import torch
 
+def create_index_map(h5file_path: str,
+                    groups: Optional[list],
+                    fields: Optional[list],
+                    input_seq_len: int,
+                    label_seq_len: int,
+                    input_seq_stride: int,
+                    label_seq_stride: int, 
+                    filter_frame: Optional[list] = None #filter_frame[0][0]: min_frame, filter_frame[0][1]: max_frame
+                    ) -> list:
+    """
+    Create index map for the dataset.
+    Returns a list of (group_name, start_idx) tuples.
+    """
+    
+    print("train_or_eval_h5_file_path:", h5file_path)
+    index_map = []
+    with h5py.File(h5file_path, 'r') as f:
+        all_groups = list(f.keys())
+        groups = groups if groups is not None else all_groups
+
+        # Infer fields from first group
+        first_group = f[groups[0]]
+        available_fields = list(first_group.keys())
+        fields = fields if fields is not None else available_fields
+
+        for group_name in groups:
+            group = f[group_name]
+            min_frame = 0 if filter_frame is None else filter_frame[0][0]
+            num_samples = group[fields[0]].shape[0]
+            max_frame = num_samples-1 if filter_frame is None else min(filter_frame[0][1], num_samples)
+
+            half_input = (input_seq_len - 1) * input_seq_stride
+            half_label = (label_seq_len - 1) * label_seq_stride
+
+            min_valid_idx = min_frame + half_input
+            max_valid_idx = max_frame - half_label - 1
+
+            for i in range(min_valid_idx, max_valid_idx + 1):
+                index_map.append((group_name, i))
+        
+        print(f"Using groups: {groups}")
+        print(f"Using fields: {fields}")
+    return index_map, groups, fields
+
 def fetch_dataset(dataset_name: str, 
+                  mode: str = "train",  # train, eval, or test
                   **kwargs):
     """
     Factory function to create a dataset instance based on the dataset name.
+    
+    Args:
+        dataset_name: Name of the dataset to load
+        mode: One of "train", "eval", or "test". For train/eval, uses train.h5. For test, uses test.h5
+        **kwargs: Additional arguments passed to the dataset constructor
     """
     if dataset_name == "KarmanVortexStreet":
         from data.fluids.incompressible import KarmanVortexStreetDataset as LoadedDataset
-        return LoadedDataset(dataset_name=dataset_name, **kwargs)
     elif dataset_name == "KuramotoSivashinsky":
         from data.fluids.incompressible import KuramotoSivashinskyDataset as LoadedDataset
-        return LoadedDataset(dataset_name=dataset_name, **kwargs)
-    
     else:
         raise ValueError(f"Dataset {dataset_name} is not implemented yet.")
 
-
+    # Determine h5 file path based on mode
+    h5file_name = "test.h5" if mode == "test" else "train.h5"
+    h5file_path = os.path.abspath(kwargs["dataset_directory_path"]+"/"+h5file_name)
+    sequence_info = kwargs.get("sequence_info", [[1, 1, 1, 1]])[0]
+    
+    index_map, groups, fields = create_index_map(
+        h5file_path=h5file_path,
+        groups=kwargs.get("groups"), #all groups to be used for training by default
+        fields=kwargs.get("fields"), #all fields to be used for training by default
+        input_seq_len=sequence_info[0], #input sequence length
+        label_seq_len=sequence_info[1], #label sequence length
+        input_seq_stride=sequence_info[2], #input sequence stride
+        label_seq_stride=sequence_info[3], #label sequence stride
+        filter_frame=kwargs.get("filter_frame") #filter frame
+    )
+    #update the kwargs with the groups and fields
+    kwargs["groups"] = groups
+    kwargs["fields"] = fields
+    
+    if mode == "test":
+        # For test data, use all indices without splitting
+        test_dataset = LoadedDataset(
+            dataset_name=dataset_name,
+            h5file_path=h5file_path,
+            mode="test",
+            indices=index_map,
+            **kwargs
+        )
+        return test_dataset
+    
+    # For train/eval, split the indices
+    np.random.seed(0) 
+    # Shuffle the list directly
+    np.random.shuffle(index_map)
+    
+    # Split indices for train and eval
+    train_size = int(len(index_map) * (1-kwargs.get("eval_split_ratio")))
+    train_indices = index_map[:train_size]
+    eval_indices = index_map[train_size:]
+    
+    # Create datasets with their respective indices
+    train_dataset = LoadedDataset(
+        dataset_name=dataset_name,
+        h5file_path=h5file_path,
+        mode="train",
+        indices=train_indices,
+        **kwargs
+    )
+    
+    eval_dataset = LoadedDataset(
+        dataset_name=dataset_name,
+        h5file_path=h5file_path,
+        mode="eval",
+        indices=eval_indices,
+        **kwargs
+    )
+    
+    return train_dataset, eval_dataset
 
 class BaseDataset(Dataset):
     def __init__(self, 
-                 dataset_directory_path: str,
-                 mode: str, #train, test, val
+                 dataset_name: str,
+                 h5file_path: str,
+                 mode: str, #train, test, eval
+                 indices: List[Tuple[str, int]],  # List of (group_name, start_idx) tuples
+                 groups: List,
+                 fields: List, #specific fields inside dataset to be used for training
                  strategy: str = 'many2many', #TODO: all2all
-                 dataset_name: Optional[str] = None,
-                 groups: Optional[list] = None, #specific groups inside dataset to be used for training
-                 fields: Optional[list] = None, #specific fields inside dataset to be used for training
                  sequence_info: Optional[list] = [[1, 1, 1, 1]], #sequence_info[0][0]: input_seq_len, sequence_info[0][1]: label_seq_len, 
                                                                  #sequence_info[0][2]: input_sequence_stride, sequence_info[0][3]: label_sequence_stride
-                 filter_frame: Optional[list] = None, #filter_frame[0][0]: min_frame, filter_frame[0][1]: max_frame
-                 transform= None, #transform: any transform to be applied to the data
+                 transform = None, #transform: any transform to be applied to the data
                  ):
         super().__init__()
         
-        assert mode in ["train", "val", "test"]
+        assert mode in ["train", "eval", "test"]
+        assert indices is not None, "indices must be provided"
+        assert fields is not None and len(fields) > 0, "fields must be provided and non-empty"
+        
         self.mode = mode
         self.dataset_name = dataset_name
+        self.h5file_path = h5file_path
         self.transform = transform
-        self.index_map = []
-
-        if dataset_name is None: #infer dataset name from the directory path
-            dataset_name = os.path.basename(os.path.normpath(dataset_directory_path))
-            print("dataset_name:", dataset_name)
-        if self.mode == "train" or self.mode == "val":
-            self.h5file_path = os.path.abspath(dataset_directory_path+"/train.h5")
-            print("h5_file_path:", self.h5file_path)
-
-        else:
-            self.h5file_path = os.path.abspath(dataset_directory_path+"/test.h5")
-            print("h5_file_path=", self.h5file_path)
+        self.index_map = indices
+        self.groups = groups
+        self.fields = fields
         
-        self.input_seq_len = sequence_info[0][0] #number of historic steps to be considered in the input
-        self.label_seq_len = sequence_info[0][1] #number of future steps to be predicted
-        self.input_seq_stride = sequence_info[0][2] #stride for the input sequence
-        self.label_seq_stride = sequence_info[0][3] #stride for the output sequence
+        print(f"{self.mode} index map size: {len(self.index_map)}")
         
-        self.strategy = strategy    
-
-        # Compute total number of frames required per sample
-        last_input_idx = (self.input_seq_len - 1) * self.input_seq_stride
-        last_label_idx = (self.label_seq_len - 1) * self.label_seq_stride 
-        self.total_span = last_input_idx + 1 + last_label_idx #this is the window to be extracted
+        self.input_seq_len = sequence_info[0][0] 
+        self.label_seq_len = sequence_info[0][1] 
+        self.input_seq_stride = sequence_info[0][2] 
+        self.label_seq_stride = sequence_info[0][3] 
         
-        with h5py.File(self.h5file_path, 'r') as f:
-            all_groups = list(f.keys())
-            self.groups = groups if groups is not None else all_groups
-
-            # Infer fields from first group
-            first_group = f[self.groups[0]]
-            available_fields = list(first_group.keys())
-            self.fields = fields if fields is not None else available_fields
-
-            for group_name in self.groups:
-                group = f[group_name]
-                # Apply t_min and t_max bounds
-                self.min_frame = 0 if filter_frame is None else filter_frame[0][0] #selecting specific timesteps from the whole trajectory
-                num_samples = group[self.fields[0]].shape[0]
-                self.max_frame = num_samples-1 if filter_frame is None else min(filter_frame[0][1], num_samples)
-
-                # Last valid starting index to keep the sample within range
-                #max_start_idx = self.max_frame - self.total_span + 1
-                # for i in range(self.min_frame, max_start_idx):
-                #     self.index_map.append((group_name, i))
-
-                half_input = (self.input_seq_len - 1) * self.input_seq_stride # Compute how far back we need to go from the center index to collect the full input sequence
-                half_label = (self.label_seq_len - 1) * self.label_seq_stride # Compute how far forward we need to go from the center index to collect the full label sequence
-
-                # The earliest valid center index must be far enough from the start (min_frame) so that we can extract all input frames to the left
-                min_valid_idx = self.min_frame + half_input
-                # The latest valid center index must be far enough from the end (max_frame)
-                # so that we can extract all label frames to the right
-                # We subtract 1 to ensure we don’t index beyond the available range
-                max_valid_idx = self.max_frame - half_label - 1  
-
-                for i in range(min_valid_idx, max_valid_idx + 1):
-                    self.index_map.append((group_name, i))
-            print("Index map built")
-
+        self.strategy = strategy    #all2all, many2many, autoregressive
+        
     def __len__(self):
         return len(self.index_map)
 
@@ -126,21 +187,25 @@ class BaseDataset(Dataset):
                 label_chunks = []
 
                 for field in self.fields:
-                    # Time indices for inputs and labels
-                    # input_indices = [start_idx + i * self.input_seq_stride for i in range(self.input_seq_len)]
-                    # label_start = input_indices[-1] + 1
-                    # label_indices = [label_start + i * self.label_seq_stride for i in range(self.label_seq_len)]
-
                     center_idx = start_idx
+                    # input_indices is a list of indices for the input sequence with the last element being the center index
+                    # for example if the center_idx is 34 and input_seq_length=6 and the input_seq_stride=1, then input_indices = [29, 30, 31, 32, 33, 34] 
                     input_indices = [center_idx - (self.input_seq_len - 1 - i) * self.input_seq_stride for i in range(self.input_seq_len)]
+                    # label_indices is a list of indices for the label sequence with the first element being the center index
+                    # for example if the center_idx is 34 and label_seq_length=7 and the label_seq_stride=1, then label_indices = [35, 36, 37, 38, 39, 40, 41]
                     label_indices = [center_idx + (i + 1) * self.label_seq_stride for i in range(self.label_seq_len)]
 
+                    #input_seq has shape [input_seq_len, C_field, X_res, Y_res, Z_res]: C_field=1 for scalar fields like density and pressure, C_field=3 for 3D vector-fields like velocity
                     input_seq = np.stack([group[field][i] for i in input_indices], axis=0)
+                    #label_seq has shape [label_seq_len, C_field, X_res, Y_res, Z_res]: C_field=1 for scalar fields like density and pressure, C_field=3 for 3D vector-fields like velocity
                     label_seq = np.stack([group[field][i] for i in label_indices], axis=0)
 
+                    #append the input and label sequences to the respective lists
                     input_chunks.append(input_seq)
                     label_chunks.append(label_seq)
 
+                # inputs are the input sequences for all fields, shape = [input_seq_len, C_total, X_res, Y_res, Z_res] where: C_total = sum(C_field) for all fields
+                # labels are the label sequences for all fields, shape = [label_seq_len, C_total, X_res, Y_res, Z_res]
                 inputs = np.concatenate(input_chunks, axis=1)
                 labels = np.concatenate(label_chunks, axis=1)
 
@@ -149,34 +214,57 @@ class BaseDataset(Dataset):
                 "input_data": torch.from_numpy(inputs).float(),
                 "labels": torch.from_numpy(labels).float()  #NOTE: the key should be named "labels" 
             }
-            if self.transform:
-                sample = self.transform(sample) #TODO: add transform
-
-            return  sample
-        else:
-            raise NotImplementedError("The specified strategy is not implemented.")
-
-    #maybe in this child class one can write the code for conditioning the data
         
-####testing
+        else:
+            raise NotImplementedError("The specified strategy is not implemented.")       
+        
+        if self.transform:
+            sample = self.transform(sample) #TODO: add transform
+
+        return  sample
+    #maybe in the child class of BaseDataset one can write the code for conditioning the data
+        
+####testing the dataloader
 if __name__ == "__main__":
-    from ..data.fluids.incompressible import KarmanVortexStreetDataset
+    import os
+    import sys
+    import torch
     
-    kvs_ds = KarmanVortexStreetDataset(
-        dataset_directory_path="./data/KVS/",
+    # Add the project root directory to Python path
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    sys.path.append(project_root)
+    
+    dataset_directory_path = "./data/fluids/KVS/2D"
+    
+    # Test fetch_dataset function
+    print("\nTesting fetch_dataset function...")
+    train_dataset, eval_dataset = fetch_dataset(
+        dataset_name="KarmanVortexStreet",
         mode="train",
-        strategy="many2many",
-        dataset_name="KVS",
+        dataset_directory_path=dataset_directory_path,
         groups=["Re_100", "Re_300", "Re_400"],
-        fields=["velocity", "density"],
-        sequence_info=[[8, 4, 1, 1]], #input_seq_len, label_seq_len, input_sequence_stride, label_sequence_stride
-        filter_frame=[[100, 500]], #min_frame, max_frame
-        transform=None 
-
+        fields=["velocity"],
+        sequence_info=[[8, 4, 1, 1]],
+        filter_frame=[[100, 500]],
+        eval_split_ratio=0.2
     )
-
-    dataloader = torch.utils.data.DataLoader(kvs_ds, batch_size=32, shuffle=True)
-
-    for batch in dataloader:
-        print(batch["inputs"].shape)  # (B, ip_seq_len, C_total, H, W)
-        print(batch["labels"].shape)  # (B, label_seq_len, C_total, H, W)
+    
+    print(f"Train dataset size: {len(train_dataset)}")
+    print(f"Eval dataset size: {len(eval_dataset)}")
+    
+    # Test dataloader
+    print("\nTesting dataloader...")
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, 
+        batch_size=32, 
+        shuffle=True,
+        num_workers=0
+    )
+    
+    # Test a single batch
+    for batch in train_loader:
+        print("\nBatch shapes:")
+        print(f"Input shape: {batch['input_data'].shape}")  # (B, input_seq, C_total, H, W)
+        print(f"Label shape: {batch['labels'].shape}")      # (B, label_seq, C_total, H, W)
+        # print(f"Group: {batch['group']}")                   # Group name for conditioning
+        break  # Only test first batch
