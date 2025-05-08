@@ -1,4 +1,3 @@
-
 from typing import List, Tuple, Union, Optional
 import torch
 from torch import Tensor
@@ -8,25 +7,33 @@ from utils import activation_func
 from .unet_utils import DownBlockND, UpBlockND, MiddleBlockND, DownsampleND, UpsampleND
 from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 class UNet(nn.Module): 
-    """Modern U-Net architecture
+    """Modern U-Net architecture for fluid dynamics simulation
 
-    This is a modern U-Net architecture with wide-residual blocks and spatial attention blocks
+    A flexible U-Net implementation that supports 1D, 2D, and 3D data processing for fluid dynamics
+    simulation. The architecture includes wide-residual blocks, spatial attention blocks, and optional
+    coordinate features for spatial awareness. It processes both scalar and vector fields with
+    multi-resolution feature extraction and reconstruction.
 
     Args:
-        n_input_scalar_components (int): Number of scalar components in the model
-        n_input_vector_components (int): Number of vector components in the model
-        n_output_scalar_components (int): Number of output scalar components in the model
-        n_output_vector_components (int): Number of output vector components in the model
-        time_history (int): Number of time steps in the input
-        time_future (int): Number of time steps in the output
-        hidden_channels (int): Number of channels in the hidden layers
-        activation (str): Activation function to use
-        norm (bool): Whether to use normalization
-        ch_mults (list): List of channel multipliers for each resolution
-        is_attn (list): List of booleans indicating whether to use attention blocks
-        mid_attn (bool): Whether to use attention block in the middle block
-        n_blocks (int): Number of residual blocks in each resolution
-        use1x1 (bool): Whether to use 1x1 convolutions in the initial and final layers
+        in_channels (int): Number of input channels (input_seq * input_fields)
+        out_channels (int): Number of output channels (output_seq * output_fields)
+        latent_channels (int): Number of channels in the hidden layers
+        activation_fn_name (str): Name of the activation function (default: "gelu")
+        sequence_info (List[List[int]]): Configuration for input/output sequences [[input_seq_len, output_seq_len, input_stride, output_stride]]
+        dimension (int): Spatial dimension of the data (1, 2, or 3)
+        norm (bool): Whether to use normalization layers (default: False)
+        ch_mults (Union[Tuple[int, ...], List[int]]): Channel multipliers for each resolution level (default: (1, 2, 2, 4))
+        is_attn (Union[Tuple[bool, ...], List[bool]]): Whether to use attention at each resolution (default: (False, False, False, False))
+        mid_attn (bool): Whether to use attention in the middle block (default: False)
+        n_blocks (int): Number of residual blocks per resolution (default: 2)
+        use1x1 (bool): Whether to use 1x1 convolutions in initial/final layers (default: False)
+
+    The architecture includes:
+    - Multi-resolution processing with skip connections
+    - Optional coordinate features for spatial awareness
+    - Wide residual blocks with optional attention
+    - Configurable normalization and activation functions
+    - Flexible input/output sequence handling
     """
 
     def __init__(
@@ -85,10 +92,6 @@ class UNet(nn.Module):
     def forward(self, input_data: Tensor,
                 labels: Tensor) -> Tensor:
         
-        #assert input_data.dim() == 5 #for 2d
-        #assert labels.dim() == 5
-        
-        #orig_shape = input_data.shape
         batch, input_seq, input_fields, *spatial = input_data.shape
         x=input_data.reshape(batch, input_seq * input_fields, *spatial)
 
