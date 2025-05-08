@@ -2,3 +2,4 @@
 batch_size: 1    
 rec_results_freq : 32 
 num_epochs: 128
+eval_split_ratio: 0.2 #20% dataset used for evaluation
