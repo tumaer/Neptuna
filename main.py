@@ -37,7 +37,9 @@ def main(config: DictConfig):
         output_dir="./",
         #fsdp_config=config.get("fsdp_config", None),
         overwrite_output_dir=True,  #! OVERWRITE THIS DIRECTORY IN CASE, also for resuming training
-        eval_strategy="no", #TODO: change it to epochs laterThe evaluation strategy to adopt during training (also change the save_strategy). Possible values are:
+        eval_strategy="steps", #TODO: change it to epochs laterThe evaluation strategy to adopt during training (also change the save_strategy). Possible values are: no, steps, epoch
+        eval_steps=25, #Number of update steps between two logs if `logging_strategy="steps", Vimp: keep an eye on number of steps between logging 
+        eval_on_start=True, #Whether to perform a evaluation step (sanity check) before the training to ensure the validation steps works correctly.
         per_device_train_batch_size=config['train_config']["batch_size"],
         per_device_eval_batch_size=config['train_config']["batch_size"],
         eval_accumulation_steps=16, #Number of predictions steps to accumulate the output tensors for, before moving the results to the CPU. If
@@ -62,7 +64,7 @@ def main(config: DictConfig):
         seed=SEED,
         fp16=False, # Whether to use fp16 16-bit (mixed) precision training instead of 32-bit training.
         dataloader_num_workers=1,  #change to CPU_CORES later
-        load_best_model_at_end=True, #Whether or not to load the best model found during training at the end of training.
+        load_best_model_at_end=False, # TODO: Change to true later (save and eval strategy should be same for this). Whether or not to load the best model found during training at the end of training.
         metric_for_best_model="loss",
         greater_is_better=False, #lower loss is better, therefore False
         dataloader_pin_memory=True, # Whether you want to pin memory in data loaders or not. Will default to `True`.
@@ -82,7 +84,7 @@ def main(config: DictConfig):
         model=model,
         args=train_config,
         train_dataset=train_dataset,
-        #eval_dataset=eval_dataset,
+        eval_dataset=eval_dataset,
         #compute_metrics=compute_metrics, # The function that will be used to compute metrics at evaluation. Must take a [`EvalPrediction`] and return a dictionary string to metric values.
         #callbacks=[early_stopping],
     )
