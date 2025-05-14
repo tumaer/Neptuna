@@ -85,7 +85,7 @@ class UNet(nn.Module):
         elif self.dimension == 3:
             return UNet3D
         else:
-            raise NotImplementedError(f"Upsampler not implemented for dimension {self.dimension}")
+            raise NotImplementedError(f"UNet not implemented for dimension {self.dimension}")
 
     
     ### Main Forward function ###

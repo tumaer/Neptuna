@@ -39,7 +39,7 @@ def main(config: DictConfig):
         overwrite_output_dir=True,  #! OVERWRITE THIS DIRECTORY IN CASE, also for resuming training
         eval_strategy="steps", #TODO: change it to epochs laterThe evaluation strategy to adopt during training (also change the save_strategy). Possible values are: no, steps, epoch
         eval_steps=25, #Number of update steps between two logs if `logging_strategy="steps", Vimp: keep an eye on number of steps between logging 
-        eval_on_start=True, #Whether to perform a evaluation step (sanity check) before the training to ensure the validation steps works correctly.
+        eval_on_start=False, #Whether to perform a evaluation step (sanity check) before the training to ensure the validation steps works correctly.
         per_device_train_batch_size=config['train_config']["batch_size"],
         per_device_eval_batch_size=config['train_config']["batch_size"],
         eval_accumulation_steps=16, #Number of predictions steps to accumulate the output tensors for, before moving the results to the CPU. If
@@ -81,6 +81,8 @@ def main(config: DictConfig):
                         data_config=config["data_config"])
 
     trainer = Trainer(
+        model_config=config["model_config"],
+        data_config=config["data_config"], #everything below goes to kwargs
         model=model,
         args=train_config,
         train_dataset=train_dataset,
@@ -88,6 +90,8 @@ def main(config: DictConfig):
         #compute_metrics=compute_metrics, # The function that will be used to compute metrics at evaluation. Must take a [`EvalPrediction`] and return a dictionary string to metric values.
         #callbacks=[early_stopping],
     )
+    ##TODO: remove this later (only pushforward trick for training)
+    #trainer.set_ar_steps(ar_steps=3, output_all_steps=False)
     
     start_time = time.time()
     trainer.train()
