@@ -61,8 +61,8 @@ class UNet(nn.Module):
         # Number of resolutions (depth of unet)
         n_resolutions = len(ch_mults)
 
-        insize = in_channels*sequence_info[0][0]
-        outsize = out_channels*sequence_info[0][1]
+        insize = in_channels*sequence_info[0]
+        outsize = out_channels*sequence_info[1]
         
         self.unet = self.build_UNet()(insize, 
                                    outsize, 
