@@ -23,13 +23,14 @@ def create_index_map(h5file_path: str,
                     fields: Optional[list],
                     input_seq_len: int,
                     label_seq_len: int,
-                    input_seq_stride: int,
-                    label_seq_stride: int, 
-                    filter_frame: Optional[list] = None #filter_frame[0][0]: min_frame, filter_frame[0][1]: max_frame
+                    stride: int, 
+                    filter_frame: Optional[list] = None #filter_frame[0]: min_frame, filter_frame[1]: max_frame
                     ) -> list:
     """
     Create index map for the dataset.
     Returns a list of (group_name, start_idx) tuples.
+    stride is the same for both input and label sequences because we also want to perform autoregressive rollout
+    In AR, we need to  take the last input_seq_len frames from the prediction and pass it to the model as input, so the prediction cannot have a different stride.
     """
     
     print("train_or_eval_h5_file_path:", h5file_path)
@@ -45,15 +46,26 @@ def create_index_map(h5file_path: str,
 
         for group_name in groups:
             group = f[group_name]
-            min_frame = 0 if filter_frame is None else filter_frame[0][0]
-            num_samples = group[fields[0]].shape[0]
-            max_frame = num_samples-1 if filter_frame is None else min(filter_frame[0][1], num_samples)
+            num_samples = group[fields[0]].shape[0]  # number of timesteps
 
-            half_input = (input_seq_len - 1) * input_seq_stride
-            half_label = (label_seq_len - 1) * label_seq_stride
+            min_frame = (filter_frame[0] - 1 if filter_frame and len(filter_frame) > 0 and filter_frame[0] is not None else 0)
+            max_frame = (filter_frame[1] - 1 if filter_frame and len(filter_frame) > 1 and filter_frame[1] is not None else num_samples - 1)
+            max_frame = min(max_frame, num_samples - 1)
 
-            min_valid_idx = min_frame + half_input
-            max_valid_idx = max_frame - half_label - 1
+            # # Example: input_seq_len=6, stride=2, label_seq_len=7, max_frame=50
+            # # For index 21:
+            # #   Input sequence: [21, 23, 25, 27, 29, 31] (6 frames with stride 2)
+            # #   Label sequence: [33, 35, 37, 39, 41, 43, 45] (7 frames with stride 2)
+            # #   This ensures we use all frames up to max_frame=50
+
+            min_valid_idx = min_frame
+            max_valid_idx = max_frame - (input_seq_len + label_seq_len - 1) * stride
+
+            assert max_valid_idx >= min_valid_idx, (
+                f"Group '{group_name}' cannot produce any valid window with input_seq_len={input_seq_len}, "
+                f"label_seq_len={label_seq_len}, stride={stride}, max_frame={max_frame}, min_frame={min_frame}."
+                f"Consider reducing either input_seq_len or label_seq_len or stride."
+            )
 
             for i in range(min_valid_idx, max_valid_idx + 1):
                 index_map.append((group_name, i))
@@ -81,18 +93,20 @@ def fetch_dataset(dataset_name: str,
         raise ValueError(f"Dataset {dataset_name} is not implemented yet.")
 
     # Determine h5 file path based on mode
-    h5file_name = "test.h5" if mode == "test" else "train.h5"
+    h5file_name = "test.h5" if mode == "test" else "train.h5" #use the same train.h5 for both train and eval data
     h5file_path = os.path.abspath(kwargs["dataset_directory_path"]+"/"+h5file_name)
-    sequence_info = kwargs.get("sequence_info", [[1, 1, 1, 1]])[0]
+    sequence_info = kwargs.get("sequence_info", [1, 1, 1])
     
+    if mode == "train":
+        extra_train_sequence_info = kwargs.get("extra_train_sequence_info", None)
+
     index_map, groups, fields = create_index_map(
         h5file_path=h5file_path,
         groups=kwargs.get("groups"), #all groups to be used for training by default
         fields=kwargs.get("fields"), #all fields to be used for training by default
         input_seq_len=sequence_info[0], #input sequence length
         label_seq_len=sequence_info[1], #label sequence length
-        input_seq_stride=sequence_info[2], #input sequence stride
-        label_seq_stride=sequence_info[3], #label sequence stride
+        stride=sequence_info[2], #stride for both input and label sequences
         filter_frame=kwargs.get("filter_frame") #filter frame
     )
     #update the kwargs with the groups and fields
@@ -148,8 +162,8 @@ class BaseDataset(Dataset):
                  groups: List,
                  fields: List, #specific fields inside dataset to be used for training
                  strategy: str = 'many2many', #TODO: all2all
-                 sequence_info: Optional[list] = [[1, 1, 1, 1]], #sequence_info[0][0]: input_seq_len, sequence_info[0][1]: label_seq_len, 
-                                                                 #sequence_info[0][2]: input_sequence_stride, sequence_info[0][3]: label_sequence_stride
+                 sequence_info: Optional[list] = [1, 1, 1], #sequence_info[0]: input_seq_len, sequence_info[1]: label_seq_len, 
+                                                           #sequence_info[2]: stride
                  transform = None, #transform: any transform to be applied to the data
                  ):
         super().__init__()
@@ -168,10 +182,9 @@ class BaseDataset(Dataset):
         
         print(f"{self.mode} index map size: {len(self.index_map)}")
         
-        self.input_seq_len = sequence_info[0][0] 
-        self.label_seq_len = sequence_info[0][1] 
-        self.input_seq_stride = sequence_info[0][2] 
-        self.label_seq_stride = sequence_info[0][3] 
+        self.input_seq_len = sequence_info[0] 
+        self.label_seq_len = sequence_info[1] 
+        self.stride = sequence_info[2]
         
         self.strategy = strategy    #all2all, many2many, autoregressive
         
@@ -187,14 +200,12 @@ class BaseDataset(Dataset):
                 label_chunks = []
 
                 for field in self.fields:
-                    center_idx = start_idx
-                    # input_indices is a list of indices for the input sequence with the last element being the center index
-                    # for example if the center_idx is 34 and input_seq_length=6 and the input_seq_stride=1, then input_indices = [29, 30, 31, 32, 33, 34] 
-                    input_indices = [center_idx - (self.input_seq_len - 1 - i) * self.input_seq_stride for i in range(self.input_seq_len)]
-                    # label_indices is a list of indices for the label sequence with the first element being the center index
-                    # for example if the center_idx is 34 and label_seq_length=7 and the label_seq_stride=1, then label_indices = [35, 36, 37, 38, 39, 40, 41]
-                    label_indices = [center_idx + (i + 1) * self.label_seq_stride for i in range(self.label_seq_len)]
-
+                    # input_indices is a list of indices for the input sequence starting from the left
+                    # for example if start_idx is 21 and input_seq_length=6 and stride=2, then input_indices = [21, 23, 25, 27, 29, 31]
+                    # label_indices is a list of indices for the label sequence starting with stride
+                    # for example if start_idx is 21 and label_seq_length=7 and stride=2, then label_indices = [33, 35, 37, 39, 41, 43, 45]
+                    input_indices = [start_idx + i * self.stride for i in range(self.input_seq_len)]
+                    label_indices = [start_idx + (self.input_seq_len + i) * self.stride for i in range(self.label_seq_len)]
                     #input_seq has shape [input_seq_len, C_field, X_res, Y_res, Z_res]: C_field=1 for scalar fields like density and pressure, C_field=3 for 3D vector-fields like velocity
                     input_seq = np.stack([group[field][i] for i in input_indices], axis=0)
                     #label_seq has shape [label_seq_len, C_field, X_res, Y_res, Z_res]: C_field=1 for scalar fields like density and pressure, C_field=3 for 3D vector-fields like velocity
@@ -215,8 +226,9 @@ class BaseDataset(Dataset):
                 "labels": torch.from_numpy(labels).float()  #NOTE: the key should be named "labels" 
             }
         
+
         else:
-            raise NotImplementedError("The specified strategy is not implemented.")       
+            raise NotImplementedError("The specified strategy/mode is not implemented.")       
         
         if self.transform:
             sample = self.transform(sample) #TODO: add transform
@@ -244,8 +256,8 @@ if __name__ == "__main__":
         dataset_directory_path=dataset_directory_path,
         groups=["Re_100", "Re_300", "Re_400"],
         fields=["velocity"],
-        sequence_info=[[8, 4, 1, 1]],
-        filter_frame=[[100, 500]],
+        sequence_info=[8, 4, 1],
+        filter_frame=[100, 500],
         eval_split_ratio=0.2
     )
     
