@@ -16,7 +16,6 @@ torch.manual_seed(SEED)
 np.random.seed(SEED)
 random.seed(SEED)
 
-
 @hydra.main(version_base="1.3", config_path="./config", config_name="defaults.yaml")
 def main(config: DictConfig):
     print("#" * 79, "\nStarting a benchmarking run with the following config:")
@@ -55,7 +54,7 @@ def main(config: DictConfig):
         adam_epsilon=1e-8,  # default
         lr_scheduler_type=config["scheduler_config"]["lr_scheduler"], #linear by default
         warmup_ratio=config["scheduler_config"]["warmup_ratio"], #Ratio of total training steps used for a linear warmup from 0 to `learning_rate`
-        log_level="passive", #default
+        log_level="debug", #default #other options: debug, info, warning, error
         logging_strategy="steps", # (set to epochs later)The logging strategy to adopt during training. (either steps or epochs)
         logging_steps=5, #Number of update ste ps between two logs if `logging_strategy="steps" 
         logging_nan_inf_filter=False, #Whether to filter `nan` and `inf` losses for logging.
