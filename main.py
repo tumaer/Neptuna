@@ -25,6 +25,7 @@ def main(config: DictConfig):
     train_dataset, eval_dataset = fetch_dataset(dataset_name=config["data_config"]["dataset_name"],
                                 dataset_directory_path=config["data_config"]["dataset_directory_path"],
                                 sequence_info=config["data_config"]["sequence_info"],
+                                extra_train_sequence_info=config["train_config"]["pushforward"]["unrolls"][-1],
                                 filter_frame=config["data_config"]["filter_frame"],
                                 groups=config["data_config"]["filter_groups"],
                                 fields=config["data_config"]["filter_fields"],
@@ -37,7 +38,7 @@ def main(config: DictConfig):
         #fsdp_config=config.get("fsdp_config", None),
         overwrite_output_dir=True,  #! OVERWRITE THIS DIRECTORY IN CASE, also for resuming training
         eval_strategy="steps", #TODO: change it to epochs laterThe evaluation strategy to adopt during training (also change the save_strategy). Possible values are: no, steps, epoch
-        eval_steps=25, #Number of update steps between two logs if `logging_strategy="steps", Vimp: keep an eye on number of steps between logging 
+        eval_steps=5, #Number of update steps between two logs if `logging_strategy="steps", Vimp: keep an eye on number of steps between logging 
         eval_on_start=False, #Whether to perform a evaluation step (sanity check) before the training to ensure the validation steps works correctly.
         per_device_train_batch_size=config['train_config']["batch_size"],
         per_device_eval_batch_size=config['train_config']["batch_size"],
@@ -56,7 +57,7 @@ def main(config: DictConfig):
         warmup_ratio=config["scheduler_config"]["warmup_ratio"], #Ratio of total training steps used for a linear warmup from 0 to `learning_rate`
         log_level="debug", #default #other options: debug, info, warning, error
         logging_strategy="steps", # (set to epochs later)The logging strategy to adopt during training. (either steps or epochs)
-        logging_steps=5, #Number of update ste ps between two logs if `logging_strategy="steps" 
+        logging_steps=1, #Number of update ste ps between two logs if `logging_strategy="steps" 
         logging_nan_inf_filter=False, #Whether to filter `nan` and `inf` losses for logging.
         save_strategy="no", #TODO: Change it to epoch when validation dataset is present. When 'load_best_model_at_end' set to `True`, the parameters `save_strategy` needs to be the same as `evaluation_strategy`
         save_total_limit=1, #If a value is passed, will limit the total amount of checkpoints. Deletes the older checkpoints in`output_dir`.
@@ -77,11 +78,14 @@ def main(config: DictConfig):
     )
 
     model = fetch_model(model_config=config["model_config"], 
-                        data_config=config["data_config"])
+                        data_config=config["data_config"],
+                        )
 
     trainer = Trainer(
         model_config=config["model_config"],
-        data_config=config["data_config"], #everything below goes to kwargs
+        data_config=config["data_config"], 
+        data_shuffle=False,
+        #everything below goes to kwargs which go directly to the base trainer class of HF
         model=model,
         args=train_config,
         train_dataset=train_dataset,

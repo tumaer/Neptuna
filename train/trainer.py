@@ -5,13 +5,50 @@ from transformers.trainer import *
 from transformers import Trainer as Trainer_
 
 class Trainer(Trainer_):
-    def __init__(self, model_config, data_config, **kwargs):
+    def __init__(self, model_config, data_config, data_shuffle=True, **kwargs):
         super().__init__(**kwargs)
         self.ar_steps = None
         self.output_all_steps = False
-
+        self.data_shuffle = data_shuffle
         self.data_config = data_config
         self.model_config = model_config
+
+
+    def get_train_dataloader(self) -> DataLoader:
+        """
+        Returns the training [`~torch.utils.data.DataLoader`].
+
+        Will use no sampler if `train_dataset` does not implement `__len__`, a random sampler (adapted to distributed
+        training if necessary) otherwise.
+
+        Subclassing to add your own datacollator (TODO) and shuffle functionality for the dataloader.
+        """
+        if self.train_dataset is None:
+            raise ValueError("Trainer: training requires a train_dataset.")
+
+        train_dataset = self.train_dataset
+        data_collator = self.data_collator #NOTE: Why is this hardcoded to remove the columns?
+        if is_datasets_available() and isinstance(train_dataset, datasets.Dataset):
+            train_dataset = self._remove_unused_columns(train_dataset, description="training")
+        else:
+            data_collator = self._get_collator_with_removed_columns(data_collator, description="training")
+
+        dataloader_params = {
+            "batch_size": self._train_batch_size,
+            "collate_fn": data_collator,
+            "num_workers": self.args.dataloader_num_workers,
+            "pin_memory": self.args.dataloader_pin_memory,
+            "persistent_workers": self.args.dataloader_persistent_workers,
+            "shuffle": self.data_shuffle,
+        }
+
+        if not isinstance(train_dataset, torch.utils.data.IterableDataset):
+            dataloader_params["sampler"] = self._get_train_sampler()
+            dataloader_params["drop_last"] = self.args.dataloader_drop_last
+            dataloader_params["worker_init_fn"] = seed_worker
+            dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
+
+        return self.accelerator.prepare(DataLoader(train_dataset, **dataloader_params))
     
     def _model_forward(self, model, inputs):  ##custom function, not inside transformers library
 
