@@ -38,7 +38,7 @@ def main(config: DictConfig):
         #fsdp_config=config.get("fsdp_config", None),
         overwrite_output_dir=True,  #! OVERWRITE THIS DIRECTORY IN CASE, also for resuming training
         eval_strategy="steps", #TODO: change it to epochs laterThe evaluation strategy to adopt during training (also change the save_strategy). Possible values are: no, steps, epoch
-        eval_steps=25, #Number of update steps between two logs if `logging_strategy="steps", Vimp: keep an eye on number of steps between logging 
+        eval_steps=100, #Number of update steps between two logs if `logging_strategy="steps", Vimp: keep an eye on number of steps between logging 
         eval_on_start=True, #Whether to perform a evaluation step (sanity check) before the training to ensure the validation steps works correctly.
         per_device_train_batch_size=config['train_config']["batch_size"],
         per_device_eval_batch_size=config['train_config']["batch_size"],
