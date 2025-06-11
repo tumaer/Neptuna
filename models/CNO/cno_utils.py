@@ -14,27 +14,27 @@ def _to_tuple(x):
     
 class CNO_LReLu(nn.Module):
     def __init__(self,
-                in_size: Union[int, List[int], Tuple[int]],
-                out_size: Union[int, list[int], Tuple[int]],
+                in_grid_resolution: Union[int, List[int], Tuple[int]],
+                out_grid_resolution: Union[int, list[int], Tuple[int]],
                 ):
         super().__init__()
 
-        self.in_size = _to_tuple(in_size)
-        self.out_size = _to_tuple(out_size)
+        self.in_grid_resolution = _to_tuple(in_grid_resolution)
+        self.out_grid_resolution = _to_tuple(out_grid_resolution)
         self.act = nn.LeakyReLU()
-        if len(in_size) == 1:
+        if len(in_grid_resolution) == 1:
             self.mode = "linear"
-        elif len(in_size) == 2:
+        elif len(in_grid_resolution) == 2:
             self.mode = "bicubic"
-        elif len(in_size) == 3:
+        elif len(in_grid_resolution) == 3:
             self.mode = "trilinear"
 
     def forward(self, x):
-        up_size = tuple(2 * s for s in self.in_size)
-        x = F.interpolate(x, size=up_size, mode=self.mode,antialias = True if self.mode == "bicubi" else False)
+        up_grid_resolution = tuple(2 * s for s in self.in_grid_resolution)
+        x = F.interpolate(x, size=up_grid_resolution, mode=self.mode,antialias = True if self.mode == "bicubi" else False)
         x = self.act(x)
-        out_size = tuple(self.out_size)
-        x = F.interpolate(x, size=out_size, mode=self.mode ,antialias = True if self.mode == "bicubi" else False)
+        down_grid_resolution = tuple(self.out_grid_resolution)
+        x = F.interpolate(x, size=down_grid_resolution, mode=self.mode ,antialias = True if self.mode == "bicubi" else False)
         return x    
 
     
@@ -42,17 +42,17 @@ class CNOBlock(nn.Module):
     def __init__(self,
                 in_channels: int,
                 out_channels: int,
-                in_size: Union[int, List[int], Tuple[int]],
-                out_size: Union[int, List[int], Tuple[int]],
+                in_grid_resolution: Union[int, List[int], Tuple[int]],
+                out_grid_resolution: Union[int, List[int], Tuple[int]],
                 dimension: int,
-                use_bn: bool = True
+                norm: bool = True
                 ):
         super().__init__()
 
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.in_size  = in_size
-        self.out_size = out_size
+        self.in_grid_resolution  = in_grid_resolution
+        self.out_grid_resolution = out_grid_resolution
         if dimension == 1:
             Conv = nn.Conv1d
             BN = nn.BatchNorm1d
@@ -74,12 +74,12 @@ class CNOBlock(nn.Module):
                                 kernel_size = 3,
                                 padding     = 1)
 
-        if use_bn:
+        if norm:
             self.batch_norm  = BN(self.out_channels)
         else:
             self.batch_norm  = nn.Identity()
-        self.act           = CNO_LReLu(in_size  = self.in_size,
-                                        out_size = self.out_size)
+        self.act           = CNO_LReLu(in_grid_resolution  = self.in_grid_resolution,
+                                        out_grid_resolution = self.out_grid_resolution)
     def forward(self, x):
         x = self.convolution(x)
         x = self.batch_norm(x)
@@ -93,18 +93,18 @@ class LiftProjectBlock(nn.Module):
     def __init__(self,
                 in_channels: int,
                 out_channels: int,
-                size: Union[int, List[int], Tuple[int]],
+                grid_resolution: Union[int, List[int], Tuple[int]],
                 dimension: int,
-                latent_dim = 64
+                latent_channels: int = 64
                 ):
         super().__init__()
 
         self.inter_CNOBlock = CNOBlock(in_channels       = in_channels,
-                                        out_channels     = latent_dim,
-                                        in_size          = size,
-                                        out_size         = size,
+                                        out_channels     = latent_channels,
+                                        in_grid_resolution          = grid_resolution,
+                                        out_grid_resolution         = grid_resolution,
                                         dimension        = dimension,
-                                        use_bn           = False)
+                                        norm           = False)
         if dimension == 1:
             Conv = nn.Conv1d
         elif dimension == 2:
@@ -113,7 +113,7 @@ class LiftProjectBlock(nn.Module):
             Conv = nn.Conv3d
         else:
             raise ValueError(f"Unsupported dimension: {dimension}. Must be 1, 2, or 3.")
-        self.convolution = Conv(in_channels  = latent_dim,
+        self.convolution = Conv(in_channels  = latent_channels,
                                 out_channels = out_channels,
                                 kernel_size  = 3,
                                 padding      = 1)
@@ -131,14 +131,14 @@ class LiftProjectBlock(nn.Module):
 class ResidualBlock(nn.Module):
     def __init__(self,
                 channels: int,
-                size: Union[int, List[int], Tuple[int]],
+                grid_resolution: Union[int, List[int], Tuple[int]],
                 dimension: int, 
-                use_bn: bool = True
+                norm: bool = True
                 ):
         super().__init__()
 
         self.channels = channels
-        self.size     = size
+        self.grid_resolution = grid_resolution
 
         #-----------------------------------------
 
@@ -164,7 +164,7 @@ class ResidualBlock(nn.Module):
                                  kernel_size = 3,
                                  padding     = 1)
 
-        if use_bn:
+        if norm:
             self.batch_norm1  = BN(self.channels)
             self.batch_norm2  = BN(self.channels)
 
@@ -172,8 +172,8 @@ class ResidualBlock(nn.Module):
             self.batch_norm1  = nn.Identity()
             self.batch_norm2  = nn.Identity()
 
-        self.act           = CNO_LReLu(in_size  = self.size,
-                                       out_size = self.size)
+        self.act           = CNO_LReLu(in_grid_resolution  = self.grid_resolution,
+                                       out_grid_resolution = self.grid_resolution)
 
 
     def forward(self, x):
@@ -191,23 +191,23 @@ class ResidualBlock(nn.Module):
 class ResNet(nn.Module):
     def __init__(self,
                 channels: int,
-                size: Union[int, List[int], Tuple[int]],
+                grid_resolution: Union[int, List[int], Tuple[int]],
                 num_blocks: int,
                 dimension: int, 
-                use_bn:bool = True
+                norm: bool = True
                 ):
         super(ResNet, self).__init__()
 
         self.channels = channels
-        self.size = size
+        self.grid_resolution = grid_resolution
         self.num_blocks = num_blocks
 
         self.res_nets = []
         for _ in range(self.num_blocks):
             self.res_nets.append(ResidualBlock(channels = channels,
-                                                size = size,
+                                                grid_resolution = grid_resolution,
                                                 dimension = dimension,
-                                                use_bn = use_bn))
+                                                norm = norm))
 
         self.res_nets = torch.nn.Sequential(*self.res_nets)
 
