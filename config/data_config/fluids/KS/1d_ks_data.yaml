@@ -8,4 +8,4 @@ sequence_info: [4, 3, 2]  # [input_seq_len, label_seq_len, stride]
 filter_frame: [null, null]  # [min_frame, max_frame]
 filter_groups: null
 filter_fields: null 
-resolution: [160]
+grid_resolution: [160]
