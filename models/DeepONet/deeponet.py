@@ -4,47 +4,8 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from utils import activation_func
-from .deeponet_utils import Ffn, CnnBranch
+from .deeponet_utils import Ffn, CnnBranch, grid_to_points, points_to_grid
 from models.ResNet.resnet import ResNet1D, ResNet2D, ResNet3D
-
-def grid_to_points(value: Tensor) -> Tuple[Tensor, List[int]]:
-    """
-    Convert from grid-based (XD) representation to point-based representation.
-
-    Parameters
-    ----------
-    value : Tensor
-        Input tensor of shape (B, C, X).
-
-    Returns
-    -------
-    Tuple
-        - Tensor of shape (B, C*X).
-        - Original shape as a list [B, C, X].
-    """
-    output = value.reshape(value.size(0), -1)  # Reshape to (B, C*X)
-    return output
-
-def points_to_grid(value: Tensor, shape: List[int]) -> Tensor:
-    """
-    Convert from point-based representation back to grid-based representation.
-
-    Parameters
-    ----------
-    value : Tensor
-        Input tensor of shape (B, C*X).
-    shape : List[int]
-        Original shape as [B, C, X].
-
-    Returns
-    -------
-    Tensor
-        Restored tensor of shape (B, C, X).
-    """
-    output = value.reshape(shape)  # Reshape back to (B, C, X)
-    return output
-
-
 
 class AutoDeepONet(nn.Module):
     """
@@ -84,6 +45,7 @@ class AutoDeepONet(nn.Module):
             Number of hidden channels for the CNN and ResNet branch network, not used for FFN
     
     """
+    main_input_name = "input_data"
     def __init__(
         self,
         in_channels: int,
@@ -92,7 +54,7 @@ class AutoDeepONet(nn.Module):
         dimension: int,
         branch_net: str = "FFN",
         query_idxs: Optional[Tensor] = None,
-        sequence_info: Optional[List[List[int]]] = [[1,1,1,1]],
+        sequence_info: Optional[List[int]] = [1,1,1],
         #num_label_samples: int = 1000,
         branch_depth: int = 4,
         trunk_depth: int = 4,
@@ -106,8 +68,8 @@ class AutoDeepONet(nn.Module):
     ):
 
         super().__init__()
-        self.in_channels = in_channels * sequence_info[0][0] 
-        self.out_channels = out_channels * sequence_info[0][1]
+        self.in_channels = in_channels * sequence_info[0] 
+        self.out_channels = out_channels * sequence_info[1]
         self.branch_depth = branch_depth
         self.trunk_depth = trunk_depth
         self.width = width
@@ -161,8 +123,7 @@ class AutoDeepONet(nn.Module):
 
     def forward(self, 
                 input_data: Tensor,
-                labels: Tensor) -> Tensor: #NOTE: Vimp: forward SHOULD always have the arguments EXACTLY named as "input_data" and "labels", 
-                                           #else the data collator will remove them. 
+                ) -> Tensor: 
         
         #reshape input into [batch, in_channel, grid_x, grid_y, ...]
         #NOTE: input and output fields need not be necessarily the same.
@@ -171,11 +132,7 @@ class AutoDeepONet(nn.Module):
         
         y = self.AutoDeepONet(input_data)  # (B, C_out, X)
      
-        # Reshape the prediction to match the labels shape
-        batch, output_seq, output_fields, *spatial = labels.shape
-        y = y.reshape(batch, output_seq, output_fields, *spatial)
-        
-        return y, labels
+        return y
     
     def build_AutoDeepONet(self):
         """Get the ResNet encoder based on the model dimensionality"""
@@ -420,7 +377,6 @@ class AutoDeepONet2D(nn.Module):
         y = y.view(shape[0], self.out_channels, height, width)  # (B, C_out, H, W)
         return y
     
-
 #not tested for CNN and ResNet branch nets
 class AutoDeepONet3D(nn.Module):
     def __init__(
