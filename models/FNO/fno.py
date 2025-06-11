@@ -132,7 +132,7 @@ class FNO(nn.Module):
     Reference: Li, Zongyi, et al. "Fourier neural operator for parametric
     partial differential equations." arXiv preprint arXiv:2010.08895 (2020).
     """
-
+    main_input_name = "input_data"
     def __init__(
         self,
         in_channels: int,
@@ -196,8 +196,7 @@ class FNO(nn.Module):
             )
 
     def forward(self, 
-                input_data: Tensor,
-                labels: Tensor) -> Tensor: #NOTE: Vimp: forward SHOULD always have the arguments EXACTLY named as "input_data" and "labels", 
+                input_data: Tensor) -> Tensor: #NOTE: Vimp: forward SHOULD always have the arguments EXACTLY named as "input_data" and "labels", 
                                            #else the data collator will remove them. 
         
         #reshape input into [batch, in_channel, grid_x, grid_y, ...]
@@ -219,11 +218,7 @@ class FNO(nn.Module):
         # Convert back into grid
         y = self.fno.points_to_grid(y, y_shape)
 
-        # Reshape the prediction to match the labels shape
-        batch, output_seq, output_fields, *spatial = labels.shape
-        y = y.reshape(batch, output_seq, output_fields, *spatial)
-
-        return y,labels
+        return y
 # ===================================================================
 # ===================================================================
 
