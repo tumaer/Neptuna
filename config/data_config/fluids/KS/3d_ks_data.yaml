@@ -3,7 +3,7 @@ dataset_directory_path: ./data/fluids/KS/3D
 dimension: 3
 in_channels: 1 #velocity magnitude
 out_channels: 1
-sequence_info: [6, 7, 1]  # [input_seq_len, label_seq_len, stride]
+sequence_info: [4, 3, 2]  # [input_seq_len, label_seq_len, stride]
 filter_frame: [10, 50]  # [min_frame, max_frame]
 filter_groups: null
 filter_fields: null 
