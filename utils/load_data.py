@@ -17,63 +17,136 @@ from typing import Optional, List, Tuple
 import os
 import numpy as np
 import torch
+import math
+import random
 
-def create_index_map(h5file_path: str,
+
+def build_index_map(h5py_file, group_list, field_list, filter_frame, window_size):
+    index_map = []
+    for group_name in group_list:
+        group = h5py_file[group_name]
+        num_samples = group[field_list[0]].shape[0]
+
+        min_frame = (filter_frame[0] - 1 if filter_frame and filter_frame[0] is not None else 0)
+        max_frame = (filter_frame[1] - 1 if filter_frame and filter_frame[1] is not None else num_samples - 1)
+        max_frame = min(max_frame, num_samples - 1)
+
+        max_start_idx = max_frame - window_size + 1
+        for start_idx in range(min_frame, max_start_idx + 1, 1):
+            end_idx = start_idx + window_size - 1
+            index_map.append((group_name, start_idx, end_idx))
+    return index_map
+
+def create_train_eval_index_map(h5file_path: str,
                     groups: Optional[list],
                     fields: Optional[list],
                     input_seq_len: int,
                     label_seq_len: int,
                     stride: int, 
-                    filter_frame: Optional[list] = None #filter_frame[0]: min_frame, filter_frame[1]: max_frame
+                    filter_frame: Optional[list] = None, #filter_frame[0]: min_frame, filter_frame[1]: max_frame
+                    n_max_pf_train_rollouts: Optional[int] = 0,
+                    n_eval_rollouts: Optional[int] = 1,
+                    eval_split_ratio: Optional[float] = 0.2 #TODO: Handle the case where evel-split ratio is 0.0
                     ) -> list:
-    """
-    Create index map for the dataset.
-    Returns a list of (group_name, start_idx) tuples.
-    stride is the same for both input and label sequences because we also want to perform autoregressive rollout
-    In AR, we need to  take the last input_seq_len frames from the prediction and pass it to the model as input, so the prediction cannot have a different stride.
-    """
+     
+    random.seed(42) # Set random seed for reproducibility
     
     print("train_or_eval_h5_file_path:", h5file_path)
-    index_map = []
+
     with h5py.File(h5file_path, 'r') as f:
-        all_groups = list(f.keys())
-        groups = groups if groups is not None else all_groups
+        all_groups = sorted(list(f.keys()))
+        groups = groups if groups is not None else all_groups 
 
         # Infer fields from first group
         first_group = f[groups[0]]
         available_fields = list(first_group.keys())
         fields = fields if fields is not None else available_fields
 
-        for group_name in groups:
-            group = f[group_name]
-            num_samples = group[fields[0]].shape[0]  # number of timesteps
+        total_groups = len(groups)
+        n_eval_groups = int(round(total_groups * eval_split_ratio))
 
-            min_frame = (filter_frame[0] - 1 if filter_frame and len(filter_frame) > 0 and filter_frame[0] is not None else 0)
-            max_frame = (filter_frame[1] - 1 if filter_frame and len(filter_frame) > 1 and filter_frame[1] is not None else num_samples - 1)
-            max_frame = min(max_frame, num_samples - 1)
+        # --- Step 1 & 2: Split eval groups 50-50 between extremes and middle ---
+        n_extreme = (n_eval_groups // 2) + 1 #+1 is added for the case where n_extreme is zero
+        n_middle = n_eval_groups - n_extreme  # remaining from middle
 
-            # # Example: input_seq_len=6, stride=2, label_seq_len=7, max_frame=50
-            # # For index 21:
-            # #   Input sequence: [21, 23, 25, 27, 29, 31] (6 frames with stride 2)
-            # #   Label sequence: [33, 35, 37, 39, 41, 43, 45] (7 frames with stride 2)
-            # #   This ensures we use all frames up to max_frame=50
+        eval_groups = []
 
-            min_valid_idx = min_frame
-            max_valid_idx = max_frame - (input_seq_len + label_seq_len - 1) * stride
-
-            assert max_valid_idx >= min_valid_idx, (
-                f"Group '{group_name}' cannot produce any valid window with input_seq_len={input_seq_len}, "
-                f"label_seq_len={label_seq_len}, stride={stride}, max_frame={max_frame}, min_frame={min_frame}."
-                f"Consider reducing either input_seq_len or label_seq_len or stride."
-            )
-
-            for i in range(min_valid_idx, max_valid_idx + 1):
-                index_map.append((group_name, i))
+        # Get extremes: alternate picking from start and end
+        extreme_indices = []
+        start_idx = 0
+        end_idx = total_groups - 1
         
-        print(f"Using groups: {groups}")
-        print(f"Using fields: {fields}")
-    return index_map, groups, fields
+        while len(extreme_indices) < n_extreme and start_idx <= end_idx:
+            if len(extreme_indices) < n_extreme:
+                extreme_indices.append(end_idx)
+                end_idx -= 1
+            if len(extreme_indices) < n_extreme and start_idx <= end_idx:
+                extreme_indices.append(start_idx)
+                start_idx += 1
 
+        eval_groups = [groups[i] for i in extreme_indices]
+
+        # Remaining groups to choose middle candidates from
+        remaining_groups = [g for i, g in enumerate(groups) if i not in extreme_indices]
+
+        # Randomly sample from middle
+        middle_groups = remaining_groups[1:-1] if len(remaining_groups) > 2 else remaining_groups
+        middle_sample = random.sample(middle_groups, min(n_middle, len(middle_groups)))
+
+        eval_groups.extend(middle_sample)
+        eval_groups = list(dict.fromkeys(eval_groups))  # ensure uniqueness
+        train_groups = [g for g in groups if g not in eval_groups]
+
+        print(f"Train groups ({len(train_groups)}): {train_groups}")
+        print(f"Eval groups ({len(eval_groups)}): {eval_groups}")
+
+        # --- Window sizes ---
+        train_window_size = (input_seq_len + label_seq_len - 1 + n_max_pf_train_rollouts * label_seq_len) * stride + 1
+        eval_window_size = (input_seq_len + label_seq_len - 1 + n_eval_rollouts * label_seq_len) * stride + 1
+
+        #For example, if the input_seq_len=4, label_seq_len=3, stride=2, n_max_pf_train_rollouts=2, then the train_window_size = 25
+        # as an example, if start_idx = 21, then the end_idx = 21 + 25 - 1 = 45
+        # the window size is 25, so the input sequence is [21, 23, 25, 27] 
+        # and the label sequence is [29, 31, 33], first pf-label indices: [35, 37, 39] and second pf-label indices: [41, 43, 45]
+        # pushforward only kicks in according to the current epoch and the relative probabilities at that epoch, but we have to slice and select the labels for the max number of pf-rollouts
+
+        # --- Build both train and eval maps ---
+        train_index_map = build_index_map(f, train_groups, fields, filter_frame, train_window_size)
+        eval_index_map = build_index_map(f, eval_groups, fields, filter_frame, eval_window_size)
+        print(f"Length of train index map: {len(train_index_map)}")
+        print(f"Length of eval index map: {len(eval_index_map)}")
+        
+        return train_index_map, eval_index_map, groups, fields
+
+def create_test_index_map(h5file_path: str,
+                    groups: Optional[list],
+                    fields: Optional[list],
+                    input_seq_len: int,
+                    label_seq_len: int,
+                    stride: int, 
+                    filter_frame: Optional[list] = None,  # filter_frame[0]: min_frame, filter_frame[1]: max_frame
+                    n_test_rollouts: Optional[int] = 1
+                    ) -> list:
+    
+    print("test_h5_file_path:", h5file_path)
+
+    with h5py.File(h5file_path, 'r') as f:
+        all_groups = sorted(list(f.keys()))
+        groups = groups if groups is not None else all_groups 
+
+        # Infer fields from first group
+        first_group = f[groups[0]]
+        available_fields = list(first_group.keys())
+        fields = fields if fields is not None else available_fields
+
+        # --- Test window size ---
+        test_window_size = (input_seq_len + label_seq_len - 1 + n_test_rollouts * label_seq_len) * stride + 1
+
+        test_index_map = build_index_map(f, groups, fields, filter_frame, test_window_size)
+
+        print(f"Length of test index map: {len(test_index_map)}")
+        return test_index_map, groups, fields
+     
 def fetch_dataset(dataset_name: str, 
                   mode: str = "train",  # train, eval, or test
                   **kwargs):
@@ -98,60 +171,69 @@ def fetch_dataset(dataset_name: str,
     sequence_info = kwargs.get("sequence_info", [1, 1, 1])
     
     if mode == "train":
-        extra_train_sequence_info = kwargs.get("extra_train_sequence_info", None)
+        #for pushforward training trick, we need to create a train index map with the extra sequence length
+        n_max_pf_train_rollouts = kwargs.get("max_pf_train_rollouts", 0) #only used for the pf trick
+        n_eval_rollouts = kwargs.get("n_eval_rollouts", 0)
 
-    index_map, groups, fields = create_index_map(
-        h5file_path=h5file_path,
-        groups=kwargs.get("groups"), #all groups to be used for training by default
-        fields=kwargs.get("fields"), #all fields to be used for training by default
-        input_seq_len=sequence_info[0], #input sequence length
-        label_seq_len=sequence_info[1], #label sequence length
-        stride=sequence_info[2], #stride for both input and label sequences
-        filter_frame=kwargs.get("filter_frame") #filter frame
-    )
-    #update the kwargs with the groups and fields
-    kwargs["groups"] = groups
-    kwargs["fields"] = fields
-    
-    if mode == "test":
-        # For test data, use all indices without splitting
+        train_index_map, eval_index_map, groups, fields = create_train_eval_index_map(
+            h5file_path=h5file_path,
+            groups=kwargs.get("groups"),
+            fields=kwargs.get("fields"),
+            input_seq_len=sequence_info[0],
+            label_seq_len=sequence_info[1],
+            stride=sequence_info[2],
+            filter_frame=kwargs.get("filter_frame", None),
+            n_max_pf_train_rollouts=n_max_pf_train_rollouts,
+            n_eval_rollouts=n_eval_rollouts,
+            eval_split_ratio=kwargs.get("eval_split_ratio")
+        )
+        
+        kwargs["groups"] = groups
+        kwargs["fields"] = fields
+
+        # Create datasets with their respective indices
+        train_dataset = LoadedDataset(
+            dataset_name=dataset_name,
+            h5file_path=h5file_path,
+            mode="train",
+            indices=train_index_map,
+            **kwargs
+        )
+        
+        eval_dataset = LoadedDataset(
+            dataset_name=dataset_name,
+            h5file_path=h5file_path,
+            mode="eval",
+            indices=eval_index_map,
+            **kwargs
+        )
+        
+        return train_dataset, eval_dataset
+    #########################################################
+    else: 
+        n_test_rollouts = kwargs.get("n_test_rollouts", 0)
+        
+        test_index_map, groups, fields = create_test_index_map(
+            h5file_path=h5file_path,
+            groups=kwargs.get("groups"),
+            fields=kwargs.get("fields"),
+            input_seq_len=sequence_info[0],
+            label_seq_len=sequence_info[1],
+            stride=sequence_info[2],
+            n_test_rollouts=n_test_rollouts
+        )
+        #update the kwargs with the groups and fields
+        kwargs["groups"] = groups
+        kwargs["fields"] = fields
+
         test_dataset = LoadedDataset(
             dataset_name=dataset_name,
             h5file_path=h5file_path,
             mode="test",
-            indices=index_map,
+            indices=test_index_map,
             **kwargs
         )
         return test_dataset
-    
-    # For train/eval, split the indices
-    np.random.seed(0) 
-    # Shuffle the list directly
-    np.random.shuffle(index_map)
-    
-    # Split indices for train and eval
-    train_size = int(len(index_map) * (1-kwargs.get("eval_split_ratio")))
-    train_indices = index_map[:train_size]
-    eval_indices = index_map[train_size:]
-    
-    # Create datasets with their respective indices
-    train_dataset = LoadedDataset(
-        dataset_name=dataset_name,
-        h5file_path=h5file_path,
-        mode="train",
-        indices=train_indices,
-        **kwargs
-    )
-    
-    eval_dataset = LoadedDataset(
-        dataset_name=dataset_name,
-        h5file_path=h5file_path,
-        mode="eval",
-        indices=eval_indices,
-        **kwargs
-    )
-    
-    return train_dataset, eval_dataset
 
 class BaseDataset(Dataset):
     def __init__(self, 
@@ -176,24 +258,24 @@ class BaseDataset(Dataset):
         self.dataset_name = dataset_name
         self.h5file_path = h5file_path
         self.transform = transform
-        self.index_map = indices
+        self.index_map = indices #NOTE: this is a list of (group_name, start_idx) tuples and depends on the train/eval/test mode
         self.groups = groups
         self.fields = fields
-        
-        print(f"{self.mode} index map size: {len(self.index_map)}")
         
         self.input_seq_len = sequence_info[0] 
         self.label_seq_len = sequence_info[1] 
         self.stride = sequence_info[2]
         
-        self.strategy = strategy    #all2all, many2many, autoregressive
-        
+        self.strategy = strategy    #many2many
+
     def __len__(self):
-        return len(self.index_map)
+        return len(self.index_map) #idx in __getitem__ is generated between 0 and len(self.index_map)-1
+    #train_dataset, eval_dataset, test_dataset are all of type BaseDataset and each have their own len(self.index_map).
 
     def __getitem__(self, idx):
+        
         if self.strategy == "many2many":
-            group_name, start_idx = self.index_map[idx]
+            group_name, start_idx, end_idx = self.index_map[idx]
             with h5py.File(self.h5file_path, 'r') as f:
                 group = f[group_name]
                 input_chunks = []
@@ -204,16 +286,18 @@ class BaseDataset(Dataset):
                     # for example if start_idx is 21 and input_seq_length=6 and stride=2, then input_indices = [21, 23, 25, 27, 29, 31]
                     # label_indices is a list of indices for the label sequence starting with stride
                     # for example if start_idx is 21 and label_seq_length=7 and stride=2, then label_indices = [33, 35, 37, 39, 41, 43, 45]
-                    input_indices = [start_idx + i * self.stride for i in range(self.input_seq_len)]
-                    label_indices = [start_idx + (self.input_seq_len + i) * self.stride for i in range(self.label_seq_len)]
-                    #input_seq has shape [input_seq_len, C_field, X_res, Y_res, Z_res]: C_field=1 for scalar fields like density and pressure, C_field=3 for 3D vector-fields like velocity
-                    input_seq = np.stack([group[field][i] for i in input_indices], axis=0)
-                    #label_seq has shape [label_seq_len, C_field, X_res, Y_res, Z_res]: C_field=1 for scalar fields like density and pressure, C_field=3 for 3D vector-fields like velocity
-                    label_seq = np.stack([group[field][i] for i in label_indices], axis=0)
+                    input_indices = [i for i in range(start_idx, start_idx + (self.input_seq_len * self.stride), self.stride)]
+                    #label_indices = [start_idx + (self.input_seq_len + i) * self.stride for i in range(self.label_seq_len)]
+                    label_indices = [i for i in range(start_idx + (self.input_seq_len * self.stride), end_idx+1, self.stride)]
+
+                    #input_seq_per_field has shape [input_seq_len, C_field, X_res, Y_res, Z_res]: C_field=1 for scalar fields like density and pressure, C_field=3 for 3D vector-fields like velocity
+                    input_seq_per_field = np.stack([group[field][i] for i in input_indices], axis=0)
+                    #label_seq_per_field has shape [label_seq_len, C_field, X_res, Y_res, Z_res]: C_field=1 for scalar fields like density and pressure, C_field=3 for 3D vector-fields like velocity
+                    label_seq_per_field = np.stack([group[field][i] for i in label_indices], axis=0)
 
                     #append the input and label sequences to the respective lists
-                    input_chunks.append(input_seq)
-                    label_chunks.append(label_seq)
+                    input_chunks.append(input_seq_per_field)
+                    label_chunks.append(label_seq_per_field)
 
                 # inputs are the input sequences for all fields, shape = [input_seq_len, C_total, X_res, Y_res, Z_res] where: C_total = sum(C_field) for all fields
                 # labels are the label sequences for all fields, shape = [label_seq_len, C_total, X_res, Y_res, Z_res]
@@ -223,10 +307,9 @@ class BaseDataset(Dataset):
             sample = {
                 "group": group_name, #can be used to condition the model
                 "input_data": torch.from_numpy(inputs).float(),
-                "labels": torch.from_numpy(labels).float()  #NOTE: the key should be named "labels" 
+                "label_including_rollouts": torch.from_numpy(labels).float()
             }
         
-
         else:
             raise NotImplementedError("The specified strategy/mode is not implemented.")       
         
@@ -254,7 +337,7 @@ if __name__ == "__main__":
         dataset_name="KarmanVortexStreet",
         mode="train",
         dataset_directory_path=dataset_directory_path,
-        groups=["Re_100", "Re_300", "Re_400"],
+        groups=["Re_100", "Re_200", "Re_300", "Re_400", "Re_500"],
         fields=["velocity"],
         sequence_info=[8, 4, 1],
         filter_frame=[100, 500],
@@ -268,8 +351,8 @@ if __name__ == "__main__":
     print("\nTesting dataloader...")
     train_loader = torch.utils.data.DataLoader(
         train_dataset, 
-        batch_size=32, 
-        shuffle=True,
+        batch_size=16, 
+        shuffle=False,
         num_workers=0
     )
     
