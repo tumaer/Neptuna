@@ -254,13 +254,20 @@ class MiddleBlockND(nn.Module):
         has_attn (bool): Whether to use attention block. Defaults to False.
         activation (str): Activation function to use. Defaults to "gelu".
         norm (bool): Whether to use normalization. Defaults to False.
+        n_groups (int): Number of groups for normalization. Defaults to 1.
     """
 
-    def __init__(self, n_channels: int, dim: int, has_attn: bool = False, activation: str = "gelu", norm: bool = False):
+    def __init__(self, 
+                 n_channels: int, 
+                 dim: int, 
+                 has_attn: bool = False, 
+                 activation: str = "gelu", 
+                 norm: bool = False, 
+                 n_groups: int = 1):
         super().__init__()
-        self.res1 = ResidualBlockND(dim=dim, in_channels=n_channels, out_channels=n_channels, activation_fn_name=activation, norm=norm)
+        self.res1 = ResidualBlockND(dim=dim, in_channels=n_channels, out_channels=n_channels, activation_fn_name=activation, norm=norm, n_groups=n_groups)
         self.attn = AttentionBlockND(n_channels) if has_attn else nn.Identity()
-        self.res2 = ResidualBlockND(dim=dim, in_channels=n_channels, out_channels=n_channels, activation_fn_name=activation, norm=norm)
+        self.res2 = ResidualBlockND(dim=dim, in_channels=n_channels, out_channels=n_channels, activation_fn_name=activation, norm=norm, n_groups=n_groups)
 
     def forward(self, x: torch.Tensor):
         x = self.res1(x)
