@@ -26,7 +26,7 @@ class ConvNdFCLayer(nn.Module):
         in_channels: int,
         out_channels: int,
         dimension: int, 
-        activation_fn: Union[nn.Module, Callable[[Tensor], Tensor], None] = None, #why could this be Tensor???
+        activation_fn: Union[nn.Module, Callable[[Tensor], Tensor], None] = None, 
         activation_par: Union[nn.Parameter, None] = None,
         weight_norm: bool = False,
     ) -> None:
