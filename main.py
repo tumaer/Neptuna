@@ -58,8 +58,8 @@ def main(config: DictConfig):
         logging_strategy="steps", # (set to epochs later)The logging strategy to adopt during training. (either steps or epochs)
         logging_steps=1, #Number of update ste ps between two logs if `logging_strategy="steps" 
         logging_nan_inf_filter=False, #Whether to filter `nan` and `inf` losses for logging.
-        save_strategy="best", #options: no, epoch, steps, best. TODO: Change it to epoch when validation dataset is present. When 'load_best_model_at_end' set to `True`, the parameters `save_strategy` needs to be the same as `evaluation_strategy`
-        #save_steps=1, #Number of updates steps before two checkpoint saves if `save_strategy="steps"`
+        save_strategy="steps", #options: no, epoch, steps, best. TODO: Change it to epoch when validation dataset is present. When 'load_best_model_at_end' set to `True`, the parameters `save_strategy` needs to be the same as `evaluation_strategy`
+        save_steps=5, #Number of updates steps before two checkpoint saves if `save_strategy="steps"`#NOTE: Save steps must be the same/multiple of eval_steps. 
         save_total_limit=2, #If a value is passed, will limit the total amount of checkpoints. Deletes the older checkpoints in`output_dir`. #NOTE: always saves the checkpoint after performing evaluation depending on the self.state.best_global_step in _save_checkpoints in Trainer class.
         #save_only_model=False, #Whether to only save the model, or also the optimizer, scheduler & rng state.
         seed=SEED, #model_seed
@@ -129,4 +129,6 @@ if __name__=="__main__":
 ##TODO:
 # 3 normalize and renormalize
 # 4 Inference code
+# 5 Plot only after a certain number of epochs/steps
+# 6 Add the model name to the checkpoint also the date and time
 # also let the user specify the list of groups for validation manually in the config file
