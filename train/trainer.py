@@ -447,7 +447,7 @@ class Trainer(Trainer_):
             return (loss, None, None)
 
         logits = nested_detach(logits)
-        if len(logits) == 1: #not relevant as logits is a tensor
+        if len(logits) == 1 and isinstance(logits, tuple): 
             logits = logits[0] 
 
         return (loss, logits, labels)
