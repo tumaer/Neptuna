@@ -75,7 +75,7 @@ class ResNet(nn.Module):
         num_groups : int
             Number of groups for GroupNorm, by default 1 (equivalent with LayerNorm)
     """
-
+    main_input_name = "input_data"
     def __init__(
         self,
         in_channels: int,
@@ -131,7 +131,7 @@ class ResNet(nn.Module):
     
     def forward(self, 
                 input_data: Tensor,
-                labels: Tensor) -> Tensor: #NOTE: Vimp: forward SHOULD always have the arguments EXACTLY named as "input_data" and "labels", 
+                ) -> Tensor: #NOTE: Vimp: forward SHOULD always have the arguments EXACTLY named as "input_data" and "labels", 
                                            #else the data collator will remove them. 
         #reshape input into [batch, in_channel, grid_x, grid_y, ...]
         #NOTE: input and output fields need not be necessarily the same.
@@ -140,11 +140,7 @@ class ResNet(nn.Module):
         
         y = self.resnet(input_data)
         
-        # Reshape the prediction to match the labels shape
-        batch, output_seq, output_fields, *spatial = labels.shape
-        y = y.reshape(batch, output_seq, output_fields, *spatial)
-
-        return y,labels
+        return y
                                                    
 class ResNet1D(nn.Module):
     """    Args:

@@ -35,7 +35,9 @@ class UNet(nn.Module):
     - Configurable normalization and activation functions
     - Flexible input/output sequence handling
     """
-
+    #TODO: Do this for all models
+    main_input_name = "input_data"
+    
     def __init__(
         self,
         in_channels: int,
@@ -61,8 +63,8 @@ class UNet(nn.Module):
         # Number of resolutions (depth of unet)
         n_resolutions = len(ch_mults)
 
-        insize = in_channels*sequence_info[0][0]
-        outsize = out_channels*sequence_info[0][1]
+        insize = in_channels*sequence_info[0]
+        outsize = out_channels*sequence_info[1]
         
         self.unet = self.build_UNet()(insize, 
                                    outsize, 
@@ -85,22 +87,18 @@ class UNet(nn.Module):
         elif self.dimension == 3:
             return UNet3D
         else:
-            raise NotImplementedError(f"Upsampler not implemented for dimension {self.dimension}")
+            raise NotImplementedError(f"UNet not implemented for dimension {self.dimension}")
 
     
     ### Main Forward function ###
-    def forward(self, input_data: Tensor,
-                labels: Tensor) -> Tensor:
+    def forward(self, input_data: Tensor) -> Tensor:
         
         batch, input_seq, input_fields, *spatial = input_data.shape
         x=input_data.reshape(batch, input_seq * input_fields, *spatial)
 
         x = self.unet(x)
 
-        batch, output_seq, output_fields, *spatial = labels.shape
-        x = x.reshape(
-            batch, output_seq, output_fields, *spatial)
-        return x, labels
+        return x
 
 #Unet based on the dimension
 class UNet1D(nn.Module):
