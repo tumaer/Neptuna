@@ -1,0 +1,4 @@
+model_name: DeepONet_FFN
+width: 128
+branch_depth: 4
+trunk_depth: 4

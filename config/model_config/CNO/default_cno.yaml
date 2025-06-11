@@ -1,0 +1,6 @@
+model_name: CNO
+N_layers: 2   #number of channels in the latent space after lifting.
+N_res: 4
+N_res_neck: 4
+channel_multiplier: 8
+use_bn: True
