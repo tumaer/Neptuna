@@ -12,7 +12,7 @@ from metrics.default_metrics import l1_error, l2_error
 import time
 import os
 import h5py
-
+from datetime import datetime
 SEED=0
 torch.manual_seed(SEED)
 np.random.seed(SEED)
@@ -66,7 +66,8 @@ def main(config: DictConfig):
                                 )
     
     training_arguments = TrainingArguments(
-        output_dir=f"./checkpoints/{config['data_config']['dataset_name']}_{config['data_config']['dimension']}D",
+        #add model name and the date and time to the output directory
+        output_dir=f"./checkpoints/{config['data_config']['dataset_name']}_{config['data_config']['dimension']}D_{config['model_config']['model_name']}_{datetime.now().strftime('%d%m%Y_%H%M%S')}",
         #fsdp_config=config.get("fsdp_config", None),
         overwrite_output_dir=True,  #! OVERWRITE THIS DIRECTORY IN CASE, also for resuming training
         eval_strategy="steps", #TODO: change it to epochs laterThe evaluation strategy to adopt during training (also change the save_strategy). Possible values are: no, steps, epoch
@@ -132,7 +133,7 @@ def main(config: DictConfig):
     trainer = Trainer(
         model_config=config["model_config"],
         data_config=config["data_config"],
-        pushforward_config=config["train_config"]["pushforward"],
+        train_config=config["train_config"],
         #everything below goes to kwargs which go directly to the base trainer class of HF
         model=model,
         args=training_arguments,
@@ -162,6 +163,5 @@ if __name__=="__main__":
 ##TODO:
 # wandb integration
 # 4 Inference code
-# 5 Plot only after a certain number of epochs/steps
-# 6 Add the model name to the checkpoint also the date and time
+# most of the training arguments to be passed from the config file
 # also let the user specify the list of groups for validation manually in the config file
