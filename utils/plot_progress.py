@@ -12,7 +12,6 @@ def _plot_data(ax, data, ndim, ch_names=None):
         x = np.arange(data.shape[-1])
         for c in range(C):
             ax.plot(x, data[c], label=ch_names[c])
-        if C > 1:
             ax.legend(fontsize=8, loc="upper right")
         # Show ticks for 1D plots
         ax.set_xticks(x[::len(x)//5])  # Show 5 ticks
@@ -26,6 +25,7 @@ def _plot_data(ax, data, ndim, ch_names=None):
         
         if C == 1:
             im = ax.imshow(data[0], cmap="coolwarm", aspect=aspect)
+            ax.set_title(ch_names[0], fontsize=8)
             cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.1, orientation='horizontal', location='bottom')
             cbar.ax.tick_params(labelsize=4)  # Reduce font size by 50%
             cbar.formatter.set_scientific(True)
@@ -62,11 +62,13 @@ def _plot_data(ax, data, ndim, ch_names=None):
         ax.axis('off')
 
 
-def plot_examples(input_array, prediction_array, target_array, channel_names, checkpoint_step, epoch, ndim=1, num_examples=5, stride=1, save_dir="plots"):
+def plot_examples(input_array, prediction_array, target_array, channel_names, checkpoint_step, epoch, extra_info, ndim=1, num_examples=5, stride=1, save_dir="plots"):
     os.makedirs(save_dir, exist_ok=True)
 
     N, T_in, C, *spatial_shape = input_array.shape
     T_pred = prediction_array.shape[1]
+
+    extra_info = extra_info.split('/')[-1]
 
     np.random.seed(42)
     example_indices = np.random.choice(N, size=num_examples, replace=False)
@@ -86,10 +88,10 @@ def plot_examples(input_array, prediction_array, target_array, channel_names, ch
         fig = plt.figure(figsize=(ncols * 5, (nrows + 2) * 3.5))
         
         # Add main title
-        fig.suptitle(f"Checkpoint Step: {checkpoint_step}, Epoch: {epoch}, Example Index: {idx}", fontsize=18, y=0.94, weight='bold')
+        fig.suptitle(f"{extra_info}, Checkpoint Step: {checkpoint_step}, Epoch: {epoch}, Example Index: {idx}", fontsize=16, y=0.94, weight='bold')
         
         # Add dimensions info as subtitle
-        dims_text = f"Additional Info: Total number of validation examples={N}, Problem dimension={ndim}, Spatial_res={spatial_shape}, # Input_frames={T_in}, # Input_channels={C}, # Prediction_frames={T_pred}, # Prediction_channels={pred.shape[1]}"
+        dims_text = f"Additional Info: Total number of validation examples={N}, Spatial_res={spatial_shape}, # Input_frames={T_in}, # Input_channels={C}, # Prediction_frames={T_pred}, # Prediction_channels={pred.shape[1]}"
         fig.text(0.5, 0.93, dims_text, ha='center', va='center', fontsize=12)
 
         # Create gridspec with specific height ratios and spacing
@@ -102,7 +104,7 @@ def plot_examples(input_array, prediction_array, target_array, channel_names, ch
                 axes[i, j] = fig.add_subplot(gs[i, j])
 
         # Add column titles at the top
-        column_titles = ["Input", "Prediction", "Target", "Abs Error", "Rel Error"]
+        column_titles = ["Input", "Prediction", "Target", "Abs Error = |Pred - Target|", "Rel Error = |Pred - Target|/|Target|"]
         for col in range(ncols):
             axes[0, col].axis('off')
             axes[0, col].text(0.5, 0.5, column_titles[col], ha='center', va='center', fontsize=14, weight='bold')
