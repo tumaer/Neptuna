@@ -19,6 +19,7 @@ import numpy as np
 import torch
 import math
 import random
+from utils.feature_utils import normalize_data
 
 
 def build_index_map(h5py_file, group_list, filter_frame, window_size):
@@ -308,12 +309,16 @@ class BaseDataset(Dataset):
                     input_seq_per_channel = np.stack([group[dataset_name][i][component_idx:component_idx + 1] for i in input_indices], axis=0)
                     label_seq_per_channel = np.stack([group[dataset_name][i][component_idx:component_idx + 1] for i in label_indices], axis=0)
 
-                if self.data_normalization_strategy == "z_normalization":
-                    input_seq_per_channel = (input_seq_per_channel - self.data_normalization_stats[channel]["mean"]) / self.data_normalization_stats[channel]["std"]
-                    label_seq_per_channel = (label_seq_per_channel - self.data_normalization_stats[channel]["mean"]) / self.data_normalization_stats[channel]["std"]
-                elif self.data_normalization_strategy == "min_max_normalization":
-                    input_seq_per_channel = (input_seq_per_channel - self.data_normalization_stats[channel]["min"]) / (self.data_normalization_stats[channel]["max"] - self.data_normalization_stats[channel]["min"])
-                    label_seq_per_channel = (label_seq_per_channel - self.data_normalization_stats[channel]["min"]) / (self.data_normalization_stats[channel]["max"] - self.data_normalization_stats[channel]["min"])
+                input_seq_per_channel = normalize_data(
+                    input_seq_per_channel,
+                    self.data_normalization_stats[channel],
+                    self.data_normalization_strategy,
+                )
+                label_seq_per_channel = normalize_data(
+                    label_seq_per_channel,
+                    self.data_normalization_stats[channel],
+                    self.data_normalization_strategy,
+                )
 
                 #append the input and label sequences to the respective lists
                 input_chunks.append(input_seq_per_channel)

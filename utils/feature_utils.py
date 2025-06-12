@@ -84,7 +84,7 @@ def get_grid_resolution(dataset_directory_path: str) -> List[int]:
         grid_resolution = list(f[first_group][first_field].shape[2:])
     return grid_resolution
 
-def _renormalize(arr: np.ndarray, channel_names: List[str], norm_stats: Dict[str, Dict[str, float]], norm_strategy: str) -> np.ndarray:
+def re_normalize_data(arr: np.ndarray, channel_names: List[str], norm_stats: Dict[str, Dict[str, float]], norm_strategy: str) -> np.ndarray:
     """Reverts normalization applied during loading.
     Expects shape [N, T, C, *spatial_dims]. Returns a copy.
     """
@@ -100,5 +100,35 @@ def _renormalize(arr: np.ndarray, channel_names: List[str], norm_stats: Dict[str
             arr_renormed[:, :, c_idx] = arr_renormed[:, :, c_idx] * stats["std"] + stats["mean"]
         elif norm_strategy == "min_max_normalization":
             arr_renormed[:, :, c_idx] = arr_renormed[:, :, c_idx] * (stats["max"] - stats["min"]) + stats["min"]
+        else:
+            raise ValueError(f"Unknown normalization strategy: {norm_strategy}")
 
     return arr_renormed
+
+# -----------------------------------------------------------------------------
+# Normalization helper used during data loading
+# -----------------------------------------------------------------------------
+
+def normalize_data(arr: np.ndarray, stats: Dict[str, float], strategy: str) -> np.ndarray:
+    """Apply per-channel normalization to a NumPy array.
+
+    Parameters
+    ----------
+    arr : np.ndarray
+        The data to normalize (any shape).
+    stats : Dict[str, float]
+        Dictionary containing either {"mean", "std"} or {"min", "max"}.
+    strategy : str
+        Either "z_normalization" or "min_max_normalization" (no-op otherwise).
+
+    Returns
+    -------
+    np.ndarray
+        Normalized array (new copy).
+    """
+    if strategy == "z_normalization":
+        return (arr - stats["mean"]) / stats["std"]
+    elif strategy == "min_max_normalization":
+        return (arr - stats["min"]) / (stats["max"] - stats["min"])
+    else:
+        raise ValueError(f"Unknown normalization strategy: {strategy}")

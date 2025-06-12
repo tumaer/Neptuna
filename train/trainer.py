@@ -5,7 +5,7 @@ from transformers.trainer import *
 from transformers import Trainer as Trainer_
 from utils.plot_progress import plot_examples
 import numpy as np
-from utils.feature_utils import _renormalize
+from utils.feature_utils import re_normalize_data
 class Trainer(Trainer_):
     def __init__(self, model_config, data_config, train_config, **kwargs):
         super().__init__(**kwargs)
@@ -864,9 +864,9 @@ class Trainer(Trainer_):
                 channel_names = getattr(self.eval_dataset, "channels", None)
 
                 # Renormalize:
-                inputs   = _renormalize(inputs, channel_names, norm_stats, norm_strategy)
-                labels   = _renormalize(labels, channel_names, norm_stats, norm_strategy)
-                predictions = _renormalize(predictions, channel_names, norm_stats, norm_strategy) 
+                inputs   = re_normalize_data(inputs, channel_names, norm_stats, norm_strategy)
+                labels   = re_normalize_data(labels, channel_names, norm_stats, norm_strategy)
+                predictions = re_normalize_data(predictions, channel_names, norm_stats, norm_strategy) 
 
                 plot_examples(inputs, 
                             predictions, 
