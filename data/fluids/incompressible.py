@@ -8,9 +8,9 @@ class KarmanVortexStreetDataset(BaseDataset):
                  indices: list, 
                  channels: list,
                  groups: list,
-                 strategy: str = 'many2many', 
                  sequence_info: list = [[1, 1, 1, 1]], 
-                 transform = None, **kwargs):    
+                 data_normalization_stats = None,
+                 data_normalization_strategy = 'z_normalization', **kwargs):    
         super().__init__(
             dataset_name=dataset_name,
             h5file_path=h5file_path,
@@ -18,9 +18,9 @@ class KarmanVortexStreetDataset(BaseDataset):
             indices=indices,
             groups=groups,
             channels=channels,
-            strategy=strategy,
             sequence_info=sequence_info,
-            transform=transform
+            data_normalization_stats=data_normalization_stats,
+            data_normalization_strategy=data_normalization_strategy
         )
 
 #TODO: Is this the correct place to add this KS class?
@@ -32,9 +32,10 @@ class KuramotoSivashinskyDataset(BaseDataset):
                  indices: list, 
                  groups: list,
                  channels: list,
-                 strategy: str = 'many2many', 
                  sequence_info: list = [[1, 1, 1, 1]], 
-                 transform = None, **kwargs):    
+                 data_normalization_stats = None,
+                 data_normalization_strategy = 'z_normalization',  **kwargs):    
+        
         super().__init__(
             dataset_name=dataset_name,
             h5file_path=h5file_path,
@@ -42,7 +43,7 @@ class KuramotoSivashinskyDataset(BaseDataset):
             indices=indices,
             groups=groups,
             channels=channels,
-            strategy=strategy,
             sequence_info=sequence_info,
-            transform=transform
+            data_normalization_stats= data_normalization_stats,
+            data_normalization_strategy= data_normalization_strategy
         )
