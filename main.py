@@ -7,6 +7,7 @@ import numpy as np
 from utils.load_data import fetch_dataset
 from utils.load_model import fetch_model
 from utils.feature_utils import get_grid_resolution
+from utils.compute_stats import compute_statistics
 from metrics.default_metrics import l1_error, l2_error
 import time
 import os
@@ -27,6 +28,15 @@ def main(config: DictConfig):
     if config["data_config"]["grid_resolution"] is None:
         config["data_config"]["grid_resolution"] = get_grid_resolution(config["data_config"]["dataset_directory_path"])
 
+    # Get statistics directly from the HDF5 file
+    if config["data_config"]["statistics"] is None:
+        stats, _, _ = compute_statistics(h5_paths=[config["data_config"]["dataset_directory_path"]+"/train.h5"])
+        config["data_config"]["statistics"] = stats
+
+    print(f"Statistics of the {config['data_config']['dimension']}D_{config['data_config']['dataset_name']} dataset:")
+    for key, value in config["data_config"]["statistics"].items():
+        print(f"{key}: {value}")
+
     train_dataset, eval_dataset = fetch_dataset(dataset_name=config["data_config"]["dataset_name"],
                                 dataset_directory_path=config["data_config"]["dataset_directory_path"],
                                 sequence_info=config["data_config"]["sequence_info"],
@@ -34,13 +44,11 @@ def main(config: DictConfig):
                                 n_eval_rollouts=config["train_config"]["n_eval_rollouts"],
                                 filter_frame=config["data_config"]["filter_frame"],
                                 groups=config["data_config"]["filter_groups"],
-                                fields=config["data_config"]["filter_fields"],
+                                channels=config["data_config"]["filter_channels"],
                                 eval_split_ratio=config["train_config"]["eval_split_ratio"],
                                 transform=None, #TODO: add transform
                                 )
     
-
-
     training_arguments = TrainingArguments(
         output_dir=f"./checkpoints/{config['data_config']['dataset_name']}_{config['data_config']['dimension']}D",
         #fsdp_config=config.get("fsdp_config", None),
