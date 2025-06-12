@@ -6,5 +6,6 @@ out_channels: 1
 sequence_info: [4, 3, 2]  # [input_seq_len, label_seq_len, stride]
 filter_frame: [10, 50]  # [min_frame, max_frame]
 filter_groups: null
-filter_fields: null 
+filter_channels: null 
 grid_resolution: null #if not provided, will be inferred automatically from the dataset
+statistics: null #if not provided, will be computed automatically from the dataset

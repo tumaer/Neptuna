@@ -52,9 +52,9 @@ class ResNet(nn.Module):
 
     Args:
         in_channels : int
-            Number of input fields
+            Number of input channels
         out_channels : int
-            Number of output fields
+            Number of output channels
         block (str): 
             BasicBlock, Dilblock only for now
         num_blocks (List[int]): 
@@ -131,12 +131,9 @@ class ResNet(nn.Module):
     
     def forward(self, 
                 input_data: Tensor,
-                ) -> Tensor: #NOTE: Vimp: forward SHOULD always have the arguments EXACTLY named as "input_data" and "labels", 
-                                           #else the data collator will remove them. 
-        #reshape input into [batch, in_channel, grid_x, grid_y, ...]
-        #NOTE: input and output fields need not be necessarily the same.
-        batch, input_seq, input_fields, *spatial = input_data.shape
-        input_data=input_data.reshape(batch, input_seq * input_fields, *spatial)
+                ) -> Tensor: 
+        batch, input_seq, input_channels, *spatial = input_data.shape
+        input_data=input_data.reshape(batch, input_seq * input_channels, *spatial)
         
         y = self.resnet(input_data)
         
@@ -145,9 +142,9 @@ class ResNet(nn.Module):
 class ResNet1D(nn.Module):
     """    Args:
         in_channels : int
-            Number of input fields
+            Number of input channels
         out_channels : int
-            Number of output fields
+            Number of output channels
         block : str
             BasicBlock,Dilblock only for now
         num_blocks (List[int]): 
@@ -270,9 +267,9 @@ class ResNet1D(nn.Module):
 class ResNet2D(nn.Module):
     """    Args:
         in_channels : int
-            Number of input fields
+            Number of input channels
         out_channels : int
-            Number of output fields
+            Number of output channels
         block : str
             BasicBlock,Dilblock only for now
         num_blocks (List[int]): 
@@ -396,9 +393,9 @@ class ResNet2D(nn.Module):
 class ResNet3D(nn.Module):
     """    Args:
         in_channels : int
-            Number of input fields
+            Number of input channels
         out_channels : int
-            Number of output fields
+            Number of output channels
         block : str
             BasicBlock,Dilblock only for now
         num_blocks (List[int]): 

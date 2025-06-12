@@ -9,7 +9,7 @@
 """
 Each dataset inside the .h5 file should have the following format:
 1. Group name: Ex: ['Re_100', 'Re_200', 'Re_300', 'Re_400', 'Re_500']
-2. Inside each group: Fields: Ex: ['velocity', 'pressure', 'density', 'temperature']
+2. Inside each group: Channels: Ex: ['velocity', 'pressure', 'density', 'temperature']
 """
 import h5py
 from torch.utils.data import Dataset
@@ -39,7 +39,7 @@ def build_index_map(h5py_file, group_list, field_list, filter_frame, window_size
 
 def create_train_eval_index_map(h5file_path: str,
                     groups: Optional[list],
-                    fields: Optional[list],
+                    channels: Optional[list],
                     input_seq_len: int,
                     label_seq_len: int,
                     stride: int, 
@@ -57,10 +57,10 @@ def create_train_eval_index_map(h5file_path: str,
         all_groups = sorted(list(f.keys()))
         groups = groups if groups is not None else all_groups 
 
-        # Infer fields from first group
+        # Infer channels from first group
         first_group = f[groups[0]]
-        available_fields = list(first_group.keys())
-        fields = fields if fields is not None else available_fields
+        available_channels = list(first_group.keys())
+        channels = channels if channels is not None else available_channels
 
         total_groups = len(groups)
         n_eval_groups = int(round(total_groups * eval_split_ratio))
@@ -111,16 +111,16 @@ def create_train_eval_index_map(h5file_path: str,
         # pushforward only kicks in according to the current epoch and the relative probabilities at that epoch, but we have to slice and select the labels for the max number of pf-rollouts
 
         # --- Build both train and eval maps ---
-        train_index_map = build_index_map(f, train_groups, fields, filter_frame, train_window_size)
-        eval_index_map = build_index_map(f, eval_groups, fields, filter_frame, eval_window_size)
+        train_index_map = build_index_map(f, train_groups, channels, filter_frame, train_window_size)
+        eval_index_map = build_index_map(f, eval_groups, channels, filter_frame, eval_window_size)
         print(f"Length of train index map: {len(train_index_map)}")
         print(f"Length of eval index map: {len(eval_index_map)}")
         
-        return train_index_map, eval_index_map, groups, fields
+        return train_index_map, eval_index_map, groups, channels
 
 def create_test_index_map(h5file_path: str,
                     groups: Optional[list],
-                    fields: Optional[list],
+                    channels: Optional[list],
                     input_seq_len: int,
                     label_seq_len: int,
                     stride: int, 
@@ -134,18 +134,18 @@ def create_test_index_map(h5file_path: str,
         all_groups = sorted(list(f.keys()))
         groups = groups if groups is not None else all_groups 
 
-        # Infer fields from first group
+        # Infer channels from first group
         first_group = f[groups[0]]
-        available_fields = list(first_group.keys())
-        fields = fields if fields is not None else available_fields
+        available_channels = list(first_group.keys())
+        channels = channels if channels is not None else available_channels
 
         # --- Test window size ---
         test_window_size = (input_seq_len + label_seq_len - 1 + n_test_rollouts * label_seq_len) * stride + 1
 
-        test_index_map = build_index_map(f, groups, fields, filter_frame, test_window_size)
+        test_index_map = build_index_map(f, groups, channels, filter_frame, test_window_size)
 
         print(f"Length of test index map: {len(test_index_map)}")
-        return test_index_map, groups, fields
+        return test_index_map, groups, channels
      
 def fetch_dataset(dataset_name: str, 
                   mode: str = "train",  # train, eval, or test
@@ -175,10 +175,10 @@ def fetch_dataset(dataset_name: str,
         n_max_pf_train_rollouts = kwargs.get("max_pf_train_rollouts", 0) #only used for the pf trick
         n_eval_rollouts = kwargs.get("n_eval_rollouts", 0)
 
-        train_index_map, eval_index_map, groups, fields = create_train_eval_index_map(
+        train_index_map, eval_index_map, groups, channels = create_train_eval_index_map(
             h5file_path=h5file_path,
             groups=kwargs.get("groups"),
-            fields=kwargs.get("fields"),
+            channels=kwargs.get("channels"),
             input_seq_len=sequence_info[0],
             label_seq_len=sequence_info[1],
             stride=sequence_info[2],
@@ -189,7 +189,7 @@ def fetch_dataset(dataset_name: str,
         )
         
         kwargs["groups"] = groups
-        kwargs["fields"] = fields
+        kwargs["channels"] = channels
 
         # Create datasets with their respective indices
         train_dataset = LoadedDataset(
@@ -213,18 +213,18 @@ def fetch_dataset(dataset_name: str,
     else: 
         n_test_rollouts = kwargs.get("n_test_rollouts", 0)
         
-        test_index_map, groups, fields = create_test_index_map(
+        test_index_map, groups, channels = create_test_index_map(
             h5file_path=h5file_path,
             groups=kwargs.get("groups"),
-            fields=kwargs.get("fields"),
+            channels=kwargs.get("channels"),
             input_seq_len=sequence_info[0],
             label_seq_len=sequence_info[1],
             stride=sequence_info[2],
             n_test_rollouts=n_test_rollouts
         )
-        #update the kwargs with the groups and fields
+        #update the kwargs with the groups and channels
         kwargs["groups"] = groups
-        kwargs["fields"] = fields
+        kwargs["channels"] = channels
 
         test_dataset = LoadedDataset(
             dataset_name=dataset_name,
@@ -242,7 +242,7 @@ class BaseDataset(Dataset):
                  mode: str, #train, test, eval
                  indices: List[Tuple[str, int]],  # List of (group_name, start_idx) tuples
                  groups: List,
-                 fields: List, #specific fields inside dataset to be used for training
+                 channels: List, #specific channels inside dataset to be used for training
                  strategy: str = 'many2many', #TODO: all2all
                  sequence_info: Optional[list] = [1, 1, 1], #sequence_info[0]: input_seq_len, sequence_info[1]: label_seq_len, 
                                                            #sequence_info[2]: stride
@@ -252,7 +252,7 @@ class BaseDataset(Dataset):
         
         assert mode in ["train", "eval", "test"]
         assert indices is not None, "indices must be provided"
-        assert fields is not None and len(fields) > 0, "fields must be provided and non-empty"
+        assert channels is not None and len(channels) > 0, "channels must be provided and non-empty"
         
         self.mode = mode
         self.dataset_name = dataset_name
@@ -260,7 +260,7 @@ class BaseDataset(Dataset):
         self.transform = transform
         self.index_map = indices #NOTE: this is a list of (group_name, start_idx) tuples and depends on the train/eval/test mode
         self.groups = groups
-        self.fields = fields
+        self.channels = channels
         
         self.input_seq_len = sequence_info[0] 
         self.label_seq_len = sequence_info[1] 
@@ -281,7 +281,7 @@ class BaseDataset(Dataset):
                 input_chunks = []
                 label_chunks = []
 
-                for field in self.fields:
+                for channel in self.channels:
                     # input_indices is a list of indices for the input sequence starting from the left
                     # for example if start_idx is 21 and input_seq_length=6 and stride=2, then input_indices = [21, 23, 25, 27, 29, 31]
                     # label_indices is a list of indices for the label sequence starting with stride
@@ -290,17 +290,17 @@ class BaseDataset(Dataset):
                     #label_indices = [start_idx + (self.input_seq_len + i) * self.stride for i in range(self.label_seq_len)]
                     label_indices = [i for i in range(start_idx + (self.input_seq_len * self.stride), end_idx+1, self.stride)]
 
-                    #input_seq_per_field has shape [input_seq_len, C_field, X_res, Y_res, Z_res]: C_field=1 for scalar fields like density and pressure, C_field=3 for 3D vector-fields like velocity
-                    input_seq_per_field = np.stack([group[field][i] for i in input_indices], axis=0)
-                    #label_seq_per_field has shape [label_seq_len, C_field, X_res, Y_res, Z_res]: C_field=1 for scalar fields like density and pressure, C_field=3 for 3D vector-fields like velocity
-                    label_seq_per_field = np.stack([group[field][i] for i in label_indices], axis=0)
+                    #input_seq_per_channel has shape [input_seq_len, C_channel, X_res, Y_res, Z_res]: C_channel=1 for scalar channels like density and pressure, C_channel=3 for 3D vector-channels like velocity
+                    input_seq_per_channel = np.stack([group[channel][i] for i in input_indices], axis=0)
+                    #label_seq_per_channel has shape [label_seq_len, C_channel, X_res, Y_res, Z_res]: C_channel=1 for scalar channels like density and pressure, C_channel=3 for 3D vector-channels like velocity
+                    label_seq_per_channel = np.stack([group[channel][i] for i in label_indices], axis=0)
 
                     #append the input and label sequences to the respective lists
-                    input_chunks.append(input_seq_per_field)
-                    label_chunks.append(label_seq_per_field)
+                    input_chunks.append(input_seq_per_channel)
+                    label_chunks.append(label_seq_per_channel)
 
-                # inputs are the input sequences for all fields, shape = [input_seq_len, C_total, X_res, Y_res, Z_res] where: C_total = sum(C_field) for all fields
-                # labels are the label sequences for all fields, shape = [label_seq_len, C_total, X_res, Y_res, Z_res]
+                # inputs are the input sequences for all channels, shape = [input_seq_len, C_total, X_res, Y_res, Z_res] where: C_total = sum(C_channel) for all channels
+                # labels are the label sequences for all channels, shape = [label_seq_len, C_total, X_res, Y_res, Z_res]
                 inputs = np.concatenate(input_chunks, axis=1)
                 labels = np.concatenate(label_chunks, axis=1)
 
@@ -338,7 +338,7 @@ if __name__ == "__main__":
         mode="train",
         dataset_directory_path=dataset_directory_path,
         groups=["Re_100", "Re_200", "Re_300", "Re_400", "Re_500"],
-        fields=["velocity"],
+        channels=["velocity"],
         sequence_info=[8, 4, 1],
         filter_frame=[100, 500],
         eval_split_ratio=0.2

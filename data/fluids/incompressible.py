@@ -6,7 +6,7 @@ class KarmanVortexStreetDataset(BaseDataset):
                  h5file_path: str, 
                  mode: str, 
                  indices: list, 
-                 fields: list,
+                 channels: list,
                  groups: list,
                  strategy: str = 'many2many', 
                  sequence_info: list = [[1, 1, 1, 1]], 
@@ -17,7 +17,7 @@ class KarmanVortexStreetDataset(BaseDataset):
             mode=mode,
             indices=indices,
             groups=groups,
-            fields=fields,
+            channels=channels,
             strategy=strategy,
             sequence_info=sequence_info,
             transform=transform
@@ -31,7 +31,7 @@ class KuramotoSivashinskyDataset(BaseDataset):
                  mode: str, 
                  indices: list, 
                  groups: list,
-                 fields: list,
+                 channels: list,
                  strategy: str = 'many2many', 
                  sequence_info: list = [[1, 1, 1, 1]], 
                  transform = None, **kwargs):    
@@ -41,7 +41,7 @@ class KuramotoSivashinskyDataset(BaseDataset):
             mode=mode,
             indices=indices,
             groups=groups,
-            fields=fields,
+            channels=channels,
             strategy=strategy,
             sequence_info=sequence_info,
             transform=transform
