@@ -1,6 +1,8 @@
 from typing import List, Tuple, Union
 import torch
 from torch import Tensor
+import h5py
+import os
 
 def oned_meshgrid(shape: List[int], device: torch.device) -> Tensor:
     """Creates 1D meshgrid feature
@@ -69,3 +71,13 @@ def threed_meshgrid(shape: List[int], device: torch.device) -> Tensor:
     grid_y = grid_y.unsqueeze(0).unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
     grid_z = grid_z.unsqueeze(0).unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
     return torch.cat((grid_x, grid_y, grid_z), dim=1)
+
+def get_grid_resolution(dataset_directory_path: str) -> List[int]:
+    """Get the grid resolution from the dataset directory path
+    """
+    train_eval_h5file_path = os.path.abspath(dataset_directory_path + "/train.h5")
+    with h5py.File(train_eval_h5file_path, 'r') as f:
+        first_group = list(f.keys())[0]
+        first_field = list(f[first_group].keys())[0]
+        grid_resolution = list(f[first_group][first_field].shape[2:])
+    return grid_resolution

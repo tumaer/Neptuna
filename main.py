@@ -6,8 +6,11 @@ from transformers import TrainingArguments
 import numpy as np
 from utils.load_data import fetch_dataset
 from utils.load_model import fetch_model
+from utils.feature_utils import get_grid_resolution
 from metrics.default_metrics import l1_error, l2_error
 import time
+import os
+import h5py
 
 SEED=0
 torch.manual_seed(SEED)
@@ -20,6 +23,10 @@ def main(config: DictConfig):
     print(OmegaConf.to_yaml(config))
     print("#" * 79)
 
+    # Get grid resolution directly from the HDF5 file
+    if config["data_config"]["grid_resolution"] is None:
+        config["data_config"]["grid_resolution"] = get_grid_resolution(config["data_config"]["dataset_directory_path"])
+
     train_dataset, eval_dataset = fetch_dataset(dataset_name=config["data_config"]["dataset_name"],
                                 dataset_directory_path=config["data_config"]["dataset_directory_path"],
                                 sequence_info=config["data_config"]["sequence_info"],
@@ -31,6 +38,8 @@ def main(config: DictConfig):
                                 eval_split_ratio=config["train_config"]["eval_split_ratio"],
                                 transform=None, #TODO: add transform
                                 )
+    
+
 
     training_arguments = TrainingArguments(
         output_dir=f"./checkpoints/{config['data_config']['dataset_name']}_{config['data_config']['dimension']}D",
