@@ -14,7 +14,7 @@ __all__ = [
 
 
 class _StatsAggregator:
-    """Utility container to accumulate stats for a single field across groups/files."""
+    """Utility container to accumulate stats for a single channel across groups/files."""
 
     def __init__(self):
         self.means: List[float] = []
@@ -45,14 +45,14 @@ def _combined_std(std_devs: List[float]) -> float:
 
 
 def _discover_metadata(first_h5_path: str) -> Tuple[List[str], int]:
-    """Extract expanded field names and spatial dimension from the first group
+    """Extract expanded channel names and spatial dimension from the first group
     of the first H5 file provided."""
 
     with h5py.File(first_h5_path, "r") as f:
         first_group = list(f.keys())[0]
         grp = f[first_group]
 
-        field_names: List[str] = []
+        channel_names: List[str] = []
         problem_dimension: int | None = None
 
         for dset_name in grp:
@@ -61,21 +61,21 @@ def _discover_metadata(first_h5_path: str) -> Tuple[List[str], int]:
 
             # expanded channel names
             if channel_dim == 1:
-                field_names.append(dset_name)
+                channel_names.append(dset_name)
             else:
                 for ch in range(channel_dim):
-                    field_names.append(f"{dset_name}_{ch}")
+                    channel_names.append(f"{dset_name}_{ch}")
 
             if problem_dimension is None:
                 problem_dimension = len(dset.shape[2:])
 
         assert problem_dimension is not None, "Could not infer problem dimension."
 
-    return field_names, problem_dimension
+    return channel_names, problem_dimension
 
 
 def compute_statistics(h5_paths: List[str]) -> Tuple[Dict[str, Dict[str, float]], List[str], int]:
-    """Compute combined mean/std/min/max for each channel-expanded field across one
+    """Compute combined mean/std/min/max for each channel-expanded list across one
     or many HDF5 files.
 
     Parameters
@@ -85,10 +85,10 @@ def compute_statistics(h5_paths: List[str]) -> Tuple[Dict[str, Dict[str, float]]
 
     Returns
     -------
-    field_stats : Dict[str, Dict[str, float]]
-        Mapping: field_name -> {mean, std, min, max}
-    field_names : List[str]
-        Expanded field names discovered from the first file's first group.
+    channel_stats : Dict[str, Dict[str, float]]
+        Mapping: channel_name -> {mean, std, min, max}
+    channel_names : List[str]
+        Expanded channel names discovered from the first file's first group.
     problem_dim : int
         Number of spatial dimensions (2 for 2D, 3 for 3D, ...).
     """
@@ -97,10 +97,10 @@ def compute_statistics(h5_paths: List[str]) -> Tuple[Dict[str, Dict[str, float]]
         raise ValueError("h5_paths list is empty.")
 
     # Metadata from first file
-    field_names, problem_dim = _discover_metadata(h5_paths[0])
+    channel_names, problem_dim = _discover_metadata(h5_paths[0])
 
-    # Aggregators keyed by expanded field name
-    aggregators: Dict[str, _StatsAggregator] = {name: _StatsAggregator() for name in field_names}
+    # Aggregators keyed by expanded channel name
+    aggregators: Dict[str, _StatsAggregator] = {name: _StatsAggregator() for name in channel_names}
 
     # Iterate over all files and groups
     for path in h5_paths:
@@ -115,20 +115,20 @@ def compute_statistics(h5_paths: List[str]) -> Tuple[Dict[str, Dict[str, float]]
                         channel_data = dset[:, ch]
                         key = dset_name if ch_dim == 1 else f"{dset_name}_{ch}"
 
-                        # Safety: if new field encountered that wasn't in metadata (unlikely but possible)
+                        # Safety: if new channel encountered that wasn't in metadata (unlikely but possible)
                         if key not in aggregators:
                             aggregators[key] = _StatsAggregator()
 
                         aggregators[key].add(channel_data)
 
     # Combine
-    field_stats = {k: agg.combined() for k, agg in aggregators.items()}
+    channel_stats = {k: agg.combined() for k, agg in aggregators.items()}
 
-    return field_stats, field_names, problem_dim
+    return channel_stats, channel_names, problem_dim
 
 
 # -----------------------------------------------------------------------------
-# If executed as a script, run a quick demo
+# Test script
 # -----------------------------------------------------------------------------
 
 if __name__ == "__main__":
@@ -139,7 +139,7 @@ if __name__ == "__main__":
 
     stats, names, dim = compute_statistics(demo_paths)
 
-    print("Field names:", names)
+    print("Channel names:", names)
     print(f"Problem dimension: {dim}D")
     print("\nStatistics:")
     for k, v in stats.items():
