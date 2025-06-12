@@ -4,6 +4,8 @@ from typing import List, Optional, Dict, Tuple, Union, Any
 from transformers.trainer import *
 from transformers import Trainer as Trainer_
 from utils.plot_progress import plot_examples
+import numpy as np
+
 class Trainer(Trainer_):
     def __init__(self, model_config, data_config, pushforward_config, **kwargs):
         super().__init__(**kwargs)
@@ -849,9 +851,43 @@ class Trainer(Trainer_):
             len_eval_dataloader, num_eval_rollouts, label_seq_length, channel_dim, *spatial_dims = predictions.shape
             predictions=predictions.reshape(len_eval_dataloader, num_eval_rollouts*label_seq_length, channel_dim, *spatial_dims)
 
+            # ------------------------------------------------------------------
+            # Denormalize inputs, labels and predictions for visualization
+            # ------------------------------------------------------------------
+            norm_stats = self.data_config["data_normalization_stats"]
+            norm_strategy = self.data_config["data_normalization_strategy"]
+
+            # Channel ordering in the dataset 
+            channel_names = getattr(self.eval_dataset, "channels", None)
+
+            def _renormalize(arr: np.ndarray) -> np.ndarray:
+                """Reverts normalization applied during loading.
+                Expects shape [N, T, C, *spatial_dims]. Returns a copy.
+                """
+                arr_renormed = copy.deepcopy(arr)
+
+                for c_idx, ch_name in enumerate(channel_names):
+                    if ch_name not in norm_stats:
+                        # Raise an error if stats for this channel are unavailable
+                        raise ValueError(f"Stats for channel {ch_name} are unavailable.")
+
+                    stats = norm_stats[ch_name]
+                    if norm_strategy == "z_normalization":
+                        arr_renormed[:, :, c_idx] = arr_renormed[:, :, c_idx] * stats["std"] + stats["mean"]
+                    elif norm_strategy == "min_max_normalization":
+                        arr_renormed[:, :, c_idx] = arr_renormed[:, :, c_idx] * (stats["max"] - stats["min"]) + stats["min"]
+
+                return arr_renormed
+
+            # Renormalize:
+            inputs   = _renormalize(inputs)
+            labels   = _renormalize(labels)
+            predictions = _renormalize(predictions) 
+
             plot_examples(inputs, 
                           predictions, 
                           labels, 
+                          channel_names,
                           ndim=self.data_config["dimension"],
                           stride=self.data_config["sequence_info"][-1], 
                           checkpoint_step=self.state.global_step,

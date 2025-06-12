@@ -5,13 +5,13 @@ matplotlib.use('Agg')  # Set non-interactive backend before importing pyplot
 import matplotlib.pyplot as plt
 
 
-def _plot_data(ax, data, ndim):
+def _plot_data(ax, data, ndim, ch_names=None):
     C = data.shape[0]  # number of channels
 
     if ndim == 1:
         x = np.arange(data.shape[-1])
         for c in range(C):
-            ax.plot(x, data[c], label=f"ch{c}")
+            ax.plot(x, data[c], label=ch_names[c])
         if C > 1:
             ax.legend(fontsize=8, loc="upper right")
         # Show ticks for 1D plots
@@ -43,7 +43,7 @@ def _plot_data(ax, data, ndim):
             for c in range(C):
                 sub_ax = fig.add_subplot(gs[0, c])
                 im = sub_ax.imshow(data[c], cmap="coolwarm", aspect=aspect)
-                sub_ax.set_title(f"ch{c}", fontsize=8)
+                sub_ax.set_title(ch_names[c], fontsize=8)
                 #sub_ax.set_xticks([])
                 #sub_ax.set_yticks([])
                 cbar = fig.colorbar(im, ax=sub_ax, fraction=0.046, pad=0.1, orientation='horizontal', location='bottom')
@@ -62,7 +62,7 @@ def _plot_data(ax, data, ndim):
         ax.axis('off')
 
 
-def plot_examples(input_array, prediction_array, target_array, checkpoint_step, epoch, ndim=1, num_examples=5, stride=1, save_dir="plots"):
+def plot_examples(input_array, prediction_array, target_array, channel_names, checkpoint_step, epoch, ndim=1, num_examples=5, stride=1, save_dir="plots"):
     os.makedirs(save_dir, exist_ok=True)
 
     N, T_in, C, *spatial_shape = input_array.shape
@@ -122,7 +122,7 @@ def plot_examples(input_array, prediction_array, target_array, checkpoint_step, 
             # Column 0: Input
             if row < T_in:
                 time_val = "t" if row == T_in - 1 else f"t - {stride * (T_in - 1 - row)}"
-                axes_to_label = _plot_data(axes[row_offset, 0], inp[row], ndim)
+                axes_to_label = _plot_data(axes[row_offset, 0], inp[row], ndim, channel_names)
                 if isinstance(axes_to_label, list):  # Multi-channel 2D case
                     # Add time label only to the middle channel
                     mid_channel = len(axes_to_label) // 2
@@ -137,7 +137,7 @@ def plot_examples(input_array, prediction_array, target_array, checkpoint_step, 
             # Column 1: Prediction
             if row < T_pred:
                 time_val = f"t + {stride * (row + 1)}"
-                axes_to_label = _plot_data(axes[row_offset, 1], pred[row], ndim)
+                axes_to_label = _plot_data(axes[row_offset, 1], pred[row], ndim, channel_names)
                 if isinstance(axes_to_label, list):  # Multi-channel 2D case
                     # Add time label only to the middle channel
                     mid_channel = len(axes_to_label) // 2
@@ -152,7 +152,7 @@ def plot_examples(input_array, prediction_array, target_array, checkpoint_step, 
             # Column 2: Target
             if row < T_pred:
                 time_val = f"t + {stride * (row + 1)}"
-                axes_to_label = _plot_data(axes[row_offset, 2], tgt[row], ndim)
+                axes_to_label = _plot_data(axes[row_offset, 2], tgt[row], ndim, channel_names)
                 if isinstance(axes_to_label, list):  # Multi-channel 2D case
                     # Add time label only to the middle channel
                     mid_channel = len(axes_to_label) // 2
@@ -167,7 +167,7 @@ def plot_examples(input_array, prediction_array, target_array, checkpoint_step, 
             # Column 3: Abs Error
             if row < T_pred:
                 time_val = f"t + {stride * (row + 1)}"
-                axes_to_label = _plot_data(axes[row_offset, 3], abs_err[row], ndim)
+                axes_to_label = _plot_data(axes[row_offset, 3], abs_err[row], ndim, channel_names)
                 if isinstance(axes_to_label, list):  # Multi-channel 2D case
                     # Add time label only to the middle channel
                     mid_channel = len(axes_to_label) // 2
@@ -182,7 +182,7 @@ def plot_examples(input_array, prediction_array, target_array, checkpoint_step, 
             # Column 4: Rel Error
             if row < T_pred:
                 time_val = f"t + {stride * (row + 1)}"
-                axes_to_label = _plot_data(axes[row_offset, 4], rel_err[row], ndim)
+                axes_to_label = _plot_data(axes[row_offset, 4], rel_err[row], ndim, channel_names)
                 if isinstance(axes_to_label, list):  # Multi-channel 2D case
                     # Add time label only to the middle channel
                     mid_channel = len(axes_to_label) // 2
