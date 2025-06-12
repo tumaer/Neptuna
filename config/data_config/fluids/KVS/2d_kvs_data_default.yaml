@@ -6,7 +6,7 @@ out_channels: null #if not provided, will be computed inferred from the filter_c
 sequence_info: [4, 3, 1]
 filter_frame: null #filter_frame: [100, 500]
 filter_groups: null #filter_groups: ["Re_100", "Re_300", "Re_400"]
-filter_channels: ["density", "velocity"] #filter_channels: ["density"], 
+filter_channels: ["density", "velocity"] #filter_channels: ["density", "velocity_0", "velocity_1"], 
 grid_resolution: null #if not provided, will be inferred automatically from the dataset
 data_normalization_stats: #if not provided, will be computed automatically from the dataset
   density:
