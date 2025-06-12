@@ -1,0 +1,11 @@
+dataset_name: KuramotoSivashinsky #should be from the names available in fetch_dataset() function in utils/load_data.py
+#shape of this KS-1D dataset [50,51,1,160]
+dataset_directory_path: ./data/fluids/KS/1D
+dimension: 1
+in_channels: 1 #velocity magnitude
+out_channels: 1
+sequence_info: [4, 3, 2]  # [input_seq_len, label_seq_len, stride]
+filter_frame: [null, null]  # [min_frame, max_frame]
+filter_groups: null
+filter_fields: null 
+grid_resolution: [160]

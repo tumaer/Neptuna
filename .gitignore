@@ -8,4 +8,5 @@ outputs/
 #*.txt
 *.npy
 outputs/
+checkpoints/
 data/

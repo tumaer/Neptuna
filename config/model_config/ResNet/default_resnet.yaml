@@ -1,0 +1,5 @@
+model_name: resnet
+num_blocks: [1, 1, 1, 1]
+block: BasicBlock
+hidden_channels: 256
+norm: True
