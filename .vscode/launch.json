@@ -6,6 +6,25 @@
     "configurations": [
 
         {
+            "name": "main train scot",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "hydra.run.dir=.",
+                "hydra.output_subdir=null",
+                "data_config=KS/default_ks_data",
+                "model_config=ScOT/default_scot"
+              ],
+            "env": {
+                "HYDRA_FULL_ERROR": "1",
+                "HYDRA_MAIN_DISABLE_RUN": "1"
+                }
+
+        },
+        {
             "name": "main train fno",
             "type": "debugpy",
             "request": "launch",

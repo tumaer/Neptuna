@@ -8,3 +8,4 @@ outputs/
 #*.txt
 *.npy
 outputs/
+data/
