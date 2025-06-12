@@ -23,20 +23,35 @@ def main(config: DictConfig):
     print("#" * 79, "\nStarting a benchmarking run with the following config:")
     print(OmegaConf.to_yaml(config))
     print("#" * 79)
-
+    #########################################################
     # Get grid resolution directly from the HDF5 file
     if config["data_config"]["grid_resolution"] is None:
         config["data_config"]["grid_resolution"] = get_grid_resolution(config["data_config"]["dataset_directory_path"])
 
-    # Get statistics directly from the HDF5 file
-    if config["data_config"]["statistics"] is None:
-        stats, _, _ = compute_statistics(h5_paths=[config["data_config"]["dataset_directory_path"]+"/train.h5"])
-        config["data_config"]["statistics"] = stats
+    # Collect / compute normalization statistics and derive channel lists
+    if config["data_config"]["data_normalization_stats"] is None:
+        stats, channel_names, _ = compute_statistics(
+            [os.path.join(config["data_config"]["dataset_directory_path"], "train.h5")]
+        )
+        config["data_config"]["data_normalization_stats"] = stats
+    else:
+        channel_names = list(config["data_config"]["data_normalization_stats"].keys())
 
+    filter_keywords = config["data_config"].get("filter_channels") or []
+    filtered_channel_names = (
+        [name for name in channel_names if any(name.startswith(k) for k in filter_keywords)]
+        if filter_keywords
+        else channel_names
+    )
+    #NOTE: currently in_channels and out_channels are the same
+    config["data_config"]["in_channels"] = len(filtered_channel_names)
+    config["data_config"]["out_channels"] = len(filtered_channel_names)
+    
     print(f"Statistics of the {config['data_config']['dimension']}D_{config['data_config']['dataset_name']} dataset:")
-    for key, value in config["data_config"]["statistics"].items():
-        print(f"{key}: {value}")
-
+    for key, value in config["data_config"]["data_normalization_stats"].items():
+        if key in filtered_channel_names:
+            print(f"{key}: {value}")
+    #########################################################
     train_dataset, eval_dataset = fetch_dataset(dataset_name=config["data_config"]["dataset_name"],
                                 dataset_directory_path=config["data_config"]["dataset_directory_path"],
                                 sequence_info=config["data_config"]["sequence_info"],
@@ -44,9 +59,10 @@ def main(config: DictConfig):
                                 n_eval_rollouts=config["train_config"]["n_eval_rollouts"],
                                 filter_frame=config["data_config"]["filter_frame"],
                                 groups=config["data_config"]["filter_groups"],
-                                channels=config["data_config"]["filter_channels"],
+                                channels=filtered_channel_names,
                                 eval_split_ratio=config["train_config"]["eval_split_ratio"],
-                                transform=None, #TODO: add transform
+                                data_normalization_stats=config["data_config"]["data_normalization_stats"],
+                                data_normalization_strategy=config["data_config"]["data_normalization_strategy"],
                                 )
     
     training_arguments = TrainingArguments(
@@ -82,14 +98,14 @@ def main(config: DictConfig):
         seed=SEED, #model_seed
         data_seed=1045, #data_seed for the sampler (for SeedableRandomSampler)
         fp16=False, # Whether to use fp16 16-bit (mixed) precision training instead of 32-bit training.
-        dataloader_num_workers=1,  #change to CPU_CORES later
+        dataloader_num_workers=8,  #change to CPU_CORES later
         load_best_model_at_end=False, # TODO: Change to true later (save and eval strategy should be same for this). Whether or not to load the best model found during training at the end of training.
         metric_for_best_model="l2_error", #use this metric for checkpointing while performing evaluation
-        include_for_metrics = ["inputs"],
+        include_for_metrics = ["inputs"], #need this for plotting
         greater_is_better=False, #lower loss is better, therefore False
         dataloader_pin_memory=True, # Whether you want to pin memory in data loaders or not. Will default to `True`.
         gradient_checkpointing=False, #If True, use gradient checkpointing to save memory at the expense of slower backward pass.
-        auto_find_batch_size=True, #can be set to true, requires accelerate libraray
+        auto_find_batch_size=False, #can be set to true, requires accelerate libraray
         full_determinism=False, #set to false, only required for debugging distributed training
         torch_compile=False, #check if setting it to true helps
         report_to="none", #change to wandb later  
@@ -144,7 +160,7 @@ if __name__=="__main__":
 
 
 ##TODO:
-# 3 normalize and renormalize
+# wandb integration
 # 4 Inference code
 # 5 Plot only after a certain number of epochs/steps
 # 6 Add the model name to the checkpoint also the date and time
