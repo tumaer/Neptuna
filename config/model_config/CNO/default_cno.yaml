@@ -1,6 +1,7 @@
 model_name: CNO
-N_layers: 2   #number of channels in the latent space after lifting.
-N_res: 4
-N_res_neck: 4
-channel_multiplier: 8
-use_bn: True
+cno_depth: 4 #number of down/up sampling blocks in the network
+n_blocks: 4 #number of residual blocks per level (except the neck)
+n_blocks_bottleneck: 4 #number of residual blocks in the bottleneck
+channel_multiplier: 16 #base channel multiplier for network width
+norm: True #whether to use batch normalization
+latent_channels: 64 #number of channels in latent space of the lifting/projection block

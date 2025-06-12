@@ -7,4 +7,4 @@ sequence_info: [4, 3, 1]
 filter_frame: null #filter_frame: [100, 500]
 filter_groups: null #filter_groups: ["Re_100", "Re_300", "Re_400"]
 filter_fields: null #filter_fields: ["velocity", "density"]
-resolution: [256,64]
+grid_resolution: null #if not provided, will be inferred automatically from the dataset

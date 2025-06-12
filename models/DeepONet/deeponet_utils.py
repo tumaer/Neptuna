@@ -1,4 +1,4 @@
-from typing import List, Optional, Union, Callable
+from typing import List, Tuple
 import torch.nn as nn
 from torch import Tensor
 from models.ResNet.resnet_utils import BasicBlockND
@@ -74,3 +74,40 @@ class CnnBranch(nn.Module):
         x = self.blocks(x)  # (b, 32, h/16=4, w/16=4)
         x = self.out_conv(x)  # (b, 32, 4, 4)
         return x
+    
+
+def grid_to_points(value: Tensor) -> Tuple[Tensor, List[int]]:
+    """
+    Convert from grid-based (1D, 2D, 3D) representation to point-based representation.
+
+    Parameters
+    ----------
+    value : Tensor
+        Input tensor of shape (B, C, X, Y, Z).
+
+    Returns
+    -------
+    Tuple
+        - Tensor of shape (B, C*X*Y*Z).
+    """
+    output = value.reshape(value.size(0), -1)  # Reshape to (B, C*X*Y*Z)
+    return output
+
+def points_to_grid(value: Tensor, shape: List[int]) -> Tensor:
+    """
+    Convert from point-based representation back to grid-based (1D, 2D, 3D) representation.
+
+    Parameters
+    ----------
+    value : Tensor
+        Input tensor of shape (B, C*X*Y*Z).
+    shape : List[int]
+        Original shape as [B, C, X, Y, Z].
+
+    Returns
+    -------
+    Tensor
+        Restored tensor of shape (B, C, X, Y, Z).
+    """
+    output = value.reshape(shape)  # Reshape back to (B, C, X, Y, Z)
+    return output

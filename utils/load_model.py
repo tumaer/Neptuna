@@ -55,7 +55,14 @@ def fetch_model(model_config: Dict,
                     out_channels=data_config['out_channels'], 
                     sequence_info=data_config["sequence_info"], 
                     latent_channels=model_config['latent_channels'],
-                    #TODO: more arguments to be added
+                    activation_fn_name=model_config['activation_fn_name'],
+                    norm=model_config['norm'],
+                    n_groups=model_config['n_groups'],
+                    channel_multiplier=model_config['channel_multiplier'],
+                    is_attn=model_config['is_attn'],
+                    mid_attn=model_config['mid_attn'],
+                    n_blocks=model_config['n_blocks'],
+                    use1x1=model_config['use1x1'],
         )
     elif model_name == "deeponet_ffn":
         from models.DeepONet.deeponet import AutoDeepONet
@@ -110,16 +117,18 @@ def fetch_model(model_config: Dict,
     elif model_name == "cno":
         from models.CNO.cno import CNO
         model = CNO(
-                    in_dim=data_config['in_channels'],
-                    out_dim=data_config['out_channels'], 
-                    size=data_config['resolution'],
+                    in_channels=data_config['in_channels'],
+                    out_channels=data_config['out_channels'], 
+                    grid_resolution=data_config['grid_resolution'], #TODO: Change this 
                     sequence_info=data_config["sequence_info"],
                     dimension=data_config['dimension'],
-                    N_layers=model_config['N_layers'],
-                    N_res=model_config['N_res'],
-                    N_res_neck=model_config['N_res_neck'],
+                    cno_depth=model_config['cno_depth'],
+                    n_blocks=model_config['n_blocks'],
+                    n_blocks_bottleneck=model_config['n_blocks_bottleneck'],
                     channel_multiplier=model_config['channel_multiplier'],
-                    use_bn=model_config['use_bn'],
+                    norm=model_config['norm'],
+                    latent_channels=model_config['latent_channels'],
+
         )
     else:
         raise ValueError(f"Model {model_name} is not implemented yet.")                      

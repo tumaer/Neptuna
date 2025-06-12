@@ -22,7 +22,7 @@ class UNet(nn.Module):
         sequence_info (List[List[int]]): Configuration for input/output sequences [[input_seq_len, output_seq_len, input_stride, output_stride]]
         dimension (int): Spatial dimension of the data (1, 2, or 3)
         norm (bool): Whether to use normalization layers (default: False)
-        ch_mults (Union[Tuple[int, ...], List[int]]): Channel multipliers for each resolution level (default: (1, 2, 2, 4))
+        channel_multiplier (Union[Tuple[int, ...], List[int]]): Channel multipliers for each resolution level (default: (1, 2, 2, 4))
         is_attn (Union[Tuple[bool, ...], List[bool]]): Whether to use attention at each resolution (default: (False, False, False, False))
         mid_attn (bool): Whether to use attention in the middle block (default: False)
         n_blocks (int): Number of residual blocks per resolution (default: 2)
@@ -44,10 +44,11 @@ class UNet(nn.Module):
         out_channels: int,
         latent_channels: int,
         activation_fn_name: str="gelu",
-        sequence_info: Optional[List[List[int]]] = [[1,1,1,1]],
+        sequence_info: Optional[List[int]] = [1,1,1],
         dimension: int = 2,
         norm: bool = False,
-        ch_mults: Union[Tuple[int, ...], List[int]] = (1, 2, 2, 4),
+        n_groups: int = 1,
+        channel_multiplier: Union[Tuple[int, ...], List[int]] = (1, 2, 2, 4),
         is_attn: Union[Tuple[bool, ...], List[bool]] = (False, False, False, False),
         mid_attn: bool = False,
         n_blocks: int = 2,
@@ -61,22 +62,23 @@ class UNet(nn.Module):
         if self.activation is None:
             raise NotImplementedError(f"Activation {activation_fn_name} not implemented")
         # Number of resolutions (depth of unet)
-        n_resolutions = len(ch_mults)
+        unet_depth = len(channel_multiplier)
 
-        insize = in_channels*sequence_info[0]
-        outsize = out_channels*sequence_info[1]
+        in_size = in_channels*sequence_info[0]
+        out_size = out_channels*sequence_info[1]
         
-        self.unet = self.build_UNet()(insize, 
-                                   outsize, 
-                                   latent_channels, 
-                                   n_resolutions, 
-                                   ch_mults, 
-                                   is_attn, 
-                                   mid_attn, 
-                                   n_blocks, 
-                                   activation_fn_name, 
-                                   norm, 
-                                   use1x1)
+        self.unet = self.build_UNet()(in_size=in_size, 
+                                   out_size=out_size, 
+                                   latent_channels=latent_channels, 
+                                   unet_depth=unet_depth, 
+                                   channel_multiplier=channel_multiplier, 
+                                   is_attn=is_attn, 
+                                   mid_attn=mid_attn, 
+                                   n_blocks=n_blocks, 
+                                   activation_fn_name=activation_fn_name, 
+                                   norm=norm, 
+                                   n_groups=n_groups,
+                                   use1x1=use1x1)
        
     def build_UNet(self):
         """Get the appropriate upsampler based on the dimension."""
@@ -104,17 +106,18 @@ class UNet(nn.Module):
 class UNet1D(nn.Module):
     """1D U-Net"""
     def __init__(self, 
-                 insize: int, 
-                 outsize: int,
-                 hidden_channels: int, 
-                 n_resolutions, 
-                 ch_mults, 
-                 is_attn, 
-                 mid_attn, 
-                 n_blocks, 
+                 in_size: int, 
+                 out_size: int,
+                 latent_channels: int, 
+                 unet_depth: int, 
+                 channel_multiplier: Union[Tuple[int, ...], List[int]], 
+                 is_attn: Union[Tuple[bool, ...], List[bool]], 
+                 mid_attn: bool, 
+                 n_blocks: int, 
                  activation_fn_name: str,
-                 norm, 
-                 use1x1,
+                 norm: bool,
+                 n_groups: int,
+                 use1x1: bool,
                  coord_features: bool = True
                  ):
         super().__init__()
@@ -122,83 +125,97 @@ class UNet1D(nn.Module):
         self.activation = activation_func.get_activation(activation_fn_name)
         self.coord_features = coord_features
         if self.coord_features:
-            insize = insize + 1
+            in_size = in_size + 1
         
         # Project image into feature map
         if use1x1: #false by default
-            self.image_proj = nn.Conv1d(insize, hidden_channels, kernel_size=1)
+            self.image_proj = nn.Conv1d(in_size, latent_channels, kernel_size=1)
         else:
-            self.image_proj = nn.Conv1d(insize, hidden_channels, kernel_size=(3, ), padding=(1, ))
+            self.image_proj = nn.Conv1d(in_size, latent_channels, kernel_size=(3, ), padding=(1, ))
 
         # #### First half of U-Net - decreasing resolution
         down = []
         # Number of channels
-        out_channels = in_channels = hidden_channels
+        out_channels_down = in_channels_down = latent_channels
         # For each resolution
-        for i in range(n_resolutions):
+        for i in range(unet_depth):
             # Number of output channels at this resolution
-            out_channels = in_channels * ch_mults[i]
+            out_channels_down = in_channels_down * channel_multiplier[i]
             # Add `n_blocks`
             for _ in range(n_blocks):
                 down.append(
                     DownBlockND(
-                        in_channels,
-                        out_channels,
+                        in_channels=in_channels_down,
+                        out_channels=out_channels_down,
                         dim=1,
                         has_attn=is_attn[i],
                         activation=activation_fn_name,
                         norm=norm,
+                        n_groups=n_groups,
                     )
                 )
-                in_channels = out_channels
+                in_channels_down = out_channels_down
             # Down sample at all resolutions except the last
-            if i < n_resolutions - 1:
-                down.append(DownsampleND(in_channels, dim=1))
+            if i < unet_depth - 1:
+                down.append(DownsampleND(n_channels=in_channels_down, dim=1))
 
         # Combine the set of modules
         self.down = nn.ModuleList(down)
-        
-        self.middle = MiddleBlockND(out_channels, dim=1, has_attn=mid_attn, activation=activation_fn_name, norm=norm)
+        out_channels_mid=out_channels_down
+        self.middle = MiddleBlockND(n_channels=out_channels_mid, 
+                                    dim=1, 
+                                    has_attn=mid_attn, 
+                                    activation=activation_fn_name, 
+                                    norm=norm,
+                                    n_groups=n_groups)
 
         # #### Second half of U-Net - increasing resolution
         up = []
         # Number of channels
-        in_channels = out_channels
+        in_channels_up = out_channels_mid
         # For each resolution
-        for i in reversed(range(n_resolutions)):
+        for i in reversed(range(unet_depth)):
             # `n_blocks` at the same resolution
-            out_channels = in_channels
+            out_channels_up = in_channels_up
             for _ in range(n_blocks):
                 up.append(
                     UpBlockND(
-                        in_channels,
-                        out_channels,
+                        in_channels=in_channels_up,
+                        out_channels=out_channels_up,
                         dim=1,
                         has_attn=is_attn[i],
                         activation=activation_fn_name,
                         norm=norm,
+                        n_groups=n_groups,
                     )
                 )
             # Final block to reduce the number of channels
-            out_channels = in_channels // ch_mults[i]
-            up.append(UpBlockND(in_channels, out_channels, dim=1, has_attn=is_attn[i], activation=activation_fn_name, norm=norm))
-            in_channels = out_channels
+            out_channels_up = in_channels_up // channel_multiplier[i]
+            up.append(UpBlockND(in_channels=in_channels_up, 
+                                out_channels=out_channels_up, 
+                                dim=1, 
+                                has_attn=is_attn[i], 
+                                activation=activation_fn_name, 
+                                norm=norm,
+                                n_groups=n_groups))
+            
+            in_channels_up = out_channels_up
             # Up sample at all resolutions except last
             if i > 0:
-                up.append(UpsampleND(in_channels, dim=1))
+                up.append(UpsampleND(n_channels=in_channels_up, dim=1))
 
         # Combine the set of modules
         self.up = nn.ModuleList(up)
 
         if norm:
-            self.norm = nn.GroupNorm(8, hidden_channels)
+            self.norm = nn.GroupNorm(8, latent_channels)
         else:
             self.norm = nn.Identity()
 
         if use1x1:
-            self.final = nn.Conv1d(in_channels, outsize, kernel_size=1)
+            self.final = nn.Conv1d(in_channels_up, out_size, kernel_size=1)
         else:
-            self.final = nn.Conv1d(in_channels, outsize, kernel_size=(3,), padding=(1,))
+            self.final = nn.Conv1d(in_channels_up, out_size, kernel_size=(3,), padding=(1,))
 
     def forward(self, x: torch.Tensor):
         if x.dim() != 3:
@@ -235,17 +252,18 @@ class UNet1D(nn.Module):
 class UNet2D(nn.Module):
     """2D U-Net"""
     def __init__(self, 
-                 insize, 
-                 outsize,
-                 hidden_channels, 
-                 n_resolutions, 
-                 ch_mults, 
-                 is_attn, 
-                 mid_attn, 
-                 n_blocks, 
-                 activation_fn_name,
-                 norm, 
-                 use1x1,
+                 in_size: int, 
+                 out_size: int,
+                 latent_channels: int, 
+                 unet_depth: int, 
+                 channel_multiplier: Union[Tuple[int, ...], List[int]], 
+                 is_attn: Union[Tuple[bool, ...], List[bool]], 
+                 mid_attn: bool, 
+                 n_blocks: int, 
+                 activation_fn_name: str,
+                 norm: bool,
+                 n_groups: int,
+                 use1x1: bool,
                  coord_features: bool = True):
         super().__init__()
 
@@ -253,83 +271,97 @@ class UNet2D(nn.Module):
         
         self.coord_features = coord_features
         if self.coord_features:
-            insize = insize + 2
+            in_size = in_size + 2
         
         # Project image into feature map
         if use1x1: #false by default
-            self.image_proj = nn.Conv2d(insize, hidden_channels, kernel_size=1)
+            self.image_proj = nn.Conv2d(in_size, latent_channels, kernel_size=1)
         else:
-            self.image_proj = nn.Conv2d(insize, hidden_channels, kernel_size=(3, 3), padding=(1, 1))
+            self.image_proj = nn.Conv2d(in_size, latent_channels, kernel_size=(3, 3), padding=(1, 1))
 
         # #### First half of U-Net - decreasing resolution
         down = []
         # Number of channels
-        out_channels = in_channels = hidden_channels
+        out_channels_down = in_channels_down = latent_channels
         # For each resolution
-        for i in range(n_resolutions):
+        for i in range(unet_depth):
             # Number of output channels at this resolution
-            out_channels = in_channels * ch_mults[i]
+            out_channels_down = in_channels_down * channel_multiplier[i]
             # Add `n_blocks`
             for _ in range(n_blocks):
                 down.append(
                     DownBlockND(
-                        in_channels,
-                        out_channels,
+                        in_channels=in_channels_down,
+                        out_channels=out_channels_down,
                         dim=2,
                         has_attn=is_attn[i],
                         activation=activation_fn_name,
                         norm=norm,
+                        n_groups=n_groups,
                     )
                 )
-                in_channels = out_channels
+                in_channels_down = out_channels_down
             # Down sample at all resolutions except the last
-            if i < n_resolutions - 1:
-                down.append(DownsampleND(in_channels, dim=2))
+            if i < unet_depth - 1:
+                down.append(DownsampleND(n_channels=in_channels_down, dim=2))
 
         # Combine the set of modules
         self.down = nn.ModuleList(down)
         
-        self.middle = MiddleBlockND(out_channels, dim=2, has_attn=mid_attn, activation=activation_fn_name, norm=norm)
+        out_channels_mid = out_channels_down
+        self.middle = MiddleBlockND(n_channels=out_channels_mid, 
+                                    dim=2, 
+                                    has_attn=mid_attn, 
+                                    activation=activation_fn_name, 
+                                    norm=norm,
+                                    n_groups=n_groups)
 
         # #### Second half of U-Net - increasing resolution
         up = []
         # Number of channels
-        in_channels = out_channels
+        in_channels_up = out_channels_mid
         # For each resolution
-        for i in reversed(range(n_resolutions)):
+        for i in reversed(range(unet_depth)):
             # `n_blocks` at the same resolution
-            out_channels = in_channels
+            out_channels_up = in_channels_up
             for _ in range(n_blocks):
                 up.append(
                     UpBlockND(
-                        in_channels,
-                        out_channels,
+                        in_channels=in_channels_up,
+                        out_channels=out_channels_up,
                         dim=2,
                         has_attn=is_attn[i],
                         activation=activation_fn_name,
                         norm=norm,
+                        n_groups=n_groups,
                     )
                 )
             # Final block to reduce the number of channels
-            out_channels = in_channels // ch_mults[i]
-            up.append(UpBlockND(in_channels, out_channels, dim=2, has_attn=is_attn[i], activation=activation_fn_name, norm=norm))
-            in_channels = out_channels
+            out_channels_up = in_channels_up // channel_multiplier[i]
+            up.append(UpBlockND(in_channels=in_channels_up, 
+                                out_channels=out_channels_up, 
+                                dim=2, 
+                                has_attn=is_attn[i], 
+                                activation=activation_fn_name, 
+                                norm=norm,
+                                n_groups=n_groups))
+            in_channels_up = out_channels_up
             # Up sample at all resolutions except last
             if i > 0:
-                up.append(UpsampleND(in_channels, dim=2))
+                up.append(UpsampleND(n_channels=in_channels_up, dim=2))
 
         # Combine the set of modules
         self.up = nn.ModuleList(up)
 
         if norm:
-            self.norm = nn.GroupNorm(8, hidden_channels)
+            self.norm = nn.GroupNorm(8, latent_channels)
         else:
             self.norm = nn.Identity()
 
         if use1x1:
-            self.final = nn.Conv2d(in_channels, outsize, kernel_size=1)
+            self.final = nn.Conv2d(in_channels_up, out_size, kernel_size=1)
         else:
-            self.final = nn.Conv2d(in_channels, outsize, kernel_size=(3, 3), padding=(1, 1))
+            self.final = nn.Conv2d(in_channels_up, out_size, kernel_size=(3, 3), padding=(1, 1))
 
     def forward(self, x: torch.Tensor):
         if x.dim() != 4:
@@ -366,17 +398,18 @@ class UNet2D(nn.Module):
 class UNet3D(nn.Module):
     """3D U-Net"""
     def __init__(self, 
-                 insize, 
-                 outsize,
-                 hidden_channels, 
-                 n_resolutions, 
-                 ch_mults, 
-                 is_attn, 
-                 mid_attn, 
-                 n_blocks, 
-                 activation_fn_name,
-                 norm, 
-                 use1x1,
+                 in_size: int, 
+                 out_size: int,
+                 latent_channels: int, 
+                 unet_depth: int, 
+                 channel_multiplier: Union[Tuple[int, ...], List[int]], 
+                 is_attn: Union[Tuple[bool, ...], List[bool]], 
+                 mid_attn: bool, 
+                 n_blocks: int, 
+                 activation_fn_name: str,
+                 norm: bool, 
+                 n_groups: int,
+                 use1x1: bool,
                  coord_features: bool = True):
         super().__init__()
 
@@ -384,83 +417,98 @@ class UNet3D(nn.Module):
         self.coord_features = coord_features
         # Add relative coordinate feature
         if self.coord_features:
-            insize = insize + 3
+            in_size = in_size + 3
         
         # Project image into feature map
         if use1x1: #false by default
-            self.image_proj = nn.Conv3d(insize, hidden_channels, kernel_size=1)
+            self.image_proj = nn.Conv3d(in_size, latent_channels, kernel_size=1)
         else:
-            self.image_proj = nn.Conv3d(insize, hidden_channels, kernel_size=(3, 3, 3), padding=(1, 1, 1))
+            self.image_proj = nn.Conv3d(in_size, latent_channels, kernel_size=(3, 3, 3), padding=(1, 1, 1))
 
         # #### First half of U-Net - decreasing resolution
         down = []
         # Number of channels
-        out_channels = in_channels = hidden_channels
+        out_channels_down = in_channels_down = latent_channels
         # For each resolution
-        for i in range(n_resolutions):
+        for i in range(unet_depth):
             # Number of output channels at this resolution
-            out_channels = in_channels * ch_mults[i]
+            out_channels_down = in_channels_down * channel_multiplier[i]
             # Add `n_blocks`
             for _ in range(n_blocks):
                 down.append(
                     DownBlockND(
-                        in_channels,
-                        out_channels,
+                        in_channels=in_channels_down,
+                        out_channels=out_channels_down,
                         dim=3,
                         has_attn=is_attn[i],
                         activation=activation_fn_name,
                         norm=norm,
+                        n_groups=n_groups,
                     )
                 )
-                in_channels = out_channels
+                in_channels_down = out_channels_down
             # Down sample at all resolutions except the last
-            if i < n_resolutions - 1:
-                down.append(DownsampleND(in_channels, dim=3))
+            if i < unet_depth - 1:
+                down.append(DownsampleND(n_channels=in_channels_down, dim=3))
 
         # Combine the set of modules
         self.down = nn.ModuleList(down)
         
-        self.middle = MiddleBlockND(out_channels, dim=3, has_attn=mid_attn, activation=activation_fn_name, norm=norm)
+        out_channels_mid = out_channels_down
+        self.middle = MiddleBlockND(n_channels=out_channels_mid, 
+                                    dim=3, 
+                                    has_attn=mid_attn, 
+                                    activation=activation_fn_name, 
+                                    norm=norm,
+                                    n_groups=n_groups)
 
         # #### Second half of U-Net - increasing resolution
         up = []
         # Number of channels
-        in_channels = out_channels
+        in_channels_up = out_channels_mid
         # For each resolution
-        for i in reversed(range(n_resolutions)):
+        for i in reversed(range(unet_depth)):
             # `n_blocks` at the same resolution
-            out_channels = in_channels
+            out_channels_up = in_channels_up
             for _ in range(n_blocks):
                 up.append(
                     UpBlockND(
-                        in_channels,
-                        out_channels,
+                        in_channels=in_channels_up,
+                        out_channels=out_channels_up,
                         dim=3,
                         has_attn=is_attn[i],
                         activation=activation_fn_name,
                         norm=norm,
+                        n_groups=n_groups,
                     )
                 )
             # Final block to reduce the number of channels
-            out_channels = in_channels // ch_mults[i]
-            up.append(UpBlockND(in_channels, out_channels, dim=3, has_attn=is_attn[i], activation=activation_fn_name, norm=norm))
-            in_channels = out_channels
+            out_channels_up = in_channels_up // channel_multiplier[i]
+            up.append(UpBlockND(in_channels=in_channels_up, 
+                                out_channels=out_channels_up, 
+                                dim=3, 
+                                has_attn=is_attn[i], 
+                                activation=activation_fn_name, 
+                                norm=norm,
+                                n_groups=n_groups))
+            
+            in_channels_up = out_channels_up
             # Up sample at all resolutions except last
             if i > 0:
-                up.append(UpsampleND(in_channels, dim=3))
+                up.append(UpsampleND(n_channels=in_channels_up, dim=3))
 
         # Combine the set of modules
         self.up = nn.ModuleList(up)
 
         if norm:
-            self.norm = nn.GroupNorm(8, hidden_channels)
+            self.norm = nn.GroupNorm(8, latent_channels)
         else:
             self.norm = nn.Identity()
 
         if use1x1:
-            self.final = nn.Conv3d(in_channels, outsize, kernel_size=1)
+            self.final = nn.Conv3d(in_channels_up, out_size, kernel_size=1)
         else:
-            self.final = nn.Conv3d(in_channels, outsize, kernel_size=(3, 3, 3), padding=(1, 1, 1))
+            self.final = nn.Conv3d(in_channels_up, out_size, kernel_size=(3, 3, 3), padding=(1, 1, 1))
 
     def forward(self, x: torch.Tensor):
         if x.dim() != 5:

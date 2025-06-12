@@ -30,7 +30,7 @@ class Trainer(Trainer_):
         train_dataset = self.train_dataset
         data_collator = self.data_collator #NOTE: Using the default collator from the base class.
         
-        ##commented out code from the base class
+        ## NOTE:commented out code from the base class
         #if is_datasets_available() and isinstance(train_dataset, datasets.Dataset):
         #    train_dataset = self._remove_unused_columns(train_dataset, description="training")
         #else:
@@ -132,11 +132,13 @@ class Trainer(Trainer_):
         if channel_difference:
             warnings.warn("Channel difference is True, which means that the number of input and label channels are different")
         
+        batch_size, _, _, *spatial_dims = inputs["input_data"].shape
+        
         with torch.no_grad(): #comment this out for multi-step autoregressive training
             for unroll_step in range(pushforward_unroll_steps):
                 #print(f"Pushforward unroll step {unroll_step+1} of {pushforward_unroll_steps}")
                 prediction = model(inputs["input_data"])
-                batch_size, input_seq_len, input_channels, *spatial_dims = inputs["input_data"].shape
+                
                 prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], self.data_config["out_channels"], *spatial_dims)
                 
                 if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length >= input_sequence length
@@ -447,7 +449,7 @@ class Trainer(Trainer_):
             return (loss, None, None)
 
         logits = nested_detach(logits)
-        if len(logits) == 1: #not relevant as logits is a tensor
+        if len(logits) == 1 and isinstance(logits, tuple): 
             logits = logits[0] 
 
         return (loss, logits, labels)

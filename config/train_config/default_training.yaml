@@ -1,6 +1,5 @@
 #train_config
 batch_size: 6
-rec_results_freq : 32 
 num_epochs: 128
 eval_split_ratio: 0.2 #20% dataset used for evaluation
 n_eval_rollouts: 4
@@ -9,6 +8,6 @@ pushforward:
   # At which training step to introduce next unroll stage
   deciding_epochs: [-1, 2, 50]
   # For how many steps to unroll
-  max_allowed_unroll_steps: [3, 3, 3]
+  max_allowed_unroll_steps: [0, 1, 2] 
   # Which probability ratio to keep between the unrolls
   relative_probabilities: [7, 2, 1]
