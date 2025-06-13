@@ -1,6 +1,7 @@
 defaults:
   - data_config: KVS/default_kvs_data
   - model_config: FNO/default_fno
+  - output_log_config: default_output_log
   #- output: default_output
   - scheduler_config: default_scheduler
   - train_config: default_training

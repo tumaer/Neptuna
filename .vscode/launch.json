@@ -15,7 +15,8 @@
                 "hydra.run.dir=.",
                 "hydra.output_subdir=null",
                 "data_config=fluids/KS/1d_ks_data.yaml",
-                "model_config=UNet/default_unet"
+                "model_config=UNet/default_unet",
+                //"output_log_config=wandb_log.yaml"
               ],
             "env": {
                 "HYDRA_FULL_ERROR": "1",

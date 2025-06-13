@@ -2,6 +2,7 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 from transformers.trainer import *
 from train.trainer import Trainer
+import transformers
 from transformers import TrainingArguments
 import numpy as np
 from utils.load_data import fetch_dataset
@@ -13,6 +14,7 @@ import time
 import os
 import h5py
 from datetime import datetime
+import wandb
 SEED=0
 torch.manual_seed(SEED)
 np.random.seed(SEED)
@@ -23,6 +25,9 @@ def main(config: DictConfig):
     print("#" * 79, "\nStarting a benchmarking run with the following config:")
     print(OmegaConf.to_yaml(config))
     print("#" * 79)
+
+    output_dir = f"./checkpoints/{config['data_config']['dataset_name']}_{config['data_config']['dimension']}D_{config['model_config']['model_name']}_{datetime.now().strftime('%d%m%Y_%H%M%S')}"
+
     #########################################################
     # Get grid resolution directly from the HDF5 file
     if config["data_config"]["grid_resolution"] is None:
@@ -51,6 +56,13 @@ def main(config: DictConfig):
     for key, value in config["data_config"]["data_normalization_stats"].items():
         if key in filtered_channel_names:
             print(f"{key}: {value}")
+    
+    #########################################################
+    # Initialize logging
+    if config["output_log_config"]["logging"]["wandb"]:    
+        transformers.utils.logging.disable_progress_bar()
+        config["output_log_config"]["logging"]["wandb_run_name"] = str(output_dir.split('/')[-1])
+        run = wandb.init(project=config["output_log_config"]["logging"]["wandb_project"], name=config["output_log_config"]["logging"]["wandb_run_name"], config=dict(config))
     #########################################################
     train_dataset, eval_dataset = fetch_dataset(dataset_name=config["data_config"]["dataset_name"],
                                 dataset_directory_path=config["data_config"]["dataset_directory_path"],
@@ -67,7 +79,7 @@ def main(config: DictConfig):
     
     training_arguments = TrainingArguments(
         #add model name and the date and time to the output directory
-        output_dir=f"./checkpoints/{config['data_config']['dataset_name']}_{config['data_config']['dimension']}D_{config['model_config']['model_name']}_{datetime.now().strftime('%d%m%Y_%H%M%S')}",
+        output_dir= output_dir,
         #fsdp_config=config.get("fsdp_config", None),
         overwrite_output_dir=True,  #! OVERWRITE THIS DIRECTORY IN CASE, also for resuming training
         eval_strategy="steps", #TODO: change it to epochs laterThe evaluation strategy to adopt during training (also change the save_strategy). Possible values are: no, steps, epoch
@@ -109,17 +121,21 @@ def main(config: DictConfig):
         auto_find_batch_size=False, #can be set to true, requires accelerate libraray
         full_determinism=False, #set to false, only required for debugging distributed training
         torch_compile=False, #check if setting it to true helps
-        report_to="none", #change to wandb later  
         use_cpu=False, #Whether to not use CUDA even when it is available.
         label_names=["label_including_rollouts"],
         #accelerator_config={"use_seedable_sampler": False},  # Default is True.Setting to False disables SeedableRandomSampler and uses RandomSampler instead.
-        #run_name=params.wandb_run_name, # Typically used for [wandb] and [mlflow]logging.
+        report_to=("wandb" if config["output_log_config"]["logging"]["wandb"] else "none"),  
+        run_name=(config["output_log_config"]["logging"]["wandb_run_name"] if config["output_log_config"]["logging"]["wandb"] else "none"), # Typically used for [wandb] and [mlflow]logging.
     )
 
     model = fetch_model(model_config=config["model_config"], 
                         data_config=config["data_config"],
                         )
 
+    # example_input = torch.randn(1, 4, 1, 160)
+    # onnx_program = torch.onnx.export(model, example_input, "resnet_example.onnx", dynamo=True)
+    # onnx_program.save("resnet_example.onnx")
+    
     def compute_metrics(eval_prediction: EvalPrediction):
         predictions = eval_prediction.predictions
         len_eval_dataloader, num_eval_rollouts, label_seq_length, channel_dim, *spatial_dims = predictions.shape
