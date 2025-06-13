@@ -128,18 +128,19 @@ def fetch_model(model_config: Dict,
                     norm=model_config['norm'],
                     latent_channels=model_config['latent_channels'],
 
-        )
-    else:
-        raise ValueError(f"Model {model_name} is not implemented yet.")                      
-    
+        )                     
     
     elif model_name == 'scot':
         from models.ScOT.scot import ScOT, ScOTConfig
+
+        if data_config['dimension'] != 2:
+            raise ValueError("Model is not yet implemented for other dimension than 2")
         scot_config = ScOTConfig(
-            image_size=model_config['resolution'],
+            resolution_x=data_config['grid_resolution'][0],
+            resolution_y=data_config['grid_resolution'][1],
             patch_size=model_config['patch_size'],
-            in_channels=model_config['in_channels'],
-            out_channels=model_config['out_channels'],
+            in_channels=data_config['in_channels'],
+            out_channels=data_config['out_channels'],
             embed_dim=model_config['embed_dim'], # base dimensionality of patch embeddings (size of feature vector used to represent each patch)
             depths=model_config['depths'], #number of transformer blocks in encoder / decoder stages e.g. 4 stages each with 4 transformer blocks
             num_heads=model_config['num_heads'], # used in Swinv2SelfAttention (HF) (see ScOTEncoder: each stage has own num_heads
@@ -155,15 +156,15 @@ def fetch_model(model_config: Dict,
             use_absolute_embeddings=model_config['use_absolute_embeddings'], # absolute position information into the patch embeddings (spatial structure of trajectory); different to time_conditioning
             initializer_range=model_config['initializer_range'], # Swinv2PreTrainedModel (HF), std of normal distribution to initialize weights
             layer_norm_eps=model_config['layer_norm_eps'], # used in layer_norm both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
-            p=model_config['p'], # 1: l1 loss , 2: l2 loss
-            channel_slice_list_normalized_loss=model_config['channel_slice_list_normalized_loss'], # if None will fall back to absolute loss otherwise normalized loss with split channels
-            # divide output tensor into channel slices and compute normalized loss per slice (and then average)
             residual_model=model_config['residual_model'], # either convnext or resnet
             use_conditioning=model_config['use_conditioning'], # if True ConditionalLayerNorm is used otherwise LayerNorm
             learn_residual=model_config['learn_residual'], # can only be used if use_conditioning is True -> model trained to predict residual (difference) between input and target, rather than full output directly
-            input_steps=data_config['sequence_info'][0][0],
-            output_steps=data_config['sequence_info'][0][0]
+            input_steps=data_config['sequence_info'][0],
+            output_steps=data_config['sequence_info'][1]
         )
         model = ScOT(scot_config)
+
+    else:
+        raise ValueError(f"Model {model_name} is not implemented yet.") 
     
     return model

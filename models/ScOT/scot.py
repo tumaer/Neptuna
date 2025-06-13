@@ -1,5 +1,5 @@
 from transformers import (
-    Swinv2PreTrainedModel,
+    PreTrainedModel,
     PretrainedConfig,
 )
 from transformers.models.swinv2.modeling_swinv2 import (
@@ -11,6 +11,7 @@ from transformers.models.swinv2.modeling_swinv2 import (
     window_reverse,
     window_partition,
 )
+from transformers.models.swinv2.configuration_swinv2 import Swinv2Config
 from transformers.utils import ModelOutput
 from dataclasses import dataclass
 import torch
@@ -41,7 +42,8 @@ class ScOTConfig(PretrainedConfig):
 
     def __init__(
         self,
-        image_size=224,
+        resolution_x=224,
+        resolution_y=224,
         patch_size=4,
         in_channels=3,
         out_channels=1,
@@ -59,16 +61,19 @@ class ScOTConfig(PretrainedConfig):
         use_absolute_embeddings=False,
         initializer_range=0.02,
         layer_norm_eps=1e-5,
-        p=1,  # for loss: 1 for l1, 2 for l2
-        channel_slice_list_normalized_loss=None,  # if None will fall back to absolute loss otherwise normalized loss with split channels
         residual_model="convnext",  # "convnext" or "resnet"
         use_conditioning=False,
         learn_residual=False,  # learn the residual for time-dependent problems
+        input_steps=4,
+        output_steps=3,
         **kwargs,
     ):
         super().__init__(**kwargs)
 
-        self.image_size = image_size
+        self.resolution_x = resolution_x
+        self.resolution_y = resolution_y
+        if resolution_x != resolution_y:
+            raise ValueError("Different resolution sizes for x and y not yet implemented.")
         self.patch_size = patch_size
         self.in_channels = in_channels
         self.embed_dim = embed_dim
@@ -93,9 +98,9 @@ class ScOTConfig(PretrainedConfig):
         self.hidden_size = int(embed_dim * 2 ** (len(depths) - 1)) # actually not used but recomputed as num_features
         self.pretrained_window_sizes = (0, 0, 0, 0)
         self.out_channels = out_channels
-        self.p = p
-        self.channel_slice_list_normalized_loss = channel_slice_list_normalized_loss
         self.residual_model = residual_model
+        self.input_steps = input_steps
+        self.output_steps = output_steps
 
 
 class LayerNorm(nn.LayerNorm):
@@ -225,32 +230,33 @@ class ScOTPatchEmbeddings(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        image_size, patch_size = config.image_size, config.patch_size # 128, 4
+        resolution, patch_size = config.resolution_x, config.patch_size # 128, 4
         in_channels, hidden_size = config.in_channels, config.embed_dim # 4, 48
-        image_size = ( # (128, 128)
-            image_size
-            if isinstance(image_size, collections.abc.Iterable)
-            else (image_size, image_size)
+        self.input_steps = config.input_steps
+        resolution = ( # (128, 128)
+            resolution
+            if isinstance(resolution, collections.abc.Iterable)
+            else (resolution, resolution)
         )
         patch_size = ( # (4, 4)
             patch_size
             if isinstance(patch_size, collections.abc.Iterable)
             else (patch_size, patch_size)
         )
-        num_patches = (image_size[1] // patch_size[1]) * (
-            image_size[0] // patch_size[0]
+        num_patches = (resolution[1] // patch_size[1]) * (
+            resolution[0] // patch_size[0]
         )# 1024 = (128 / 4) * (128 / 4)
-        self.image_size = image_size
+        self.resolution = resolution
         self.patch_size = patch_size
         self.in_channels = in_channels
         self.num_patches = num_patches
         self.grid_size = ( # number of patches in each dimension of the image
-            image_size[0] // patch_size[0],
-            image_size[1] // patch_size[1],
+            resolution[0] // patch_size[0],
+            resolution[1] // patch_size[1],
         ) # (32, 32) = 128 / 4
 
         self.projection = nn.Conv2d( 
-            in_channels, hidden_size, kernel_size=patch_size, stride=patch_size
+            in_channels * self.input_steps, hidden_size, kernel_size=patch_size, stride=patch_size
         )
 
     def maybe_pad(self, input_data, height, width):
@@ -266,7 +272,7 @@ class ScOTPatchEmbeddings(nn.Module):
         self, input_data: Optional[torch.FloatTensor]
     ) -> Tuple[torch.Tensor, Tuple[int]]:
         _, in_channels, height, width = input_data.shape # 4, 128, 128
-        if in_channels != self.in_channels:
+        if in_channels != self.in_channels * self.input_steps:
             raise ValueError(
                 "Make sure that the channel dimension of the pixel values match with the one set in the configuration."
             )
@@ -558,43 +564,44 @@ class ScOTPatchRecovery(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        image_size, patch_size = config.image_size, config.patch_size # 128, 4
+        resolution, patch_size = config.resolution_x, config.patch_size # 128, 4
         out_channels, hidden_size = ( # 4, 48
             config.out_channels,
             config.embed_dim,
         )
-        image_size = ( # 128, 128
-            image_size
-            if isinstance(image_size, collections.abc.Iterable)
-            else (image_size, image_size)
+        resolution = ( # 128, 128
+            resolution
+            if isinstance(resolution, collections.abc.Iterable)
+            else (resolution, resolution)
         )
         patch_size = ( # 4, 4
             patch_size
             if isinstance(patch_size, collections.abc.Iterable)
             else (patch_size, patch_size)
         )
-        num_patches = (image_size[0] // patch_size[0]) * ( # 1024
-            image_size[1] // patch_size[1]
+        num_patches = (resolution[0] // patch_size[0]) * ( # 1024
+            resolution[1] // patch_size[1]
         )
         self.num_patches = num_patches
         self.patch_size = patch_size
-        self.image_size = image_size
+        self.resolution = resolution
         self.out_channels = out_channels
+        self.output_steps = config.output_steps
         self.grid_size = ( # 32, 32
-            image_size[0] // patch_size[0],
-            image_size[1] // patch_size[1],
+            resolution[0] // patch_size[0],
+            resolution[1] // patch_size[1],
         )
 
         self.projection = nn.ConvTranspose2d(
             in_channels=hidden_size, # 48
-            out_channels=out_channels, # 4
+            out_channels=out_channels * self.output_steps, # 4
             kernel_size=patch_size, # (4, 4)
             stride=patch_size, # (4, 4)
         )
         # the following is not done in Pangu
         self.mixup = nn.Conv2d(
-            out_channels, # 48
-            out_channels, # 48
+            out_channels * self.output_steps, # 48
+            out_channels * self.output_steps, # 48
             kernel_size=5,
             stride=1,
             padding=2,
@@ -615,7 +622,7 @@ class ScOTPatchRecovery(nn.Module):
         ) # [16, 48, 32, 32]
 
         output = self.projection(hidden_states)
-        output = self.maybe_crop(output, self.image_size[0], self.image_size[1]) # check if last two dimensions have the expected dim, otherwise crop
+        output = self.maybe_crop(output, self.resolution[0], self.resolution[1]) # check if last two dimensions have the expected dim, otherwise crop
         return self.mixup(output)
 
 
@@ -1215,6 +1222,31 @@ class ScOTDecoder(nn.Module):
         )
 
 
+class Swinv2PreTrainedModel(PreTrainedModel):
+    """
+    An abstract class to handle weights initialization and a simple interface for downloading and loading pretrained
+    models.
+    """
+
+    config_class = Swinv2Config
+    base_model_prefix = "swinv2"
+    main_input_name = "input_data"
+    supports_gradient_checkpointing = True
+    _no_split_modules = ["Swinv2Stage"]
+
+    def _init_weights(self, module):
+        """Initialize the weights"""
+        if isinstance(module, (nn.Linear, nn.Conv2d)):
+            # Slightly different from the TF version which uses truncated_normal for initialization
+            # cf https://github.com/pytorch/pytorch/pull/5617
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+
+
 class ScOT(Swinv2PreTrainedModel):
     """Inspired by https://github.com/huggingface/transformers/blob/v4.35.2/src/transformers/models/swinv2/modeling_swinv2.py#L1129"""
 
@@ -1224,7 +1256,7 @@ class ScOT(Swinv2PreTrainedModel):
         self.config = config
         self.num_layers_encoder = len(config.depths)
         self.num_layers_decoder = len(config.depths)
-        self.num_features = int(config.embed_dim * 2 ** (self.num_layers_encoder - 1)) # the channel size at the final stage of the encoder
+        self.num_features = int(config.embed_dim * 2 ** (self.num_layers_encoder - 1) * config.output_steps) # the channel size at the final stage of the encoder
 
 
         self.embeddings = ScOTEmbeddings(config, use_mask_token=use_mask_token) # creates patch embeddings from input
@@ -1267,8 +1299,8 @@ class ScOT(Swinv2PreTrainedModel):
             self.decoder.layers[layer].attention.prune_heads(heads)
 
     def _downsample(self, image, target_size):
-        image_size = image.shape[-2]
-        freqs = torch.fft.fftfreq(image_size, d=1 / image_size)
+        resolution = image.shape[-2]
+        freqs = torch.fft.fftfreq(resolution, d=1 / resolution)
         sel = torch.logical_and(freqs >= -target_size / 2, freqs <= target_size / 2 - 1)
         image_hat = torch.fft.fft2(image, norm="forward")
         image_hat = image_hat[:, :, sel, :][:, :, :, sel]
@@ -1277,10 +1309,10 @@ class ScOT(Swinv2PreTrainedModel):
 
     def _upsample(self, image, target_size):
         # https://stackoverflow.com/questions/71143279/upsampling-images-in-frequency-domain-using-pytorch
-        image_size = image.shape[-2]
+        resolution = image.shape[-2]
         image_hat = torch.fft.fft2(image, norm="forward")
         image_hat = torch.fft.fftshift(image_hat)
-        pad_size = (target_size - image_size) // 2
+        pad_size = (target_size - resolution) // 2
         real = nn.functional.pad(
             image_hat.real, (pad_size, pad_size, pad_size, pad_size), value=0.0
         )
@@ -1336,13 +1368,17 @@ class ScOT(Swinv2PreTrainedModel):
                 [self.num_layers_encoder, self.num_layers_decoder]
             )
 
-        image_size = input_data.shape[2] # 128; image size is x (and y) velocity shape
+        if len(input_data.shape) == 5:
+            batch, input_seq, channels, x_dim, y_dim = input_data.shape
+            input_data = input_data.reshape(batch, input_seq * channels, x_dim, y_dim)
+
+        resolution = input_data.shape[2] # 128; image size is x (and y) velocity shape
         # image must be square
-        if image_size != self.config.image_size: # in case actual size of data is different from specified one -> upsample or downsample with FFT
-            if image_size < self.config.image_size:
-                input_data = self._upsample(input_data, self.config.image_size)
+        if resolution != self.config.resolution_x: # in case actual size of data is different from specified one -> upsample or downsample with FFT
+            if resolution < self.config.resolution_x:
+                input_data = self._upsample(input_data, self.config.resolution_x)
             else:
-                input_data = self._downsample(input_data, self.config.image_size)
+                input_data = self._downsample(input_data, self.config.resolution_x)
 
         embedding_output, input_dimensions = self.embeddings(
             input_data, bool_masked_pos=bool_masked_pos, time=time
@@ -1393,97 +1429,14 @@ class ScOT(Swinv2PreTrainedModel):
                 input_data = input_data[:, 0 : self.config.out_channels]
             prediction += input_data # original input (input_data) is added to prediction
 
-        if image_size != self.config.image_size: # False # Makes sure that image size corresponds to specified image_size in config
-            if image_size > self.config.image_size:
-                prediction = self._upsample(prediction, image_size)
+        if resolution != self.config.resolution_x: # False # Makes sure that image size corresponds to specified resolution in config
+            if resolution > self.config.resolution_x:
+                prediction = self._upsample(prediction, resolution)
             else:
-                prediction = self._downsample(prediction, image_size)
+                prediction = self._downsample(prediction, resolution)
 
         if pixel_mask is not None:
             prediction[pixel_mask] = labels[pixel_mask].type_as(prediction) # here: does not do anything since all values in pixel_mask are False
-        loss = None
-        if labels is not None: # set loss
-            if self.config.p == 1: # set to 1
-                loss_fn = nn.functional.l1_loss
-            elif self.config.p == 2:
-                loss_fn = nn.functional.mse_loss
-            else:
-                raise ValueError("p must be 1 or 2")
-            if self.config.channel_slice_list_normalized_loss is not None: # if there is a slice list (specific channels should be normalized together
-                loss = torch.mean( # compute average over all normalized slice losses
-                    torch.stack(
-                        [ # calculate loss of slice
-                            loss_fn(
-                                prediction[
-                                    :,
-                                    self.config.channel_slice_list_normalized_loss[
-                                        i
-                                    ] : self.config.channel_slice_list_normalized_loss[
-                                        i + 1
-                                    ],
-                                ],
-                                labels[
-                                    :,
-                                    self.config.channel_slice_list_normalized_loss[
-                                        i
-                                    ] : self.config.channel_slice_list_normalized_loss[
-                                        i + 1
-                                    ],
-                                ],
-                            )
-                            / ( # Normalizing each slice by the magnitude of the corresponding ground_truth slice (i.e. loss between labels and zeros)
-                                loss_fn(
-                                    labels[
-                                        :,
-                                        self.config.channel_slice_list_normalized_loss[
-                                            i
-                                        ] : self.config.channel_slice_list_normalized_loss[
-                                            i + 1
-                                        ],
-                                    ],
-                                    torch.zeros_like(
-                                        labels[
-                                            :,
-                                            self.config.channel_slice_list_normalized_loss[
-                                                i
-                                            ] : self.config.channel_slice_list_normalized_loss[
-                                                i + 1
-                                            ],
-                                        ]
-                                    ),
-                                )
-                                + 1e-10 # avoid division by zero
-                            )
-                            for i in range(
-                                len(self.config.channel_slice_list_normalized_loss) - 1 # list(4) # [0, 1, 3, 4]
-                            )
-                        ]
-                    )
-                )
-            else:
-                loss = loss_fn(prediction, labels)
 
-        if not return_dict:
-            output = (prediction,) + decoder_output[1:] + encoder_outputs[1:]
-            return ((loss,) + output) if loss is not None else output
 
-        return ScOTOutput(
-            loss=loss,
-            output=prediction,
-            hidden_states=(
-                decoder_output.hidden_states + encoder_outputs.hidden_states
-                if output_hidden_states is not None and output_hidden_states is True
-                else None
-            ),
-            attentions=(
-                decoder_output.attentions + encoder_outputs.attentions
-                if output_attentions is not None and output_attentions is True
-                else None
-            ),
-            reshaped_hidden_states=(
-                decoder_output.reshaped_hidden_states
-                + encoder_outputs.reshaped_hidden_states
-                if output_hidden_states is not None and output_hidden_states is True
-                else None
-            ),
-        )
+        return prediction

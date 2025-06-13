@@ -34,7 +34,7 @@
             "args": [
                 "hydra.run.dir=.",
                 "hydra.output_subdir=null",
-                "data_config=KS/default_ks_data",
+                "data_config=fluids/KS/2d_ks_data_default",
                 "model_config=ScOT/default_scot"
               ],
             "env": {
