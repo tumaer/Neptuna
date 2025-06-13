@@ -19,7 +19,7 @@ class UNet(nn.Module):
         out_channels (int): Number of output channels/fields
         latent_channels (int): Number of channels in the hidden layers
         activation_fn_name (str): Name of the activation function (default: "gelu")
-        sequence_info (List[List[int]]): Configuration for input/output sequences [[input_seq_len, output_seq_len, input_stride, output_stride]]
+        sequence_info (List[int]): Configuration for input/output sequences [input_seq_len, output_seq_len, stride]
         dimension (int): Spatial dimension of the data (1, 2, or 3)
         norm (bool): Whether to use normalization layers (default: False)
         channel_multiplier (Union[Tuple[int, ...], List[int]]): Channel multipliers for each resolution level (default: (1, 2, 2, 4))
