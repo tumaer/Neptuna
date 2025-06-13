@@ -6,21 +6,21 @@ class KarmanVortexStreetDataset(BaseDataset):
                  h5file_path: str, 
                  mode: str, 
                  indices: list, 
-                 fields: list,
+                 channels: list,
                  groups: list,
-                 strategy: str = 'many2many', 
                  sequence_info: list = [[1, 1, 1, 1]], 
-                 transform = None, **kwargs):    
+                 data_normalization_stats = None,
+                 data_normalization_strategy = 'z_normalization', **kwargs):    
         super().__init__(
             dataset_name=dataset_name,
             h5file_path=h5file_path,
             mode=mode,
             indices=indices,
             groups=groups,
-            fields=fields,
-            strategy=strategy,
+            channels=channels,
             sequence_info=sequence_info,
-            transform=transform
+            data_normalization_stats=data_normalization_stats,
+            data_normalization_strategy=data_normalization_strategy
         )
 
 #TODO: Is this the correct place to add this KS class?
@@ -31,18 +31,19 @@ class KuramotoSivashinskyDataset(BaseDataset):
                  mode: str, 
                  indices: list, 
                  groups: list,
-                 fields: list,
-                 strategy: str = 'many2many', 
+                 channels: list,
                  sequence_info: list = [[1, 1, 1, 1]], 
-                 transform = None, **kwargs):    
+                 data_normalization_stats = None,
+                 data_normalization_strategy = 'z_normalization',  **kwargs):    
+        
         super().__init__(
             dataset_name=dataset_name,
             h5file_path=h5file_path,
             mode=mode,
             indices=indices,
             groups=groups,
-            fields=fields,
-            strategy=strategy,
+            channels=channels,
             sequence_info=sequence_info,
-            transform=transform
+            data_normalization_stats= data_normalization_stats,
+            data_normalization_strategy= data_normalization_strategy
         )

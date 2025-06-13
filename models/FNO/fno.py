@@ -77,7 +77,7 @@ class FNO(nn.Module):
 
     Note
     ----
-    The FNO architecture supports options for 1D, 2D, 3D and 4D fields which can
+    The FNO architecture supports options for 1D, 2D, 3D and 4D channels which can
     be controlled using the `dimension` parameter.
 
     Parameters
@@ -200,9 +200,9 @@ class FNO(nn.Module):
                                            #else the data collator will remove them. 
         
         #reshape input into [batch, in_channel, grid_x, grid_y, ...]
-        #NOTE: input and output fields need not be necessarily the same.
-        batch, input_seq, input_fields, *spatial = input_data.shape
-        input_data=input_data.reshape(batch, input_seq * input_fields, *spatial)
+        #NOTE: input and output channels need not be necessarily the same.
+        batch, input_seq, input_channels, *spatial = input_data.shape
+        input_data=input_data.reshape(batch, input_seq * input_channels, *spatial)
 
         # Fourier encoder
         y_latent = self.fno(input_data)

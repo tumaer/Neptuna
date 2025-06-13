@@ -163,10 +163,8 @@ class CNO(nn.Module):
     def forward(self, 
                 input_data: Tensor) -> Tensor: 
                                            
-        #reshape input into [batch, in_channel, grid_x, grid_y, ...]
-        #NOTE: input and output fields need not be necessarily the same.
-        batch, input_seq, input_fields, *spatial = input_data.shape
-        x = input_data.reshape(batch, input_seq * input_fields, *spatial)
+        batch, input_seq, input_channels, *spatial = input_data.shape
+        x = input_data.reshape(batch, input_seq * input_channels, *spatial)
                         
         x = self.lift(x) #Execute Lift
         skip = []

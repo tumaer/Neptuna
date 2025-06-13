@@ -4,14 +4,17 @@ from typing import List, Optional, Dict, Tuple, Union, Any
 from transformers.trainer import *
 from transformers import Trainer as Trainer_
 from utils.plot_progress import plot_examples
+import numpy as np
+from utils.feature_utils import re_normalize_data
 class Trainer(Trainer_):
-    def __init__(self, model_config, data_config, pushforward_config, **kwargs):
+    def __init__(self, model_config, data_config, train_config, **kwargs):
         super().__init__(**kwargs)
         self.eval_or_test_rollout_steps = None
         self.output_all_steps = False
         self.data_config = data_config
         self.model_config = model_config
-        self.pushforward_config = pushforward_config
+        self.pushforward_config = train_config["pushforward"]
+        self.plot_after_epoch = train_config["plot_after_epoch"]
         self.original_label_seq_len = self.data_config.sequence_info[1] #number of predicted timesteps from the model (#no rollout timesteps considered)
         
     ##overrides the one in the  base class from transformers library
@@ -849,15 +852,33 @@ class Trainer(Trainer_):
             len_eval_dataloader, num_eval_rollouts, label_seq_length, channel_dim, *spatial_dims = predictions.shape
             predictions=predictions.reshape(len_eval_dataloader, num_eval_rollouts*label_seq_length, channel_dim, *spatial_dims)
 
-            plot_examples(inputs, 
-                          predictions, 
-                          labels, 
-                          ndim=self.data_config["dimension"],
-                          stride=self.data_config["sequence_info"][-1], 
-                          checkpoint_step=self.state.global_step,
-                          epoch=round(self.state.epoch, 3),
-                          num_examples=3, #3 random examples out of len(eval_dataloader) examples will be plotted
-                          save_dir=output_dir) 
+            #plot after a certain number of epochs/steps
+            if self.state.epoch >= self.plot_after_epoch:
+                # ------------------------------------------------------------------
+                # Renormalize inputs, labels and predictions for visualization
+                # ------------------------------------------------------------------
+                norm_stats = self.data_config["data_normalization_stats"]
+                norm_strategy = self.data_config["data_normalization_strategy"]
+
+                # Channel ordering in the dataset 
+                channel_names = getattr(self.eval_dataset, "channels", None)
+
+                # Renormalize:
+                inputs   = re_normalize_data(inputs, channel_names, norm_stats, norm_strategy)
+                labels   = re_normalize_data(labels, channel_names, norm_stats, norm_strategy)
+                predictions = re_normalize_data(predictions, channel_names, norm_stats, norm_strategy) 
+
+                plot_examples(inputs, 
+                            predictions, 
+                            labels, 
+                            channel_names,
+                            ndim=self.data_config["dimension"],
+                            stride=self.data_config["sequence_info"][-1],
+                            extra_info= run_dir, 
+                            checkpoint_step=self.state.global_step,
+                            epoch=round(self.state.epoch, 3),
+                            num_examples=3, #3 random examples out of len(eval_dataloader) examples will be plotted
+                            save_dir=output_dir) 
             #########################################################
             self.control = self.callback_handler.on_save(self.args, self.state, self.control)
             

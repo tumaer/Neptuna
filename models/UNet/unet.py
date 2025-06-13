@@ -11,12 +11,12 @@ class UNet(nn.Module):
 
     A flexible U-Net implementation that supports 1D, 2D, and 3D data processing for fluid dynamics
     simulation. The architecture includes wide-residual blocks, spatial attention blocks, and optional
-    coordinate features for spatial awareness. It processes both scalar and vector fields with
+    coordinate features for spatial awareness. It processes both scalar and vector channels with
     multi-resolution feature extraction and reconstruction.
 
     Args:
-        in_channels (int): Number of input channels (input_seq * input_fields)
-        out_channels (int): Number of output channels (output_seq * output_fields)
+        in_channels (int): Number of input channels/fields
+        out_channels (int): Number of output channels/fields
         latent_channels (int): Number of channels in the hidden layers
         activation_fn_name (str): Name of the activation function (default: "gelu")
         sequence_info (List[List[int]]): Configuration for input/output sequences [[input_seq_len, output_seq_len, input_stride, output_stride]]
@@ -95,8 +95,8 @@ class UNet(nn.Module):
     ### Main Forward function ###
     def forward(self, input_data: Tensor) -> Tensor:
         
-        batch, input_seq, input_fields, *spatial = input_data.shape
-        x=input_data.reshape(batch, input_seq * input_fields, *spatial)
+        batch, input_seq, input_channels, *spatial = input_data.shape
+        x=input_data.reshape(batch, input_seq * input_channels, *spatial)
 
         x = self.unet(x)
 
