@@ -4,81 +4,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from .fno_utils import ConvNdFCLayer, SpectralConvNd
-from .fno_utils import FullyConnected
+from .fno_utils import FullyConnected, build_lift_network, build_fno
 from utils import activation_func
 from typing import Optional, Union, Tuple, List
 
 from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 
-def build_lift_network(
-    in_channels: int,
-    fno_width: int,
-    activation_fn: nn.Module,
-    dimension: int,
-    ) -> nn.Sequential:
-    """construct network for lifting variables to latent space."""
-    # Initial lift network
-    lift_network = torch.nn.Sequential()
-    lift_network.append(
-        ConvNdFCLayer(
-            in_channels = in_channels,
-            out_channels = int(fno_width / 2), 
-            dimension = dimension,
-            #activation_fn = activation_fn,
-            )
-    )
-    lift_network.append(activation_fn) #insert the activation function into ConvNdFCLayer,no need to add it here
-    lift_network.append(
-        ConvNdFCLayer(
-            in_channels=int(fno_width / 2), 
-            out_channels=fno_width,
-            dimension=dimension,
-            )
-    )
-    return lift_network
-
-def build_fno(
-    fno_width: int,
-    num_fno_modes: List[int],
-    num_fno_layers: int,
-    dimension: int,
-    ) -> Tuple[nn.ModuleList, nn.ModuleList]:
-    """construct FNO block.
-    """
-    # Build Neural Fourier Operators
-    if dimension == 1:
-        Conv = nn.Conv1d
-    elif dimension == 2:
-        Conv = nn.Conv2d
-    elif dimension == 3:
-        Conv = nn.Conv3d
-    else:
-        raise ValueError(f"Unsupported dimension: {dimension}. Must be 1, 2, or 3.")
-    spconv_layers = nn.ModuleList()
-    conv_layers = nn.ModuleList()
-    for _ in range(num_fno_layers):
-        spconv_layers.append(
-            SpectralConvNd(
-                in_channels=fno_width,
-                out_channels=fno_width,
-                modes=num_fno_modes,
-                dimension=dimension,
-            )
-        )
-        conv_layers.append(Conv(fno_width, fno_width, 1))
-    return spconv_layers, conv_layers
-# ===================================================================
-# ===================================================================
-# nD FNO main class
-# ===================================================================
-# ===================================================================
 class FNO(nn.Module):
     """Fourier neural operator (FNO) model.
-
-    Note
-    ----
-    The FNO architecture supports options for 1D, 2D, 3D and 4D channels which can
-    be controlled using the `dimension` parameter.
 
     Parameters
     ----------
@@ -86,6 +19,8 @@ class FNO(nn.Module):
         Number of input channels
     out_channels : int
         Number of output channels
+    sequence_info : List[int], optional
+        Configuration for input/output sequences [input_seq_len, output_seq_len, stride], by default [1,1,1]
     decoder_layers : int, optional
         Number of decoder layers, by default 1
     decoder_layer_size : int, optional
@@ -104,40 +39,18 @@ class FNO(nn.Module):
         Domain padding for spectral convolutions, by default 8
     padding_type : str, optional
         Type of padding for spectral convolutions, by default "constant"
+        padding_type options: 'constant', 'reflect', 'replicate' or 'circular'
     activation_fn : str, optional
         Activation function, by default "gelu"
     coord_features : bool, optional
         Use coordinate grid as additional feature map, by default True
-
-    Example
-    -------
-    >>> # define the 2d FNO model
-    >>> model = modulus.models.fno.FNO(
-    ...     in_channels=4,
-    ...     out_channels=3,
-    ...     decoder_layers=2,
-    ...     decoder_layer_size=32,
-    ...     dimension=2,
-    ...     latent_channels=32,
-    ...     num_fno_layers=2,
-    ...     padding=0,
-    ... )
-    >>> input = torch.randn(32, 4, 32, 32) #(N, C, H, W)
-    >>> output = model(input)
-    >>> output.size()
-    torch.Size([32, 3, 32, 32])
-
-    Note
-    ----
-    Reference: Li, Zongyi, et al. "Fourier neural operator for parametric
-    partial differential equations." arXiv preprint arXiv:2010.08895 (2020).
     """
     main_input_name = "input_data"
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
-        sequence_info: Optional[List[List[int]]] = [[1,1,1,1]],
+        sequence_info: Optional[List[int]] = [1,1,1],
         decoder_layers: int = 1,
         decoder_layer_size: int = 32,
         decoder_activation_fn_name: str = "silu",
@@ -164,12 +77,12 @@ class FNO(nn.Module):
         self.dimension = dimension
         self.sequence_info = sequence_info
         
-        model_in_channels= in_channels*sequence_info[0][0]
-        model_out_channels= out_channels*self.sequence_info[0][1]
+        in_size= in_channels*sequence_info[0]
+        out_size= out_channels*self.sequence_info[1]
         
         self.fno = self.build_FNO()(
-            in_channels=model_in_channels,
-            out_channels=model_out_channels,
+            in_size=in_size,
+            out_size=out_size,
             num_fno_layers=self.num_fno_layers,
             fno_layer_size=latent_channels,
             num_fno_modes=self.num_fno_modes,
@@ -196,35 +109,27 @@ class FNO(nn.Module):
             )
 
     def forward(self, 
-                input_data: Tensor) -> Tensor: #NOTE: Vimp: forward SHOULD always have the arguments EXACTLY named as "input_data" and "labels", 
-                                           #else the data collator will remove them. 
+                input_data: Tensor) -> Tensor: 
         
-        #reshape input into [batch, in_channel, grid_x, grid_y, ...]
-        #NOTE: input and output channels need not be necessarily the same.
         batch, input_seq, input_channels, *spatial = input_data.shape
         input_data=input_data.reshape(batch, input_seq * input_channels, *spatial)
 
         # Fourier encoder
-        y_latent = self.fno(input_data)
+        x_latent = self.fno(input_data)
 
         # Reshape to pointwise inputs if not a conv FC model
-        y_shape = y_latent.shape
-        y_latent, y_shape = self.fno.grid_to_points(y_latent)
+        x_shape = x_latent.shape
+        x_latent, x_shape = self.fno.grid_to_points(x_latent)
 
         # Decoder
-        decoder_net = (self.fno.decoder_net()).to(y_latent.device)
-        y = decoder_net(y_latent)
+        decoder_net = (self.fno.decoder_net()).to(x_latent.device)
+        x = decoder_net(x_latent)
 
         # Convert back into grid
-        y = self.fno.points_to_grid(y, y_shape)
+        x = self.fno.points_to_grid(x, x_shape)
 
-        return y
-# ===================================================================
-# ===================================================================
+        return x
 
-# ===================================================================
-# 1D FNO 
-# ===================================================================
 class FNO1D(nn.Module):
     """1D FNO
 
@@ -250,8 +155,8 @@ class FNO1D(nn.Module):
 
     def __init__(
         self,
-        in_channels: int = 1,
-        out_channels: int = 1,
+        in_size: int,
+        out_size: int,
         num_fno_layers: int = 4,
         fno_layer_size: int = 32,
         num_fno_modes: Union[int, List[int]] = 16,
@@ -265,8 +170,8 @@ class FNO1D(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.in_channels = in_channels
-        self.out_channels = out_channels
+        self.in_size = in_size
+        self.out_size = out_size
         self.num_fno_layers = num_fno_layers
         self.fno_width = fno_layer_size
         self.activation_fn = activation_fn
@@ -277,7 +182,7 @@ class FNO1D(nn.Module):
         # Add relative coordinate feature
         self.coord_features = coord_features
         if self.coord_features:
-            self.in_channels = self.in_channels + 1
+            self.in_size = self.in_size + 1
 
         # Padding values for spectral conv
         if isinstance(padding, int):
@@ -291,7 +196,7 @@ class FNO1D(nn.Module):
 
         # build lift
         self.lift_network = build_lift_network(
-            in_channels=self.in_channels,
+            in_channels=self.in_size,
             fno_width=self.fno_width,
             activation_fn=self.activation_fn,
             dimension=1,
@@ -308,7 +213,7 @@ class FNO1D(nn.Module):
         return FullyConnected(
             in_features=self.fno_width,
             layer_size=self.decoder_layer_size,
-            out_features=self.out_channels,
+            out_features=self.out_size,
             num_layers=self.decoder_layers,
             activation_fn=self.decoder_activation_fn_name,
         )
@@ -367,9 +272,6 @@ class FNO1D(nn.Module):
         return torch.permute(output, (0, 2, 1))
 
 
-# ===================================================================
-# 2D FNO Encoder
-# ===================================================================
 class FNO2D(nn.Module):
     """2D Spectral encoder for FNO
 
@@ -395,8 +297,8 @@ class FNO2D(nn.Module):
 
     def __init__(
         self,
-        in_channels: int = 1,
-        out_channels: int = 1,
+        in_size: int,
+        out_size: int,
         num_fno_layers: int = 4,
         fno_layer_size: int = 32,
         num_fno_modes: Union[int, List[int]] = 16,
@@ -409,8 +311,8 @@ class FNO2D(nn.Module):
         decoder_layer_size: int = 32,
     ) -> None:
         super().__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
+        self.in_size = in_size
+        self.out_size = out_size
         self.num_fno_layers = num_fno_layers
         self.fno_width = fno_layer_size
         
@@ -422,7 +324,7 @@ class FNO2D(nn.Module):
         # Add relative coordinate feature
         self.coord_features = coord_features
         if self.coord_features:
-            self.in_channels = self.in_channels + 2
+            self.in_size = self.in_size + 2
 
         # Padding values for spectral conv
         if isinstance(padding, int):
@@ -437,7 +339,7 @@ class FNO2D(nn.Module):
 
         # build lift
         self.lift_network = build_lift_network(
-            in_channels=self.in_channels,
+            in_channels=self.in_size,
             fno_width=self.fno_width,
             activation_fn=self.activation_fn,
             dimension=2,
@@ -454,7 +356,7 @@ class FNO2D(nn.Module):
         return FullyConnected(
             in_features=self.fno_width,
             layer_size=self.decoder_layer_size,
-            out_features=self.out_channels,
+            out_features=self.out_size,
             num_layers=self.decoder_layers,
             activation_fn=self.decoder_activation_fn_name,
         )
@@ -520,9 +422,6 @@ class FNO2D(nn.Module):
         return torch.permute(output, (0, 3, 1, 2))
     
 
-# ===================================================================
-# 3D FNO Encoder
-# ===================================================================
 class FNO3D(nn.Module):
     """3D Spectral encoder for FNO
 
@@ -548,8 +447,8 @@ class FNO3D(nn.Module):
 
     def __init__(
         self,
-        in_channels: int = 1,
-        out_channels: int = 1,
+        in_size: int,
+        out_size: int,
         num_fno_layers: int = 4,
         fno_layer_size: int = 32,
         num_fno_modes: Union[int, List[int]] = 16,
@@ -563,8 +462,8 @@ class FNO3D(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.in_channels = in_channels
-        self.out_channels = out_channels
+        self.in_size = in_size
+        self.out_size = out_size
         self.num_fno_layers = num_fno_layers
         self.fno_width = fno_layer_size
         
@@ -575,7 +474,7 @@ class FNO3D(nn.Module):
         # Add relative coordinate feature
         self.coord_features = coord_features
         if self.coord_features:
-            self.in_channels = self.in_channels + 3
+            self.in_size = self.in_size + 3
 
         # Padding values for spectral conv
         if isinstance(padding, int):
@@ -590,7 +489,7 @@ class FNO3D(nn.Module):
 
         # build lift
         self.lift_network = build_lift_network(
-            in_channels=self.in_channels,
+            in_channels=self.in_size,
             fno_width=self.fno_width,
             activation_fn=self.activation_fn,
             dimension=3,
@@ -607,7 +506,7 @@ class FNO3D(nn.Module):
         return FullyConnected(
             in_features=self.fno_width,
             layer_size=self.decoder_layer_size,
-            out_features=self.out_channels,
+            out_features=self.out_size,
             num_layers=self.decoder_layers,
             activation_fn=self.decoder_activation_fn_name,
         )
