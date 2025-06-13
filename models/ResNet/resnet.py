@@ -46,7 +46,7 @@ class ResNet(nn.Module):
         dimension: int,
         sequence_info: Optional[List[int]] = [1,1,1],
         latent_channels: int = 64,
-        activation_fn: str = "gelu",
+        activation_fn_name: str = "gelu",
         coord_features: bool = True,
         norm: bool = True,
         padding: int = 9,
@@ -61,9 +61,9 @@ class ResNet(nn.Module):
         self.coord_features = coord_features
         self.dimension = dimension
                
-        self.activation: nn.Module = activation_func.get_activation(activation_fn)
+        self.activation: nn.Module = activation_func.get_activation(activation_fn_name)
         if self.activation is None:
-            raise NotImplementedError(f"Activation {activation_fn} not implemented")
+            raise NotImplementedError(f"Activation {activation_fn_name} not implemented")
         
         self.resnet = self.build_resnet()(
             in_size=self.in_size,
