@@ -2,5 +2,5 @@ model_name: DeepONet_ResNet
 branch_depth: 4
 trunk_depth: 4
 padding: 1
-hidden_channels: 32
+latent_channels: 32
 width: 128

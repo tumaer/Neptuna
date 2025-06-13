@@ -1,7 +1,7 @@
 from typing import List, Tuple
 import torch.nn as nn
 from torch import Tensor
-from models.ResNet.resnet_utils import BasicBlockND
+import numpy as np
 
 
 class Ffn(nn.Module):
@@ -36,11 +36,20 @@ class CnnBranch(nn.Module):
         kernel_size: int, 
         padding: int, 
         dimension: int,
-        hidden_channels: int = 32,
+        grid_resolution:Tuple[int],
+        latent_channels: int = 32,
         depth: int = 4,
         activation_fn: nn.Module = nn.ReLU(),
+        stride : int = 1,
     ):
         super().__init__()
+        
+        self.in_channels = in_channels
+        self.kernel_size = kernel_size
+        self.padding = padding
+        self.depth = depth
+        self.stride = stride
+        self.grid_resolution = grid_resolution
         
         if dimension == 1:
             Conv = nn.Conv1d
@@ -54,16 +63,14 @@ class CnnBranch(nn.Module):
         else:
             raise ValueError(f"Unsupported dimension: {dimension}. Must be 1, 2, or 3.")
         self.in_conv = Conv(
-            in_channels, hidden_channels , kernel_size=kernel_size, padding=padding
-        )
+            in_channels, latent_channels , kernel_size=3, padding=1)
         self.out_conv = Conv(
-            hidden_channels, hidden_channels, kernel_size=kernel_size, padding=padding
-        )
+            latent_channels, latent_channels, kernel_size=3, padding=1)
 
         blocks = []
         for i in range(depth):
             blocks += [
-                Conv(hidden_channels, hidden_channels, kernel_size, padding=padding),
+                Conv(latent_channels, latent_channels, kernel_size, padding=padding, stride=stride),
                 Pool(2),
                 activation_fn,
             ]
@@ -75,6 +82,13 @@ class CnnBranch(nn.Module):
         x = self.out_conv(x)  # (b, 32, 4, 4)
         return x
     
+    def calc_out_shape(self) -> Tuple[int, ...]:
+        out = list(self.grid_resolution)
+        for _ in range(self.depth):
+            for i in range(len(out)):
+                out[i] = (out[i] + 2 * self.padding - self.kernel_size) // self.stride + 1  # Conv
+                out[i] = (out[i]  - 2) // 2 + 1  # Pool
+        return tuple(out)
 
 def grid_to_points(value: Tensor) -> Tuple[Tensor, List[int]]:
     """
@@ -111,3 +125,31 @@ def points_to_grid(value: Tensor, shape: List[int]) -> Tensor:
     """
     output = value.reshape(shape)  # Reshape back to (B, C, X, Y, Z)
     return output
+
+def calc_resnet_out_shape(
+    in_shape: tuple,
+    num_blocks: List[int],
+    stride: int=1,
+    kernel_size: int=3,
+    padding: int=1,
+):
+    out = list(in_shape)
+    count = 0
+    for j in range(len(num_blocks)):
+        count += num_blocks[j]
+    for _ in range(count):
+        for i in range(len(out)):
+            # 第一个conv
+            out[i] = (out[i] + 2 * padding - kernel_size) // stride + 1
+            # 第二个conv（stride=1, padding同上）
+            out[i] = (out[i] + 2 * padding - kernel_size) // 1 + 1
+            # shortcut不改变空间尺寸
+    return tuple(out)
+def linspace_int_list(int1: int, int2: int, int3: int, reverse: bool) -> list:
+    arr = [int(round(x)) for x in np.linspace(int3, int1, int2)]
+    arr[0] = int3
+    arr[-1] = int1
+    if reverse:
+        return arr[::-1]
+    else:
+        return arr
