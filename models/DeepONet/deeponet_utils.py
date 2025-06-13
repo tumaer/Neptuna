@@ -88,6 +88,7 @@ class CnnBranch(nn.Module):
             for i in range(len(out)):
                 out[i] = (out[i] + 2 * self.padding - self.kernel_size) // self.stride + 1  # Conv
                 out[i] = (out[i]  - 2) // 2 + 1  # Pool
+                assert out[i] > 0, f"Output shape is non-positive: {out[i]}"
         return tuple(out)
 
 def grid_to_points(value: Tensor) -> Tuple[Tensor, List[int]]:
@@ -144,6 +145,7 @@ def calc_resnet_out_shape(
             # 第二个conv（stride=1, padding同上）
             out[i] = (out[i] + 2 * padding - kernel_size) // 1 + 1
             # shortcut不改变空间尺寸
+            assert out[i] > 0, f"Output shape is non-positive: {out[i]}"
     return tuple(out)
 def linspace_int_list(int1: int, int2: int, int3: int, reverse: bool) -> list:
     arr = [int(round(x)) for x in np.linspace(int3, int1, int2)]

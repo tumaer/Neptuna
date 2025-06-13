@@ -63,7 +63,7 @@ class AutoDeepONet(nn.Module):
         branch_depth: int = 4,
         trunk_depth: int = 4,
         width: int = 100,
-        activation_fn: str = "gelu",
+        activation_fn_name: str = "gelu",
         #act_norm: bool = False,
         act_on_output: bool = False,        
         kernel_size: Optional[int] = 3, 
@@ -80,9 +80,9 @@ class AutoDeepONet(nn.Module):
         self.trunk_depth = trunk_depth
         self.width = width
         self.dimension = dimension
-        self.activation: nn.Module = activation_func.get_activation(activation_fn)
+        self.activation: nn.Module = activation_func.get_activation(activation_fn_name)
         if self.activation is None:
-            raise NotImplementedError(f"Activation {activation_fn} not implemented")
+            raise NotImplementedError(f"Activation {activation_fn_name} not implemented")
 
         if isinstance(branch_net, str):
             if branch_net == "FFN":
