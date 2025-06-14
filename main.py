@@ -72,10 +72,10 @@ def main(config: DictConfig):
                                 filter_frames=config["data_config"]["filter_frames"],
                                 filter_groups=config["data_config"]["filter_groups"],
                                 channels=filtered_channel_names,
-                                eval_split_ratio=config["train_config"]["eval_split_ratio"],
                                 data_normalization_stats=config["data_config"]["data_normalization_stats"],
                                 data_normalization_strategy=config["data_config"]["data_normalization_strategy"],
-                                validation_groups = config["data_config"]["validation_groups"]
+                                eval_split_ratio=config["train_config"]["eval_split_ratio"], #NOTE: only used when eval_groups is not provided
+                                eval_groups = config["data_config"]["eval_groups"]
                                 )
     
     training_arguments = TrainingArguments(
@@ -178,7 +178,6 @@ if __name__=="__main__":
 
 
 ##TODO:
-# wandb integration
+# optuna integration
 # 4 Inference code
 # most of the training arguments to be passed from the config file
-# also let the user specify the list of groups for validation manually in the config file

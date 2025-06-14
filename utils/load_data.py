@@ -19,6 +19,7 @@ import numpy as np
 import torch
 import math
 import random
+import warnings
 from utils.feature_utils import normalize_data
 
 
@@ -40,14 +41,15 @@ def build_index_map(h5py_file, group_list, filter_frame, window_size):
     return index_map
 
 def create_train_eval_index_map(h5file_path: str,
-                    groups: Optional[list],
+                    filter_groups: Optional[list],
                     input_seq_len: int,
                     label_seq_len: int,
                     stride: int, 
-                    filter_frame: Optional[list] = None, #filter_frame[0]: min_frame, filter_frame[1]: max_frame
+                    filter_frames: Optional[list] = None, #filter_frames[0]: min_frame, filter_frame[1]: max_frame
                     n_max_pf_train_rollouts: Optional[int] = 0,
                     n_eval_rollouts: Optional[int] = 1,
-                    eval_split_ratio: Optional[float] = 0.2 #TODO: Handle the case where evel-split ratio is 0.0
+                    eval_split_ratio: Optional[float] = 0.2, #TODO: Handle the case where evel-split ratio is 0.0
+                    eval_groups: Optional[list] = None
                     ) -> list:
      
     random.seed(42) # Set random seed for reproducibility of sampling groups from the middle for eval
@@ -56,46 +58,52 @@ def create_train_eval_index_map(h5file_path: str,
 
     with h5py.File(h5file_path, 'r') as f:
         all_groups = sorted(list(f.keys()))
-        groups = groups if groups is not None else all_groups 
-
-        # Infer channels from first group
-        #first_group = f[groups[0]]
-        #available_channels = list(first_group.keys())
-        #channels = channels if channels is not None else available_channels
-
-        total_groups = len(groups)
-        n_eval_groups = int(round(total_groups * eval_split_ratio))
-
-        # --- Step 1 & 2: Split eval groups 50-50 between extremes and middle ---
-        n_extreme = (n_eval_groups // 2) + 1 #+1 is added for the case where n_extreme is zero
-        n_middle = n_eval_groups - n_extreme  # remaining from middle
-
-        eval_groups = []
-
-        # Get extremes: alternate picking from start and end
-        extreme_indices = []
-        start_idx = 0
-        end_idx = total_groups - 1
+        groups = groups if filter_groups is not None else all_groups 
         
-        while len(extreme_indices) < n_extreme and start_idx <= end_idx:
-            if len(extreme_indices) < n_extreme:
-                extreme_indices.append(end_idx)
-                end_idx -= 1
-            if len(extreme_indices) < n_extreme and start_idx <= end_idx:
-                extreme_indices.append(start_idx)
-                start_idx += 1
+        if eval_groups is None:
+            # Infer channels from first group
+            #first_group = f[groups[0]]
+            #available_channels = list(first_group.keys())
+            #channels = channels if channels is not None else available_channels
 
-        eval_groups = [groups[i] for i in extreme_indices]
+            total_groups = len(groups)
+            n_eval_groups = int(round(total_groups * eval_split_ratio))
 
-        # Remaining groups to choose middle candidates from
-        remaining_groups = [g for i, g in enumerate(groups) if i not in extreme_indices]
+            # --- Step 1 & 2: Split eval groups 50-50 between extremes and middle ---
+            n_extreme = (n_eval_groups // 2) + 1 #+1 is added for the case where n_extreme is zero
+            n_middle = n_eval_groups - n_extreme  # remaining from middle
 
-        # Randomly sample from middle
-        middle_groups = remaining_groups[1:-1] if len(remaining_groups) > 2 else remaining_groups
-        middle_sample = random.sample(middle_groups, min(n_middle, len(middle_groups)))
+            eval_groups = []
 
-        eval_groups.extend(middle_sample)
-        eval_groups = list(dict.fromkeys(eval_groups))  # ensure uniqueness
+            # Get extremes: alternate picking from start and end
+            extreme_indices = []
+            start_idx = 0
+            end_idx = total_groups - 1
+            
+            while len(extreme_indices) < n_extreme and start_idx <= end_idx:
+                if len(extreme_indices) < n_extreme:
+                    extreme_indices.append(end_idx)
+                    end_idx -= 1
+                if len(extreme_indices) < n_extreme and start_idx <= end_idx:
+                    extreme_indices.append(start_idx)
+                    start_idx += 1
+
+            eval_groups = [groups[i] for i in extreme_indices]
+
+            # Remaining groups to choose middle candidates from
+            remaining_groups = [g for i, g in enumerate(groups) if i not in extreme_indices]
+
+            # Randomly sample from middle
+            middle_groups = remaining_groups[1:-1] if len(remaining_groups) > 2 else remaining_groups
+            middle_sample = random.sample(middle_groups, min(n_middle, len(middle_groups)))
+
+            eval_groups.extend(middle_sample)
+            eval_groups = list(dict.fromkeys(eval_groups))  # ensure uniqueness
+        
+        else:
+            warnings.warn("eval_split_ratio not obeyed as the evaluation groups are user-specified; using provided eval_groups instead.")
+            eval_groups = eval_groups
+        
         train_groups = [g for g in groups if g not in eval_groups]
 
         print(f"Train groups ({len(train_groups)}): {train_groups}")
@@ -112,20 +120,20 @@ def create_train_eval_index_map(h5file_path: str,
         # pushforward only kicks in according to the current epoch and the relative probabilities at that epoch, but we have to slice and select the labels for the max number of pf-rollouts
 
         # --- Build both train and eval maps ---
-        train_index_map = build_index_map(f, train_groups, filter_frame, train_window_size)
-        eval_index_map = build_index_map(f, eval_groups, filter_frame, eval_window_size)
+        train_index_map = build_index_map(f, train_groups, filter_frames, train_window_size)
+        eval_index_map = build_index_map(f, eval_groups, filter_frames, eval_window_size)
         print(f"Length of train index map: {len(train_index_map)}")
         print(f"Length of eval index map: {len(eval_index_map)}")
         
         return train_index_map, eval_index_map, groups
 
 def create_test_index_map(h5file_path: str,
-                    groups: Optional[list],
+                    filter_groups: Optional[list],
                     channels: Optional[list],
                     input_seq_len: int,
                     label_seq_len: int,
                     stride: int, 
-                    filter_frame: Optional[list] = None,  # filter_frame[0]: min_frame, filter_frame[1]: max_frame
+                    filter_frames: Optional[list] = None,  # filter_frame[0]: min_frame, filter_frame[1]: max_frame
                     n_test_rollouts: Optional[int] = 1
                     ) -> list:
     
@@ -133,7 +141,7 @@ def create_test_index_map(h5file_path: str,
 
     with h5py.File(h5file_path, 'r') as f:
         all_groups = sorted(list(f.keys()))
-        groups = groups if groups is not None else all_groups 
+        groups = groups if filter_groups is not None else all_groups 
 
         # Infer channels from first group
         first_group = f[groups[0]]
@@ -143,7 +151,7 @@ def create_test_index_map(h5file_path: str,
         # --- Test window size ---
         test_window_size = (input_seq_len + label_seq_len - 1 + n_test_rollouts * label_seq_len) * stride + 1
 
-        test_index_map = build_index_map(f, groups, filter_frame, test_window_size)
+        test_index_map = build_index_map(f, groups, filter_frames, test_window_size)
 
         print(f"Length of test index map: {len(test_index_map)}")
         return test_index_map, groups, channels
@@ -173,19 +181,20 @@ def fetch_dataset(dataset_name: str,
     
     if mode == "train":
         #for pushforward training trick, we need to create a train index map with the extra sequence length
-        n_max_pf_train_rollouts = kwargs.get("max_pf_train_rollouts", 0) #only used for the pf trick
+        n_max_pf_train_rollouts = kwargs.get("max_pf_train_rollouts", 0) 
         n_eval_rollouts = kwargs.get("n_eval_rollouts", 0)
 
         train_index_map, eval_index_map, groups = create_train_eval_index_map(
             h5file_path=h5file_path,
-            groups=kwargs.get("groups"),
             input_seq_len=sequence_info[0],
             label_seq_len=sequence_info[1],
             stride=sequence_info[2],
-            filter_frame=kwargs.get("filter_frame", None),
+            filter_groups=kwargs["filter_groups"],
+            filter_frames=kwargs["filter_frames"],
             n_max_pf_train_rollouts=n_max_pf_train_rollouts,
             n_eval_rollouts=n_eval_rollouts,
-            eval_split_ratio=kwargs.get("eval_split_ratio")
+            eval_split_ratio=kwargs["eval_split_ratio"],
+            eval_groups = kwargs["eval_groups"]
         )
         
         kwargs["groups"] = groups
@@ -214,8 +223,9 @@ def fetch_dataset(dataset_name: str,
         
         test_index_map, groups, channels = create_test_index_map(
             h5file_path=h5file_path,
-            groups=kwargs.get("groups"),
-            channels=kwargs.get("channels"),
+            filter_groups=kwargs["filter_groups"],
+            filter_frames=kwargs["filter_frames"],
+            channels=kwargs["channels"],
             input_seq_len=sequence_info[0],
             label_seq_len=sequence_info[1],
             stride=sequence_info[2],

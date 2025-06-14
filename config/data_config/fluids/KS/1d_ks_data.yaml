@@ -5,9 +5,10 @@ dimension: 1
 in_channels: null #if not provided, will be computed inferred from the filter_channels
 out_channels: null #if not provided, will be computed inferred from the filter_channels
 sequence_info: [4, 3, 2]  # [input_seq_len, label_seq_len, stride]
-filter_frame: [null, null]  # [min_frame, max_frame]
+filter_frames: [null, null]  # [min_frame, max_frame]
 filter_groups: null
 filter_channels: null
 grid_resolution: null #if not provided, will be inferred automatically from the dataset
 data_normalization_stats: null #if not provided, will be computed automatically from the dataset
 data_normalization_strategy: z_normalization #options: z_normalization, min_max_normalization
+eval_groups: null #["seed 000000", "seed 000049"]
