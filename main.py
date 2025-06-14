@@ -69,12 +69,13 @@ def main(config: DictConfig):
                                 sequence_info=config["data_config"]["sequence_info"],
                                 max_pf_train_rollouts=config["train_config"]["pushforward"]["max_allowed_unroll_steps"][-1],
                                 n_eval_rollouts=config["train_config"]["n_eval_rollouts"],
-                                filter_frame=config["data_config"]["filter_frame"],
-                                groups=config["data_config"]["filter_groups"],
+                                filter_frames=config["data_config"]["filter_frames"],
+                                filter_groups=config["data_config"]["filter_groups"],
                                 channels=filtered_channel_names,
                                 eval_split_ratio=config["train_config"]["eval_split_ratio"],
                                 data_normalization_stats=config["data_config"]["data_normalization_stats"],
                                 data_normalization_strategy=config["data_config"]["data_normalization_strategy"],
+                                validation_groups = config["data_config"]["validation_groups"]
                                 )
     
     training_arguments = TrainingArguments(
