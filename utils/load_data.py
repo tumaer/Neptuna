@@ -118,10 +118,15 @@ def create_train_eval_index_map(h5file_path: str,
         # the window size is 25, so the input sequence is [21, 23, 25, 27] 
         # and the label sequence is [29, 31, 33], first pf-label indices: [35, 37, 39] and second pf-label indices: [41, 43, 45]
         # pushforward only kicks in according to the current epoch and the relative probabilities at that epoch, but we have to slice and select the labels for the max number of pf-rollouts
-
+        
         # --- Build both train and eval maps ---
         train_index_map = build_index_map(f, train_groups, filter_frames, train_window_size)
         eval_index_map = build_index_map(f, eval_groups, filter_frames, eval_window_size)
+        
+        #Check if the train_index_map and eval_index_map are not empty
+        assert len(train_index_map) > 0, "train_index_map is empty"
+        assert len(eval_index_map) > 0, "eval_index_map is empty"
+        
         print(f"Length of train index map: {len(train_index_map)}")
         print(f"Length of eval index map: {len(eval_index_map)}")
         
