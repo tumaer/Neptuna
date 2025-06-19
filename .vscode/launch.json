@@ -537,6 +537,24 @@
             }
       },
       {
+        "name": "train 2D_KVS_DeepONet_ResNet",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "main.py",
+        "console": "integratedTerminal",
+        "justMyCode": false,
+        "args": [
+            "hydra.run.dir=.",
+            "hydra.output_subdir=null",
+            "data_config=fluids/KVS/2d_kvs_data_default",
+            "model_config=DeepONet/default_deeponet_resnet"
+          ],
+        "env": {
+            "HYDRA_FULL_ERROR": "1",
+            "HYDRA_MAIN_DISABLE_RUN": "1"
+            }
+      },
+      {
         "name": "train 2D_KVS_CNO",
         "type": "debugpy",
         "request": "launch",
