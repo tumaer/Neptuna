@@ -3,7 +3,15 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')  # Set non-interactive backend before importing pyplot
 import matplotlib.pyplot as plt
+import wandb
+# -------------------------------------------------------------
+# Figure cache to avoid expensive figure re-construction on each
+# call to `plot_examples`.  We keep one Figure per unique grid
+# layout (nrows, ncols) so that consecutive examples only update
+# the existing artists.
+# -------------------------------------------------------------
 
+_FIG_CACHE: dict[tuple[int, int], matplotlib.figure.Figure] = {}
 
 def _plot_data(ax, data, ndim, ch_names=None):
     C = data.shape[0]  # number of channels
@@ -62,7 +70,20 @@ def _plot_data(ax, data, ndim, ch_names=None):
         ax.axis('off')
 
 
-def plot_examples(input_array, prediction_array, target_array, channel_names, checkpoint_step, epoch, extra_info, ndim=1, num_examples=5, stride=1, save_dir="plots"):
+def plot_examples(
+    input_array,
+    prediction_array,
+    target_array,
+    channel_names,
+    checkpoint_step,
+    epoch,
+    extra_info,
+    ndim=1,
+    num_examples=5,
+    stride=1,
+    save_dir="plots",
+    log_to_wandb: bool = False,
+):
     os.makedirs(save_dir, exist_ok=True)
 
     N, T_in, C, *spatial_shape = input_array.shape
@@ -73,7 +94,11 @@ def plot_examples(input_array, prediction_array, target_array, channel_names, ch
     np.random.seed(42)
     example_indices = np.random.choice(N, size=num_examples, replace=False)
 
+    returned_figs: dict[str, matplotlib.figure.Figure] = {}
+
     for idx in example_indices:
+        # Fresh figure for every example so that objects are independent when returned
+        fig = plt.figure(figsize=(5 * 5, (max(T_in, T_pred) + 2) * 3.5))
         inp = input_array[idx]          # [T_in, C, ...]
         pred = prediction_array[idx]    # [T_pred, C, ...]
         tgt = target_array[idx]         # [T_pred, C, ...]
@@ -84,9 +109,6 @@ def plot_examples(input_array, prediction_array, target_array, channel_names, ch
         nrows = max(T_in, T_pred)
         ncols = 5
 
-        # Increase figure size and adjust height ratio for better spacing
-        fig = plt.figure(figsize=(ncols * 5, (nrows + 2) * 3.5))
-        
         # Add main title
         fig.suptitle(f"{extra_info}, Checkpoint Step: {checkpoint_step}, Epoch: {epoch}, Example Index: {idx}", fontsize=16, y=0.94, weight='bold')
         
@@ -202,6 +224,16 @@ def plot_examples(input_array, prediction_array, target_array, channel_names, ch
 
         # Adjust layout to ensure labels are visible
         plt.subplots_adjust(top=0.92, bottom=0.05, left=0.05, right=0.95, hspace=0.4, wspace=0.3)
-        filename = f"ckpt_{checkpoint_step}_epoch_{epoch}_example_{idx}.png"       
-        fig.savefig(os.path.join(save_dir, filename), dpi=300, bbox_inches='tight')
-        plt.close(fig)
+
+        # Save only when we are NOT logging to W&B. When logging, the caller
+        # (Trainer) will decide what to do with the figure.
+        if not log_to_wandb:
+            filename = f"ckpt_{checkpoint_step}_epoch_{epoch}_example_{idx}.png"       
+            img_path = os.path.join(save_dir, filename)
+            fig.savefig(img_path, dpi=150, bbox_inches='tight')
+
+        # Collect figure to return; caller handles logging or closing
+        returned_figs[f"plot_progress/example_{idx}"] = wandb.Image(fig)
+        
+
+    return returned_figs
