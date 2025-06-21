@@ -16,7 +16,6 @@
                 "hydra.output_subdir=null",
                 "data_config=fluids/KS/1d_ks_data.yaml",
                 "model_config=UNet/default_unet",
-                //"output_log_config=wandb_log.yaml"
               ],
             "env": {
                 "HYDRA_FULL_ERROR": "1",
@@ -24,6 +23,47 @@
                 }
 
         },
+        {
+          "name": "WandB train 1D_KS_UNet:",
+          "type": "debugpy",
+          "request": "launch",
+          "program": "main.py",
+          "console": "integratedTerminal",
+          "justMyCode": false,
+          "args": [
+              "hydra.run.dir=.",
+              "hydra.output_subdir=null",
+              "data_config=fluids/KS/1d_ks_data.yaml",
+              "model_config=UNet/default_unet",
+              "output_log_config=wandb_log.yaml"
+            ],
+          "env": {
+              "HYDRA_FULL_ERROR": "1",
+              "HYDRA_MAIN_DISABLE_RUN": "1"
+              }
+
+      },
+        {
+          "name": "HP_OPT_train 1D_KS_UNet:",
+          "type": "debugpy",
+          "request": "launch",
+          "program": "main.py",
+          "console": "integratedTerminal",
+          "justMyCode": false,
+          "args": [
+              "hydra.run.dir=.",
+              "hydra.output_subdir=null",
+              "data_config=fluids/KS/1d_ks_data.yaml",
+              "model_config=UNet/default_unet",
+              "hyperparam_opt_config=basic_hp_opt_config.yaml"
+              //"output_log_config=wandb_log.yaml"
+            ],
+          "env": {
+              "HYDRA_FULL_ERROR": "1",
+              "HYDRA_MAIN_DISABLE_RUN": "1"
+              }
+
+      },
         {
             "name": "train 2D_KS_UNet:",
             "type": "debugpy",
