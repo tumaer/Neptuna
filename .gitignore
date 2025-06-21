@@ -9,3 +9,4 @@ outputs/
 *.npy
 outputs/
 checkpoints/
+wandb/
