@@ -1,5 +1,6 @@
 logging: 
+  output_dir: null
   wandb: False  
-  wandb_project: None
-  wandb_entity: None
+  wandb_project: null
+  wandb_entity: null
   disable_progress_bar: False
