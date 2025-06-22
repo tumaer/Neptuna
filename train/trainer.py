@@ -20,8 +20,10 @@ class Trainer(Trainer_):
         self.train_config = train_config
         self.output_log_config = output_log_config
         self.original_label_seq_len = self.data_config.sequence_info[1] #number of predicted timesteps from the model (#no rollout timesteps considered)
-        self.callback_handler.remove_callback(HF_WandbCallback)
-        self.add_callback(WandbCallback())
+        
+        if self.output_log_config["logging"]["wandb"]:
+            self.callback_handler.remove_callback(HF_WandbCallback)
+            self.add_callback(WandbCallback())
     
     def _rebuild_datasets(self):
         """Recreate train and evaluation datasets after hyper-parameters were updated during an HP search trial."""
@@ -863,7 +865,7 @@ class Trainer(Trainer_):
             if self.args.save_strategy == SaveStrategy.BEST:
                 self.control.should_save = is_new_best_metric
 
-        if self.control.should_save:
+        if self.control.should_save: 
             # ------------------------------------------------------------------
             # Purge any plot_progress entries from log_history before the
             # checkpoint is written.  These images are not JSON serializable.

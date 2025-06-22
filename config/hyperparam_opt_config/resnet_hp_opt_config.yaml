@@ -1,0 +1,21 @@
+optimize: true
+n_trials: 2
+metric_for_tuning_hp: ['eval_l2_error']
+search_space:
+  train_config:
+    max_steps:
+      method: categorical
+      choices: [50]
+
+    pushforward:
+      max_allowed_unroll_steps:
+        method: categorical
+        choices: [[0,0,0]]
+
+  model_config:
+    latent_channels:
+      method: categorical
+      choices: [16, 32, 64]
+    num_blocks:
+      method: categorical
+      choices: [[1, 1], [1, 1, 1], [1, 1, 1, 1]]

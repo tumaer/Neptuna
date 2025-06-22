@@ -86,7 +86,7 @@ def run(cfg):  # noqa: D401
         # Misc runtime knobs -----------------------------------------------
         # ------------------------------------------------------------------
         fp16=False,  # set True for mixed-precision
-        dataloader_num_workers=2,  
+        dataloader_num_workers=0,  
         load_best_model_at_end=False,  # enable when save & eval strategy align
         metric_for_best_model="l2_error",  # checkpoint metric
         include_for_metrics=["inputs"],  # keep inputs for plotting
@@ -98,7 +98,7 @@ def run(cfg):  # noqa: D401
         torch_compile=False,
         use_cpu=False,  # force CPU even if CUDA present
         label_names=["label_including_rollouts"],
-        disable_tqdm=True,
+        disable_tqdm=True if cfg["output_log_config"]["logging"]["wandb"] else False,
 
         # ------------------------------------------------------------------
         # Reporting --------------------------------------------------------
@@ -147,7 +147,7 @@ def run(cfg):  # noqa: D401
         train_dataset=train_ds,
         eval_dataset=eval_ds,
         compute_metrics=compute_metrics,
-        callbacks=[WandbCallback],
+        callbacks=[WandbCallback] if cfg["output_log_config"]["logging"]["wandb"] else None, #TODO: to be changed, if there are multiple callbacks 
     )
 
     trainer.set_eval_or_test_rollout_steps(rollout_steps=cfg["train_config"]["n_eval_rollouts"], output_all_steps=True)
@@ -196,8 +196,7 @@ def run(cfg):  # noqa: D401
             direction="minimize",
             backend="optuna",
             hp_space=optuna_hp_space_factory(cfg),
-            n_trials=cfg["hyperparam_opt_config"].get("n_trials", 3),
+            n_trials=cfg["hyperparam_opt_config"]["n_trials"],
             hp_name=trial_name,
             compute_objective=compute_objective_function(selected_metrics=cfg["hyperparam_opt_config"]["metric_for_tuning_hp"]),
-            n_jobs=3
         ) 

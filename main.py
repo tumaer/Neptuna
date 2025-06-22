@@ -25,6 +25,7 @@ if __name__ == "__main__":
 ### Number of eval iterations: number_of_eval_iterations = (len(eval_index_map)/batch_size) there are no epochs during eval 
 
 ##TODO:
+#TODO: Find a way to use predictions inside should_save even when save_steps is not a multiple of eval_steps
 # 4 Inference code
 # most of the training arguments to be passed from the config file
 #TODO: See how to increase the n_jobs inside integration_utils.py > run_hp_search_optuna() (it is by default 1)
