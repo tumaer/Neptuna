@@ -1,5 +1,5 @@
 optimize: true
-
+n_trials: 4
 metric_for_tuning_hp: ['eval_l2_error', 'eval_l1_error']
 search_space:
 #only the arguments as mentioned in TrainingArguments can be done for HP Optimization

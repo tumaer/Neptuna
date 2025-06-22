@@ -131,7 +131,7 @@ def optuna_hp_space_factory(config):
             suggestions.update(traverse(child, path_parts + [key], trial))
         return suggestions
 
-    def optuna_hp_space(trial):  # noqa: D401
+    def optuna_hp_space(trial): 
         """Optuna *hp_space* callback compatible with HuggingFace Trainer."""
         return traverse(search_space, [], trial)
 

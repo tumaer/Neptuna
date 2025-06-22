@@ -1,5 +1,5 @@
 optimize: false
-
+n_trials: 3
 metric_for_tuning_hp: ['eval_l2_error', 'eval_l1_error']
 
 search_space:
