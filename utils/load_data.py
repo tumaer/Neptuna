@@ -22,7 +22,6 @@ import random
 import warnings
 from utils.feature_utils import normalize_data
 
-
 def build_index_map(h5py_file, group_list, filter_frame, window_size):
     index_map = []
     channel_names_in_h5_file = list(h5py_file[group_list[0]].keys())
@@ -51,8 +50,9 @@ def create_train_eval_index_map(h5file_path: str,
                     eval_split_ratio: Optional[float] = 0.2, #TODO: Handle the case where evel-split ratio is 0.0
                     eval_groups: Optional[list] = None
                     ) -> list:
-     
-    random.seed(42) # Set random seed for reproducibility of sampling groups from the middle for eval
+    
+    # Set random seed for reproducibility of sampling groups from the middle for eval
+    random.seed(42) 
     
     print("train_or_eval_h5_file_path:", h5file_path)
 
@@ -106,8 +106,8 @@ def create_train_eval_index_map(h5file_path: str,
         
         train_groups = [g for g in groups if g not in eval_groups]
 
-        print(f"Train groups ({len(train_groups)}): {train_groups}")
-        print(f"Eval groups ({len(eval_groups)}): {eval_groups}")
+        #print(f"Train groups ({len(train_groups)}): {train_groups}")
+        #print(f"Eval groups ({len(eval_groups)}): {eval_groups}")
 
         # --- Window sizes ---
         train_window_size = (input_seq_len + label_seq_len - 1 + n_max_pf_train_rollouts * label_seq_len) * stride + 1
@@ -118,10 +118,15 @@ def create_train_eval_index_map(h5file_path: str,
         # the window size is 25, so the input sequence is [21, 23, 25, 27] 
         # and the label sequence is [29, 31, 33], first pf-label indices: [35, 37, 39] and second pf-label indices: [41, 43, 45]
         # pushforward only kicks in according to the current epoch and the relative probabilities at that epoch, but we have to slice and select the labels for the max number of pf-rollouts
-
+        
         # --- Build both train and eval maps ---
         train_index_map = build_index_map(f, train_groups, filter_frames, train_window_size)
         eval_index_map = build_index_map(f, eval_groups, filter_frames, eval_window_size)
+        
+        #Check if the train_index_map and eval_index_map are not empty
+        assert len(train_index_map) > 0, "train_index_map is empty"
+        assert len(eval_index_map) > 0, "eval_index_map is empty"
+        
         print(f"Length of train index map: {len(train_index_map)}")
         print(f"Length of eval index map: {len(eval_index_map)}")
         

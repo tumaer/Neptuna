@@ -1,0 +1,19 @@
+optimize: false
+
+metric_for_tuning_hp: ['eval_l2_error', 'eval_l1_error']
+
+search_space:
+  learning_rate:
+    method: float
+    low: 1e-5
+    high: 5e-4
+    log: true
+
+  batch_size:
+    method: categorical
+    choices: [2, 3, 6]
+
+  num_train_epochs:
+    method: int
+    low: 2
+    high: 5
