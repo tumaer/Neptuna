@@ -5,6 +5,7 @@ from torch import Tensor
 from utils import activation_func
 from typing import Optional, List
 from .resnet_utils import BasicBlockND,DilatedBasicBlockND, getblock, make_layer
+from models.DeepONet.deeponet_utils import BasicBlockND4DeepONet
 from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 
 

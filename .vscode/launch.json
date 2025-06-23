@@ -44,7 +44,7 @@
 
       },
         {
-          "name": "HP_OPT_train 1D_KS_UNet:",
+          "name": "UNet_HP_OPT_train 1D_KS:",
           "type": "debugpy",
           "request": "launch",
           "program": "main.py",
@@ -56,27 +56,6 @@
               "data_config=fluids/KS/1d_ks_data.yaml",
               "model_config=UNet/default_unet",
               "hyperparam_opt_config=basic_hp_opt_config.yaml"
-              //"output_log_config=wandb_log.yaml"
-            ],
-          "env": {
-              "HYDRA_FULL_ERROR": "1",
-              "HYDRA_MAIN_DISABLE_RUN": "1"
-              }
-
-      },
-        {
-          "name": "ResNet_HP_OPT_train 1D_KS_UNet:",
-          "type": "debugpy",
-          "request": "launch",
-          "program": "main.py",
-          "console": "integratedTerminal",
-          "justMyCode": false,
-          "args": [
-              "hydra.run.dir=.",
-              "hydra.output_subdir=null",
-              "data_config=fluids/KS/1d_ks_data.yaml",
-              "model_config=ResNet/default_resnet",
-              "hyperparam_opt_config=resnet_hp_opt_config.yaml"
               //"output_log_config=wandb_log.yaml"
             ],
           "env": {
@@ -143,6 +122,27 @@
                 }
 
         },
+        {
+          "name": "ResNet_HP_OPT_train_1D_KS:",
+          "type": "debugpy",
+          "request": "launch",
+          "program": "main.py",
+          "console": "integratedTerminal",
+          "justMyCode": false,
+          "args": [
+              "hydra.run.dir=.",
+              "hydra.output_subdir=null",
+              "data_config=fluids/KS/1d_ks_data.yaml",
+              "model_config=ResNet/default_resnet",
+              "hyperparam_opt_config=resnet_hp_opt_config.yaml"
+              //"output_log_config=wandb_log.yaml"
+            ],
+          "env": {
+              "HYDRA_FULL_ERROR": "1",
+              "HYDRA_MAIN_DISABLE_RUN": "1"
+              }
+
+      },
         {
             "name": "train 2D_KS_ResNet:",
             "type": "debugpy",
@@ -259,6 +259,27 @@
               }
 
       },
+      {
+        "name": "FNO_HP_OPT_train_1D_KS:",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "main.py",
+        "console": "integratedTerminal",
+        "justMyCode": false,
+        "args": [
+            "hydra.run.dir=.",
+            "hydra.output_subdir=null",
+            "data_config=fluids/KS/1d_ks_data.yaml",
+            "model_config=FNO/default_fno",
+            "hyperparam_opt_config=fno_hp_opt_config.yaml"
+            //"output_log_config=wandb_log.yaml"
+          ],
+        "env": {
+            "HYDRA_FULL_ERROR": "1",
+            "HYDRA_MAIN_DISABLE_RUN": "1"
+            }
+
+    },
       {
         "name": "train 2D_KS_FNO:",
         "type": "debugpy",
@@ -450,6 +471,22 @@
           }
     },
     {
+      "name": "CNO_HP_OPT_train_1D_KS:",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "main.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+          "hydra.run.dir=.",
+          "hydra.output_subdir=null",
+          "data_config=fluids/KS/1d_ks_data.yaml",
+          "model_config=CNO/default_cno",
+          "hyperparam_opt_config=cno_hp_opt_config.yaml"
+          //"output_log_config=wandb_log.yaml"
+        ],
+      },
+    {
       "name": "train 2D_KS_CNO",
       "type": "debugpy",
       "request": "launch",
@@ -591,6 +628,24 @@
             "hydra.output_subdir=null",
             "data_config=fluids/KVS/2d_kvs_data_default",
             "model_config=DeepONet/default_deeponet_cnn"
+          ],
+        "env": {
+            "HYDRA_FULL_ERROR": "1",
+            "HYDRA_MAIN_DISABLE_RUN": "1"
+            }
+      },
+      {
+        "name": "train 2D_KVS_DeepONet_ResNet",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "main.py",
+        "console": "integratedTerminal",
+        "justMyCode": false,
+        "args": [
+            "hydra.run.dir=.",
+            "hydra.output_subdir=null",
+            "data_config=fluids/KVS/2d_kvs_data_default",
+            "model_config=DeepONet/default_deeponet_resnet"
           ],
         "env": {
             "HYDRA_FULL_ERROR": "1",

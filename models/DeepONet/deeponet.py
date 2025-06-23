@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from utils import activation_func
-from .deeponet_utils import Ffn, CnnBranch, grid_to_points, points_to_grid, calc_resnet_out_shape, linspace_int_list
+from .deeponet_utils import Ffn, CnnBranch,grid_to_points, points_to_grid, calc_resnet_out_shape, linspace_int_list
 from models.ResNet.resnet import ResNet1D, ResNet2D, ResNet3D
 
 
@@ -43,7 +43,7 @@ class AutoDeepONet(nn.Module):
         kernel_size : Optional[int]
             Kernel size for the CNN branch network, not used for FFN or ResNet
         padding : Optional[int]
-            Padding for the CNN and ResNet branch network, not used for FFN
+            Padding for the CNN branch network, not used for FFN and ResNet
         hidden_channels : Optional[int]
             Number of hidden channels for the CNN and ResNet branch network, not used for FFN
         num_blocks (List[int]): 
@@ -71,6 +71,7 @@ class AutoDeepONet(nn.Module):
         stride: Optional[int] = 2,
         latent_channels: Optional[int] = 32,
         num_blocks: Optional[List[int]] = [1],
+        ResNet_block: Optional[str] = "BasicBlock",
     ):
 
         super().__init__()
@@ -126,8 +127,8 @@ class AutoDeepONet(nn.Module):
                     trunk_depth = trunk_depth,
                     padding= padding,
                     latent_channels = latent_channels, 
-                    #block = "BasicBlock",
-                    #num_blocks = [1,1,1],
+                    ResNet_block = ResNet_block,
+                    num_blocks = num_blocks,
                 )
 
     def forward(self, 
@@ -174,6 +175,7 @@ class AutoDeepONet1D(nn.Module):
         padding: Optional[int] = 1, 
         latent_channels: Optional[int] = 32,
         query_idxs: Optional[Tensor] = None,        
+        ResNet_block: Optional[str] = "BasicBlock",
     ):
         super().__init__()
         self.out_size = out_size
@@ -226,17 +228,18 @@ class AutoDeepONet1D(nn.Module):
                 
             elif branch_net == "ResNet":
                 self.branch_net = ResNet1D(
-                    in_channels= in_size,
-                    out_channels= latent_channels,
-                    block = "BasicBlock",
+                    in_size= in_size,
+                    out_size= latent_channels,
+                    block = ResNet_block,
                     num_blocks = num_blocks,
-                    hidden_channels= latent_channels,#TODO:change this!!!!!
+                    latent_channels= latent_channels,
                     coord_features= False,
-                    padding= padding,
+                    padding= 0,
                 )
                 length_new = latent_channels * calc_resnet_out_shape(
                     in_shape = grid_resolution,
                     num_blocks = num_blocks,
+                    if_maxpool = False if ResNet_block == "BasicBlock" else True
                 )[0]
                 self.trunk_dims = linspace_int_list(length_new, self.trunk_depth, 1, False)
                 #self.trunk_dims = [1] + [self.width] * self.trunk_depth + [length_new]
@@ -313,7 +316,8 @@ class AutoDeepONet2D(nn.Module):
         out_ffn_depth: Optional[int] = 3,
         padding: Optional[int] = 1, 
         latent_channels: Optional[int] = 32,
-        query_idxs: Optional[Tensor] = None,        
+        query_idxs: Optional[Tensor] = None,    
+        ResNet_block: Optional[str] = "BasicBlock",    
     ):
         super().__init__()
         self.out_size = out_size
@@ -366,19 +370,21 @@ class AutoDeepONet2D(nn.Module):
                 
             elif branch_net == "ResNet":
                 self.branch_net = ResNet2D(
-                    in_channels= in_size,
-                    out_channels= latent_channels,
-                    block = "BasicBlock",
+                    in_size= in_size,
+                    out_size= latent_channels,
+                    block = ResNet_block,
                     num_blocks = num_blocks,
-                    hidden_channels= latent_channels,#TODO:change this!!!!!
+                    latent_channels= latent_channels,
                     coord_features= False,
-                    padding= padding,
+                    padding= 0,
                 )
                 length_new = latent_channels * calc_resnet_out_shape(
                     in_shape = grid_resolution,
-                    num_blocks = num_blocks)[0]* calc_resnet_out_shape(
+                    num_blocks = num_blocks,
+                    if_maxpool = False if ResNet_block == "BasicBlock" else True)[0]* calc_resnet_out_shape(
                                                     in_shape = grid_resolution,
-                                                    num_blocks = num_blocks)[1]
+                                                    num_blocks = num_blocks,
+                                                    if_maxpool = False if ResNet_block == "BasicBlock" else True)[1]
                 self.trunk_dims = linspace_int_list(length_new, self.trunk_depth, 2, False)
                 #self.trunk_dims = [2] + [self.width] * self.trunk_depth + [length_new]
                 self.trunk_net = Ffn(
@@ -456,7 +462,8 @@ class AutoDeepONet3D(nn.Module):
         out_ffn_depth: Optional[int] = 3,
         padding: Optional[int] = 1, 
         latent_channels: Optional[int] = 32,
-        query_idxs: Optional[Tensor] = None,        
+        query_idxs: Optional[Tensor] = None,
+        ResNet_block: Optional[str] = "BasicBlock",        
     ):
         super().__init__()
         self.out_size = out_size
@@ -509,21 +516,24 @@ class AutoDeepONet3D(nn.Module):
                 
             elif branch_net == "ResNet":
                 self.branch_net = ResNet3D(
-                    in_channels= in_size,
-                    out_channels= latent_channels,
-                    block = "BasicBlock",
+                    in_size= in_size,
+                    out_size= latent_channels,
+                    block = ResNet_block,
                     num_blocks = num_blocks,
-                    hidden_channels= latent_channels,#TODO:change this!!!!!
+                    latent_channels= latent_channels,#TODO:change this!!!!!
                     coord_features= False,
-                    padding= padding,
+                    padding= 0,
                 )
                 length_new = latent_channels * calc_resnet_out_shape(
                     in_shape = grid_resolution,
-                    num_blocks = num_blocks)[0]* calc_resnet_out_shape(
+                    num_blocks = num_blocks,
+                    if_maxpool = False if ResNet_block == "BasicBlock" else True)[0]* calc_resnet_out_shape(
                                                     in_shape = grid_resolution,
-                                                    num_blocks = num_blocks)[1] * calc_resnet_out_shape(
+                                                    num_blocks = num_blocks,
+                                                    if_maxpool = False if ResNet_block == "BasicBlock" else True)[1] * calc_resnet_out_shape(
                                                     in_shape = grid_resolution,
-                                                    num_blocks = num_blocks)[2]
+                                                    num_blocks = num_blocks,
+                                                    if_maxpool = False if ResNet_block == "BasicBlock" else True)[2]
                 self.trunk_dims = linspace_int_list(length_new, self.trunk_depth, 3, False)
                 #self.trunk_dims = [3] + [self.width] * self.trunk_depth + [length_new]
                 self.trunk_net = Ffn(

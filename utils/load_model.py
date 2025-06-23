@@ -122,6 +122,8 @@ def fetch_model(model_config: Dict,
                     branch_net = "ResNet",
                     width=model_config['width'],
                     activation_fn_name=model_config['activation_fn_name'],
+                    ResNet_block= model_config['ResNet_block'],
+                    num_blocks= model_config['num_blocks'],
                     )
     
     elif model_name == "cno":

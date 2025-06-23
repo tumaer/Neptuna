@@ -1,9 +1,6 @@
 optimize: true
 n_trials: 200
 metric_for_tuning_hp: ['eval_l2_error']
-optuna_sampler: Random_sampler
-sampler_params:
-  seed: 0  # for reproducible random sampling
 search_space:
   train_config:
     max_steps:
@@ -19,12 +16,12 @@ search_space:
     latent_channels:
       method: categorical
       choices: [16, 32, 64]
-    num_blocks:
+    n_fno_layers:
       method: categorical
-      choices: [[1, 1], [1, 1, 1], [1, 1, 1, 1]]
-    n_groups:
+      choices: [2, 3, 4]
+    decoder_layers:
       method: categorical
-      choices: [1, 2, 4]
-    activation_fn_name:
+      choices: [1, 2, 3]
+    decoder_layer_size:
       method: categorical
-      choices: ['gelu', 'relu']
+      choices: [64, 128, 256]

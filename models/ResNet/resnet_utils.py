@@ -2,7 +2,7 @@ from typing import List, Optional, Union, Callable
 import torch
 import torch.nn as nn
 from torch import Tensor
-
+from models.DeepONet.deeponet_utils import BasicBlockND4DeepONet
 #######################################################################
 #######################################################################
 class BasicBlockND(nn.Module):
@@ -163,6 +163,8 @@ def getblock(block):
                 return BasicBlockND
         elif block == "DilatedBasicBlock":
                 return DilatedBasicBlockND
+        elif block == "BasicBlockND4DeepONet":
+                return BasicBlockND4DeepONet
         else:
             raise NotImplementedError(f"Unknown block: {block}")
     else:

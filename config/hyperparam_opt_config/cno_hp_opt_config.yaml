@@ -1,9 +1,6 @@
 optimize: true
 n_trials: 200
 metric_for_tuning_hp: ['eval_l2_error']
-optuna_sampler: Random_sampler
-sampler_params:
-  seed: 0  # for reproducible random sampling
 search_space:
   train_config:
     max_steps:
@@ -14,17 +11,23 @@ search_space:
       max_allowed_unroll_steps:
         method: categorical
         choices: [[0,0,0]]
-
+    
   model_config:
     latent_channels:
       method: categorical
       choices: [16, 32, 64]
-    num_blocks:
+    cno_depth:
       method: categorical
-      choices: [[1, 1], [1, 1, 1], [1, 1, 1, 1]]
-    n_groups:
+      choices: [2, 3, 4]
+    n_blocks:
       method: categorical
-      choices: [1, 2, 4]
-    activation_fn_name:
+      choices: [4,5]
+    n_blocks_bottleneck:
       method: categorical
-      choices: ['gelu', 'relu']
+      choices: [2, 4]
+    channel_multiplier:
+      method: categorical
+      choices: [8, 16, 32]
+    norm:
+      method: categorical
+      choices: [True, False]

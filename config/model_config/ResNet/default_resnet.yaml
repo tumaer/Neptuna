@@ -4,4 +4,3 @@ latent_channels: 256
 norm: True
 activation_fn_name: gelu
 n_groups: 1
-stride: 1
