@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 """Orchestrates a full training or hyper-parameter-optimisation run."""
 
 import time
@@ -15,12 +14,13 @@ from bench.dataset_utils import make_datasets
 from utils.hp_optimization import (
     compute_objective_function,
     optuna_hp_space_factory,
+    get_optuna_sampler,
 )
 from utils.wandb_callback import WandbCallback
 __all__ = ["run"]
 
 
-def run(cfg):  # noqa: D401
+def run(cfg):
     """Entry-point called by main.py after Hydra config is prepared."""
     # ------------------------------------------------------------------
     # Build TrainingArguments
@@ -154,7 +154,7 @@ def run(cfg):  # noqa: D401
 
 
     # Helper to give each Optuna trial a human-readable name 
-    def trial_name(trial):  # noqa: D401
+    def trial_name(trial):  
         """Return a short, unique name for an Optuna trial.
 
         We include the trial number and a couple of key sampled parameters (if
@@ -192,6 +192,8 @@ def run(cfg):  # noqa: D401
         trainer.train(resume_from_checkpoint=False)
         print(f"Total train time: {time.time() - start:.2f} s")
     else:
+        #get the sampler from the config, it could be GridSampler, RandomSampler, TPESampler
+        sampler = get_optuna_sampler(cfg["hyperparam_opt_config"]["optuna_sampler"], config=cfg)
         best_trial = trainer.hyperparameter_search(
             direction="minimize",
             backend="optuna",
@@ -199,4 +201,5 @@ def run(cfg):  # noqa: D401
             n_trials=cfg["hyperparam_opt_config"]["n_trials"],
             hp_name=trial_name,
             compute_objective=compute_objective_function(selected_metrics=cfg["hyperparam_opt_config"]["metric_for_tuning_hp"]),
+            sampler=sampler,
         ) 
