@@ -8,13 +8,14 @@ from train.trainer import Trainer
 from metrics.default_metrics import l1_error, l2_error
 from transformers.trainer import EvalPrediction
 import copy
-
+import optuna
+from plotly.io import show
 from utils.load_model import fetch_model
 from bench.dataset_utils import make_datasets
 from utils.hp_optimization import (
     compute_objective_function,
     optuna_hp_space_factory,
-    get_optuna_sampler,
+    get_optuna_sampler
 )
 from utils.wandb_callback import WandbCallback
 __all__ = ["run"]
@@ -194,7 +195,7 @@ def run(cfg):
     else:
         #get the sampler from the config, it could be GridSampler, RandomSampler, TPESampler
         sampler = get_optuna_sampler(cfg["hyperparam_opt_config"]["optuna_sampler"], config=cfg)
-        best_trial = trainer.hyperparameter_search(
+        best_trial, study = trainer.hyperparameter_search(
             direction="minimize",
             backend="optuna",
             hp_space=optuna_hp_space_factory(cfg),
@@ -203,3 +204,6 @@ def run(cfg):
             compute_objective=compute_objective_function(selected_metrics=cfg["hyperparam_opt_config"]["metric_for_tuning_hp"]),
             sampler=sampler,
         ) 
+
+        # fig = optuna.visualization.plot_parallel_coordinate(study)
+        # fig.write_image("optuna_parallel_coordinate.png")
