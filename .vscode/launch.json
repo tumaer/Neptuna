@@ -5,27 +5,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "train 1D_KS_UNet:",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "main.py",
-            "console": "integratedTerminal",
-            "justMyCode": false,
-            "args": [
-                "hydra.run.dir=.",
-                "hydra.output_subdir=null",
-                "data_config=fluids/KS/1d_ks_data.yaml",
-                "model_config=UNet/default_unet"
-              ],
-            "env": {
-                "HYDRA_FULL_ERROR": "1",
-                "HYDRA_MAIN_DISABLE_RUN": "1"
-                }
-
-        },
-
-        {
-            "name": "main train scot",
+            "name": "train 2D_KS_ScOT",
             "type": "debugpy",
             "request": "launch",
             "program": "main.py",
@@ -41,6 +21,25 @@
                 "HYDRA_FULL_ERROR": "1",
                 "HYDRA_MAIN_DISABLE_RUN": "1"
                 }
+
+        },
+        {
+          "name": "train 1D_KS_UNet:",
+          "type": "debugpy",
+          "request": "launch",
+          "program": "main.py",
+          "console": "integratedTerminal",
+          "justMyCode": false,
+          "args": [
+              "hydra.run.dir=.",
+              "hydra.output_subdir=null",
+              "data_config=fluids/KS/1d_ks_data.yaml",
+              "model_config=UNet/default_unet"
+            ],
+          "env": {
+              "HYDRA_FULL_ERROR": "1",
+              "HYDRA_MAIN_DISABLE_RUN": "1"
+              }
 
         },
         {
@@ -81,7 +80,6 @@
                 }
 
         },
-        //-------------------------------------------------------------------------------
         {
             "name": "train 1D_KS_ResNet:",
             "type": "debugpy",
@@ -139,7 +137,6 @@
                 }
 
         },
-        //-------------------------------------------------------------------------------
         {
           "name": "train 1D_KS_dilResNet:",
           "type": "debugpy",
@@ -197,7 +194,6 @@
               }
 
       },
-      //-------------------------------------------------------------------------------
         {
           "name": "train 1D_KS_FNO:",
           "type": "debugpy",
@@ -255,7 +251,6 @@
             }
 
     },     
-     //-------------------------------------------------------------------------------
     {
       "name": "train 1D_KS_DeepONet_FFN",
       "type": "debugpy",
@@ -444,6 +439,25 @@
           }
     },
         //###################################################################
+        {
+          "name": "train 2D_KVS_ScOT",
+          "type": "debugpy",
+          "request": "launch",
+          "program": "main.py",
+          "console": "integratedTerminal",
+          "justMyCode": false,
+          "args": [
+              "hydra.run.dir=.",
+              "hydra.output_subdir=null",
+              "data_config=fluids/KVS/2d_kvs_data_default",
+              "model_config=ScOT/default_scot"
+            ],
+          "env": {
+              "HYDRA_FULL_ERROR": "1",
+              "HYDRA_MAIN_DISABLE_RUN": "1"
+              }
+
+        },
         {
             "name": "train 2D_KVS_Unet",
             "type": "debugpy",

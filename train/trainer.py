@@ -833,7 +833,7 @@ class Trainer(Trainer_):
             if self.args.save_strategy == SaveStrategy.BEST:
                 self.control.should_save = is_new_best_metric
 
-        if self.control.should_save:
+        if False: #self.control.should_save: # ToDo: SET BACK TO self.control.should_save when pipeline ready !!!
             self._save_checkpoint(model, trial)
             #########################################################
             ##NOTE: This plotting is not present in the base class

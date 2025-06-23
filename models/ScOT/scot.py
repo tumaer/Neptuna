@@ -1,3 +1,7 @@
+### Model taken from Poseidon: Efficient Foundation Models for PDEs. 
+# Github: https://github.com/camlab-ethz/poseidon?tab=readme-ov-file 
+# Paper: https://arxiv.org/abs/2405.19101
+
 from transformers import (
     PreTrainedModel,
     PretrainedConfig,
@@ -19,7 +23,6 @@ from torch import nn
 from typing import Optional, Union, Tuple, List
 import math
 import collections
-
 
 @dataclass
 class ScOTOutput(ModelOutput):
@@ -72,8 +75,6 @@ class ScOTConfig(PretrainedConfig):
 
         self.resolution_x = resolution_x
         self.resolution_y = resolution_y
-        if resolution_x != resolution_y:
-            raise ValueError("Different resolution sizes for x and y not yet implemented.")
         self.patch_size = patch_size
         self.in_channels = in_channels
         self.embed_dim = embed_dim
@@ -230,14 +231,11 @@ class ScOTPatchEmbeddings(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        resolution, patch_size = config.resolution_x, config.patch_size # 128, 4
+        resolution_x, resolution_y, patch_size = config.resolution_x, config.resolution_y, config.patch_size # 128, 4
         in_channels, hidden_size = config.in_channels, config.embed_dim # 4, 48
         self.input_steps = config.input_steps
-        resolution = ( # (128, 128)
-            resolution
-            if isinstance(resolution, collections.abc.Iterable)
-            else (resolution, resolution)
-        )
+        resolution = (resolution_x, resolution_y)
+        
         patch_size = ( # (4, 4)
             patch_size
             if isinstance(patch_size, collections.abc.Iterable)
@@ -395,11 +393,17 @@ class ScOTLayer(nn.Module):
             if isinstance(self.shift_size, collections.abc.Iterable)
             else (self.shift_size, self.shift_size)
         )
-        window_dim = ( # 32
+        window_dim_x = ( # 32
             input_resolution[0].item()
             if torch.is_tensor(input_resolution[0])
             else input_resolution[0]
         )
+        window_dim_y = ( 
+            input_resolution[1].item()
+            if torch.is_tensor(input_resolution[1])
+            else input_resolution[1]
+        )
+        window_dim = min(window_dim_x, window_dim_y)
         self.window_size = (
             window_dim if window_dim <= target_window_size[0] else target_window_size[0]
         )
@@ -564,16 +568,12 @@ class ScOTPatchRecovery(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        resolution, patch_size = config.resolution_x, config.patch_size # 128, 4
+        resolution_x, resolution_y, patch_size = config.resolution_x, config.resolution_y, config.patch_size # 128, 4
         out_channels, hidden_size = ( # 4, 48
             config.out_channels,
             config.embed_dim,
         )
-        resolution = ( # 128, 128
-            resolution
-            if isinstance(resolution, collections.abc.Iterable)
-            else (resolution, resolution)
-        )
+        resolution = (resolution_x, resolution_y)
         patch_size = ( # 4, 4
             patch_size
             if isinstance(patch_size, collections.abc.Iterable)
@@ -722,8 +722,9 @@ class ScOTPatchUnmerging(nn.Module):
     ) -> torch.Tensor:
         output_height, output_width = output_dimensions # 8, 8
         batch_size, seq_len, hidden_size = input_feature.shape # 16, 16, 384
-        #! assume square image
-        input_height = input_width = math.floor(seq_len**0.5) # 4
+        r = output_height / output_width # r is proportion factor
+        input_height = math.floor((seq_len * r) ** 0.5) # To calculate new height (double old one) -> sqrt(4 * area * proportion factor)
+        input_width = math.floor((seq_len / r) ** 0.5)
         input_feature = self.upsample(input_feature) # Linear: [16, 16, 384] -> [16, 16, 768]
         input_feature = input_feature.reshape(
             batch_size, input_height, input_width, 2, 2, hidden_size // 2
@@ -1298,31 +1299,6 @@ class ScOT(Swinv2PreTrainedModel):
         for layer, heads in reversed(heads_to_prune.items()):
             self.decoder.layers[layer].attention.prune_heads(heads)
 
-    def _downsample(self, image, target_size):
-        resolution = image.shape[-2]
-        freqs = torch.fft.fftfreq(resolution, d=1 / resolution)
-        sel = torch.logical_and(freqs >= -target_size / 2, freqs <= target_size / 2 - 1)
-        image_hat = torch.fft.fft2(image, norm="forward")
-        image_hat = image_hat[:, :, sel, :][:, :, :, sel]
-        image = torch.fft.ifft2(image_hat, norm="forward").real
-        return image
-
-    def _upsample(self, image, target_size):
-        # https://stackoverflow.com/questions/71143279/upsampling-images-in-frequency-domain-using-pytorch
-        resolution = image.shape[-2]
-        image_hat = torch.fft.fft2(image, norm="forward")
-        image_hat = torch.fft.fftshift(image_hat)
-        pad_size = (target_size - resolution) // 2
-        real = nn.functional.pad(
-            image_hat.real, (pad_size, pad_size, pad_size, pad_size), value=0.0
-        )
-        imag = nn.functional.pad(
-            image_hat.imag, (pad_size, pad_size, pad_size, pad_size), value=0.0
-        )
-        image_hat = torch.fft.ifftshift(torch.complex(real, imag))
-        image = torch.fft.ifft2(image_hat, norm="forward").real
-        return image
-
     def forward(
         self,
         input_data: Optional[torch.FloatTensor] = None,
@@ -1372,14 +1348,6 @@ class ScOT(Swinv2PreTrainedModel):
             batch, input_seq, channels, x_dim, y_dim = input_data.shape
             input_data = input_data.reshape(batch, input_seq * channels, x_dim, y_dim)
 
-        resolution = input_data.shape[2] # 128; image size is x (and y) velocity shape
-        # image must be square
-        if resolution != self.config.resolution_x: # in case actual size of data is different from specified one -> upsample or downsample with FFT
-            if resolution < self.config.resolution_x:
-                input_data = self._upsample(input_data, self.config.resolution_x)
-            else:
-                input_data = self._downsample(input_data, self.config.resolution_x)
-
         embedding_output, input_dimensions = self.embeddings(
             input_data, bool_masked_pos=bool_masked_pos, time=time
         )
@@ -1407,11 +1375,13 @@ class ScOT(Swinv2PreTrainedModel):
                 else: # is not Identity
                     skip_states[i] = block(skip_states[i], time)
 
-        #! assumes square images
-        input_dim = math.floor(skip_states[-1].shape[1] ** 0.5) # 4
+        input_dim_x = input_dimensions[0] // (2 ** (len(self.config.depths) - 1))
+        input_dim_y = input_dimensions[1] // (2 ** (len(self.config.depths) - 1))
+
+        #input_dim = math.floor(skip_states[-1].shape[1] ** 0.5) # 4
         decoder_output = self.decoder(
             skip_states[-1],
-            (input_dim, input_dim),
+            (input_dim_x, input_dim_y),
             time=time,
             skip_states=skip_states[:-1],
             head_mask=head_mask_decoder,
@@ -1428,12 +1398,6 @@ class ScOT(Swinv2PreTrainedModel):
             if self.config.in_channels > self.config.out_channels: # remove unnecessary channels (like Reynolds-number)
                 input_data = input_data[:, 0 : self.config.out_channels]
             prediction += input_data # original input (input_data) is added to prediction
-
-        if resolution != self.config.resolution_x: # False # Makes sure that image size corresponds to specified resolution in config
-            if resolution > self.config.resolution_x:
-                prediction = self._upsample(prediction, resolution)
-            else:
-                prediction = self._downsample(prediction, resolution)
 
         if pixel_mask is not None:
             prediction[pixel_mask] = labels[pixel_mask].type_as(prediction) # here: does not do anything since all values in pixel_mask are False
