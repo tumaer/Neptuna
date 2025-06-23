@@ -8,7 +8,7 @@ from utils.load_data import fetch_dataset
 __all__ = ["make_datasets"]
 
 
-def make_datasets(cfg: DictConfig):  # noqa: D401
+def make_datasets(cfg: DictConfig): 
     """Return (train_ds, eval_ds) according to *cfg*."""
 
     return fetch_dataset(

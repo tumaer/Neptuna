@@ -12,7 +12,7 @@ from utils.compute_stats import compute_statistics
 __all__ = ["prepare_config"]
 
 
-def prepare_config(cfg: DictConfig) -> DictConfig:  # noqa: D401
+def prepare_config(cfg: DictConfig) -> DictConfig:  
     """Mutate *cfg* in-place, filling in any derived fields.
 
     1. Derive *output_dir* when not specified.

@@ -21,7 +21,7 @@ from omegaconf import ListConfig
 
 # NOTE: Kept here to avoid an extra module.
 
-def encode(value):  # noqa: D401
+def encode(value):  
     """Convert list/ListConfig to a JSON string for safe hashing by Optuna.
 
     Any other type is returned unchanged.
@@ -33,7 +33,7 @@ def encode(value):  # noqa: D401
     return value
 
 
-def decode(value):  # noqa: D401
+def decode(value):  
     """Attempt to convert an encoded JSON string back to ListConfig.
 
     If *value* was not produced by :pyfunc:`encode`, it is returned unchanged.
@@ -136,3 +136,90 @@ def optuna_hp_space_factory(config):
         return traverse(search_space, [], trial)
 
     return optuna_hp_space 
+
+
+# ---------------------------------------------------------------------------
+# Optuna sampler selection
+# ---------------------------------------------------------------------------
+
+def get_optuna_sampler(sampler_name: str, config=None, **kwargs):
+    """Create an Optuna sampler based on the given name and optional parameters.
+    
+    Args:
+        sampler_name: Name of the sampler to create. Supported options:
+            - "TPE_sampler" or "TPESampler": Tree-structured Parzen Estimator
+            - "Random_sampler" or "RandomSampler": Random sampling  
+            - "Grid_sampler" or "GridSampler": Grid search
+            - "CMA_ES_sampler" or "CmaEsSampler": CMA-ES algorithm
+            - "QMC_sampler" or "QMCSampler": Quasi-Monte Carlo sampling
+            - "NSGA2_sampler" or "NSGAIISampler": Multi-objective optimization
+            - "Partial_sampler" or "PartialFixedSampler": Fix some parameters
+        config: Optional config dict containing 'sampler_params' section
+        **kwargs: Additional parameters to pass to the sampler constructor
+        
+    Returns:
+        An instance of the requested Optuna sampler
+        
+    Raises:
+        ValueError: If the sampler name is not supported
+        ImportError: If required dependencies are not available
+    """
+    
+    # Extract sampler parameters from config if provided
+    sampler_params = {}
+    if config and "hyperparam_opt_config" in config and "sampler_params" in config["hyperparam_opt_config"]:
+        sampler_params = dict(config["hyperparam_opt_config"]["sampler_params"])
+    
+    # Merge with explicit kwargs (kwargs take precedence)
+    sampler_params.update(kwargs)
+    
+    # Normalize sampler name (handle both snake_case and CamelCase)
+    sampler_name = sampler_name.lower()
+    
+    try:
+        if sampler_name in ["tpe_sampler", "tpesampler"]:
+            from optuna.samplers import TPESampler
+            return TPESampler(**sampler_params)
+            
+        elif sampler_name in ["random_sampler", "randomsampler"]:
+            from optuna.samplers import RandomSampler
+            return RandomSampler(**sampler_params)
+            
+        elif sampler_name in ["grid_sampler", "gridsampler"]:
+            from optuna.samplers import GridSampler
+            return GridSampler(**sampler_params)
+            
+        elif sampler_name in ["cma_es_sampler", "cmaessampler"]:
+            from optuna.samplers import CmaEsSampler
+            return CmaEsSampler(**sampler_params)
+            
+        elif sampler_name in ["qmc_sampler", "qmcsampler"]:
+            from optuna.samplers import QMCSampler
+            return QMCSampler(**sampler_params)
+            
+        elif sampler_name in ["nsga2_sampler", "nsgaiisampler"]:
+            from optuna.samplers import NSGAIISampler
+            return NSGAIISampler(**sampler_params)
+            
+        elif sampler_name in ["partial_sampler", "partialfixedsampler"]:
+            from optuna.samplers import PartialFixedSampler
+            if "fixed_params" not in sampler_params:
+                raise ValueError("PartialFixedSampler requires 'fixed_params' argument")
+            return PartialFixedSampler(**sampler_params)
+            
+        else:
+            # List available samplers for better error message
+            available = [
+                "TPE_sampler", "Random_sampler", "Grid_sampler", 
+                "CMA_ES_sampler", "QMC_sampler", "NSGA2_sampler", "Partial_sampler"
+            ]
+            raise ValueError(
+                f"Unsupported sampler: '{sampler_name}'. "
+                f"Available options: {', '.join(available)}"
+            )
+            
+    except ImportError as e:
+        raise ImportError(
+            f"Failed to import {sampler_name}. Make sure optuna is installed "
+            f"and all required dependencies are available: {e}"
+        ) 

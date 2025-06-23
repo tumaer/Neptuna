@@ -1,6 +1,9 @@
 optimize: true
 n_trials: 200
 metric_for_tuning_hp: ['eval_l2_error']
+optuna_sampler: Random_sampler
+sampler_params:
+  seed: 0  # for reproducible random sampling
 search_space:
   train_config:
     max_steps:
