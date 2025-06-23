@@ -23,6 +23,7 @@ from torch import nn
 from typing import Optional, Union, Tuple, List
 import math
 import collections
+from utils.feature_utils import twod_meshgrid
 
 @dataclass
 class ScOTOutput(ModelOutput):
@@ -69,6 +70,7 @@ class ScOTConfig(PretrainedConfig):
         learn_residual=False,  # learn the residual for time-dependent problems
         input_steps=4,
         output_steps=3,
+        coord_features=False,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -102,6 +104,9 @@ class ScOTConfig(PretrainedConfig):
         self.residual_model = residual_model
         self.input_steps = input_steps
         self.output_steps = output_steps
+        self.coord_features = coord_features
+        if coord_features:
+            self.in_channels += 2
 
 
 class LayerNorm(nn.LayerNorm):
@@ -1328,6 +1333,10 @@ class ScOT(Swinv2PreTrainedModel):
 
         if input_data is None:
             raise ValueError("input_data cannot be None")
+        
+        if self.config.coord_features:
+            coord_feat = twod_meshgrid(list(input_data.shape), input_data.device)
+            input_data = torch.cat((input_data, coord_feat), dim=1)
 
         # calculate 5D tensor used by attention mechanism to selectively include / exclude attention heads
         # [batch_size, num_heads, seq_len, seq_len] -> [num_layers, batch_size, num_heads, seq_len, seq_len]
