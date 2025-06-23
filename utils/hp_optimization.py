@@ -1,4 +1,7 @@
 from __future__ import annotations
+from transformers.hyperparameter_search import OptunaBackend as OptunaBackend_
+from transformers.hyperparameter_search import ALL_HYPERPARAMETER_SEARCH_BACKENDS
+from transformers.trainer_utils import HPSearchBackend
 
 """Utility helpers for performing hyper-parameter optimisation with HuggingFace Trainer.
 
@@ -14,6 +17,10 @@ import copy
 import json
 from typing import Union
 from omegaconf import ListConfig
+import torch
+import os
+from transformers.trainer_utils import BestRun, PREFIX_CHECKPOINT_DIR
+from transformers.training_args import ParallelMode
 
 # ---------------------------------------------------------------------------
 # Simple (de)serialization helpers originally in utils.hp_codec
@@ -223,3 +230,74 @@ def get_optuna_sampler(sampler_name: str, config=None, **kwargs):
             f"Failed to import {sampler_name}. Make sure optuna is installed "
             f"and all required dependencies are available: {e}"
         ) 
+
+
+def run_hp_search_optuna(trainer, n_trials: int, direction: str, **kwargs) -> BestRun:
+    import optuna
+    from accelerate.utils.memory import release_memory
+
+    if trainer.args.process_index == 0:
+
+        def _objective(trial: optuna.Trial, checkpoint_dir=None):
+            checkpoint = None
+            if checkpoint_dir:
+                for subdir in os.listdir(checkpoint_dir):
+                    if subdir.startswith(PREFIX_CHECKPOINT_DIR):
+                        checkpoint = os.path.join(checkpoint_dir, subdir)
+            trainer.objective = None
+            if trainer.args.world_size > 1:
+                if trainer.args.parallel_mode != ParallelMode.DISTRIBUTED:
+                    raise RuntimeError("only support DDP optuna HPO for ParallelMode.DISTRIBUTED currently.")
+                trainer.hp_space(trial)
+                fixed_trial = optuna.trial.FixedTrial(trial.params, trial.number)
+                trial_main_rank_list = [fixed_trial]
+                torch.distributed.broadcast_object_list(trial_main_rank_list, src=0)
+                trainer.train(resume_from_checkpoint=checkpoint, trial=trial)
+            else:
+                trainer.train(resume_from_checkpoint=checkpoint, trial=trial)
+            # If there hasn't been any evaluation during the training loop.
+            if getattr(trainer, "objective", None) is None:
+                metrics = trainer.evaluate()
+                trainer.objective = trainer.compute_objective(metrics)
+
+            # Free GPU memory
+            trainer.model_wrapped, trainer.model = release_memory(trainer.model_wrapped, trainer.model)
+            trainer.accelerator.clear()
+
+            return trainer.objective
+
+        timeout = kwargs.pop("timeout", None)
+        n_jobs = kwargs.pop("n_jobs", 1)
+        gc_after_trial = kwargs.pop("gc_after_trial", False)
+        directions = direction if isinstance(direction, list) else None
+        direction = None if directions is not None else direction
+        study = optuna.create_study(direction=direction, directions=directions, **kwargs)
+        #NOTE: catch=(RuntimeError,) is added on top of the default function in transformers.integrations.integration_utils.py
+        study.optimize(_objective, n_trials=n_trials, timeout=timeout, n_jobs=n_jobs, gc_after_trial=gc_after_trial, catch=(RuntimeError,))
+        if not study._is_multi_objective():
+            best_trial = study.best_trial
+            return BestRun(str(best_trial.number), best_trial.value, best_trial.params), study
+        else:
+            best_trials = study.best_trials
+            return [BestRun(str(best.number), best.values, best.params) for best in best_trials], study
+    else:
+        for i in range(n_trials):
+            trainer.objective = None
+            trial_main_rank_list = [None]
+            if trainer.args.parallel_mode != ParallelMode.DISTRIBUTED:
+                raise RuntimeError("only support DDP optuna HPO for ParallelMode.DISTRIBUTED currently.")
+            torch.distributed.broadcast_object_list(trial_main_rank_list, src=0)
+            trainer.train(resume_from_checkpoint=None, trial=trial_main_rank_list[0])
+            # If there hasn't been any evaluation during the training loop.
+            if getattr(trainer, "objective", None) is None:
+                metrics = trainer.evaluate()
+                trainer.objective = trainer.compute_objective(metrics)
+        return None
+
+
+class OptunaBackend(OptunaBackend_):
+    def run(self, trainer, n_trials: int, direction: str, **kwargs):
+        print("Running OptunaBackend.run")
+        return run_hp_search_optuna(trainer, n_trials, direction, **kwargs)
+    
+ALL_HYPERPARAMETER_SEARCH_BACKENDS[HPSearchBackend(OptunaBackend.name)] = OptunaBackend
