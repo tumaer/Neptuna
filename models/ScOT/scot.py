@@ -70,7 +70,7 @@ class ScOTConfig(PretrainedConfig):
         learn_residual=False,  # learn the residual for time-dependent problems
         input_steps=4,
         output_steps=3,
-        coord_features=False,
+        coord_features=True,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -105,8 +105,6 @@ class ScOTConfig(PretrainedConfig):
         self.input_steps = input_steps
         self.output_steps = output_steps
         self.coord_features = coord_features
-        if coord_features:
-            self.in_channels += 2
 
 
 class LayerNorm(nn.LayerNorm):
@@ -240,6 +238,7 @@ class ScOTPatchEmbeddings(nn.Module):
         in_channels, hidden_size = config.in_channels, config.embed_dim # 4, 48
         self.input_steps = config.input_steps
         resolution = (resolution_x, resolution_y)
+        self.coord_features = config.coord_features
         
         patch_size = ( # (4, 4)
             patch_size
@@ -259,7 +258,7 @@ class ScOTPatchEmbeddings(nn.Module):
         ) # (32, 32) = 128 / 4
 
         self.projection = nn.Conv2d( 
-            in_channels * self.input_steps, hidden_size, kernel_size=patch_size, stride=patch_size
+            in_channels * self.input_steps + (2 if self.coord_features else 0), hidden_size, kernel_size=patch_size, stride=patch_size
         )
 
     def maybe_pad(self, input_data, height, width):
@@ -275,7 +274,7 @@ class ScOTPatchEmbeddings(nn.Module):
         self, input_data: Optional[torch.FloatTensor]
     ) -> Tuple[torch.Tensor, Tuple[int]]:
         _, in_channels, height, width = input_data.shape # 4, 128, 128
-        if in_channels != self.in_channels * self.input_steps:
+        if in_channels != (self.in_channels * self.input_steps) + (2 if self.coord_features else 0):
             raise ValueError(
                 "Make sure that the channel dimension of the pixel values match with the one set in the configuration."
             )
@@ -1333,10 +1332,6 @@ class ScOT(Swinv2PreTrainedModel):
 
         if input_data is None:
             raise ValueError("input_data cannot be None")
-        
-        if self.config.coord_features:
-            coord_feat = twod_meshgrid(list(input_data.shape), input_data.device)
-            input_data = torch.cat((input_data, coord_feat), dim=1)
 
         # calculate 5D tensor used by attention mechanism to selectively include / exclude attention heads
         # [batch_size, num_heads, seq_len, seq_len] -> [num_layers, batch_size, num_heads, seq_len, seq_len]
@@ -1356,6 +1351,10 @@ class ScOT(Swinv2PreTrainedModel):
         if len(input_data.shape) == 5:
             batch, input_seq, channels, x_dim, y_dim = input_data.shape
             input_data = input_data.reshape(batch, input_seq * channels, x_dim, y_dim)
+
+        if self.config.coord_features:
+            coord_feat = twod_meshgrid(list(input_data.shape), input_data.device)
+            input_data = torch.cat((input_data, coord_feat), dim=1)
 
         embedding_output, input_dimensions = self.embeddings(
             input_data, bool_masked_pos=bool_masked_pos, time=time
