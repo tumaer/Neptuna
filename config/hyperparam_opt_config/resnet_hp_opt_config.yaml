@@ -4,7 +4,7 @@ metric_for_tuning_hp: ['eval_l2_error']
 optuna_sampler: Random_sampler
 sampler_params:
   seed: 0  # for reproducible random sampling
-search_space:
+search_domain:
   train_config:
     max_steps:
       method: categorical

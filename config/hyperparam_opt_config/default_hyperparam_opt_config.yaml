@@ -12,7 +12,7 @@ optuna_sampler: TPE_sampler
 #   seed: 42                    # for Random_sampler: random seed for reproducibility
 #   consider_prior: true        # for TPE_sampler: whether to consider prior distributions
 
-search_space:
+search_domain:
   learning_rate:
     method: float
     low: 1e-5

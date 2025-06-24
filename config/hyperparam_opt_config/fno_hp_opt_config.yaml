@@ -1,7 +1,7 @@
 optimize: true
 n_trials: 200
 metric_for_tuning_hp: ['eval_l2_error']
-search_space:
+search_domain:
   train_config:
     max_steps:
       method: categorical

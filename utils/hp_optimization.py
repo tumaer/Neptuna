@@ -22,11 +22,6 @@ import os
 from transformers.trainer_utils import BestRun, PREFIX_CHECKPOINT_DIR
 from transformers.training_args import ParallelMode
 
-# ---------------------------------------------------------------------------
-# Simple (de)serialization helpers originally in utils.hp_codec
-# ---------------------------------------------------------------------------
-
-# NOTE: Kept here to avoid an extra module.
 
 def encode(value):  
     """Convert list/ListConfig to a JSON string for safe hashing by Optuna.
@@ -105,7 +100,7 @@ def optuna_hp_space_factory(config):
     suggested values).
     """
 
-    search_space = config["hyperparam_opt_config"]["search_space"]
+    search_domain = config["hyperparam_opt_config"]["search_domain"]
 
     def suggest_from_spec(param_path: str, spec: Mapping, trial):
         """Suggest a value for a *trial* based on the given *spec* definition."""
@@ -140,7 +135,7 @@ def optuna_hp_space_factory(config):
 
     def optuna_hp_space(trial): 
         """Optuna *hp_space* callback compatible with HuggingFace Trainer."""
-        return traverse(search_space, [], trial)
+        return traverse(search_domain, [], trial)
 
     return optuna_hp_space 
 
@@ -194,6 +189,8 @@ def get_optuna_sampler(sampler_name: str, config=None, **kwargs):
             
         elif sampler_name in ["grid_sampler", "gridsampler"]:
             from optuna.samplers import GridSampler
+            if "search_space" not in sampler_params:
+                raise ValueError("GridSampler requires 'search_space' argument")
             return GridSampler(**sampler_params)
             
         elif sampler_name in ["cma_es_sampler", "cmaessampler"]:
