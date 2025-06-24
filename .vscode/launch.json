@@ -44,7 +44,7 @@
 
       },
         {
-          "name": "UNet_HP_OPT_train 1D_KS:",
+          "name": "UNet_HP_OPT_train_1D_KS:",
           "type": "debugpy",
           "request": "launch",
           "program": "main.py",
@@ -55,7 +55,7 @@
               "hydra.output_subdir=null",
               "data_config=fluids/KS/1d_ks_data.yaml",
               "model_config=UNet/default_unet",
-              "hyperparam_opt_config=basic_hp_opt_config.yaml"
+              "hyperparam_opt_config=unet_hp_opt_config.yaml"
               //"output_log_config=wandb_log.yaml"
             ],
           "env": {

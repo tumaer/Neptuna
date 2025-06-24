@@ -6,7 +6,7 @@ defaults:
   - scheduler_config: default_scheduler
   - train_config: default_training
   - infer_config: default_infer
-  - hyperparam_opt_config: fno_hp_opt_config
+  - hyperparam_opt_config: default_hyperparam_opt_config
   #- hydra: default_hydra_config
   - _self_
 

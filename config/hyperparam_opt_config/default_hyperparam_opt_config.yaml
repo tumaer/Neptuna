@@ -3,7 +3,7 @@ n_trials: 3
 metric_for_tuning_hp: ['eval_l2_error', 'eval_l1_error']
 
 # Available samplers: TPE_sampler, Random_sampler, Grid_sampler, CMA_ES_sampler, QMC_sampler, NSGA2_sampler, Partial_sampler
-optuna_sampler: TPE_sampler
+optuna_sampler: null
 
 # Optional sampler parameters (uncomment and modify as needed)
 # sampler_params:
