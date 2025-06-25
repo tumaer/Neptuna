@@ -158,9 +158,10 @@ def fetch_model(model_config: Dict,
             layer_norm_eps=model_config['layer_norm_eps'], # used in layer_norm both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
             residual_model=model_config['residual_model'], # either convnext or resnet
             use_conditioning=model_config['use_conditioning'], # if True ConditionalLayerNorm is used otherwise LayerNorm
-            learn_residual=model_config['learn_residual'], # can only be used if use_conditioning is True -> model trained to predict residual (difference) between input and target, rather than full output directly
             input_steps=data_config['sequence_info'][0],
             output_steps=data_config['sequence_info'][1],
+            output_hidden_states=model_config['output_hidden_states'],
+            output_attentions=model_config['output_attentions'],
             coord_features=True
         )
         model = ScOT(scot_config)

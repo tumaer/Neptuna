@@ -67,9 +67,10 @@ class ScOTConfig(PretrainedConfig):
         layer_norm_eps=1e-5,
         residual_model="convnext",  # "convnext" or "resnet"
         use_conditioning=False,
-        learn_residual=False,  # learn the residual for time-dependent problems
         input_steps=4,
         output_steps=3,
+        output_hidden_states=False,
+        output_attentions=False,
         coord_features=True,
         **kwargs,
     ):
@@ -93,7 +94,6 @@ class ScOTConfig(PretrainedConfig):
         self.hidden_act = hidden_act
         self.use_absolute_embeddings = use_absolute_embeddings
         self.use_conditioning = use_conditioning
-        self.learn_residual = learn_residual if self.use_conditioning else False
         self.layer_norm_eps = layer_norm_eps
         self.initializer_range = initializer_range
         # we set the hidden_size attribute in order to make Swinv2 work with VisionEncoderDecoderModel
@@ -104,6 +104,8 @@ class ScOTConfig(PretrainedConfig):
         self.residual_model = residual_model
         self.input_steps = input_steps
         self.output_steps = output_steps
+        self.output_hidden_states = output_hidden_states
+        self.output_attentions = output_attentions
         self.coord_features = coord_features
 
 
@@ -1251,8 +1253,35 @@ class Swinv2PreTrainedModel(PreTrainedModel):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
 
+class ScOT(nn.Module):
+    def __init__(self, config):
+        super().__init__()
 
-class ScOT(Swinv2PreTrainedModel):
+        self.config = config
+        self.dimension = 2
+
+        self.scot = self.build_ScOT()(config=config)
+
+    def build_ScOT():
+        if self.dimension == 2:
+            return ScOT2D
+        else:
+            raise NotImplementedError("Invalid dimensionality. Only 2D ScOT implemented.")
+
+
+    def forward(self, input_data: Tensor) -> Tensor:
+
+        if input_data is None:
+            raise ValueError("input_data cannot be None")
+        
+        batch, input_seq, channels, x_dim, y_dim = input_data.shape
+        input_data = input_data.reshape(batch, input_seq * channels, x_dim, y_dim)
+        
+        x = self.scot(x)
+
+        return x
+
+class ScOT2D(Swinv2PreTrainedModel):
     """Inspired by https://github.com/huggingface/transformers/blob/v4.35.2/src/transformers/models/swinv2/modeling_swinv2.py#L1129"""
 
     def __init__(self, config, use_mask_token=False):
@@ -1309,29 +1338,10 @@ class ScOT(Swinv2PreTrainedModel):
         time: Optional[torch.FloatTensor] = None,
         bool_masked_pos: Optional[torch.BoolTensor] = None,
         head_mask: Optional[torch.FloatTensor] = None,
-        pixel_mask: Optional[torch.BoolTensor] = None,
-        labels: Optional[torch.FloatTensor] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
     ) -> Union[Tuple, ScOTOutput]:
-        return_dict = ( # True
-            return_dict if return_dict is not None else self.config.use_return_dict
-        )
 
-        output_attentions = ( # False
-            output_attentions
-            if output_attentions is not None
-            else self.config.output_attentions
-        )
-        output_hidden_states = ( # False
-            output_hidden_states
-            if output_hidden_states is not None
-            else self.config.output_hidden_states
-        )
-
-        if input_data is None:
-            raise ValueError("input_data cannot be None")
+        output_attentions = self.config.output_attentions # False
+        output_hidden_states = self.config.output_hidden_states # False
 
         # calculate 5D tensor used by attention mechanism to selectively include / exclude attention heads
         # [batch_size, num_heads, seq_len, seq_len] -> [num_layers, batch_size, num_heads, seq_len, seq_len]
@@ -1348,9 +1358,6 @@ class ScOT(Swinv2PreTrainedModel):
                 [self.num_layers_encoder, self.num_layers_decoder]
             )
 
-        if len(input_data.shape) == 5:
-            batch, input_seq, channels, x_dim, y_dim = input_data.shape
-            input_data = input_data.reshape(batch, input_seq * channels, x_dim, y_dim)
 
         if self.config.coord_features:
             coord_feat = twod_meshgrid(list(input_data.shape), input_data.device)
@@ -1400,15 +1407,6 @@ class ScOT(Swinv2PreTrainedModel):
 
         sequence_output = decoder_output[0] # [16, 1024, 48]
         prediction = self.patch_recovery(sequence_output)
-        # The following can be used for learning just the residual for time-dependent problems
-        # instead of directly predicting final output, it predicts change (residual) to apply to input
-        if self.config.learn_residual: # False
-            if self.config.in_channels > self.config.out_channels: # remove unnecessary channels (like Reynolds-number)
-                input_data = input_data[:, 0 : self.config.out_channels]
-            prediction += input_data # original input (input_data) is added to prediction
-
-        if pixel_mask is not None:
-            prediction[pixel_mask] = labels[pixel_mask].type_as(prediction) # here: does not do anything since all values in pixel_mask are False
 
 
         return prediction
