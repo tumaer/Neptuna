@@ -252,6 +252,8 @@ def run_hp_search_optuna(trainer, n_trials: int, direction: str, **kwargs) -> Be
                 trainer.train(resume_from_checkpoint=checkpoint, trial=trial)
             else:
                 trainer.train(resume_from_checkpoint=checkpoint, trial=trial)
+                print('\n')
+        
             # If there hasn't been any evaluation during the training loop.
             if getattr(trainer, "objective", None) is None:
                 metrics = trainer.evaluate()
