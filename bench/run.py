@@ -2,14 +2,11 @@ from __future__ import annotations
 """Orchestrates a full training or hyper-parameter-optimisation run."""
 
 import time
-from typing import Dict
+import os
 from transformers import TrainingArguments
 from train.trainer import Trainer
 from metrics.default_metrics import l1_error, l2_error
 from transformers.trainer import EvalPrediction
-import copy
-import optuna
-from plotly.io import show
 from utils.load_model import fetch_model
 from bench.dataset_utils import make_datasets
 from utils.hp_optimization import (
@@ -17,7 +14,8 @@ from utils.hp_optimization import (
     optuna_hp_space_factory,
     get_optuna_sampler
 )
-from utils.wandb_callback import WandbCallback
+from optuna.pruners import NopPruner
+from utils.custom_callbacks import WandbCallback, PlotOnEvalAndSaveCallback
 __all__ = ["run"]
 
 
@@ -104,10 +102,10 @@ def run(cfg):
         # ------------------------------------------------------------------
         # Reporting --------------------------------------------------------
         # ------------------------------------------------------------------
-        report_to=("wandb" if cfg["output_log_config"]["logging"]["wandb"] else "none"),
+        report_to=("wandb" if (cfg["output_log_config"]["logging"]["wandb"] and cfg["hyperparam_opt_config"]["optimize"] is False) else "none"),
         run_name=(
-            cfg["output_log_config"]["logging"].get("wandb_run_name", "none")
-            if cfg["output_log_config"]["logging"]["wandb"]
+            os.path.basename(os.path.normpath(cfg["output_log_config"]["logging"]["output_dir"]))
+            if (cfg["hyperparam_opt_config"]["optimize"] is False)
             else "none"
         ),
     )
@@ -136,6 +134,11 @@ def run(cfg):
         #NOTE: more metrics to be added later here
         return {"l1_error": l1_error(preds, targets), "l2_error": l2_error(preds, targets)}
 
+    # Build the callbacks list
+    callbacks = []
+    # Always add PlotOnEvalAndSaveCallback
+    callbacks.append(PlotOnEvalAndSaveCallback)
+
     trainer = Trainer(
         model_config=cfg["model_config"],
         data_config=cfg["data_config"],
@@ -148,7 +151,7 @@ def run(cfg):
         train_dataset=train_ds,
         eval_dataset=eval_ds,
         compute_metrics=compute_metrics,
-        callbacks=[WandbCallback] if cfg["output_log_config"]["logging"]["wandb"] else None, #TODO: to be changed, if there are multiple callbacks 
+        callbacks=callbacks if callbacks else None,
     )
 
     trainer.set_eval_or_test_rollout_steps(rollout_steps=cfg["train_config"]["n_eval_rollouts"], output_all_steps=True)
@@ -203,6 +206,7 @@ def run(cfg):
             hp_name=trial_name,
             compute_objective=compute_objective_function(selected_metrics=cfg["hyperparam_opt_config"]["metric_for_tuning_hp"]),
             sampler=sampler,
+            pruner=NopPruner()
         ) 
 
         # fig = optuna.visualization.plot_parallel_coordinate(study)

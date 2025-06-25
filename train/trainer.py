@@ -3,13 +3,13 @@ from torch import nn
 from typing import List, Optional, Dict, Tuple, Union, Any
 from transformers.trainer import *
 from transformers import Trainer as Trainer_
-from utils.plot_progress import plot_examples
 import numpy as np
-from utils.feature_utils import re_normalize_data
 from utils.load_data import fetch_dataset
-import wandb
-from utils.wandb_callback import WandbCallback
-from transformers.integrations.integration_utils import WandbCallback as HF_WandbCallback
+from utils.custom_callbacks import WandbCallback #custom callbacks
+#from train.trainer_callback import CallbackHandler
+from utils.custom_callbacks import CallbackHandler 
+from transformers.integrations.integration_utils import WandbCallback as WandbCallback_
+
 class Trainer(Trainer_):
     def __init__(self, model_config, data_config, train_config, output_log_config, **kwargs):
         super().__init__(**kwargs)
@@ -21,8 +21,23 @@ class Trainer(Trainer_):
         self.output_log_config = output_log_config
         self.original_label_seq_len = self.data_config.sequence_info[1] #number of predicted timesteps from the model (#no rollout timesteps considered)
         
+        # Rebuild the callback handler with our custom implementation so that on_evaluate accepts **kwargs
+        # Preserve the list of callbacks that may have been created by the HuggingFace Trainer during super().__init__.
+        # NOTE: `CallbackHandler` here refers to our subclass imported from train.trainer_callback.
+
+        existing_callbacks = getattr(self.callback_handler, "callbacks", [])
+        # Re-instantiate using our custom CallbackHandler class so the overridden methods are used.
+        self.callback_handler = CallbackHandler(
+            existing_callbacks,
+            self.model,
+            getattr(self, "tokenizer", None),
+            self.optimizer,
+            self.lr_scheduler,
+        )
+
+        # Replace/adjust callbacks as before
         if self.output_log_config["logging"]["wandb"]:
-            self.callback_handler.remove_callback(HF_WandbCallback)
+            self.callback_handler.remove_callback(WandbCallback_)
             self.add_callback(WandbCallback())
     
     def _rebuild_datasets(self):
@@ -799,7 +814,17 @@ class Trainer(Trainer_):
             # tpu-comment: Logging debug metrics for PyTorch/XLA (compile, execute times, ops, etc.)
             xm.master_print(met.metrics_report())
 
-        self.control = self.callback_handler.on_evaluate(self.args, self.state, self.control, output.metrics)
+        self.control = self.callback_handler.on_evaluate(self.args, self.state, self.control, 
+                                                         output.metrics, 
+                                                         #NOTE:  kwargs added to be used in PlotOnEvalAndSaveCallback()
+                                                         predictions=output.predictions, 
+                                                         labels=output.label_ids, 
+                                                         inputs=input,
+                                                         eval_dataset=eval_dataset,
+                                                         data_config= self.data_config,
+                                                         train_config= self.train_config,
+                                                         output_log_config= self.output_log_config
+                                                         )
 
         self._memory_tracker.stop_and_update_metrics(output.metrics)
 
@@ -880,53 +905,7 @@ class Trainer(Trainer_):
                 state_obj.log_history = cleaned
 
             self._save_checkpoint(model, trial)
-            ##NOTE: This plotting is not present in the base class
-            ##plotting a few random examples to check the progress. 
 
-            ##TODO: Add a if condition for plotting and to plot only after a certain number of epochs/steps.
-            checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}"
-            run_dir = self._get_output_dir(trial=trial)
-            output_dir = os.path.join(run_dir, checkpoint_folder)
-            
-            len_eval_dataloader, num_eval_rollouts, label_seq_length, channel_dim, *spatial_dims = predictions.shape
-            predictions=predictions.reshape(len_eval_dataloader, num_eval_rollouts*label_seq_length, channel_dim, *spatial_dims)
-
-            # Plot only after the configured epoch threshold (default 0 when null)
-            plot_after = self.train_config.get("plot_after_epoch") or 0
-            if self.state.epoch >= plot_after:
-                # ------------------------------------------------------------------
-                # Renormalize inputs, labels and predictions for visualization
-                # ------------------------------------------------------------------
-                norm_stats = self.data_config["data_normalization_stats"]
-                norm_strategy = self.data_config["data_normalization_strategy"]
-
-                # Channel ordering in the dataset 
-                channel_names = getattr(self.eval_dataset, "channels", None)
-
-                # Renormalize:
-                inputs   = re_normalize_data(inputs, channel_names, norm_stats, norm_strategy)
-                labels   = re_normalize_data(labels, channel_names, norm_stats, norm_strategy)
-                predictions = re_normalize_data(predictions, channel_names, norm_stats, norm_strategy) 
-
-                fig_dict = plot_examples(
-                            inputs,
-                            predictions,
-                            labels,
-                            channel_names,
-                            ndim=self.data_config["dimension"],
-                            stride=self.data_config["sequence_info"][-1],
-                            extra_info=run_dir,
-                            checkpoint_step=self.state.global_step,
-                            epoch=round(self.state.epoch, 3),
-                            num_examples=3,  # 3 random examples plotted
-                            save_dir=output_dir,
-                            log_to_wandb=self.output_log_config["logging"]["wandb"]
-                        )
-
-                # If W&B logging is enabled, log the figures now.
-                if self.output_log_config["logging"].get("wandb", False) and wandb.run is not None:
-                    self.log(fig_dict)
-            #########################################################
             self.control = self.callback_handler.on_save(self.args, self.state, self.control)
             
     ### overrides the one in the base class from transformers library
@@ -945,7 +924,7 @@ class Trainer(Trainer_):
             params = {k: int(v) if isinstance(v, str) else v for k, v in trial.assignments.items()}
         elif self.hp_search_backend == HPSearchBackend.WANDB:
             params = trial
-        #####HERE THE HYPERPARAMETERS ARE REPLACED in the TrainingArguments
+        #####HERE THE HYPERPARAMETERS ARE REPLACED #################
         # Accept hyperparameter keys in dot-path format (e.g. ``train_config.max_steps``) and apply them
         # to the corresponding (potentially nested) attribute inside ``self``.
         for key, value in params.items():
