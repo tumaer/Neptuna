@@ -106,9 +106,15 @@ def optuna_hp_space_factory(config):
         """Suggest a value for a *trial* based on the given *spec* definition."""
         method = spec["method"]
         if method == "float":
-            return trial.suggest_float(param_path, spec["low"], spec["high"], log=spec.get("log", False))
+            if spec.get("log", False):
+                return trial.suggest_float(param_path, spec["low"], spec["high"], log=True)
+            else:
+                return trial.suggest_float(param_path, spec["low"], spec["high"], step=spec.get("step", 1), log=False)
         if method == "int":
-            return trial.suggest_int(param_path, spec["low"], spec["high"], log=spec.get("log", False))
+            if spec.get("log", False):
+                return trial.suggest_int(param_path, spec["low"], spec["high"], log=True)
+            else:
+                return trial.suggest_int(param_path, spec["low"], spec["high"], step=spec.get("step", 1), log=False)
         if method == "categorical":
             choices = spec["choices"]
             if isinstance(choices, ListConfig):
