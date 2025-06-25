@@ -158,34 +158,46 @@ def run(cfg):
 
 
     # Helper to give each Optuna trial a human-readable name 
-    def trial_name(trial):  
+    def trial_name_factory(data_config=None):  
         """Return a short, unique name for an Optuna trial.
 
         We include the trial number and a couple of key sampled parameters (if
         present) to make the run list easier to read in W&B / MLflow etc.
         """
+        # Derive dataset prefix from data_config if provided
+        dataset_prefix = None
+        if data_config is not None:
+            initials = ''.join(ch for ch in data_config.get("dataset_name", "") if ch.isupper())
+            dim = data_config.get("dimension")
+            if initials:
+                dataset_prefix = f"{initials}{dim}D" if dim is not None else initials
 
-        pieces = [f"trial{trial.number}"]
+        def trial_name(trial):  
+            # Start with dataset prefix if available
+            pieces = [dataset_prefix] if dataset_prefix else []
+            pieces.append(f"trial{trial.number}")
 
-        def _abbr(key: str) -> str:
-            parts = key.split("_")
-            # If the key has zero or one underscore (≤ two segments), keep as is.
-            if len(parts) <= 2:
-                return key
+            def _abbr(key: str) -> str:
+                parts = key.split("_")
+                # If the key has zero or one underscore (≤ two segments), keep as is.
+                if len(parts) <= 2:
+                    return key
 
-            # Abbreviate all but the last segment.
-            prefix_abbrev = "".join(p[0] for p in parts[:-1])
-            return f"{prefix_abbrev}_{parts[-1]}"
+                # Abbreviate all but the last segment.
+                prefix_abbrev = "".join(p[0] for p in parts[:-1])
+                return f"{prefix_abbrev}_{parts[-1]}"
 
-        for full_key, value in sorted(trial.params.items()):
-            last = full_key.split(".")[-1]
-            pieces.append(f"{_abbr(last)}={value}")
+            for full_key, value in sorted(trial.params.items()):
+                last = full_key.split(".")[-1]
+                pieces.append(f"{_abbr(last)}={value}")
 
-        # Join with underscores and replace any path‐unsafe characters.
-        name = "_".join(pieces)
-        for ch in ["/", "\\"]:
-            name = name.replace(ch, "-")
-        return name
+            # Join with underscores and replace any path‐unsafe characters.
+            name = "_".join(pieces)
+            for ch in ["/", "\\"]:
+                name = name.replace(ch, "-")
+            return name
+        
+        return trial_name
 
     # ------------------------------------------------------------------
     # Train vs HP-search -----------------------------------------------
@@ -198,12 +210,13 @@ def run(cfg):
     else:
         #get the sampler from the config, it could be GridSampler, RandomSampler, TPESampler
         sampler = get_optuna_sampler(cfg["hyperparam_opt_config"]["optuna_sampler"], config=cfg)
+        
         best_trial, study = trainer.hyperparameter_search(
             direction="minimize",
             backend="optuna",
             hp_space=optuna_hp_space_factory(cfg),
             n_trials=cfg["hyperparam_opt_config"]["n_trials"],
-            hp_name=trial_name,
+            hp_name=trial_name_factory(cfg["data_config"]),
             compute_objective=compute_objective_function(selected_metrics=cfg["hyperparam_opt_config"]["metric_for_tuning_hp"]),
             sampler=sampler,
             pruner=NopPruner()
