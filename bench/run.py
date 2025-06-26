@@ -21,6 +21,16 @@ __all__ = ["run"]
 
 def run(cfg):
     """Entry-point called by main.py after Hydra config is prepared."""
+    
+    # ------------------------------------------------------------------
+    # Setup WANDB Project ----------------------------------------------
+    # ------------------------------------------------------------------
+    if cfg["output_log_config"]["logging"]["wandb"]:
+        # Set WANDB_PROJECT environment variable
+        wandb_project = cfg["output_log_config"]["logging"].get("wandb_project", "neptuna")
+        os.environ["WANDB_PROJECT"] = wandb_project
+        print(f"Setting WANDB_PROJECT to: {wandb_project}")
+    
     # ------------------------------------------------------------------
     # Build TrainingArguments
     # ------------------------------------------------------------------
