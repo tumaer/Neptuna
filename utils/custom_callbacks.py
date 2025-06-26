@@ -29,9 +29,11 @@ class WandbCallback(WandbCallback_):
                 'Automatic Weights & Biases logging enabled, to disable set os.environ["WANDB_DISABLED"] = "true"'
             )
             combined_dict = {**args.to_dict()}
+            #NOTE:add trial number if available (additional to base class)
             if hasattr(args, "trial_number"):
                 combined_dict["trial_number"] = args.trial_number
             model_config = {}
+            #NOTE: add model_config and data_config if available (additional to base class)
             if hasattr(model, "config") and model.config is not None:
                 model_config = model.config if isinstance(model.config, dict) else model.config.to_dict()
             if hasattr(state, "trial_params") and state.trial_params is not None:

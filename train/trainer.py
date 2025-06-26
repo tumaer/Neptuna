@@ -972,6 +972,7 @@ class Trainer(Trainer_):
                     except Exception:
                         pass
                 setattr(self.args, final_part, value_for_args)
+        #NOTE:add trial number to self.args, which will be passed to WandbCallback 
         if hasattr(trial, "number"):
             setattr(self.args, "trial_number", trial.number)
         if self.hp_search_backend == HPSearchBackend.OPTUNA:
