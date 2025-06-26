@@ -1,7 +1,9 @@
 from transformers.integrations.integration_utils import WandbCallback as WandbCallback_
-from transformers.integrations.integration_utils import rewrite_logs
+from transformers.integrations.integration_utils import rewrite_logs,is_torch_xla_available
 from transformers.trainer_callback import CallbackHandler as CallbackHandler_
 import wandb
+from transformers.integrations.integration_utils import logger
+import tempfile
 
 ########################################################################################
 class CallbackHandler(CallbackHandler_):
@@ -12,6 +14,114 @@ class CallbackHandler(CallbackHandler_):
 
 ########################################################################################
 class WandbCallback(WandbCallback_):
+    def setup(self, args, state, model, **kwargs):
+        """
+        Setup the optional Weights & Biases (*wandb*) integration.
+        """
+        if self._wandb is None:
+            return
+        self._initialized = True
+
+        from wandb.sdk.lib.config_util import ConfigError as WandbConfigError
+
+        if state.is_world_process_zero:
+            logger.info(
+                'Automatic Weights & Biases logging enabled, to disable set os.environ["WANDB_DISABLED"] = "true"'
+            )
+            combined_dict = {**args.to_dict()}
+            #NOTE:add trial number if available (additional to base class)
+            if hasattr(args, "trial_number"):
+                combined_dict["trial_number"] = args.trial_number
+            model_config = {}
+            #NOTE: add model_config and data_config if available (additional to base class)
+            if hasattr(model, "config") and model.config is not None:
+                model_config = model.config if isinstance(model.config, dict) else model.config.to_dict()
+            if hasattr(state, "trial_params") and state.trial_params is not None:
+                if isinstance(state.trial_params, dict):
+                    trial_params = {
+                        k.replace("model_config.", "").replace("data_config.", ""): v
+                        for k, v in state.trial_params.items()
+                        if k.startswith("model_config.") or k.startswith("data_config.")
+                    }
+                    model_config = {**model_config, **trial_params}
+            combined_dict = {**model_config, **combined_dict}
+
+            if hasattr(model, "peft_config") and model.peft_config is not None:
+                peft_config = model.peft_config
+                combined_dict = {**{"peft_config": peft_config}, **combined_dict}
+            trial_name = state.trial_name
+            init_args = {}
+            if trial_name is not None:
+                init_args["name"] = trial_name
+                init_args["group"] = args.run_name
+            elif args.run_name is not None:
+                init_args["name"] = args.run_name
+                if args.run_name == args.output_dir:
+                    self._wandb.termwarn(
+                        "The `run_name` is currently set to the same value as `TrainingArguments.output_dir`. If this was "
+                        "not intended, please specify a different run name by setting the `TrainingArguments.run_name` parameter.",
+                        repeat=False,
+                    )
+
+            if self._wandb.run is None:
+                self._wandb.init(
+                    project=os.getenv("WANDB_PROJECT", "huggingface"),
+                    **init_args,
+                )
+            self._wandb.config.update(combined_dict, allow_val_change=True)
+
+            if getattr(self._wandb, "define_metric", None):
+                self._wandb.define_metric("train/global_step")
+                self._wandb.define_metric("*", step_metric="train/global_step", step_sync=True)
+
+            _watch_model = os.getenv("WANDB_WATCH", "false")
+            if not is_torch_xla_available() and _watch_model in ("all", "parameters", "gradients"):
+                self._wandb.watch(model, log=_watch_model, log_freq=max(100, state.logging_steps))
+            self._wandb.run._label(code="transformers_trainer")
+
+            try:
+                self._wandb.config["model/num_parameters"] = model.num_parameters()
+            except AttributeError:
+                logger.info(
+                    "Could not log the number of model parameters in Weights & Biases due to an AttributeError."
+                )
+            except WandbConfigError:
+                logger.warning(
+                    "A ConfigError was raised whilst setting the number of model parameters in Weights & Biases config."
+                )
+
+            if self._log_model.is_enabled:
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    model_name = (
+                        f"model-{self._wandb.run.id}"
+                        if (args.run_name is None or args.run_name == args.output_dir)
+                        else f"model-{self._wandb.run.name}"
+                    )
+                    model_artifact = self._wandb.Artifact(
+                        name=model_name,
+                        type="model",
+                        metadata={
+                            "model_config": model.config.to_dict() if hasattr(model, "config") else None,
+                            "num_parameters": self._wandb.config.get("model/num_parameters"),
+                            "initial_model": True,
+                        },
+                    )
+                    save_model_architecture_to_file(model, temp_dir)
+
+                    for f in Path(temp_dir).glob("*"):
+                        if f.is_file():
+                            with model_artifact.new_file(f.name, mode="wb") as fa:
+                                fa.write(f.read_bytes())
+                    self._wandb.run.log_artifact(model_artifact, aliases=["base_model"])
+
+                    badge_markdown = (
+                        f'[<img src="https://raw.githubusercontent.com/wandb/assets/main/wandb-github-badge'
+                        f'-28.svg" alt="Visualize in Weights & Biases" width="20'
+                        f'0" height="32"/>]({self._wandb.run.get_url()})'
+                    )
+
+                    modelcard.AUTOGENERATED_TRAINER_COMMENT += f"\n{badge_markdown}"
+                    
     def on_log(self, args, state, control, model=None, logs=None, **kwargs):
         single_value_scalars = [
             "train_runtime",
