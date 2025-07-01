@@ -9,6 +9,7 @@ from utils.custom_callbacks import WandbCallback #custom callbacks
 #from train.trainer_callback import CallbackHandler
 from utils.custom_callbacks import CallbackHandler 
 from transformers.integrations.integration_utils import WandbCallback as WandbCallback_
+from utils.trainer_utils import EvalPrediction
 
 class Trainer(Trainer_):
     def __init__(self, model_config, data_config, train_config, output_log_config, **kwargs):
@@ -167,41 +168,31 @@ class Trainer(Trainer_):
         #########################################################
         #Pushforward trick (for training)
         #########################################################
+        #TODO: SS prediction is not supported yet
         num_steps_in_one_epoch = self.state.max_steps//self.state.num_train_epochs
         pushforward_unroll_steps = self.select_pushforward_unroll_steps_for_training(current_epoch = self.state.global_step//num_steps_in_one_epoch)
-        channel_difference = (
-                self.data_config.in_channels > self.data_config.out_channels) #usually channel_difference = False
-        #add a warning if channel_difference = True
-        if channel_difference:
-            warnings.warn("Channel difference is True, which means that the number of input and label channels are different")
         
         batch_size, _, _, *spatial_dims = inputs["input_data"].shape
         
         with torch.no_grad(): #comment this out for multi-step autoregressive training
             for unroll_step in range(pushforward_unroll_steps):
                 #print(f"Pushforward unroll step {unroll_step+1} of {pushforward_unroll_steps}")
-                prediction = model(inputs["input_data"])
+                if self.data_config.conditioning_in_channels is not None:
+                    #prediction = model(torch.cat([inputs["input_data"], inputs["conditioning_input_data"]], dim=2))
+                    prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
+                else:
+                    prediction = model(input_data=inputs["input_data"])
                 
                 prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], self.data_config["out_channels"], *spatial_dims)
                 
                 if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length >= input_sequence length
                     inputs = {
                                 **inputs,
-                                **{ # This part replaces the "input_data" of input with the output of the model. 
+                                **{ # This part replaces the "input_data" of input with the prediction of the model. 
                                     # So the new input is the output from the previous step.
                                     #prediction.shape = torch.Size([B, label_seq_len, C_labels, x_resolution, y_resolution])
                                     "input_data": (
                                         prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the outputs so as to extract the input_sequence.
-                                        if not channel_difference
-                                        else torch.cat( 
-                                            [
-                                                prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() ,
-                                                inputs["input_data"][:,:,self.data_config.out_channels:], #adding back the channels which are not predicted like Re or Ma
-                                            ],
-                                            dim=2, 
-                                            #concatenate along the channel dimension (dim=2) : the first dimension is the batch dimension, the second dimension is the time sequence dimension,
-                                            # the third dimension is the channel dimension and the rest are the spatial dimensions.
-                                        )
                                     )
                                 },
                         }
@@ -209,32 +200,29 @@ class Trainer(Trainer_):
                 else: #input_sequence length > label_sequence length (the more usual case)
                     inputs = {
                         **inputs,
-                        **{ #this part replaces the "input_data" of input with the output of the model. 
+                        **{ #this part replaces the "input_data" of input with the output of the model and concatenates part of the input whch is missing to make a complete input sequence
                             #So the new input is the output from the previous step.
                             "input_data": (
-                                torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1) #slice the outputs so as to extract the input_sequence.
-                                if not channel_difference
-                                else torch.cat( 
-                                    [
-                                        torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1),
-                                        inputs["input_data"][:,:,self.data_config.out_channels:],
-                                    ],
-                                    dim=2, 
-                                    #concatenate along the channel dimension (dim=2) : the first dimension is the batch dimension, the second dimension is the time sequence dimension,
-                                    #the third dimension is the channel dimension and the rest are the spatial dimensions.
-                                )
+                                torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1)
                             )
                         },
                     }
-
-        prediction = model(inputs["input_data"]) #compute chain restored, the input_data is corrupted by the pushforward rollout steps.
+        # NOTE:compute chain restored, the input_data is corrupted by the pushforward rollout steps (if any).
+        if self.data_config.conditioning_in_channels is not None:
+            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
+        else:
+            prediction = model(input_data=inputs["input_data"]) 
+        
         prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], self.data_config["out_channels"], *spatial_dims)
         return prediction
 
     ##custom function, not inside transformers library
     def _forward_model_eval_or_test(self, model, inputs):  
-        prediction = model(inputs["input_data"])
-        batch_size, input_seq_len, input_channels, *spatial_dims = inputs["input_data"].shape
+        if self.data_config.conditioning_in_channels is not None:
+            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
+        else:
+            prediction = model(input_data=inputs["input_data"]) 
+        batch_size, _, _, *spatial_dims = inputs["input_data"].shape
         prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], self.data_config["out_channels"], *spatial_dims)
         return prediction
     
@@ -243,7 +231,7 @@ class Trainer(Trainer_):
         #Autoregressive prediction (for eval and test)
         #########################################################
         #here everything happens with torch.no_grad()
-        channel_difference = (self.data_config.in_channels > self.data_config.out_channels) 
+        #channel_difference = (self.data_config.in_channels > self.data_config.out_channels) 
         #Here we assume that the channel which is not predicted in the output is the last channel in the input (like Re or Ma).
         ## inputs.keys() = dict_keys(['input_data', 'labels',])
         ## inputs['input_data'].shape = torch.Size([B, C_input, x_resolution, y_resolution, ...]) 
@@ -254,8 +242,8 @@ class Trainer(Trainer_):
         else:
             total_loss = 0
         
-        for i in range(self.rollout_steps+1): #+1 because at least one bunch of outputs is always predicted and rollout_steps is added on top of that.
-            #logger.debug(f"Eval/Test rollout step {i+1} of {self.rollout_steps+1}") #TODO: uncomment this later
+        for i in range(self.rollout_steps+1): #NOTE: +1 because at least one bunch of outputs is always predicted and rollout_steps is added on top of that.
+            #logger.debug(f"Eval/Test rollout step {i+1} of {self.rollout_steps+1}")
             prediction = self._forward_model_eval_or_test(model,inputs) #prediction.shape = torch.Size([B, label_seq_length,C_labels, x_resolution, y_resolution, ...]) 
             
             loss_fn = nn.functional.mse_loss #this is the eval_loss, which is NOT used for saving the best model.
@@ -274,17 +262,7 @@ class Trainer(Trainer_):
                     **{ #this part replaces the "input_data" of input with the output of the model. 
                         #So the new input is the output from the previous step.
                         "input_data": (
-                            prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the outputs so as to extract the input_sequence.
-                            if not channel_difference
-                            else torch.cat( 
-                                [
-                                    prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() ,
-                                    inputs["input_data"][:,:,self.data_config.out_channels:],
-                                ],
-                                dim=2, 
-                                #concatenate along the channel dimension (dim=2) : the first dimension is the batch dimension, the second dimension is the time sequence dimension,
-                                # the third dimension is the channel dimension and the rest are the spatial dimensions.
-                            )
+                            prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the predictions so as to extract the input_sequence.
                         )
                     },
             }
@@ -295,16 +273,6 @@ class Trainer(Trainer_):
                         #So the new input is the output from the previous step.
                         "input_data": ( 
                             torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1) #slice the outputs so as to extract the input_sequence.
-                            if not channel_difference
-                            else torch.cat( 
-                                [
-                                    torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1),
-                                    inputs["input_data"][:,:,self.data_config.out_channels:],
-                                ],
-                                dim=2, 
-                                #concatenate along the channel dimension (dim=2) : the first dimension is the batch dimension, the second dimension is the time sequence dimension,
-                                #the third dimension is the channel dimension and the rest are the spatial dimensions.
-                            )
                         )
                     },
             }
@@ -576,6 +544,7 @@ class Trainer(Trainer_):
         all_preds = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
         all_labels = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
         all_inputs = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+        all_conditioning_inputs = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
 
         metrics = None
         eval_set_kwargs = {}
@@ -599,6 +568,11 @@ class Trainer(Trainer_):
             inputs_decode = (  ##To include the inputs in the metrics computation
                 self._prepare_input(inputs[main_input_name]) if "inputs" in args.include_for_metrics else None
             )
+            #NOTE: The following is added on top of the base class
+            conditioning_input_name = getattr(self.model, "conditioning_input_name", "conditioning_input_data")
+            conditioning_input_decode = (  ##To include the inputs in the metrics computation
+                self._prepare_input(inputs[conditioning_input_name]) if "conditioning_inputs" in args.include_for_metrics else None
+            )
 
             if is_torch_xla_available():
                 xm.mark_step()
@@ -612,6 +586,14 @@ class Trainer(Trainer_):
                 inputs_decode = self.gather_function(inputs_decode)
                 if not self.args.batch_eval_metrics or description == "Prediction":
                     all_inputs.add(inputs_decode)
+            #NOTE: The following is added on top of the base class
+            #########################################################
+            if conditioning_input_decode is not None:
+                conditioning_input_decode = self.accelerator.pad_across_processes(conditioning_input_decode, dim=1, pad_index=-100)
+                conditioning_input_decode = self.gather_function(conditioning_input_decode)
+                if not self.args.batch_eval_metrics or description == "Prediction":
+                    all_conditioning_inputs.add(conditioning_input_decode)
+            #########################################################
             if labels is not None:
                 # Pad labels here, preparing for preprocess_logits_for_metrics in next logits block.
                 labels = self.accelerator.pad_across_processes(labels, dim=1, pad_index=-100)
@@ -635,6 +617,7 @@ class Trainer(Trainer_):
                     batch_kwargs = {}
                     batch_kwargs["losses"] = losses if "loss" in args.include_for_metrics else None
                     batch_kwargs["inputs"] = inputs if "inputs" in args.include_for_metrics else None
+                    #NOTE: inputs is a dict which has the input_data and conditioning_input_data
                     metrics = self.compute_metrics(
                         EvalPrediction(predictions=logits, label_ids=labels, **batch_kwargs),
                         compute_result=is_last_step,
@@ -649,6 +632,7 @@ class Trainer(Trainer_):
                 all_preds.to_cpu_and_numpy()
                 all_labels.to_cpu_and_numpy()
                 all_inputs.to_cpu_and_numpy()
+                all_conditioning_inputs.to_cpu_and_numpy()
 
                 del losses, logits, labels, inputs
                 torch.cuda.empty_cache()
@@ -664,6 +648,7 @@ class Trainer(Trainer_):
         all_preds = all_preds.get_arrays() #all_preds.shape = torch.Size([B*(steps+1), n_eval_rollouts+1, label_seq_length, C_output, x_resolution, y_resolution, ...]) 
         all_labels = all_labels.get_arrays() #all_labels.shape = torch.Size([B*(steps+1), (n_eval_rollouts+1)*label_seq_length, C_output, x_resolution, y_resolution, ...]) 
         all_inputs = all_inputs.get_arrays() #all_inputs.shape = torch.Size([B*(steps+1), input_seq_length, C_input, x_resolution, y_resolution, ...]) 
+        all_conditioning_inputs = all_conditioning_inputs.get_arrays() #all_conditioning_inputs.shape = torch.Size([B*(steps+1), conditioning_seq_length, C_conditioning, x_resolution, y_resolution, ...]) 
 
         # Number of samples
         if has_length(eval_dataset):
@@ -689,6 +674,7 @@ class Trainer(Trainer_):
         ):
             eval_set_kwargs["losses"] = all_losses if "loss" in args.include_for_metrics else None
             eval_set_kwargs["inputs"] = all_inputs if "inputs" in args.include_for_metrics else None
+            eval_set_kwargs["conditioning_inputs"] = all_conditioning_inputs if "conditioning_inputs" in args.include_for_metrics else None
             metrics = self.compute_metrics(
                 EvalPrediction(predictions=all_preds, label_ids=all_labels, **eval_set_kwargs)
             )
@@ -712,7 +698,7 @@ class Trainer(Trainer_):
             if not key.startswith(f"{metric_key_prefix}_"):
                 metrics[f"{metric_key_prefix}_{key}"] = metrics.pop(key)
 
-        return EvalLoopOutput(predictions=all_preds, label_ids=all_labels, metrics=metrics, num_samples=num_samples), all_inputs
+        return EvalLoopOutput(predictions=all_preds, label_ids=all_labels, metrics=metrics, num_samples=num_samples), all_inputs, all_conditioning_inputs
         ##NOTE: all_inputs is the additional return argument compared to the evaluation_loop() function in the base class.
 
     ### overrides the one in the base class from transformers library
@@ -784,7 +770,9 @@ class Trainer(Trainer_):
         start_time = time.time()
 
         eval_loop = self.prediction_loop if self.args.use_legacy_prediction_loop else self.evaluation_loop
-        output, input = eval_loop(
+        #########################################################
+        #NOTE: Main evaluation loop
+        output, input, conditioning_input = eval_loop(
             eval_dataloader,
             description="Evaluation",
             # No point gathering the predictions if there are no metrics, otherwise we defer to
@@ -793,7 +781,7 @@ class Trainer(Trainer_):
             ignore_keys=ignore_keys,
             metric_key_prefix=metric_key_prefix,
         )
-
+        #########################################################
         total_batch_size = self.args.eval_batch_size * self.args.world_size
         if f"{metric_key_prefix}_jit_compilation_time" in output.metrics:
             start_time += output.metrics[f"{metric_key_prefix}_jit_compilation_time"]
@@ -820,6 +808,7 @@ class Trainer(Trainer_):
                                                          predictions=output.predictions, 
                                                          labels=output.label_ids, 
                                                          inputs=input,
+                                                         conditioning_inputs=conditioning_input,
                                                          eval_dataset=eval_dataset,
                                                          data_config= self.data_config,
                                                          train_config= self.train_config,
@@ -828,13 +817,11 @@ class Trainer(Trainer_):
 
         self._memory_tracker.stop_and_update_metrics(output.metrics)
 
-        return output.metrics, output.predictions, output.label_ids, input 
-        #NOTE: added output.predictions, output.label_ids, input as additional return arguments compared to the base class.
+        return output.metrics
 
     ### overrides the one in the base class from transformers library
     def _evaluate(self, trial, ignore_keys_for_eval, skip_scheduler=False):
-        metrics, predictions, labels, inputs = self.evaluate(ignore_keys=ignore_keys_for_eval)
-        ##NOTE: added predictions, labels, inputs as additional return arguments compared to the base class.
+        metrics = self.evaluate(ignore_keys=ignore_keys_for_eval)
         self._report_to_hp_search(trial, self.state.global_step, metrics)
 
         # Run delayed LR scheduler now that metrics are populated
@@ -852,8 +839,7 @@ class Trainer(Trainer_):
                     f"Please ensure that the `compute_metrics` function returns a dictionary that includes '{metric_to_check}' or "
                     f"consider changing the `metric_for_best_model` via the TrainingArguments."
                 ) from exc
-        return metrics, predictions, labels, inputs
-        ##NOTE: added predictions, labels, inputs as additional return arguments compared to the base class.
+        return metrics
 
     ### overrides the one in the base class from transformers library
     def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time):
@@ -882,7 +868,7 @@ class Trainer(Trainer_):
 
         metrics = None
         if self.control.should_evaluate:
-            metrics, predictions, labels, inputs = self._evaluate(trial, ignore_keys_for_eval) 
+            metrics = self._evaluate(trial, ignore_keys_for_eval) 
             logger.info(f"Model checkpointing is done based on: eval_{self.args.metric_for_best_model}")
             ##NOTE: added predictions, labels, inputs as additional return arguments compared to the base class.
             is_new_best_metric = self._determine_best_metric(metrics=metrics, trial=trial)

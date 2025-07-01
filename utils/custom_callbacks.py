@@ -4,6 +4,7 @@ from transformers.trainer_callback import CallbackHandler as CallbackHandler_
 import wandb
 from transformers.integrations.integration_utils import logger
 import tempfile
+import numpy as np
 
 ########################################################################################
 class CallbackHandler(CallbackHandler_):
@@ -169,6 +170,7 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
         self.predictions = kwargs['predictions']
         self.labels = kwargs['labels']
         self.inputs = kwargs['inputs']
+        self.conditioning_inputs = kwargs['conditioning_inputs']
         self.eval_dataset = kwargs['eval_dataset']
         self.data_config = kwargs['data_config']
         self.train_config = kwargs['train_config']
@@ -198,20 +200,75 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
                 norm_strategy = self.data_config["data_normalization_strategy"]
 
                 # Channel ordering in the dataset 
-                channel_names = getattr(self.eval_dataset, "channels", None)
+                input_channel_names = getattr(self.eval_dataset, "input_channels", None)
+                output_channel_names = getattr(self.eval_dataset, "output_channels", None)
+                conditioning_input_channel_names = None
 
-                # Renormalize:
-                inputs   = re_normalize_data(self.inputs, channel_names, norm_stats, norm_strategy)
-                labels   = re_normalize_data(self.labels, channel_names, norm_stats, norm_strategy)
-                predictions = re_normalize_data(self.predictions, channel_names, norm_stats, norm_strategy) 
+                # Renormalize each channel separately
+                inputs_renormed = np.copy(self.inputs)
+                labels_renormed = np.copy(self.labels)
+                predictions_renormed = np.copy(self.predictions)
+                conditioning_inputs_renormed = None
+
+                if self.conditioning_inputs is not None:
+                    conditioning_input_channel_names = [ch_name for ch_name in input_channel_names if ch_name in getattr(self.eval_dataset, "conditioning_in_channels")]
+                    conditioning_inputs_renormed = np.copy(self.conditioning_inputs)
+                     # remove the conditioning_in_channels from the input_channel_names
+                    only_input_channel_names = [ch_name for ch_name in input_channel_names if ch_name not in conditioning_input_channel_names]
+
+                else:
+                    only_input_channel_names = input_channel_names
+
+                # Renormalize input channels (for inputs and conditioning_inputs if present)
+                for c_idx, ch_name in enumerate(only_input_channel_names):
+                    if ch_name not in norm_stats:
+                        raise ValueError(f"Stats for input channel {ch_name} are unavailable.")
+                    
+                    stats = norm_stats[ch_name]
+                    
+                    # Renormalize inputs
+                    inputs_renormed[:, :, c_idx] = re_normalize_data(
+                        self.inputs[:, :, c_idx], stats, norm_strategy
+                    )
+
+                if self.conditioning_inputs is not None:
+                # Renormalize conditioning_inputs
+                    for c_idx, ch_name in enumerate(conditioning_input_channel_names):
+                        if ch_name not in norm_stats:
+                            raise ValueError(f"Stats for conditioning_input channel {ch_name} are unavailable.")
+                        
+                        stats = norm_stats[ch_name]
+
+                        # Renormalize conditioning_inputs
+                        conditioning_inputs_renormed[:, :, c_idx] = re_normalize_data(
+                            self.conditioning_inputs[:, :, c_idx], stats, norm_strategy
+                        )
+                    
+                # Renormalize output channels (for labels and predictions)
+                for c_idx, ch_name in enumerate(output_channel_names):
+                    if ch_name not in norm_stats:
+                        raise ValueError(f"Stats for output channel {ch_name} are unavailable.")
+                    
+                    stats = norm_stats[ch_name]
+                    
+                    # Renormalize labels and predictions
+                    labels_renormed[:, :, c_idx] = re_normalize_data(
+                        self.labels[:, :, c_idx], stats, norm_strategy
+                    )
+                    predictions_renormed[:, :, c_idx] = re_normalize_data(
+                        self.predictions[:, :, c_idx], stats, norm_strategy
+                    )
 
                 run_dir = os.path.join(part_1, part_2) if part_2 is not None else part_1
 
                 fig_dict = plot_examples(
-                            inputs,
-                            predictions,
-                            labels,
-                            channel_names,
+                            inputs_renormed,
+                            predictions_renormed,
+                            labels_renormed,
+                            only_input_channel_names,
+                            output_channel_names,
+                            conditioning_input_array=conditioning_inputs_renormed,
+                            conditioning_input_channel_names=conditioning_input_channel_names,
                             ndim=self.data_config["dimension"],
                             stride=self.data_config["sequence_info"][-1],
                             extra_info=run_dir,

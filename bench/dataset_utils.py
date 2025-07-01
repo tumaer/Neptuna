@@ -19,9 +19,12 @@ def make_datasets(cfg: DictConfig):
         n_eval_rollouts=cfg["train_config"]["n_eval_rollouts"],
         filter_frames=cfg["data_config"]["filter_frames"],
         filter_groups=cfg["data_config"]["filter_groups"],
-        channels=cfg["data_config"]["filter_channels"],
+        filter_in_channels=cfg["data_config"]["filter_in_channels"],
+        conditioning_in_channels=cfg["data_config"]["conditioning_in_channels"],
+        filter_out_channels=cfg["data_config"]["filter_out_channels"],
         data_normalization_stats=cfg["data_config"]["data_normalization_stats"],
         data_normalization_strategy=cfg["data_config"]["data_normalization_strategy"],
         eval_split_ratio=cfg["train_config"]["eval_split_ratio"],
         eval_groups=cfg["data_config"]["eval_groups"],
+        is_steady_state_prediction=cfg["data_config"]["is_steady_state_prediction"],
     ) 
