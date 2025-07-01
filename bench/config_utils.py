@@ -64,15 +64,24 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     # ------------------------------------------------------------------
     # 4) Channel selection ----------------------------------------------
     # ------------------------------------------------------------------
-    filter_keywords = cfg["data_config"]["filter_channels"]
-    filtered_channels = (
-        [n for n in channel_names if any(n.startswith(k) for k in filter_keywords)]
-        if filter_keywords
+    #NOTE: filter_in_channels has also the conditioning_in_channels (if any)
+    filter_in_keywords = cfg["data_config"]["filter_in_channels"]
+    filtered_in_channels = (
+        [n for n in channel_names if any(n.startswith(k) for k in filter_in_keywords)]
+        if filter_in_keywords
         else channel_names
     )
 
-    cfg["data_config"]["filter_channels"] = filtered_channels
-    cfg["data_config"]["in_channels"] = len(filtered_channels)
-    cfg["data_config"]["out_channels"] = len(filtered_channels)
+    filter_out_keywords = cfg["data_config"]["filter_out_channels"]
+    filtered_out_channels = (
+        [n for n in channel_names if any(n.startswith(k) for k in filter_out_keywords)]
+        if filter_out_keywords
+        else channel_names
+    )
+
+    cfg["data_config"]["filter_in_channels"] = filtered_in_channels
+    cfg["data_config"]["filter_out_channels"] = filtered_out_channels
+    cfg["data_config"]["in_channels"] = len(filtered_in_channels)
+    cfg["data_config"]["out_channels"] = len(filtered_out_channels)
 
     return cfg 
