@@ -15,9 +15,8 @@ from utils.hp_optimization import (
     get_optuna_sampler
 )
 from optuna.pruners import NopPruner
-from utils.custom_callbacks import WandbCallback, PlotOnEvalAndSaveCallback
+from utils.custom_callbacks import PlotOnEvalAndSaveCallback
 __all__ = ["run"]
-
 
 def run(cfg):
     """Entry-point called by main.py after Hydra config is prepared."""
@@ -98,7 +97,9 @@ def run(cfg):
         dataloader_num_workers=0,  
         load_best_model_at_end=False,  # enable when save & eval strategy align
         metric_for_best_model="l2_error",  # checkpoint metric
-        include_for_metrics=["inputs"],  # keep inputs for plotting
+        include_for_metrics=[
+            "inputs",
+        ] + (["conditioning_inputs"] if cfg["data_config"].get("conditioning_in_channels") is not None else []),  # keep inputs and optionally conditioning_inputs for plotting
         greater_is_better=False,  # lower loss/error is better
         dataloader_pin_memory=True,
         gradient_checkpointing=False,  # save memory, slower back-prop
@@ -230,7 +231,4 @@ def run(cfg):
             compute_objective=compute_objective_function(selected_metrics=cfg["hyperparam_opt_config"]["metric_for_tuning_hp"]),
             sampler=sampler,
             pruner=NopPruner()
-        ) 
-
-        # fig = optuna.visualization.plot_parallel_coordinate(study)
-        # fig.write_image("optuna_parallel_coordinate.png")
+        )
