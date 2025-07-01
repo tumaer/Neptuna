@@ -84,26 +84,29 @@ def get_grid_resolution(dataset_directory_path: str) -> List[int]:
         grid_resolution = list(f[first_group][first_field].shape[2:])
     return grid_resolution
 
-def re_normalize_data(arr: np.ndarray, channel_names: List[str], norm_stats: Dict[str, Dict[str, float]], norm_strategy: str) -> np.ndarray:
-    """Reverts normalization applied during loading.
-    Expects shape [N, T, C, *spatial_dims]. Returns a copy.
+def re_normalize_data(arr: np.ndarray, stats: Dict[str, float], norm_strategy: str) -> np.ndarray:
+    """Reverts normalization applied during loading for a single channel.
+    
+    Parameters
+    ----------
+    arr : np.ndarray
+        The normalized data to revert (any shape).
+    stats : Dict[str, float]
+        Dictionary containing either {"mean", "std"} or {"min", "max"}.
+    norm_strategy : str
+        Either "z_normalization" or "min_max_normalization".
+    
+    Returns
+    -------
+    np.ndarray
+        Renormalized array (new copy).
     """
-    arr_renormed = copy.deepcopy(arr)
-
-    for c_idx, ch_name in enumerate(channel_names):
-        if ch_name not in norm_stats:
-            # Raise an error if stats for this channel are unavailable
-            raise ValueError(f"Stats for channel {ch_name} are unavailable.")
-
-        stats = norm_stats[ch_name]
-        if norm_strategy == "z_normalization":
-            arr_renormed[:, :, c_idx] = arr_renormed[:, :, c_idx] * stats["std"] + stats["mean"]
-        elif norm_strategy == "min_max_normalization":
-            arr_renormed[:, :, c_idx] = arr_renormed[:, :, c_idx] * (stats["max"] - stats["min"]) + stats["min"]
-        else:
-            raise ValueError(f"Unknown normalization strategy: {norm_strategy}")
-
-    return arr_renormed
+    if norm_strategy == "z_normalization":
+        return arr * stats["std"] + stats["mean"]
+    elif norm_strategy == "min_max_normalization":
+        return arr * (stats["max"] - stats["min"]) + stats["min"]
+    else:
+        raise ValueError(f"Unknown normalization strategy: {norm_strategy}")
 
 # -----------------------------------------------------------------------------
 # Normalization helper used during data loading
