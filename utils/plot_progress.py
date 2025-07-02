@@ -87,6 +87,7 @@ def plot_examples(
     stride=1,
     save_dir="plots",
     log_to_wandb: bool = False,
+    is_best_metric: bool = False
 ):
     os.makedirs(save_dir, exist_ok=True)
 
@@ -308,14 +309,42 @@ def plot_examples(
                     rel_err_ax.set_xlabel(time_val, fontsize=plot_time_fontsize, labelpad=x_label_pad)
                     rel_err_ax.tick_params(labelbottom=True)
 
-        # Save only when we are NOT logging to W&B. When logging, the caller
+        # Save to disk only when we are NOT logging to W&B. When logging, the caller
         # (Trainer) will decide what to do with the figure.
         if not log_to_wandb:
-            filename = f"ckpt_{checkpoint_step}_epoch_{epoch}_example_{idx}.png"       
+            #prepend the word "best" if is_best_metric is True to the filename
+            if is_best_metric:
+                # Before writing the new "best" file, search for an older best in the
+                # same directory (filename ending with "_best.png") and rename it by
+                # stripping the "_best" token so it is no longer considered best.
+                for prev_file in os.listdir(save_dir):
+                    if prev_file.endswith("_best.png"):
+                        old_path = os.path.join(save_dir, prev_file)
+                        # Form the new path by removing the trailing "_best" before the extension
+                        new_file = prev_file.replace("_best.png", ".png")
+                        new_path = os.path.join(save_dir, new_file)
+                        try:
+                            os.rename(old_path, new_path)
+                        except OSError as e:
+                            # Non-fatal: print a warning and continue
+                            print(f"[plot_progress] Warning: could not rename previous best file '{prev_file}': {e}")
+                #
+                filename = f"ckpt_{checkpoint_step}_epoch_{epoch}_example_{idx}_best.png"
+            else:
+                filename = f"ckpt_{checkpoint_step}_epoch_{epoch}_example_{idx}.png"       
             img_path = os.path.join(save_dir, filename)
             fig.savefig(img_path, dpi=150, bbox_inches='tight')
 
-        # Collect figure to return; caller handles logging or closing
-        returned_figs[f"plot_progress/example_{idx}"] = wandb.Image(fig)
+        else:
+            # Collect figure to return; caller handles logging or closing
+            returned_figs[f"plot_progress/example_{idx}"] = wandb.Image(fig)
+            if is_best_metric:
+                best_img = wandb.Image(
+                    fig,
+                    caption=f"Best_eval_plot_ckpt_{checkpoint_step}_epoch_{epoch}_example_{idx}"
+                )
+                wandb.run.summary[f"best_eval_plot"] = best_img
+        
+        plt.close(fig)
         
     return returned_figs
