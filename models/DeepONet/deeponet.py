@@ -49,7 +49,8 @@ class AutoDeepONet(nn.Module):
         num_blocks (List[int]): 
             Number of blocks in each stage, only used for ResNet branch network
     """
-    main_input_name = "input_data"
+    main_input_name = "input_data"  
+    conditioning_input_name = "conditioning_input_data"
     def __init__(
         self,
         in_channels: int,
@@ -133,9 +134,15 @@ class AutoDeepONet(nn.Module):
 
     def forward(self, 
                 input_data: Tensor,
-                ) -> Tensor: 
-        #reshape input into [batch, in_channel, grid_x, grid_y, ...]
-        #NOTE: input and output fields need not be necessarily the same.
+                **kwargs) -> Tensor: 
+
+        if "conditioning_input_data" in kwargs:
+            #NOTE: Conditioning data can be passed into a conv network before concatination with input_data.
+            conditioning_input_data = kwargs["conditioning_input_data"]
+            input_data = torch.cat([input_data, conditioning_input_data], dim=2)
+        else:
+            conditioning_input_data = None
+
         batch, input_seq, input_fields, *spatial = input_data.shape
         input_data=input_data.reshape(batch, input_seq * input_fields, *spatial)
         

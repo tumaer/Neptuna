@@ -44,7 +44,9 @@ class CNO(nn.Module):
         >>> x = torch.randn(1, 3, 64, 64)
         >>> output = model(x)
     """
-    main_input_name = "input_data"
+    main_input_name = "input_data"  
+    conditioning_input_name = "conditioning_input_data"
+
     def __init__(self,
                 in_channels: int,                    # Number of input channels.
                 out_channels: int,                   # Number of input channels.
@@ -161,8 +163,16 @@ class CNO(nn.Module):
         self.res_nets = torch.nn.Sequential(*self.res_nets)
 
     def forward(self, 
-                input_data: Tensor) -> Tensor: 
-                                           
+                input_data: Tensor, 
+                **kwargs) -> Tensor: 
+        
+        if "conditioning_input_data" in kwargs:
+            #NOTE: Conditioning data can be passed into a conv network before concatination with input_data.
+            conditioning_input_data = kwargs["conditioning_input_data"]
+            input_data = torch.cat([input_data, conditioning_input_data], dim=2)
+        else:
+            conditioning_input_data = None                   
+        
         batch, input_seq, input_channels, *spatial = input_data.shape
         x = input_data.reshape(batch, input_seq * input_channels, *spatial)
                         
