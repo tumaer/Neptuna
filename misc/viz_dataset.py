@@ -73,9 +73,8 @@ def load_group_datasets(group: h5py.Group):
     time_dim = None
     for dset_name, dset in group.items():
         arr = dset[...]
-        if arr.ndim < 3:
-            # Require at least (T, C, H, W) or (T, 1, H, W)
-            raise ValueError(f"Dataset {dset_name} has fewer than 3 dimensions: {arr.shape}")
+        if arr.ndim < 2:
+            raise ValueError(f"Dataset {dset_name} must have at least 2 dimensions (time + data): {arr.shape}")
         if time_dim is None:
             time_dim = arr.shape[0]
         elif arr.shape[0] != time_dim:
@@ -88,8 +87,11 @@ def load_group_datasets(group: h5py.Group):
 def plot_timestep(datasets: dict, t: int, output_path: Path, cmap_scalar: str, title_tpl: str | None = None, group_name: str | None = None):
     """Create a figure for timestep *t* containing one subplot per channel across
     all datasets. Datasets with multiple channels are laid out in rows."""
-    # Count total number of subplots required
-    n_plots = sum(arr.shape[1] for arr in datasets.values())
+    # Determine how many subplots are needed, accounting for possible absence of channel dim
+    def n_channels(arr: np.ndarray) -> int:
+        return arr.shape[1] if arr.ndim >= 3 else 1
+
+    n_plots = sum(n_channels(arr) for arr in datasets.values())
     ncols = int(np.ceil(np.sqrt(n_plots)))  # square-ish layout
     nrows = int(np.ceil(n_plots / ncols))
 
@@ -97,17 +99,37 @@ def plot_timestep(datasets: dict, t: int, output_path: Path, cmap_scalar: str, t
     axes_iter = iter(axes.flat)
 
     for dset_name, arr in datasets.items():
-        n_channels = arr.shape[1]
-        for ch in range(n_channels):
+        n_ch = n_channels(arr)
+        for ch in range(n_ch):
             ax = next(axes_iter)
-            img = arr[t, ch]
-            if dset_name.lower().startswith("velocity") or (n_channels >= 2 and dset_name.lower().startswith("vel")):
-                im = ax.imshow(img, cmap="coolwarm", origin="lower")
+            # Extract the frame for plotting
+            if arr.ndim >= 3:
+                img = arr[t, ch]
             else:
-                im = ax.imshow(img, cmap=cmap_scalar, origin="lower")
-            ax.set_title(f"{dset_name} [ch {ch}] t={t}")
-            ax.axis("off")
-            fig.colorbar(im, ax=ax, shrink=0.7)
+                img = arr[t]
+
+            # Choose plotting method based on dimensionality
+            if img.ndim == 2:
+                # 2D field -> image
+                if dset_name.lower().startswith("velocity") or (n_ch >= 2 and dset_name.lower().startswith("vel")):
+                    im = ax.imshow(img, cmap="coolwarm", origin="lower")
+                else:
+                    im = ax.imshow(img, cmap=cmap_scalar, origin="lower")
+                fig.colorbar(im, ax=ax, shrink=0.7)
+            elif img.ndim == 1:
+                ax.plot(img)
+            else:
+                raise ValueError(f"Unsupported data dimensionality for plotting: {img.shape}")
+
+            # Title per subplot
+            if n_ch > 1:
+                ax.set_title(f"{dset_name} [ch {ch}] t={t}")
+            else:
+                ax.set_title(f"{dset_name} t={t}")
+
+            # Hide axes for images; keep for line plots
+            if img.ndim == 2:
+                ax.axis("off")
 
     # Hide any remaining unused axes
     for ax in axes_iter:
