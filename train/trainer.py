@@ -877,22 +877,11 @@ class Trainer(Trainer_):
                 self.control.should_save = is_new_best_metric
 
         if self.control.should_save: 
-            # ------------------------------------------------------------------
-            # Purge any plot_progress entries from log_history before the
-            # checkpoint is written.  These images are not JSON serializable.
-            # ------------------------------------------------------------------
-            state_obj = getattr(self, "state", None)
-            if state_obj is not None and hasattr(state_obj, "log_history"):
-                cleaned = [
-                    rec
-                    for rec in state_obj.log_history
-                    if not any(str(k).startswith("plot_progress/") for k in rec.keys())
-                ]
-                state_obj.log_history = cleaned
-
             self._save_checkpoint(model, trial)
-
             self.control = self.callback_handler.on_save(self.args, self.state, self.control)
+
+        if self.control.should_plot:            
+            self.control = self.callback_handler.on_plot(self.args, self.state, self.control, is_new_best_metric=is_new_best_metric)
             
     ### overrides the one in the base class from transformers library
     def _hp_search_setup(self, trial: Union["optuna.Trial", dict[str, Any]]):

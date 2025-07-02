@@ -1,6 +1,9 @@
 from transformers.integrations.integration_utils import WandbCallback as WandbCallback_
-from transformers.integrations.integration_utils import rewrite_logs,is_torch_xla_available
+from transformers.integrations.integration_utils import rewrite_logs, is_torch_xla_available
 from transformers.trainer_callback import CallbackHandler as CallbackHandler_
+from transformers.trainer_callback import TrainerCallback as TrainerCallback_
+from transformers.trainer_callback import TrainerControl as TrainerControl_
+from dataclasses import dataclass
 import wandb
 from transformers.integrations.integration_utils import logger
 import tempfile
@@ -12,6 +15,13 @@ class CallbackHandler(CallbackHandler_):
     def on_evaluate(self, args, state, control, metrics, **kwargs):
         control.should_evaluate = False
         return self.call_event("on_evaluate", args, state, control, metrics=metrics, **kwargs)
+
+    # ------------------------------------------------------------------
+    # New optional event that propagates custom plotting callbacks.
+    # ------------------------------------------------------------------
+    def on_plot(self, args, state, control, **kwargs):
+        """Forward the `on_plot` event to all registered callbacks."""
+        return self.call_event("on_plot", args, state, control, **kwargs)
 
 ########################################################################################
 class WandbCallback(WandbCallback_):
@@ -165,6 +175,7 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
         self._should_plot = False
         self.global_step = None
         self.trial = None
+        
     def on_evaluate(self, args, state, control, **kwargs):
         # Mark that an evaluation just happened
         self.predictions = kwargs['predictions']
@@ -176,23 +187,23 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
         self.train_config = kwargs['train_config']
         self.output_log_config = kwargs['output_log_config']
         self.global_step = state.global_step
-        self._should_plot = True
+        control.should_plot = True
 
-    def on_save(self, args, state, control, **kwargs):
+    def on_plot(self, args, state, control, **kwargs):
         # Only plot if an evaluation just happened before this save
-        if self._should_plot:
+        if control.should_plot:
             ##NOTE: This plotting is not present in the base class
             part_1 = args.output_dir
             part_2 = state.trial_name or ""
-            part_3 = f"checkpoint-{self.global_step}"
+            part_3 = f"plots"
             output_dir = os.path.join(part_1, part_2, part_3)
             
             len_eval_dataloader, num_eval_rollouts, label_seq_length, channel_dim, *spatial_dims = self.predictions.shape
             self.predictions=self.predictions.reshape(len_eval_dataloader, num_eval_rollouts*label_seq_length, channel_dim, *spatial_dims)
 
             # Plot only after the configured epoch threshold (default 0 when null)
-            plot_after = self.train_config.get("plot_after_epoch") or 0
-            if state.epoch >= plot_after:
+            plot_after_epoch = self.train_config.get("plot_after_epoch") or 0
+            if state.epoch >= plot_after_epoch:
                 # ------------------------------------------------------------------
                 # Renormalize inputs, labels and predictions for visualization
                 # ------------------------------------------------------------------
@@ -276,14 +287,15 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
                             epoch=round(state.epoch, 3),
                             num_examples=self.train_config["n_plot_examples"], #NOTE: plotting is slow
                             save_dir=output_dir,
-                            log_to_wandb=self.output_log_config["logging"]["wandb"]
+                            log_to_wandb=self.output_log_config["logging"]["wandb"],
+                            is_best_metric=kwargs["is_new_best_metric"]
                         )
 
                 # If W&B logging is enabled, log the figures now.
                 if self.output_log_config["logging"].get("wandb", False) and wandb.run is not None:
                     self.wandb_fig_log(fig_dict)
         # Reset the flag
-        self._should_plot = False
+        control.should_plot = False
 
     # ------------------------------------------------------------------
     # Utility logger so that callbacks can perform Trainer-like logging.
@@ -298,3 +310,44 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
             wandb.log(log_dict)
         else:
             print(log_dict)
+
+# ------------------------------------------------------------------
+# Extend the 🤗 Transformers callback interface with an optional
+# `on_plot` event **without** modifying the original library files.
+# We monkey-patch the base `TrainerCallback` to include a no-op
+# implementation so that any callback can safely override it.
+# ------------------------------------------------------------------
+
+if not hasattr(TrainerCallback_, "on_plot"):
+    def _noop_on_plot(self, args, state, control, **kwargs):  # type: ignore[unused-argument]
+        """Event called after a plotting operation (user-defined)."""
+        return control
+
+    setattr(TrainerCallback_, "on_plot", _noop_on_plot)
+
+# ------------------------------------------------------------------
+# Extended TrainerControl that adds a `should_plot` flag.
+# ------------------------------------------------------------------
+
+@dataclass
+class TrainerControl(TrainerControl_):
+    """TrainerControl subclass with an additional `should_plot` switch."""
+
+    should_plot: bool = False
+
+    def _new_step(self):
+        """Reset flags for a new step, including the new `should_plot`."""
+        super()._new_step()
+        self.should_plot = False
+
+    # Ensure serialization/deserialization captures the new flag
+    def state(self) -> dict:
+        base_state = super().state()
+        base_state["args"]["should_plot"] = self.should_plot
+        return base_state
+
+# Also patch the reference imported in `transformers.trainer` so that
+# Trainer.__init__ uses the extended control when it instantiates.
+import transformers.trainer as _tr_mod
+if getattr(_tr_mod, "TrainerControl", None) is not TrainerControl:
+    _tr_mod.TrainerControl = TrainerControl
