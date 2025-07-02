@@ -43,28 +43,25 @@ def run(cfg):
         # ------------------------------------------------------------------
         # Evaluation -------------------------------------------------------
         # ------------------------------------------------------------------
-        eval_strategy="steps",  # TODO: switch to "epoch" once ready
-        eval_steps=5,  # update-steps between evaluations
+        eval_strategy="epoch",  # TODO: switch to "epoch" once ready
+        eval_steps=5,  # update-steps between evaluations, has no meaning if eval_strategy is "epoch"
         eval_on_start=False,  # sanity-check eval before training starts
 
         # ------------------------------------------------------------------
         # Batching ---------------------------------------------------------
         # ------------------------------------------------------------------
-        per_device_train_batch_size=cfg["train_config"]["batch_size"],
-        per_device_eval_batch_size=cfg["train_config"]["batch_size"],
-        eval_accumulation_steps=16,  # accumulate predictions on GPU before moving to CPU
+        per_device_train_batch_size=cfg["train_config"]["per_device_train_batch_size"],
+        per_device_eval_batch_size=cfg["train_config"]["per_device_eval_batch_size"],
+        eval_accumulation_steps=cfg["train_config"]["eval_accumulation_steps"],  # accumulate predictions on GPU before moving to CPU
 
         # ------------------------------------------------------------------
         # Optimiser / schedule ---------------------------------------------
         # ------------------------------------------------------------------
         max_grad_norm=1.0,  # gradient clipping
-        num_train_epochs=cfg["train_config"]["num_epochs"],
-        optim="adamw_torch",  # options: adamw_hf, adamw_torch, ...
+        num_train_epochs=cfg["train_config"]["num_train_epochs"],
         learning_rate=cfg["scheduler_config"]["lr"],
         weight_decay=cfg["scheduler_config"]["weight_decay"],
-        adam_beta1=0.9,
-        adam_beta2=0.999,
-        adam_epsilon=1e-8,
+        optim=cfg["scheduler_config"]["optim"],  # options: adamw_hf, adamw_torch, ...
         lr_scheduler_type=cfg["scheduler_config"]["lr_scheduler"],
         warmup_ratio=cfg["scheduler_config"]["warmup_ratio"],  # linear warm-up fraction
 
@@ -72,18 +69,17 @@ def run(cfg):
         # Logging ----------------------------------------------------------
         # ------------------------------------------------------------------
         log_level=cfg["train_config"].get("log_level", "info"),  # debug / info / warning / ...
-        logging_strategy="steps",  # switch to "epoch" later if needed
-        logging_steps=1,
+        logging_strategy="epoch",  # switch to "epoch" later if needed
+        logging_steps=1, #only used if logging_strategy is "steps"
         logging_nan_inf_filter=False,  # include NaNs in logs for debugging
 
         # ------------------------------------------------------------------
         # Saving -----------------------------------------------------------
         # ------------------------------------------------------------------
-        save_strategy="steps",  # switch to "epoch" once validation present
-        save_steps=5,  # must align with eval_steps when using steps-strategy
+        save_strategy="best",  # switch to "epoch" once validation present
+        save_steps=5, #only used if save_strategy is "steps"
         save_total_limit=2,  # keep only last N checkpoints
-        # save_only_model=False,  # would skip optimiser / RNG state
-
+    
         # ------------------------------------------------------------------
         # Reproducibility --------------------------------------------------
         # ------------------------------------------------------------------
@@ -93,20 +89,20 @@ def run(cfg):
         # ------------------------------------------------------------------
         # Misc runtime knobs -----------------------------------------------
         # ------------------------------------------------------------------
-        fp16=False,  # set True for mixed-precision
-        dataloader_num_workers=0,  
+        fp16=cfg["train_config"]["fp16"],  # set True for mixed-precision
+        dataloader_num_workers=cfg["train_config"]["dataloader_num_workers"],  
         load_best_model_at_end=False,  # enable when save & eval strategy align
-        metric_for_best_model="l2_error",  # checkpoint metric
+        metric_for_best_model=cfg["train_config"]["metric_for_best_model"],  # checkpoint metric
         include_for_metrics=[
             "inputs",
         ] + (["conditioning_inputs"] if cfg["data_config"].get("conditioning_in_channels") is not None else []),  # keep inputs and optionally conditioning_inputs for plotting
         greater_is_better=False,  # lower loss/error is better
         dataloader_pin_memory=True,
-        gradient_checkpointing=False,  # save memory, slower back-prop
+        gradient_checkpointing=False, # save memory, slower back-prop
         auto_find_batch_size=False,
         full_determinism=False,  # turn on for reproducible distributed training
         torch_compile=False,
-        use_cpu=False,  # force CPU even if CUDA present
+        use_cpu=False, #use_cpu even if other devices are present
         label_names=["label_including_rollouts"],
         disable_tqdm=True if cfg["output_log_config"]["logging"]["wandb"] else False,
 
