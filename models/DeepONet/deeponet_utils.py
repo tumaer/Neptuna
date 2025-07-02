@@ -88,7 +88,7 @@ class CnnBranch(nn.Module):
             for i in range(len(out)):
                 out[i] = (out[i] + 2 * self.padding - self.kernel_size) // self.stride + 1  # Conv
                 out[i] = (out[i]  - 2) // 2 + 1  # Pool
-                assert out[i] > 0, f"Output shape is non-positive: {out[i]}"
+                assert out[i] > 0, f"Output shape is non-positive: {out[i]}, reduce the number of blocks "
         return tuple(out)
 
 class BasicBlockND4DeepONet(nn.Module):
@@ -207,11 +207,11 @@ def calc_resnet_out_shape(
                 out[i] = (out[i] + 2*1 - 3) // stride + 1
                 out[i] = (out[i] + 2*1 - 3) // 1 + 1
                 out[i] = (out[i] - 2) // 2 + 1
-                assert out[i] > 0, f"Output shape is non-positive: {out[i]}"
+                assert out[i] > 0, f"Output shape is non-positive: {out[i]}, reduce the number of blocks "
             else:
                 out[i] = (out[i] + 2 * padding - kernel_size) // stride + 1
                 out[i] = (out[i] + 2 * padding - kernel_size) // 1 + 1
-                assert out[i] > 0, f"Output shape is non-positive: {out[i]}"
+                assert out[i] > 0, f"Output shape is non-positive: {out[i]}, reduce the number of blocks "
     return tuple(out)
 
 def linspace_int_list(int1: int, int2: int, int3: int, reverse: bool) -> list:
