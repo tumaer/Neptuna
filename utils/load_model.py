@@ -143,16 +143,18 @@ def fetch_model(model_config: Dict,
                     # Special activation function for CNO (defined in cno_utils.py)
                     )
     elif model_name == 'scot':
-        from models.ScOT.scot import ScOT, ScOTConfig
+        from models.ScOT.scot_utils import ScOTConfig
+        from models.ScOT.scot import ScOT 
 
         if data_config['dimension'] != 2:
             raise ValueError("Model is not yet implemented for other dimension than 2")
+        
         scot_config = ScOTConfig(
             resolution_x=data_config['grid_resolution'][0],
             resolution_y=data_config['grid_resolution'][1],
             patch_size=model_config['patch_size'],
-            in_channels=data_config['in_channels'],
-            out_channels=data_config['out_channels'],
+            in_channels=len(data_config['filter_in_channels']),
+            out_channels=len(data_config['filter_out_channels']),
             embed_dim=model_config['embed_dim'], # base dimensionality of patch embeddings (size of feature vector used to represent each patch)
             depths=model_config['depths'], #number of transformer blocks in encoder / decoder stages e.g. 4 stages each with 4 transformer blocks
             num_heads=model_config['num_heads'], # used in Swinv2SelfAttention (HF) (see ScOTEncoder: each stage has own num_heads
