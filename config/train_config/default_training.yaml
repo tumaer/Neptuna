@@ -5,7 +5,7 @@
 per_device_train_batch_size: 4
 per_device_eval_batch_size: 4
 # Number of training epochs
-num_train_epochs: 64
+num_train_epochs: 128
 # Number of training steps( overrides num_epochs)
 #max_steps: null
 # Parameters related to the push-forward trick during training
@@ -13,7 +13,7 @@ pushforward:
   # At which training step to introduce next unroll stage
   deciding_epochs: [-1, 2, 50]
   # For how many steps to unroll
-  max_allowed_unroll_steps: [1, 1, 1] 
+  max_allowed_unroll_steps: [0, 1, 2]
   # Which probability ratio to keep between the unrolls
   relative_probabilities: [7, 2, 1]
 #To use mix precison training set fp16 to true
