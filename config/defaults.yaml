@@ -1,11 +1,9 @@
 defaults:
-  - data_config: KVS/default_kvs_data
+  - data_config: fluids/KS/1d_ks_data
   - model_config: FNO/default_fno
-  #- output: default_output
+  - output_log_config: default_output_log
   - scheduler_config: default_scheduler
   - train_config: default_training
   - infer_config: default_infer
-  #- hydra: default_hydra_config
+  - hyperparam_opt_config: default_hyperparam_opt_config
   - _self_
-
-gpu_id: 0   #remove this later and find a suitable way to set this

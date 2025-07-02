@@ -1,0 +1,31 @@
+optimize: true
+n_trials: 4
+metric_for_tuning_hp: ['eval_l2_error', 'eval_l1_error']
+optuna_sampler: TPESampler
+search_domain:
+  train_config:
+    max_steps:
+      method: categorical
+      choices: [10, 15]
+
+    pushforward:
+      max_allowed_unroll_steps:
+        method: categorical
+        choices: [[1,1,1], [0,1,3]]
+
+  data_config:
+    filter_frames:
+      method: categorical
+      choices: [[null, null], [10, 49]]
+
+    data_normalization_strategy:
+      method: categorical
+      choices: ["z_normalization", "min_max_normalization"]
+
+  model_config:
+    latent_channels:
+      method: categorical
+      choices: [16, 32, 64]
+    n_blocks:
+      method: categorical
+      choices: [1, 2, 3]

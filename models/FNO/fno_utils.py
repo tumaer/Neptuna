@@ -1,4 +1,4 @@
-from typing import Callable,List, Optional, Union
+from typing import Callable,List, Optional, Union, Tuple
 import torch
 import torch.nn as nn
 from torch import Tensor
@@ -416,3 +416,61 @@ class FullyConnected(nn.Module):
 
         x = self.final_layer(x)
         return x
+    
+def build_lift_network(
+    in_channels: int,
+    fno_width: int,
+    activation_fn: nn.Module,
+    dimension: int,
+    ) -> nn.Sequential:
+    """construct network for lifting variables to latent space."""
+    # Initial lift network
+    lift_network = torch.nn.Sequential()
+    lift_network.append(
+        ConvNdFCLayer(
+            in_channels = in_channels,
+            out_channels = int(fno_width / 2), 
+            dimension = dimension,
+            #activation_fn = activation_fn,
+            )
+    )
+    lift_network.append(activation_fn) #insert the activation function into ConvNdFCLayer,no need to add it here
+    lift_network.append(
+        ConvNdFCLayer(
+            in_channels=int(fno_width / 2), 
+            out_channels=fno_width,
+            dimension=dimension,
+            )
+    )
+    return lift_network
+
+def build_fno(
+    fno_width: int,
+    num_fno_modes: List[int],
+    num_fno_layers: int,
+    dimension: int,
+    ) -> Tuple[nn.ModuleList, nn.ModuleList]:
+    """construct FNO block.
+    """
+    # Build Neural Fourier Operators
+    if dimension == 1:
+        Conv = nn.Conv1d
+    elif dimension == 2:
+        Conv = nn.Conv2d
+    elif dimension == 3:
+        Conv = nn.Conv3d
+    else:
+        raise ValueError(f"Unsupported dimension: {dimension}. Must be 1, 2, or 3.")
+    spconv_layers = nn.ModuleList()
+    conv_layers = nn.ModuleList()
+    for _ in range(num_fno_layers):
+        spconv_layers.append(
+            SpectralConvNd(
+                in_channels=fno_width,
+                out_channels=fno_width,
+                modes=num_fno_modes,
+                dimension=dimension,
+            )
+        )
+        conv_layers.append(Conv(fno_width, fno_width, 1))
+    return spconv_layers, conv_layers

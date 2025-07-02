@@ -3,16 +3,60 @@ from torch import nn
 from typing import List, Optional, Dict, Tuple, Union, Any
 from transformers.trainer import *
 from transformers import Trainer as Trainer_
-from utils.plot_progress import plot_examples
+import numpy as np
+from utils.load_data import fetch_dataset
+from utils.custom_callbacks import WandbCallback #custom callbacks
+#from train.trainer_callback import CallbackHandler
+from utils.custom_callbacks import CallbackHandler 
+from transformers.integrations.integration_utils import WandbCallback as WandbCallback_
+from utils.trainer_utils import EvalPrediction
+
 class Trainer(Trainer_):
-    def __init__(self, model_config, data_config, pushforward_config, **kwargs):
+    def __init__(self, model_config, data_config, train_config, output_log_config, **kwargs):
         super().__init__(**kwargs)
         self.eval_or_test_rollout_steps = None
         self.output_all_steps = False
         self.data_config = data_config
         self.model_config = model_config
-        self.pushforward_config = pushforward_config
+        self.train_config = train_config
+        self.output_log_config = output_log_config
         self.original_label_seq_len = self.data_config.sequence_info[1] #number of predicted timesteps from the model (#no rollout timesteps considered)
+        
+        # Rebuild the callback handler with our custom implementation so that on_evaluate accepts **kwargs
+        # Preserve the list of callbacks that may have been created by the HuggingFace Trainer during super().__init__.
+        # NOTE: `CallbackHandler` here refers to our subclass imported from train.trainer_callback.
+
+        existing_callbacks = getattr(self.callback_handler, "callbacks", [])
+        # Re-instantiate using our custom CallbackHandler class so the overridden methods are used.
+        self.callback_handler = CallbackHandler(
+            existing_callbacks,
+            self.model,
+            getattr(self, "tokenizer", None),
+            self.optimizer,
+            self.lr_scheduler,
+        )
+
+        # Replace/adjust callbacks as before
+        if self.output_log_config["logging"]["wandb"]:
+            self.callback_handler.remove_callback(WandbCallback_)
+            self.add_callback(WandbCallback())
+    
+    def _rebuild_datasets(self):
+        """Recreate train and evaluation datasets after hyper-parameters were updated during an HP search trial."""
+        self.train_dataset, self.eval_dataset = fetch_dataset(
+            dataset_name=self.data_config["dataset_name"],
+            dataset_directory_path=self.data_config["dataset_directory_path"],
+            sequence_info=self.data_config["sequence_info"],
+            max_pf_train_rollouts=self.train_config["pushforward"]["max_allowed_unroll_steps"][-1],
+            n_eval_rollouts=self.train_config["n_eval_rollouts"],
+            filter_frames=self.data_config["filter_frames"],
+            filter_groups=self.data_config["filter_groups"],
+            channels=self.data_config["filter_channels"],
+            data_normalization_stats=self.data_config["data_normalization_stats"],
+            data_normalization_strategy=self.data_config["data_normalization_strategy"],
+            eval_split_ratio=self.train_config["eval_split_ratio"],
+            eval_groups=self.data_config["eval_groups"],
+        )
         
     ##overrides the one in the  base class from transformers library
     def get_train_dataloader(self) -> DataLoader:
@@ -30,7 +74,7 @@ class Trainer(Trainer_):
         train_dataset = self.train_dataset
         data_collator = self.data_collator #NOTE: Using the default collator from the base class.
         
-        ##commented out code from the base class
+        ## NOTE:commented out code from the base class
         #if is_datasets_available() and isinstance(train_dataset, datasets.Dataset):
         #    train_dataset = self._remove_unused_columns(train_dataset, description="training")
         #else:
@@ -124,39 +168,31 @@ class Trainer(Trainer_):
         #########################################################
         #Pushforward trick (for training)
         #########################################################
+        #TODO: SS prediction is not supported yet
         num_steps_in_one_epoch = self.state.max_steps//self.state.num_train_epochs
         pushforward_unroll_steps = self.select_pushforward_unroll_steps_for_training(current_epoch = self.state.global_step//num_steps_in_one_epoch)
-        channel_difference = (
-                self.data_config.in_channels > self.data_config.out_channels) #usually channel_difference = False
-        #add a warning if channel_difference = True
-        if channel_difference:
-            warnings.warn("Channel difference is True, which means that the number of input and label channels are different")
+        
+        batch_size, _, _, *spatial_dims = inputs["input_data"].shape
         
         with torch.no_grad(): #comment this out for multi-step autoregressive training
             for unroll_step in range(pushforward_unroll_steps):
                 #print(f"Pushforward unroll step {unroll_step+1} of {pushforward_unroll_steps}")
-                prediction = model(inputs["input_data"])
-                batch_size, input_seq_len, input_channels, *spatial_dims = inputs["input_data"].shape
-                prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], self.data_config["out_channels"], *spatial_dims)
+                if self.data_config.conditioning_in_channels is not None:
+                    #prediction = model(torch.cat([inputs["input_data"], inputs["conditioning_input_data"]], dim=2))
+                    prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
+                else:
+                    prediction = model(input_data=inputs["input_data"])
+                
+                prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
                 
                 if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length >= input_sequence length
                     inputs = {
                                 **inputs,
-                                **{ # This part replaces the "input_data" of input with the output of the model. 
+                                **{ # This part replaces the "input_data" of input with the prediction of the model. 
                                     # So the new input is the output from the previous step.
                                     #prediction.shape = torch.Size([B, label_seq_len, C_labels, x_resolution, y_resolution])
                                     "input_data": (
                                         prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the outputs so as to extract the input_sequence.
-                                        if not channel_difference
-                                        else torch.cat( 
-                                            [
-                                                prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() ,
-                                                inputs["input_data"][:,:,self.data_config.out_channels:], #adding back the channels which are not predicted like Re or Ma
-                                            ],
-                                            dim=2, 
-                                            #concatenate along the channel dimension (dim=2) : the first dimension is the batch dimension, the second dimension is the time sequence dimension,
-                                            # the third dimension is the channel dimension and the rest are the spatial dimensions.
-                                        )
                                     )
                                 },
                         }
@@ -164,136 +200,115 @@ class Trainer(Trainer_):
                 else: #input_sequence length > label_sequence length (the more usual case)
                     inputs = {
                         **inputs,
-                        **{ #this part replaces the "input_data" of input with the output of the model. 
+                        **{ #this part replaces the "input_data" of input with the output of the model and concatenates part of the input whch is missing to make a complete input sequence
                             #So the new input is the output from the previous step.
                             "input_data": (
-                                torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1) #slice the outputs so as to extract the input_sequence.
-                                if not channel_difference
-                                else torch.cat( 
-                                    [
-                                        torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1),
-                                        inputs["input_data"][:,:,self.data_config.out_channels:],
-                                    ],
-                                    dim=2, 
-                                    #concatenate along the channel dimension (dim=2) : the first dimension is the batch dimension, the second dimension is the time sequence dimension,
-                                    #the third dimension is the channel dimension and the rest are the spatial dimensions.
-                                )
+                                torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1)
                             )
                         },
                     }
-
-        prediction = model(inputs["input_data"]) #compute chain restored, the input_data is corrupted by the pushforward rollout steps.
-        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], self.data_config["out_channels"], *spatial_dims)
+        # NOTE:compute chain restored, the input_data is corrupted by the pushforward rollout steps (if any).
+        if self.data_config.conditioning_in_channels is not None:
+            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
+        else:
+            prediction = model(input_data=inputs["input_data"]) 
+        
+        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
         return prediction
 
     ##custom function, not inside transformers library
     def _forward_model_eval_or_test(self, model, inputs):  
-        prediction = model(inputs["input_data"])
-        batch_size, input_seq_len, input_channels, *spatial_dims = inputs["input_data"].shape
-        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], self.data_config["out_channels"], *spatial_dims)
+        if self.data_config.conditioning_in_channels is not None:
+            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
+        else:
+            prediction = model(input_data=inputs["input_data"]) 
+        batch_size, _, _, *spatial_dims = inputs["input_data"].shape
+        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
         return prediction
     
-    ##overrides the one in the  base class from transformers library
-    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):   
-        #return_outputs is true only when doing eval or test. By default it is false for training.
+    def compute_eval_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         #########################################################
         #Autoregressive prediction (for eval and test)
         #########################################################
-        if self.control.should_evaluate: #should_evaluate is true for eval and test
-            #here everything happens with torch.no_grad()
-            channel_difference = (self.data_config.in_channels > self.data_config.out_channels) 
-            #Here we assume that the channel which is not predicted in the output is the last channel in the input (like Re or Ma).
-            ## inputs.keys() = dict_keys(['input_data', 'labels',])
-            ## inputs['input_data'].shape = torch.Size([B, C_input, x_resolution, y_resolution, ...]) 
-            ## inputs['labels'].shape = torch.Size([B, C_labels, x_resolution, y_resolution, ...])
-            if self.output_all_steps: #this is set to true when self.rollout_steps is set in main.py
-                losses_ = []
-                predictions_ = []
-            else:
-                total_loss = 0
+        #here everything happens with torch.no_grad()
+        #channel_difference = (self.data_config.in_channels > self.data_config.out_channels) 
+        #Here we assume that the channel which is not predicted in the output is the last channel in the input (like Re or Ma).
+        ## inputs.keys() = dict_keys(['input_data', 'labels',])
+        ## inputs['input_data'].shape = torch.Size([B, C_input, x_resolution, y_resolution, ...]) 
+        ## inputs['labels'].shape = torch.Size([B, C_labels, x_resolution, y_resolution, ...])
+        if self.output_all_steps: #this is set to true when self.rollout_steps is set in main.py
+            losses_ = []
+            predictions_ = []
+        else:
+            total_loss = 0
+        
+        for i in range(self.rollout_steps+1): #NOTE: +1 because at least one bunch of outputs is always predicted and rollout_steps is added on top of that.
+            #logger.debug(f"Eval/Test rollout step {i+1} of {self.rollout_steps+1}")
+            prediction = self._forward_model_eval_or_test(model,inputs) #prediction.shape = torch.Size([B, label_seq_length,C_labels, x_resolution, y_resolution, ...]) 
             
-            for i in range(self.rollout_steps+1): #+1 because at least one bunch of outputs is always predicted and rollout_steps is added on top of that.
-                #logger.debug(f"Eval/Test rollout step {i+1} of {self.rollout_steps+1}") #TODO: uncomment this later
-                prediction = self._forward_model_eval_or_test(model,inputs) #prediction.shape = torch.Size([B, label_seq_length,C_labels, x_resolution, y_resolution, ...]) 
-                
-                loss_fn = nn.functional.mse_loss #this is the eval_loss, which is NOT used for saving the best model.
-                loss = loss_fn(prediction, inputs["label_including_rollouts"][:,i*self.data_config.sequence_info[1]:(i+1)*self.data_config.sequence_info[1]]) 
-                
-                if self.output_all_steps:
-                    predictions_.append(prediction.detach()) 
-                    losses_.append(loss)
-                else:
-                    total_loss += loss #loss is added up across all rollout_steps and we obtain a scalar. This is divided by rollout_steps at the end of the "if" statement
-                
-                #recreate the inputs to be fed to the model for the next step
-                if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length > input_sequence length
-                    inputs = {
-                        **inputs,
-                        **{ #this part replaces the "input_data" of input with the output of the model. 
-                            #So the new input is the output from the previous step.
-                            "input_data": (
-                                prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the outputs so as to extract the input_sequence.
-                                if not channel_difference
-                                else torch.cat( 
-                                    [
-                                        prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() ,
-                                        inputs["input_data"][:,:,self.data_config.out_channels:],
-                                    ],
-                                    dim=2, 
-                                    #concatenate along the channel dimension (dim=2) : the first dimension is the batch dimension, the second dimension is the time sequence dimension,
-                                    # the third dimension is the channel dimension and the rest are the spatial dimensions.
-                                )
-                            )
-                        },
-                }
-                else: #input_sequence length > label_sequence length (the more usual case)
-                    inputs = {
-                        **inputs,
-                        **{ #this part replaces the "input_data" of input with the output of the model. 
-                            #So the new input is the output from the previous step.
-                            "input_data": ( 
-                                torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1) #slice the outputs so as to extract the input_sequence.
-                                if not channel_difference
-                                else torch.cat( 
-                                    [
-                                        torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1),
-                                        inputs["input_data"][:,:,self.data_config.out_channels:],
-                                    ],
-                                    dim=2, 
-                                    #concatenate along the channel dimension (dim=2) : the first dimension is the batch dimension, the second dimension is the time sequence dimension,
-                                    #the third dimension is the channel dimension and the rest are the spatial dimensions.
-                                )
-                            )
-                        },
-                }
-                    
+            loss_fn = nn.functional.mse_loss #this is the eval_loss, which is NOT used for saving the best model.
+            loss = loss_fn(prediction, inputs["label_including_rollouts"][:,i*self.data_config.sequence_info[1]:(i+1)*self.data_config.sequence_info[1]]) 
+            
             if self.output_all_steps:
-                predictions= torch.stack(predictions_, dim=1) #predictions.shape = torch.Size([B, rollout_steps+1, label_seq_length, C_output, *spatial_resolution])
-                loss = torch.stack(losses_, dim=0).mean() #mean() across the rollout steps
-
+                predictions_.append(prediction.detach()) 
+                losses_.append(loss)
             else:
-                loss = total_loss / (self.rollout_steps+1) #take the mean of the loss across all rollout_steps
-           
+                total_loss += loss #loss is added up across all rollout_steps and we obtain a scalar. This is divided by rollout_steps at the end of the "if" statement
+            
+            #recreate the inputs to be fed to the model for the next step
+            if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length > input_sequence length
+                inputs = {
+                    **inputs,
+                    **{ #this part replaces the "input_data" of input with the output of the model. 
+                        #So the new input is the output from the previous step.
+                        "input_data": (
+                            prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the predictions so as to extract the input_sequence.
+                        )
+                    },
+            }
+            else: #input_sequence length > label_sequence length (the more usual case)
+                inputs = {
+                    **inputs,
+                    **{ #this part replaces the "input_data" of input with the output of the model. 
+                        #So the new input is the output from the previous step.
+                        "input_data": ( 
+                            torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1) #slice the outputs so as to extract the input_sequence.
+                        )
+                    },
+            }
+                
+        if self.output_all_steps:
+            predictions= torch.stack(predictions_, dim=1) #predictions.shape = torch.Size([B, rollout_steps+1, label_seq_length, C_output, *spatial_resolution])
+            loss = torch.stack(losses_, dim=0).mean() #mean() across the rollout steps
+
+        else:
+            loss = total_loss / (self.rollout_steps+1) #take the mean of the loss across all rollout_steps
+
+        return (loss, predictions) if return_outputs else loss
+
+
+    ##overrides the one in the  base class from transformers library
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):   
+        #return_outputs is true only when doing eval or test. By default it is false for training.
         ########################################################
         # Pushforward trick (for training)
         ########################################################
-        else:
-            prediction = self._forward_model_train(model, inputs)
-            #compute the training loss here. Assume l2 loss 
-            loss_fn = nn.functional.mse_loss
-            #loss is computed only for the last rollout (pushforward trick!), therefore no need to update the labels, just slice from the end of the labels_including_rollouts tensor
-            loss = loss_fn(prediction, inputs["label_including_rollouts"][:,-self.data_config.sequence_info[1]:,]) 
-            #the loss which is printed is rounded-off to 4 decimal places
-            #printing happening inside the function: _maybe_log_save_evaluate() #TODO: Check 
-            #print(f"loss of unrolled steps: {loss}")
+        prediction = self._forward_model_train(model, inputs)
+        #compute the training loss here. Assume l2 loss 
+        loss_fn = nn.functional.mse_loss
+        #loss is computed only for the last rollout (pushforward trick!), therefore no need to update the labels, just slice from the end of the labels_including_rollouts tensor
+        loss = loss_fn(prediction, inputs["label_including_rollouts"][:,-self.data_config.sequence_info[1]:,]) 
+        #the loss which is printed is rounded-off to 4 decimal places
+        #printing happening inside the function: _maybe_log_save_evaluate() #TODO: Check 
+        #print(f"loss of unrolled steps: {loss}")
         #return_outputs is true only when doing eval or test. By default it is false for training.
-        return (loss, predictions) if return_outputs else loss
+        return (loss, prediction) if return_outputs else loss
 
     def select_pushforward_unroll_steps_for_training(self, current_epoch):
         current_epoch_tensor = torch.tensor(current_epoch)
-        deciding_epochs = torch.tensor(self.pushforward_config["deciding_epochs"])
-        max_unrolls = self.pushforward_config["max_allowed_unroll_steps"]
-        relative_probabilities = self.pushforward_config["relative_probabilities"]
+        deciding_epochs = torch.tensor(self.train_config["pushforward"]["deciding_epochs"])
+        max_unrolls = self.train_config["pushforward"]["max_allowed_unroll_steps"]
+        relative_probabilities = self.train_config["pushforward"]["relative_probabilities"]
 
         assert all(deciding_epochs[i] <= deciding_epochs[i + 1] for i in range(len(deciding_epochs) - 1))
 
@@ -316,7 +331,7 @@ class Trainer(Trainer_):
         return unroll_steps
 
     ##custom function used for eval and testing, not inside transformers library
-    def set_rollout_steps(self, rollout_steps=None, output_all_steps=False): 
+    def set_eval_or_test_rollout_steps(self, rollout_steps=None, output_all_steps=False): 
         self.rollout_steps = rollout_steps 
         if self.rollout_steps is not None and output_all_steps:
             self.output_all_steps = True
@@ -413,7 +428,7 @@ class Trainer(Trainer_):
             else:
                 if has_labels or loss_without_labels: #enters here 
                     with self.compute_loss_context_manager():
-                        loss, outputs = self.compute_loss( #this has the _model_perdict() function inside it
+                        loss, outputs = self.compute_eval_loss( #this has the _model_perdict() function inside it
                             model, inputs, return_outputs=True
                         ) #return_output is true only when doing eval or inference.. By default it is false
                     loss = loss.mean().detach() #mean() is used when: self.output_all_steps = True which results in loss being a tensor of shape (num_rollout_steps,) and we take the mean
@@ -529,6 +544,7 @@ class Trainer(Trainer_):
         all_preds = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
         all_labels = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
         all_inputs = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+        all_conditioning_inputs = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
 
         metrics = None
         eval_set_kwargs = {}
@@ -552,6 +568,11 @@ class Trainer(Trainer_):
             inputs_decode = (  ##To include the inputs in the metrics computation
                 self._prepare_input(inputs[main_input_name]) if "inputs" in args.include_for_metrics else None
             )
+            #NOTE: The following is added on top of the base class
+            conditioning_input_name = getattr(self.model, "conditioning_input_name", "conditioning_input_data")
+            conditioning_input_decode = (  ##To include the inputs in the metrics computation
+                self._prepare_input(inputs[conditioning_input_name]) if "conditioning_inputs" in args.include_for_metrics else None
+            )
 
             if is_torch_xla_available():
                 xm.mark_step()
@@ -565,6 +586,14 @@ class Trainer(Trainer_):
                 inputs_decode = self.gather_function(inputs_decode)
                 if not self.args.batch_eval_metrics or description == "Prediction":
                     all_inputs.add(inputs_decode)
+            #NOTE: The following is added on top of the base class
+            #########################################################
+            if conditioning_input_decode is not None:
+                conditioning_input_decode = self.accelerator.pad_across_processes(conditioning_input_decode, dim=1, pad_index=-100)
+                conditioning_input_decode = self.gather_function(conditioning_input_decode)
+                if not self.args.batch_eval_metrics or description == "Prediction":
+                    all_conditioning_inputs.add(conditioning_input_decode)
+            #########################################################
             if labels is not None:
                 # Pad labels here, preparing for preprocess_logits_for_metrics in next logits block.
                 labels = self.accelerator.pad_across_processes(labels, dim=1, pad_index=-100)
@@ -588,6 +617,7 @@ class Trainer(Trainer_):
                     batch_kwargs = {}
                     batch_kwargs["losses"] = losses if "loss" in args.include_for_metrics else None
                     batch_kwargs["inputs"] = inputs if "inputs" in args.include_for_metrics else None
+                    #NOTE: inputs is a dict which has the input_data and conditioning_input_data
                     metrics = self.compute_metrics(
                         EvalPrediction(predictions=logits, label_ids=labels, **batch_kwargs),
                         compute_result=is_last_step,
@@ -602,6 +632,7 @@ class Trainer(Trainer_):
                 all_preds.to_cpu_and_numpy()
                 all_labels.to_cpu_and_numpy()
                 all_inputs.to_cpu_and_numpy()
+                all_conditioning_inputs.to_cpu_and_numpy()
 
                 del losses, logits, labels, inputs
                 torch.cuda.empty_cache()
@@ -617,6 +648,7 @@ class Trainer(Trainer_):
         all_preds = all_preds.get_arrays() #all_preds.shape = torch.Size([B*(steps+1), n_eval_rollouts+1, label_seq_length, C_output, x_resolution, y_resolution, ...]) 
         all_labels = all_labels.get_arrays() #all_labels.shape = torch.Size([B*(steps+1), (n_eval_rollouts+1)*label_seq_length, C_output, x_resolution, y_resolution, ...]) 
         all_inputs = all_inputs.get_arrays() #all_inputs.shape = torch.Size([B*(steps+1), input_seq_length, C_input, x_resolution, y_resolution, ...]) 
+        all_conditioning_inputs = all_conditioning_inputs.get_arrays() #all_conditioning_inputs.shape = torch.Size([B*(steps+1), conditioning_seq_length, C_conditioning, x_resolution, y_resolution, ...]) 
 
         # Number of samples
         if has_length(eval_dataset):
@@ -642,6 +674,7 @@ class Trainer(Trainer_):
         ):
             eval_set_kwargs["losses"] = all_losses if "loss" in args.include_for_metrics else None
             eval_set_kwargs["inputs"] = all_inputs if "inputs" in args.include_for_metrics else None
+            eval_set_kwargs["conditioning_inputs"] = all_conditioning_inputs if "conditioning_inputs" in args.include_for_metrics else None
             metrics = self.compute_metrics(
                 EvalPrediction(predictions=all_preds, label_ids=all_labels, **eval_set_kwargs)
             )
@@ -665,7 +698,7 @@ class Trainer(Trainer_):
             if not key.startswith(f"{metric_key_prefix}_"):
                 metrics[f"{metric_key_prefix}_{key}"] = metrics.pop(key)
 
-        return EvalLoopOutput(predictions=all_preds, label_ids=all_labels, metrics=metrics, num_samples=num_samples), all_inputs
+        return EvalLoopOutput(predictions=all_preds, label_ids=all_labels, metrics=metrics, num_samples=num_samples), all_inputs, all_conditioning_inputs
         ##NOTE: all_inputs is the additional return argument compared to the evaluation_loop() function in the base class.
 
     ### overrides the one in the base class from transformers library
@@ -737,7 +770,9 @@ class Trainer(Trainer_):
         start_time = time.time()
 
         eval_loop = self.prediction_loop if self.args.use_legacy_prediction_loop else self.evaluation_loop
-        output, input = eval_loop(
+        #########################################################
+        #NOTE: Main evaluation loop
+        output, input, conditioning_input = eval_loop(
             eval_dataloader,
             description="Evaluation",
             # No point gathering the predictions if there are no metrics, otherwise we defer to
@@ -746,7 +781,7 @@ class Trainer(Trainer_):
             ignore_keys=ignore_keys,
             metric_key_prefix=metric_key_prefix,
         )
-
+        #########################################################
         total_batch_size = self.args.eval_batch_size * self.args.world_size
         if f"{metric_key_prefix}_jit_compilation_time" in output.metrics:
             start_time += output.metrics[f"{metric_key_prefix}_jit_compilation_time"]
@@ -761,23 +796,32 @@ class Trainer(Trainer_):
             )
         )
 
-        self.log(output.metrics)
+        self.log(output.metrics) #NOTE: logs into wandb during evaluation
 
         if DebugOption.TPU_METRICS_DEBUG in self.args.debug:
             # tpu-comment: Logging debug metrics for PyTorch/XLA (compile, execute times, ops, etc.)
             xm.master_print(met.metrics_report())
 
-        self.control = self.callback_handler.on_evaluate(self.args, self.state, self.control, output.metrics)
+        self.control = self.callback_handler.on_evaluate(self.args, self.state, self.control, 
+                                                         output.metrics, 
+                                                         #NOTE:  kwargs added to be used in PlotOnEvalAndSaveCallback()
+                                                         predictions=output.predictions, 
+                                                         labels=output.label_ids, 
+                                                         inputs=input,
+                                                         conditioning_inputs=conditioning_input,
+                                                         eval_dataset=eval_dataset,
+                                                         data_config= self.data_config,
+                                                         train_config= self.train_config,
+                                                         output_log_config= self.output_log_config
+                                                         )
 
         self._memory_tracker.stop_and_update_metrics(output.metrics)
 
-        return output.metrics, output.predictions, output.label_ids, input 
-        #NOTE: added output.predictions, output.label_ids, input as additional return arguments compared to the base class.
+        return output.metrics
 
     ### overrides the one in the base class from transformers library
     def _evaluate(self, trial, ignore_keys_for_eval, skip_scheduler=False):
-        metrics, predictions, labels, inputs = self.evaluate(ignore_keys=ignore_keys_for_eval)
-        ##NOTE: added predictions, labels, inputs as additional return arguments compared to the base class.
+        metrics = self.evaluate(ignore_keys=ignore_keys_for_eval)
         self._report_to_hp_search(trial, self.state.global_step, metrics)
 
         # Run delayed LR scheduler now that metrics are populated
@@ -795,8 +839,7 @@ class Trainer(Trainer_):
                     f"Please ensure that the `compute_metrics` function returns a dictionary that includes '{metric_to_check}' or "
                     f"consider changing the `metric_for_best_model` via the TrainingArguments."
                 ) from exc
-        return metrics, predictions, labels, inputs
-        ##NOTE: added predictions, labels, inputs as additional return arguments compared to the base class.
+        return metrics
 
     ### overrides the one in the base class from transformers library
     def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time):
@@ -821,11 +864,11 @@ class Trainer(Trainer_):
             self._globalstep_last_logged = self.state.global_step
             self.store_flos()
 
-            self.log(logs, start_time)
+            self.log(logs, start_time) #NOTE: logs into wandb for training
 
         metrics = None
         if self.control.should_evaluate:
-            metrics, predictions, labels, inputs = self._evaluate(trial, ignore_keys_for_eval) 
+            metrics = self._evaluate(trial, ignore_keys_for_eval) 
             logger.info(f"Model checkpointing is done based on: eval_{self.args.metric_for_best_model}")
             ##NOTE: added predictions, labels, inputs as additional return arguments compared to the base class.
             is_new_best_metric = self._determine_best_metric(metrics=metrics, trial=trial)
@@ -833,32 +876,193 @@ class Trainer(Trainer_):
             if self.args.save_strategy == SaveStrategy.BEST:
                 self.control.should_save = is_new_best_metric
 
-        if False: #self.control.should_save: # ToDo: SET BACK TO self.control.should_save when pipeline ready !!!
+        if self.control.should_save: 
             self._save_checkpoint(model, trial)
-            #########################################################
-            ##NOTE: This plotting is not present in the base class
-            ##plotting a few random examples to check the progress. 
-
-            ##TODO: Add a if condition for plotting and to plot only after a certain number of epochs/steps.
-            checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}"
-            run_dir = self._get_output_dir(trial=trial)
-            output_dir = os.path.join(run_dir, checkpoint_folder)
-            
-            len_eval_dataloader, num_eval_rollouts, label_seq_length, channel_dim, *spatial_dims = predictions.shape
-            predictions=predictions.reshape(len_eval_dataloader, num_eval_rollouts*label_seq_length, channel_dim, *spatial_dims)
-
-            plot_examples(inputs, 
-                          predictions, 
-                          labels, 
-                          ndim=self.data_config["dimension"],
-                          stride=self.data_config["sequence_info"][-1], 
-                          checkpoint_step=self.state.global_step,
-                          epoch=round(self.state.epoch, 3),
-                          num_examples=3, #3 random examples out of len(eval_dataloader) examples will be plotted
-                          save_dir=output_dir) 
-            #########################################################
             self.control = self.callback_handler.on_save(self.args, self.state, self.control)
+
+        if self.control.should_plot:            
+            self.control = self.callback_handler.on_plot(self.args, self.state, self.control, is_new_best_metric=is_new_best_metric)
             
+    ### overrides the one in the base class from transformers library
+    def _hp_search_setup(self, trial: Union["optuna.Trial", dict[str, Any]]):
+        """HP search setup code"""
+        self._trial = trial
+
+        if self.hp_search_backend is None or trial is None:
+            return
+        if self.hp_search_backend == HPSearchBackend.OPTUNA:
+            params = self.hp_space(trial)
+        elif self.hp_search_backend == HPSearchBackend.RAY:
+            params = trial
+            params.pop("wandb", None)
+        elif self.hp_search_backend == HPSearchBackend.SIGOPT:
+            params = {k: int(v) if isinstance(v, str) else v for k, v in trial.assignments.items()}
+        elif self.hp_search_backend == HPSearchBackend.WANDB:
+            params = trial
+        #####HERE THE HYPERPARAMETERS ARE REPLACED #################
+        # Accept hyperparameter keys in dot-path format (e.g. ``train_config.max_steps``) and apply them
+        # to the corresponding (potentially nested) attribute inside ``self``.
+        for key, value in params.items():
+            attr_path = key.split(".")  # Traverse nested attributes via dot notation
+            target_obj = self
+
+            # Walk down the hierarchy until the parent of the final attribute
+            for part in attr_path[:-1]:
+                if hasattr(target_obj, part):
+                    target_obj = getattr(target_obj, part)
+                else:
+                    logger.warning(
+                        f"Trying to set {key} in the hyperparameter search but `{part}` attribute was not found."
+                    )
+                    target_obj = None
+                    break
+
+            if target_obj is None:
+                continue  # Skip keys that cannot be resolved
+
+            final_part = attr_path[-1]
+
+            # Retrieve the existing value (if any) to perform type casting later on
+            old_attr = getattr(target_obj, final_part, None)
+
+            # Attempt to cast the new value to the type of the existing value, when available
+            if old_attr is not None:
+                try:
+                    value = type(old_attr)(value)
+                except Exception:
+                    # Fallback to the supplied type if casting fails (e.g. incompatible types)
+                    pass
+
+            # Finally, set/overwrite the attribute
+            setattr(target_obj, final_part, value)
+
+            # Mirror the change in ``self.args`` if the attribute exists there as well.
+            if hasattr(self.args, final_part):
+                old_attr_args = getattr(self.args, final_part, None)
+                # Perform type-casting similar to above when possible
+                value_for_args = value
+                if old_attr_args is not None:
+                    try:
+                        value_for_args = type(old_attr_args)(value)
+                    except Exception:
+                        pass
+                setattr(self.args, final_part, value_for_args)
+        #NOTE:add trial number to self.args, which will be passed to WandbCallback 
+        if hasattr(trial, "number"):
+            setattr(self.args, "trial_number", trial.number)
+        if self.hp_search_backend == HPSearchBackend.OPTUNA:
+            logger.info(f"Trial: {trial.params}")
+        if self.hp_search_backend == HPSearchBackend.SIGOPT:
+            logger.info(f"SigOpt Assignments: {trial.assignments}")
+        if self.hp_search_backend == HPSearchBackend.WANDB:
+            logger.info(f"W&B Sweep parameters: {trial}")
+        if self.is_deepspeed_enabled:
+            if self.args.deepspeed is None:
+                raise ValueError("For sweeps with deepspeed, `args.deepspeed` must be set")
+
+            self.accelerator.free_memory()
+
+            # Rebuild the deepspeed config to reflect the updated training parameters
+            from accelerate.utils import DeepSpeedPlugin
+
+            from transformers.integrations.deepspeed import HfTrainerDeepSpeedConfig
+
+            self.args.hf_deepspeed_config = HfTrainerDeepSpeedConfig(self.args.deepspeed)
+            self.args.hf_deepspeed_config.trainer_config_process(self.args)
+            self.args.deepspeed_plugin = DeepSpeedPlugin(hf_ds_config=self.args.hf_deepspeed_config)
+
+            # From 1.0 on, we need to fully wipe the DS plugin when doing sweeps.
+            # Simply calling `_reset_state` is enough and doesn't need a version pin.
+            AcceleratorState()._reset_state()
+
+        self.create_accelerator_and_postprocess()
+
+        # Recreate datasets so they reflect the updated hyper-parameters
+        self._rebuild_datasets()
+
+    def hyperparameter_search(
+        self,
+        hp_space: Optional[Callable[["optuna.Trial"], dict[str, float]]] = None,
+        compute_objective: Optional[Callable[[dict[str, float]], float]] = None,
+        n_trials: int = 20,
+        direction: Union[str, list[str]] = "minimize",
+        backend: Optional[Union["str", HPSearchBackend]] = None,
+        hp_name: Optional[Callable[["optuna.Trial"], str]] = None,
+        **kwargs,
+    ) -> Union[BestRun, list[BestRun]]:
+        """
+        Launch an hyperparameter search using `optuna` or `Ray Tune` or `SigOpt`. The optimized quantity is determined
+        by `compute_objective`, which defaults to a function returning the evaluation loss when no metric is provided,
+        the sum of all metrics otherwise.
+
+        <Tip warning={true}>
+
+        To use this method, you need to have provided a `model_init` when initializing your [`Trainer`]: we need to
+        reinitialize the model at each new run. This is incompatible with the `optimizers` argument, so you need to
+        subclass [`Trainer`] and override the method [`~Trainer.create_optimizer_and_scheduler`] for custom
+        optimizer/scheduler.
+
+        </Tip>
+
+        Args:
+            hp_space (`Callable[["optuna.Trial"], Dict[str, float]]`, *optional*):
+                A function that defines the hyperparameter search space. Will default to
+                [`~trainer_utils.default_hp_space_optuna`] or [`~trainer_utils.default_hp_space_ray`] or
+                [`~trainer_utils.default_hp_space_sigopt`] depending on your backend.
+            compute_objective (`Callable[[Dict[str, float]], float]`, *optional*):
+                A function computing the objective to minimize or maximize from the metrics returned by the `evaluate`
+                method. Will default to [`~trainer_utils.default_compute_objective`].
+            n_trials (`int`, *optional*, defaults to 100):
+                The number of trial runs to test.
+            direction (`str` or `List[str]`, *optional*, defaults to `"minimize"`):
+                If it's single objective optimization, direction is `str`, can be `"minimize"` or `"maximize"`, you
+                should pick `"minimize"` when optimizing the validation loss, `"maximize"` when optimizing one or
+                several metrics. If it's multi objectives optimization, direction is `List[str]`, can be List of
+                `"minimize"` and `"maximize"`, you should pick `"minimize"` when optimizing the validation loss,
+                `"maximize"` when optimizing one or several metrics.
+            backend (`str` or [`~training_utils.HPSearchBackend`], *optional*):
+                The backend to use for hyperparameter search. Will default to optuna or Ray Tune or SigOpt, depending
+                on which one is installed. If all are installed, will default to optuna.
+            hp_name (`Callable[["optuna.Trial"], str]]`, *optional*):
+                A function that defines the trial/run name. Will default to None.
+            kwargs (`Dict[str, Any]`, *optional*):
+                Additional keyword arguments for each backend:
+
+                - `optuna`: parameters from
+                  [optuna.study.create_study](https://optuna.readthedocs.io/en/stable/reference/generated/optuna.study.create_study.html)
+                  and also the parameters `timeout`, `n_jobs` and `gc_after_trial` from
+                  [optuna.study.Study.optimize](https://optuna.readthedocs.io/en/stable/reference/generated/optuna.study.Study.html#optuna.study.Study.optimize)
+                - `ray`: parameters from [tune.run](https://docs.ray.io/en/latest/tune/api_docs/execution.html#tune-run).
+                  If `resources_per_trial` is not set in the `kwargs`, it defaults to 1 CPU core and 1 GPU (if available).
+                  If `progress_reporter` is not set in the `kwargs`,
+                  [ray.tune.CLIReporter](https://docs.ray.io/en/latest/tune/api/doc/ray.tune.CLIReporter.html) is used.
+                - `sigopt`: the parameter `proxies` from
+                  [sigopt.Connection.set_proxies](https://docs.sigopt.com/support/faq#how-do-i-use-sigopt-with-a-proxy).
+
+        Returns:
+            [`trainer_utils.BestRun` or `List[trainer_utils.BestRun]`]: All the information about the best run or best
+            runs for multi-objective optimization. Experiment summary can be found in `run_summary` attribute for Ray
+            backend.
+        """
+        if backend is None:
+            backend = default_hp_search_backend()
+        backend = HPSearchBackend(backend)
+        backend_obj = ALL_HYPERPARAMETER_SEARCH_BACKENDS[backend]()
+        backend_obj.ensure_available()
+        self.hp_search_backend = backend
+        if self.model_init is None:
+            raise RuntimeError(
+                "To use hyperparameter search, you need to pass your model through a model_init function."
+            )
+
+        self.hp_space = backend_obj.default_hp_space if hp_space is None else hp_space
+        self.hp_name = hp_name
+        self.compute_objective = default_compute_objective if compute_objective is None else compute_objective
+
+        best_run, study = backend_obj.run(self, n_trials, direction, **kwargs)
+
+        self.hp_search_backend = None
+        return best_run, study
 
 def test_pushforward_unroll_steps():
     """

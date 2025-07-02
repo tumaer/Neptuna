@@ -6,20 +6,21 @@ from utils import activation_func
 
 from .unet_utils import DownBlockND, UpBlockND, MiddleBlockND, DownsampleND, UpsampleND
 from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
+
 class UNet(nn.Module): 
     """Modern U-Net architecture for fluid dynamics simulation
 
     A flexible U-Net implementation that supports 1D, 2D, and 3D data processing for fluid dynamics
     simulation. The architecture includes wide-residual blocks, spatial attention blocks, and optional
-    coordinate features for spatial awareness. It processes both scalar and vector fields with
+    coordinate features for spatial awareness. It processes both scalar and vector channels with
     multi-resolution feature extraction and reconstruction.
 
     Args:
-        in_channels (int): Number of input channels (input_seq * input_fields)
-        out_channels (int): Number of output channels (output_seq * output_fields)
+        in_channels (int): Number of input channels/fields
+        out_channels (int): Number of output channels/fields
         latent_channels (int): Number of channels in the hidden layers
         activation_fn_name (str): Name of the activation function (default: "gelu")
-        sequence_info (List[List[int]]): Configuration for input/output sequences [[input_seq_len, output_seq_len, input_stride, output_stride]]
+        sequence_info (List[int]): Configuration for input/output sequences [input_seq_len, output_seq_len, stride]
         dimension (int): Spatial dimension of the data (1, 2, or 3)
         norm (bool): Whether to use normalization layers (default: False)
         channel_multiplier (Union[Tuple[int, ...], List[int]]): Channel multipliers for each resolution level (default: (1, 2, 2, 4))
@@ -37,6 +38,7 @@ class UNet(nn.Module):
     """
     #TODO: Do this for all models
     main_input_name = "input_data"
+    conditioning_input_name = "conditioning_input_data"
     
     def __init__(
         self,
@@ -93,10 +95,17 @@ class UNet(nn.Module):
 
     
     ### Main Forward function ###
-    def forward(self, input_data: Tensor) -> Tensor:
+    def forward(self, input_data: Tensor, **kwargs) -> Tensor:
         
-        batch, input_seq, input_fields, *spatial = input_data.shape
-        x=input_data.reshape(batch, input_seq * input_fields, *spatial)
+        if "conditioning_input_data" in kwargs:
+            #NOTE: Conditioning data can be passed into a conv network before concatination with input_data.
+            conditioning_input_data = kwargs["conditioning_input_data"]
+            input_data = torch.cat([input_data, conditioning_input_data], dim=2)
+        else:
+            conditioning_input_data = None
+
+        batch, input_seq, input_channels, *spatial = input_data.shape
+        x=input_data.reshape(batch, input_seq * input_channels, *spatial)
 
         x = self.unet(x)
 

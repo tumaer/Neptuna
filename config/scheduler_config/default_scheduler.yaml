@@ -1,5 +1,11 @@
-#scheduler_config:
+# Optimiser
+#for other options: refer to OptimizerNames https://github.com/huggingface/transformers/blob/main/src/transformers/training_args.py
+optim: "adamw_torch" # a few options: adamw_hf, adamw_torch, sgd, rmsprop, adagrad...
+# Learning rate
 lr: 0.00005
+# Weight decay
 weight_decay: 0.000001
+# Scheduler
 lr_scheduler: "cosine"
+# Warmup ratio
 warmup_ratio: 0.0

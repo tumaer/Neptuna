@@ -1,10 +1,29 @@
 dataset_name: KarmanVortexStreet
 dataset_directory_path: ./data/fluids/KVS/2D_trimmed
 dimension: 2
-in_channels: 3 #rho ,u ,v
-out_channels: 3
 sequence_info: [4, 3, 1]
-filter_frame: null #filter_frame: [100, 500]
+filter_frames: null #filter_frame: [100, 500]
 filter_groups: null #filter_groups: ["Re_100", "Re_300", "Re_400"]
-filter_fields: null #filter_fields: ["velocity", "density"]
-grid_resolution: [256,64]
+filter_in_channels: null
+filter_out_channels: null
+conditioning_in_channels: null
+is_steady_state_prediction: False #assuming the last frame is the steady state
+grid_resolution: null #if not provided, will be inferred automatically from the dataset
+data_normalization_stats: #if not provided, will be computed automatically from the dataset
+  density:
+    mean: 9.992812e-01
+    std: 1.639584e-03
+    min: 9.860891e-01
+    max: 1.006007e+00
+  velocity_0:
+    mean: 1.972001e-02
+    std: 4.770194e-03
+    min: -2.213852e-02
+    max: 5.820784e-02
+  velocity_1:
+    mean: -3.324723e-07
+    std: 6.757189e-03
+    min: -4.687472e-02
+    max: 4.687507e-02
+data_normalization_strategy: min_max_normalization #z_normalization, min_max_normalization
+eval_groups: null

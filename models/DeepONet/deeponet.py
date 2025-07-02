@@ -4,8 +4,10 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from utils import activation_func
-from .deeponet_utils import Ffn, CnnBranch, grid_to_points, points_to_grid
+from .deeponet_utils import Ffn, CnnBranch,grid_to_points, points_to_grid, calc_resnet_out_shape, linspace_int_list
 from models.ResNet.resnet import ResNet1D, ResNet2D, ResNet3D
+
+
 
 class AutoDeepONet(nn.Module):
     """
@@ -16,7 +18,7 @@ class AutoDeepONet(nn.Module):
             Number of input fields
         out_channels : int
             Number of output fields
-        resolution : Tuple[int]
+        grid_resolution : Tuple[int]
             Resolution of the input fields
         dimension : int
             Dimension of the input fields (1D, 2D, or 3D)
@@ -24,33 +26,36 @@ class AutoDeepONet(nn.Module):
             Type of branch network (FFN, CNN, ResNet)
         query_idxs : Optional[Tensor]
             Indices for the trunk network
-        sequence_info (List[List[int]]):
-            sequence_info[0][0]: input_seq_len, sequence_info[0][1]: label_seq_len,
-            sequence_info[0][2]: input_sequence_stride, sequence_info[0][3]: label_sequence_stride  
+        sequence_info (Listint]):
+            sequence_info[0]: input_seq_len, 
+            sequence_info[1]: label_seq_len,
+            sequence_info[2]: input/output_sequence_stride 
         branch_depth : int
             Depth of the branch network, not used for ResNet
         trunk_depth : int
             Depth of the trunk network
         width : int
             Dimension of the hidden layers, if CNN or ResNet is used for branch net, this argument is only applied to trunk net
-         activation_fn : str
+        activation_fn : str
             Activation function
         act_on_output : bool
             Whether to apply activation function on the output of the branch network, only used for FFN
         kernel_size : Optional[int]
             Kernel size for the CNN branch network, not used for FFN or ResNet
         padding : Optional[int]
-            Padding for the CNN and ResNet branch network, not used for FFN
+            Padding for the CNN branch network, not used for FFN and ResNet
         hidden_channels : Optional[int]
             Number of hidden channels for the CNN and ResNet branch network, not used for FFN
-    
+        num_blocks (List[int]): 
+            Number of blocks in each stage, only used for ResNet branch network
     """
-    main_input_name = "input_data"
+    main_input_name = "input_data"  
+    conditioning_input_name = "conditioning_input_data"
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
-        resolution: Tuple[int],
+        grid_resolution: Tuple[int],
         dimension: int,
         branch_net: str = "FFN",
         query_idxs: Optional[Tensor] = None,
@@ -59,31 +64,34 @@ class AutoDeepONet(nn.Module):
         branch_depth: int = 4,
         trunk_depth: int = 4,
         width: int = 100,
-        activation_fn: str = "gelu",
+        activation_fn_name: str = "gelu",
         #act_norm: bool = False,
         act_on_output: bool = False,        
         kernel_size: Optional[int] = 3, 
         padding: Optional[int] = 1, 
-        hidden_channels: Optional[int] = 32,
+        stride: Optional[int] = 2,
+        latent_channels: Optional[int] = 32,
+        num_blocks: Optional[List[int]] = [1],
+        ResNet_block: Optional[str] = "BasicBlock",
     ):
 
         super().__init__()
-        self.in_channels = in_channels * sequence_info[0] 
-        self.out_channels = out_channels * sequence_info[1]
+        self.in_size = in_channels * sequence_info[0] 
+        self.out_size = out_channels * sequence_info[1]
         self.branch_depth = branch_depth
         self.trunk_depth = trunk_depth
         self.width = width
         self.dimension = dimension
-        self.activation: nn.Module = activation_func.get_activation(activation_fn)
+        self.activation: nn.Module = activation_func.get_activation(activation_fn_name)
         if self.activation is None:
-            raise NotImplementedError(f"Activation {activation_fn} not implemented")
+            raise NotImplementedError(f"Activation {activation_fn_name} not implemented")
 
         if isinstance(branch_net, str):
             if branch_net == "FFN":
                 self.AutoDeepONet = self.build_AutoDeepONet()(
-                    in_channels = self.in_channels,
-                    out_channels = self.out_channels,
-                    resolution = resolution,
+                    in_size = self.in_size,
+                    out_size = self.out_size,
+                    grid_resolution = grid_resolution,
                     activation_fn = self.activation,
                     branch_net = branch_net,
                     branch_depth = branch_depth,
@@ -91,12 +99,13 @@ class AutoDeepONet(nn.Module):
                     width = width,
                     act_on_output = act_on_output,
                     query_idxs = query_idxs,
+                    num_blocks = num_blocks,
                 )
             elif branch_net == "CNN":
                 self.AutoDeepONet = self.build_AutoDeepONet()(
-                    in_channels = self.in_channels,
-                    out_channels = self.out_channels,
-                    resolution = resolution,
+                    in_size = self.in_size,
+                    out_size = self.out_size,
+                    grid_resolution = grid_resolution,
                     activation_fn = self.activation,
                     branch_net = branch_net,
                     branch_depth = branch_depth,
@@ -105,34 +114,41 @@ class AutoDeepONet(nn.Module):
                     query_idxs = query_idxs,
                     kernel_size = kernel_size,
                     padding = padding,
-                    hidden_channels = hidden_channels,
+                    stride = stride,
+                    latent_channels = latent_channels,
                 )
-            elif branch_net == "ResNet":
+            elif branch_net == "ResNet": #TODO:add kernal_size and stride to ResNet
                 self.AutoDeepONet = self.build_AutoDeepONet()(
-                    in_channels = self.in_channels,
-                    out_channels = self.out_channels,
-                    resolution = resolution,
+                    in_size = self.in_size,
+                    out_size = self.out_size,
+                    grid_resolution = grid_resolution,
                     activation_fn = self.activation,
                     branch_net = branch_net,
                     branch_depth = branch_depth,
                     trunk_depth = trunk_depth,
                     padding= padding,
-                    #block = "BasicBlock",
-                    #num_blocks = [1,1,1],
+                    latent_channels = latent_channels, 
+                    ResNet_block = ResNet_block,
+                    num_blocks = num_blocks,
                 )
 
     def forward(self, 
                 input_data: Tensor,
-                ) -> Tensor: 
-        
-        #reshape input into [batch, in_channel, grid_x, grid_y, ...]
-        #NOTE: input and output fields need not be necessarily the same.
+                **kwargs) -> Tensor: 
+
+        if "conditioning_input_data" in kwargs:
+            #NOTE: Conditioning data can be passed into a conv network before concatination with input_data.
+            conditioning_input_data = kwargs["conditioning_input_data"]
+            input_data = torch.cat([input_data, conditioning_input_data], dim=2)
+        else:
+            conditioning_input_data = None
+
         batch, input_seq, input_fields, *spatial = input_data.shape
         input_data=input_data.reshape(batch, input_seq * input_fields, *spatial)
         
-        y = self.AutoDeepONet(input_data)  # (B, C_out, X)
+        x = self.AutoDeepONet(input_data)  # (B, C_out, X)
      
-        return y
+        return x
     
     def build_AutoDeepONet(self):
         """Get the ResNet encoder based on the model dimensionality"""
@@ -150,22 +166,26 @@ class AutoDeepONet(nn.Module):
 class AutoDeepONet1D(nn.Module):
     def __init__(
         self,
-        in_channels: int,
-        out_channels: int,
-        resolution: Tuple[int],
+        in_size: int,
+        out_size: int,
+        grid_resolution: Tuple[int],
         activation_fn: nn.Module,
         branch_net: str,
         branch_depth: int,
         trunk_depth: int,
         width: Optional[int] = 4,
+        num_blocks: Optional[List[int]] = [1],
         act_on_output: Optional[bool] = False,
         kernel_size: Optional[int] = 3, 
+        stride: Optional[int] = 1,
+        out_ffn_depth: Optional[int] = 3,
         padding: Optional[int] = 1, 
-        hidden_channels: Optional[int] = 32,
+        latent_channels: Optional[int] = 32,
         query_idxs: Optional[Tensor] = None,        
+        ResNet_block: Optional[str] = "BasicBlock",
     ):
         super().__init__()
-        self.out_channels = out_channels
+        self.out_size = out_size
         self.activation_fn = activation_fn
         self.branch_net_str = branch_net
         self.query_idxs = query_idxs
@@ -173,44 +193,79 @@ class AutoDeepONet1D(nn.Module):
         self.trunk_depth = trunk_depth        
         if isinstance(branch_net, str):
             if branch_net == "FFN":
-                branch_dim = in_channels * resolution[0]
+                branch_dim = in_size * grid_resolution[0]
                 self.branch_dims = [branch_dim] + [width] * branch_depth
                 self.branch_net = Ffn(
                     dims = self.branch_dims,
                     activation_fn = activation_fn,
                     act_on_output = act_on_output,
                 )
+                self.trunk_dims = linspace_int_list(self.width, self.trunk_depth, 1, False)
+                #self.trunk_dims = [1] + [self.width] * self.trunk_depth        
+                self.trunk_net = Ffn(
+                    dims = self.trunk_dims, 
+                    activation_fn = activation_fn,
+                )
             elif branch_net == "CNN":
                 self.branch_net = CnnBranch(
-                    in_channels = in_channels,
+                    in_channels = in_size,
                     kernel_size = kernel_size,
                     dimension = 1,
                     activation_fn= activation_fn,
                     padding = padding,
-                    hidden_channels = hidden_channels,
+                    stride = stride,
+                    latent_channels = latent_channels, 
                     depth = branch_depth,
+                    grid_resolution = grid_resolution,
                 )
+                length_new = latent_channels * self.branch_net.calc_out_shape()[0]
+                self.trunk_dims = linspace_int_list(length_new, self.trunk_depth, 1, False)
+                #self.trunk_dims = [1] + [self.width] * self.trunk_depth + [length_new]
+                self.trunk_net = Ffn(
+                    dims = self.trunk_dims, 
+                    activation_fn = self.activation_fn,
+                )
+                dims_outffn = linspace_int_list(length_new, out_ffn_depth, 1, True)  
+                self.out_Ffn = Ffn(
+                    dims = dims_outffn,
+                    #dims = [length_new] * out_ffn_depth  + [1], 
+                    activation_fn = self.activation_fn,
+                    act_on_output = False,  
+                )
+                
             elif branch_net == "ResNet":
                 self.branch_net = ResNet1D(
-                    in_channels= in_channels,
-                    out_channels= hidden_channels,
-                    block = "BasicBlock",
-                    num_blocks = [1],
-                    hidden_channels= hidden_channels,
+                    in_size= in_size,
+                    out_size= latent_channels,
+                    block = ResNet_block,
+                    num_blocks = num_blocks,
+                    latent_channels= latent_channels,
                     coord_features= False,
-                    padding= padding,
+                    padding= 0,
+                )
+                length_new = latent_channels * calc_resnet_out_shape(
+                    in_shape = grid_resolution,
+                    num_blocks = num_blocks,
+                    if_maxpool = False if ResNet_block == "BasicBlock" else True
+                )[0]
+                self.trunk_dims = linspace_int_list(length_new, self.trunk_depth, 1, False)
+                #self.trunk_dims = [1] + [self.width] * self.trunk_depth + [length_new]
+                self.trunk_net = Ffn(
+                    dims = self.trunk_dims, 
+                    activation_fn = self.activation_fn,
+                )
+                dims_outffn = linspace_int_list(length_new, out_ffn_depth, 1, True)  
+                self.out_Ffn = Ffn(
+                    dims = dims_outffn,
+                    #dims = [length_new] * out_ffn_depth  + [1], 
+                    activation_fn = self.activation_fn,
+                    act_on_output = False,  
                 )
             else:
                 raise NotImplementedError(f"Unknown block: {branch_net}")
         else:
             raise ValueError(f"Unknown block type: {branch_net}")    
         
-        self.trunk_dims = [1] + [width] * trunk_depth
-        
-        self.trunk_net = Ffn(
-            dims = self.trunk_dims, 
-            activation_fn = activation_fn,
-        )
         
         self.bias = nn.Parameter(torch.zeros(1))  
         
@@ -224,7 +279,7 @@ class AutoDeepONet1D(nn.Module):
                 dtype=torch.long, 
                 device=x.device
                 ).unsqueeze(1)  # (H, 1)
-            self.query_idxs = self.query_idxs.repeat(self.out_channels, 1)  # (H * C_out , 1)
+            self.query_idxs = self.query_idxs.repeat(self.out_size, 1)  # (H * C_out , 1)
         x_trunk = self.query_idxs.float()
         x_trunk[:, 0] = x_trunk[:, 0]  / length #normalize to [0,1]
         
@@ -235,53 +290,44 @@ class AutoDeepONet1D(nn.Module):
                 x_branch = x_branch.unsqueeze(1)  # (B, 1, p)
                 x_trunk = self.trunk_net(x_trunk)  # (H * C_out , p)
                 x_trunk = x_trunk.unsqueeze(0)  # (1, H * C_out, p)
-                y = torch.sum(x_branch * x_trunk, dim=-1) + self.bias  # (B, H * C_out)
+                x = torch.sum(x_branch * x_trunk, dim=-1) + self.bias  # (B, H * C_out)
             elif self.branch_net_str in ["CNN", "ResNet"]:
                 x_branch = self.branch_net(x) # (B, C_hidden , H_new)
                 x_branch = x_branch.view(shape[0], -1)  # (B, C_hidden*H_new)
                 x_branch = x_branch.unsqueeze(1)  # (B, 1, C_hidden*H_new)
-                length_new = x_branch.size(2)
-                self.trunk_dims = [1] + [self.width] * self.trunk_depth + [length_new]
-                self.trunk_net = Ffn(
-                    dims = self.trunk_dims, 
-                    activation_fn = self.activation_fn,
-                ).to(x.device)
-                x_trunk = self.trunk_net(x_trunk)  # (X * C_out , C_hidden*H_new)
-                x_trunk = x_trunk.unsqueeze(0)  # (1, X * C_out, C_hidden*H_new)
-                self.out_Ffn = Ffn(
-                    dims = [length_new]*3  + [1], # 3 fix value??
-                    activation_fn = self.activation_fn,
-                    act_on_output = False,  
-                ).to(x.device)  # should i do this here? 
-                y = x_branch * x_trunk # (B, H * C_out, C_hidden*H_new)
-                y = self.out_Ffn(y)  # (B, H * C_out, 1)
-                y = y.squeeze(-1)  # (B, H * C_out)
+                x_trunk = self.trunk_net(x_trunk)  # (H * C_out , C_hidden*H_new)
+                x_trunk = x_trunk.unsqueeze(0)  # (1, H * C_out, C_hidden*H_new)
+                x = x_branch * x_trunk # (B, H * C_out, C_hidden*H_new)
+                x = self.out_Ffn(x)  # (B, H * C_out, 1)
+                x = x.squeeze(-1)  # (B, H * C_out)
 
-        shape[1] = self.out_channels   
-        y = points_to_grid(y, shape)  # (B, C_out , H)
-        return y
-
+        shape[1] = self.out_size  
+        x = points_to_grid(x, shape)  # (B, C_out , H)
+        return x
 
 class AutoDeepONet2D(nn.Module):
     def __init__(
         self,
-        in_channels: int,
-        out_channels: int,
-        resolution: Tuple[int, int],
+        in_size: int,
+        out_size: int,
+        grid_resolution: Tuple[int],
         activation_fn: nn.Module,
         branch_net: str,
         branch_depth: int,
         trunk_depth: int,
         width: Optional[int] = 4,
+        num_blocks: Optional[List[int]] = [1],
         act_on_output: Optional[bool] = False,
         kernel_size: Optional[int] = 3, 
+        stride: Optional[int] = 1,
+        out_ffn_depth: Optional[int] = 3,
         padding: Optional[int] = 1, 
-        hidden_channels: Optional[int] = 32,
-        query_idxs: Optional[Tensor] = None,        
+        latent_channels: Optional[int] = 32,
+        query_idxs: Optional[Tensor] = None,    
+        ResNet_block: Optional[str] = "BasicBlock",    
     ):
         super().__init__()
-        self.out_channels = out_channels
-        self.hidden_channels = hidden_channels
+        self.out_size = out_size
         self.activation_fn = activation_fn
         self.branch_net_str = branch_net
         self.query_idxs = query_idxs
@@ -289,48 +335,86 @@ class AutoDeepONet2D(nn.Module):
         self.trunk_depth = trunk_depth        
         if isinstance(branch_net, str):
             if branch_net == "FFN":
-                branch_dim = in_channels * resolution[0] * resolution[1]
+                branch_dim = in_size * grid_resolution[0] * grid_resolution[1]
                 self.branch_dims = [branch_dim] + [width] * branch_depth
                 self.branch_net = Ffn(
                     dims = self.branch_dims,
                     activation_fn = activation_fn,
                     act_on_output = act_on_output,
                 )
+                self.trunk_dims = linspace_int_list(self.width, self.trunk_depth, 2, False)
+                #self.trunk_dims = [2] + [self.width] * self.trunk_depth        
+                self.trunk_net = Ffn(
+                    dims = self.trunk_dims, 
+                    activation_fn = activation_fn,
+                )
             elif branch_net == "CNN":
                 self.branch_net = CnnBranch(
-                    in_channels = in_channels,
+                    in_channels = in_size,
                     kernel_size = kernel_size,
                     dimension = 2,
                     activation_fn= activation_fn,
                     padding = padding,
-                    hidden_channels = hidden_channels,
+                    stride = stride,
+                    latent_channels = latent_channels, 
                     depth = branch_depth,
+                    grid_resolution = grid_resolution,
                 )
+                length_new = latent_channels * self.branch_net.calc_out_shape()[0] * self.branch_net.calc_out_shape()[1] 
+                self.trunk_dims = linspace_int_list(length_new, self.trunk_depth, 2, False)
+                #self.trunk_dims = [2] + [self.width] * self.trunk_depth + [length_new]
+                self.trunk_net = Ffn(
+                    dims = self.trunk_dims, 
+                    activation_fn = self.activation_fn,
+                )
+                dims_outffn = linspace_int_list(length_new, out_ffn_depth, 1, True)  
+                self.out_Ffn = Ffn(
+                    dims = dims_outffn,
+                    #dims = [length_new] * out_ffn_depth  + [1], 
+                    activation_fn = self.activation_fn,
+                    act_on_output = False,  
+                )
+                
             elif branch_net == "ResNet":
                 self.branch_net = ResNet2D(
-                    in_channels= in_channels,
-                    out_channels= hidden_channels,
-                    block = "BasicBlock",
-                    num_blocks = [1],
-                    hidden_channels= hidden_channels,
+                    in_size= in_size,
+                    out_size= latent_channels,
+                    block = ResNet_block,
+                    num_blocks = num_blocks,
+                    latent_channels= latent_channels,
                     coord_features= False,
-                    padding= padding,
+                    padding= 0,
+                )
+                length_new = latent_channels * calc_resnet_out_shape(
+                    in_shape = grid_resolution,
+                    num_blocks = num_blocks,
+                    if_maxpool = False if ResNet_block == "BasicBlock" else True)[0]* calc_resnet_out_shape(
+                                                    in_shape = grid_resolution,
+                                                    num_blocks = num_blocks,
+                                                    if_maxpool = False if ResNet_block == "BasicBlock" else True)[1]
+                self.trunk_dims = linspace_int_list(length_new, self.trunk_depth, 2, False)
+                #self.trunk_dims = [2] + [self.width] * self.trunk_depth + [length_new]
+                self.trunk_net = Ffn(
+                    dims = self.trunk_dims, 
+                    activation_fn = self.activation_fn,
+                )
+                dims_outffn = linspace_int_list(length_new, out_ffn_depth, 1, True)  
+                self.out_Ffn = Ffn(
+                    dims = dims_outffn,
+                    #dims = [length_new] * out_ffn_depth  + [1], 
+                    activation_fn = self.activation_fn,
+                    act_on_output = False,  
                 )
             else:
                 raise NotImplementedError(f"Unknown block: {branch_net}")
         else:
             raise ValueError(f"Unknown block type: {branch_net}")    
         
-        self.trunk_dims = [2] + [width] * trunk_depth
-        
-        self.trunk_net = Ffn(
-            dims = self.trunk_dims, 
-            activation_fn = activation_fn,
-        )
         
         self.bias = nn.Parameter(torch.zeros(1))  
         
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, 
+                x: Tensor) -> Tensor:
         shape = list(x.size())  # [B, C, H, W]
         height, width = shape[2], shape[3]
         if self.query_idxs is None:
@@ -339,65 +423,57 @@ class AutoDeepONet2D(nn.Module):
                 dtype=torch.long,
                 device=x.device,
             )  # (H * W, 2)
-            self.query_idxs = self.query_idxs.repeat(self.out_channels, 1)  # (H * W * C_out, 2)
+            self.query_idxs = self.query_idxs.repeat(self.out_size, 1)  # (H * W * C_out, 2)
         x_trunk = self.query_idxs.float()
         x_trunk[:, 0] = x_trunk[:, 0] / height  # normalize H
         x_trunk[:, 1] = x_trunk[:, 1] / width   # normalize W
-
+        
         if isinstance(self.branch_net_str, str):
             if self.branch_net_str == "FFN":
-                flat_x = x.reshape(shape[0], -1)  # (B, C*H*W)
-                x_branch = self.branch_net(flat_x)  # (B, p)
+                flat_x= grid_to_points(x)  # (B, C * H * W)
+                x_branch = self.branch_net(flat_x) # (B, p)
                 x_branch = x_branch.unsqueeze(1)  # (B, 1, p)
-                x_trunk = self.trunk_net(x_trunk)  # (H*W*C_out, p)
-                x_trunk = x_trunk.unsqueeze(0)  # (1, H*W*C_out, p)
-                y = torch.sum(x_branch * x_trunk, dim=-1) + self.bias  # (B, H*W*C_out)
+                x_trunk = self.trunk_net(x_trunk)  # (H * W * C_out , p)
+                x_trunk = x_trunk.unsqueeze(0)  # (1, H * W * C_out, p)
+                x = torch.sum(x_branch * x_trunk, dim=-1) + self.bias  # (B, H * W * C_out)
             elif self.branch_net_str in ["CNN", "ResNet"]:
                 x_branch = self.branch_net(x)  # (B, C_hidden, H_new, W_new)
                 x_branch = x_branch.view(shape[0], -1)  # (B, C_hidden*H_new*W_new)
                 x_branch = x_branch.unsqueeze(1)  # (B, 1, C_hidden*H_new*W_new)
-                length_new = x_branch.size(2)
-                self.trunk_dims = [2] + [self.width] * self.trunk_depth + [length_new]
-                self.trunk_net = Ffn(
-                    dims=self.trunk_dims,
-                    activation_fn=self.activation_fn,
-                ).to(x.device)
                 x_trunk = self.trunk_net(x_trunk)  # (H*W*C_out, C_hidden*H_new*W_new)
                 x_trunk = x_trunk.unsqueeze(0)  # (1, H*W*C_out, C_hidden*H_new*W_new)
-                self.out_Ffn = Ffn(
-                    dims=[length_new]*3 + [1],
-                    activation_fn=self.activation_fn,
-                    act_on_output=False,
-                ).to(x.device)
-                y = x_branch * x_trunk  # (B, H*W*C_out, C_hidden*H_new*W_new)
-                y = self.out_Ffn(y)  # (B, H*W*C_out, 1)
-                y = y.squeeze(-1)  # (B, H*W*C_out)
+                x = x_branch * x_trunk # (B, H*W*C_out, C_hidden*H_new*W_new)
+                x = self.out_Ffn(x)   # (B, H*W*C_out, 1)
+                x = x.squeeze(-1)  # (B, H*W*C_out)
 
-        shape[1] = self.out_channels
-        y = y.view(shape[0], self.out_channels, height, width)  # (B, C_out, H, W)
-        return y
-    
-#not tested for CNN and ResNet branch nets
+        shape[1] = self.out_size  
+        x = points_to_grid(x, shape)  # (B, C_out, H, W)
+        return x
+
+
 class AutoDeepONet3D(nn.Module):
     def __init__(
         self,
-        in_channels: int,
-        out_channels: int,
-        resolution: Tuple[int, int, int],
+        in_size: int,
+        out_size: int,
+        grid_resolution: Tuple[int],
         activation_fn: nn.Module,
         branch_net: str,
         branch_depth: int,
         trunk_depth: int,
         width: Optional[int] = 4,
+        num_blocks: Optional[List[int]] = [1],
         act_on_output: Optional[bool] = False,
         kernel_size: Optional[int] = 3, 
+        stride: Optional[int] = 1,
+        out_ffn_depth: Optional[int] = 3,
         padding: Optional[int] = 1, 
-        hidden_channels: Optional[int] = 32,
-        query_idxs: Optional[Tensor] = None,        
+        latent_channels: Optional[int] = 32,
+        query_idxs: Optional[Tensor] = None,
+        ResNet_block: Optional[str] = "BasicBlock",        
     ):
         super().__init__()
-        self.out_channels = out_channels
-        self.hidden_channels = hidden_channels
+        self.out_size = out_size
         self.activation_fn = activation_fn
         self.branch_net_str = branch_net
         self.query_idxs = query_idxs
@@ -405,47 +481,87 @@ class AutoDeepONet3D(nn.Module):
         self.trunk_depth = trunk_depth        
         if isinstance(branch_net, str):
             if branch_net == "FFN":
-                branch_dim = in_channels * resolution[0] * resolution[1] * resolution[2]
+                branch_dim = in_size * grid_resolution[0] * grid_resolution[1] * grid_resolution[2]
                 self.branch_dims = [branch_dim] + [width] * branch_depth
                 self.branch_net = Ffn(
                     dims = self.branch_dims,
                     activation_fn = activation_fn,
                     act_on_output = act_on_output,
                 )
+                self.trunk_dims = linspace_int_list(self.width, self.trunk_depth, 3, False)
+                #self.trunk_dims = [3] + [self.width] * self.trunk_depth        
+                self.trunk_net = Ffn(
+                    dims = self.trunk_dims, 
+                    activation_fn = activation_fn,
+                )
             elif branch_net == "CNN":
                 self.branch_net = CnnBranch(
-                    in_channels = in_channels,
+                    in_channels = in_size,
                     kernel_size = kernel_size,
                     dimension = 3,
                     activation_fn= activation_fn,
                     padding = padding,
-                    hidden_channels = hidden_channels,
+                    stride = stride,
+                    latent_channels = latent_channels, 
                     depth = branch_depth,
+                    grid_resolution = grid_resolution,
                 )
+                length_new = latent_channels * self.branch_net.calc_out_shape()[0] * self.branch_net.calc_out_shape()[1] * self.branch_net.calc_out_shape()[2]
+                self.trunk_dims = linspace_int_list(length_new, self.trunk_depth, 3, False)
+                #self.trunk_dims = [3] + [self.width] * self.trunk_depth + [length_new]
+                self.trunk_net = Ffn(
+                    dims = self.trunk_dims, 
+                    activation_fn = self.activation_fn,
+                )
+                dims_outffn = linspace_int_list(length_new, out_ffn_depth, 1, True)  
+                self.out_Ffn = Ffn(
+                    dims = dims_outffn,
+                    #dims = [length_new] * out_ffn_depth  + [1], 
+                    activation_fn = self.activation_fn,
+                    act_on_output = False,  
+                )
+                
             elif branch_net == "ResNet":
                 self.branch_net = ResNet3D(
-                    in_channels= in_channels,
-                    out_channels= hidden_channels,
-                    block = "BasicBlock",
-                    num_blocks = [1],
-                    hidden_channels= hidden_channels,
+                    in_size= in_size,
+                    out_size= latent_channels,
+                    block = ResNet_block,
+                    num_blocks = num_blocks,
+                    latent_channels= latent_channels,#TODO:change this!!!!!
                     coord_features= False,
-                    padding= padding,
+                    padding= 0,
+                )
+                length_new = latent_channels * calc_resnet_out_shape(
+                    in_shape = grid_resolution,
+                    num_blocks = num_blocks,
+                    if_maxpool = False if ResNet_block == "BasicBlock" else True)[0]* calc_resnet_out_shape(
+                                                    in_shape = grid_resolution,
+                                                    num_blocks = num_blocks,
+                                                    if_maxpool = False if ResNet_block == "BasicBlock" else True)[1] * calc_resnet_out_shape(
+                                                    in_shape = grid_resolution,
+                                                    num_blocks = num_blocks,
+                                                    if_maxpool = False if ResNet_block == "BasicBlock" else True)[2]
+                self.trunk_dims = linspace_int_list(length_new, self.trunk_depth, 3, False)
+                #self.trunk_dims = [3] + [self.width] * self.trunk_depth + [length_new]
+                self.trunk_net = Ffn(
+                    dims = self.trunk_dims, 
+                    activation_fn = self.activation_fn,
+                )
+                dims_outffn = linspace_int_list(length_new, out_ffn_depth, 1, True)  
+                self.out_Ffn = Ffn(
+                    dims = dims_outffn,
+                    #dims = [length_new] * out_ffn_depth  + [1], 
+                    activation_fn = self.activation_fn,
+                    act_on_output = False,  
                 )
             else:
                 raise NotImplementedError(f"Unknown block: {branch_net}")
         else:
             raise ValueError(f"Unknown block type: {branch_net}")    
         
-        self.trunk_dims = [3] + [width] * trunk_depth
-        
-        self.trunk_net = Ffn(
-            dims = self.trunk_dims, 
-            activation_fn = activation_fn,
-        )
         
         self.bias = nn.Parameter(torch.zeros(1))  
-        
+
     def forward(self, x: Tensor) -> Tensor:
         shape = list(x.size())  # [B, C, D, H, W]
         depth, height, width = shape[2], shape[3], shape[4]
@@ -455,7 +571,7 @@ class AutoDeepONet3D(nn.Module):
                 dtype=torch.long,
                 device=x.device,
             )  # (D * H * W, 3)
-            self.query_idxs = self.query_idxs.repeat(self.out_channels, 1)  # (D*H*W*C_out, 3)
+            self.query_idxs = self.query_idxs.repeat(self.out_size, 1)  # (D*H*W*C_out, 3)
         x_trunk = self.query_idxs.float()
         x_trunk[:, 0] = x_trunk[:, 0] / depth   # normalize D
         x_trunk[:, 1] = x_trunk[:, 1] / height  # normalize H
@@ -468,28 +584,18 @@ class AutoDeepONet3D(nn.Module):
                 x_branch = x_branch.unsqueeze(1)  # (B, 1, p)
                 x_trunk = self.trunk_net(x_trunk)  # (D*H*W*C_out, p)
                 x_trunk = x_trunk.unsqueeze(0)  # (1, D*H*W*C_out, p)
-                y = torch.sum(x_branch * x_trunk, dim=-1) + self.bias  # (B, D*H*W*C_out)
+                x = torch.sum(x_branch * x_trunk, dim=-1) + self.bias  # (B, D*H*W*C_out)
             elif self.branch_net_str in ["CNN", "ResNet"]:
                 x_branch = self.branch_net(x)  # (B, C_hidden, D_new, H_new, W_new)
                 x_branch = x_branch.view(shape[0], -1)  # (B, C_hidden*D_new*H_new*W_new)
                 x_branch = x_branch.unsqueeze(1)  # (B, 1, C_hidden*D_new*H_new*W_new)
-                length_new = x_branch.size(2)
-                self.trunk_dims = [3] + [self.width] * self.trunk_depth + [length_new]
-                self.trunk_net = Ffn(
-                    dims=self.trunk_dims,
-                    activation_fn=self.activation_fn,
-                ).to(x.device)
                 x_trunk = self.trunk_net(x_trunk)  # (D*H*W*C_out, C_hidden*D_new*H_new*W_new)
                 x_trunk = x_trunk.unsqueeze(0)  # (1, D*H*W*C_out, C_hidden*D_new*H_new*W_new)
-                self.out_Ffn = Ffn(
-                    dims=[length_new]*3 + [1],
-                    activation_fn=self.activation_fn,
-                    act_on_output=False,
-                ).to(x.device)
-                y = x_branch * x_trunk  # (B, D*H*W*C_out, C_hidden*D_new*H_new*W_new)
-                y = self.out_Ffn(y)  # (B, D*H*W*C_out, 1)
-                y = y.squeeze(-1)  # (B, D*H*W*C_out)
+                x = x_branch * x_trunk  # (B, D*H*W*C_out, C_hidden*D_new*H_new*W_new)
+                x = self.out_Ffn(x)  # (B, D*H*W*C_out, 1)
+                x = x.squeeze(-1)  # (B, D*H*W*C_out)
 
-        shape[1] = self.out_channels
-        y = y.view(shape[0], self.out_channels, depth, height, width)  # (B, C_out, D, H, W)
-        return y    
+        shape[1] = self.out_size
+        x = x.view(shape[0], self.out_size, depth, height, width)  # (B, C_out, D, H, W)
+        return x    
+ 
