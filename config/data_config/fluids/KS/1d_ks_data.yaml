@@ -7,7 +7,10 @@ out_channels: null #if not provided, will be computed inferred from the filter_c
 sequence_info: [4, 3, 2]  # [input_seq_len, label_seq_len, stride]
 filter_frames: [null, null]  # [min_frame, max_frame]
 filter_groups: null
-filter_channels: null
+filter_in_channels: null
+filter_out_channels: null
+conditioning_in_channels: null
+is_steady_state_prediction: False #assuming the last frame is the steady state
 grid_resolution: null #if not provided, will be inferred automatically from the dataset
 data_normalization_stats: null #if not provided, will be computed automatically from the dataset
 data_normalization_strategy: z_normalization #options: z_normalization, min_max_normalization
