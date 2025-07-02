@@ -1260,6 +1260,9 @@ class ScOT(nn.Module):
         self.config = config
         self.dimension = 2
 
+        main_input_name = "input_data"
+        conditioning_input_name = "conditioning_input_data"
+
         self.scot = self.build_ScOT()(config=config)
 
     def build_ScOT():
