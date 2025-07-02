@@ -1,8 +1,6 @@
 dataset_name: KarmanVortexStreet
 dataset_directory_path: ./data/fluids/KVS_trimmed/2D
 dimension: 2
-in_channels: null #if not provided, will be computed inferred from the filter_channels
-out_channels: null #if not provided, will be computed inferred from the filter_channels
 sequence_info: [4, 3, 1]
 filter_frames: null #filter_frame: [100, 500]
 filter_groups: null #filter_groups: ["Re_100", "Re_300", "Re_400"]

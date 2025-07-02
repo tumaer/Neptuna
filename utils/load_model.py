@@ -11,8 +11,8 @@ def fetch_model(model_config: Dict,
         from models.FNO.fno import FNO
         model = FNO(
                     dimension=data_config['dimension'],
-                    in_channels=data_config['in_channels'],
-                    out_channels=data_config['out_channels'], 
+                    in_channels=len(data_config['filter_in_channels']),
+                    out_channels=len(data_config['filter_out_channels']), 
                     sequence_info=data_config["sequence_info"],
                     latent_channels=model_config['latent_channels'],
                     num_fno_modes=model_config['fno_modes'],
@@ -28,8 +28,8 @@ def fetch_model(model_config: Dict,
     elif model_name == "resnet":
         from models.ResNet.resnet import ResNet
         model = ResNet(
-                    in_channels=data_config['in_channels'],
-                    out_channels=data_config['out_channels'], 
+                    in_channels=len(data_config['filter_in_channels']),
+                    out_channels=len(data_config['filter_out_channels']), 
                     sequence_info=data_config["sequence_info"],
                     dimension=data_config['dimension'],
                     num_blocks=model_config['num_blocks'],
@@ -43,8 +43,8 @@ def fetch_model(model_config: Dict,
     elif model_name == "dilresnet":
         from models.ResNet.resnet import ResNet
         model = ResNet(
-                    in_channels=data_config['in_channels'],
-                    out_channels=data_config['out_channels'], 
+                    in_channels=len(data_config['filter_in_channels']),
+                    out_channels=len(data_config['filter_out_channels']), 
                     sequence_info=data_config["sequence_info"],
                     dimension=data_config['dimension'],
                     num_blocks=model_config['num_blocks'],
@@ -59,8 +59,8 @@ def fetch_model(model_config: Dict,
         from models.UNet.unet import UNet
         model= UNet(
                     dimension=data_config['dimension'],
-                    in_channels=data_config['in_channels'],
-                    out_channels=data_config['out_channels'], 
+                    in_channels=len(data_config['filter_in_channels']),
+                    out_channels=len(data_config['filter_out_channels']), 
                     sequence_info=data_config["sequence_info"], 
                     latent_channels=model_config['latent_channels'],
                     norm=model_config['norm'],
@@ -76,8 +76,8 @@ def fetch_model(model_config: Dict,
     elif model_name == "deeponet_ffn":
         from models.DeepONet.deeponet import AutoDeepONet
         model = AutoDeepONet(
-                    in_channels=data_config['in_channels'],
-                    out_channels=data_config['out_channels'], 
+                    in_channels=len(data_config['filter_in_channels']),
+                    out_channels=len(data_config['filter_out_channels']), 
                     grid_resolution=data_config['grid_resolution'],
                     sequence_info=data_config["sequence_info"],
                     dimension=data_config['dimension'],
@@ -92,8 +92,8 @@ def fetch_model(model_config: Dict,
     elif model_name == "deeponet_cnn":
         from models.DeepONet.deeponet import AutoDeepONet
         model = AutoDeepONet(
-                    in_channels=data_config['in_channels'],
-                    out_channels=data_config['out_channels'], 
+                    in_channels=len(data_config['filter_in_channels']),
+                    out_channels=len(data_config['filter_out_channels']), 
                     grid_resolution=data_config['grid_resolution'],
                     sequence_info=data_config["sequence_info"],
                     dimension=data_config['dimension'],
@@ -110,8 +110,8 @@ def fetch_model(model_config: Dict,
     elif model_name == "deeponet_resnet":
         from models.DeepONet.deeponet import AutoDeepONet
         model = AutoDeepONet(
-                    in_channels=data_config['in_channels'],
-                    out_channels=data_config['out_channels'], 
+                    in_channels=len(data_config['filter_in_channels']),
+                    out_channels=len(data_config['filter_out_channels']), 
                     grid_resolution=data_config['grid_resolution'],
                     sequence_info=data_config["sequence_info"],
                     dimension=data_config['dimension'],
@@ -129,8 +129,8 @@ def fetch_model(model_config: Dict,
     elif model_name == "cno":
         from models.CNO.cno import CNO
         model = CNO(
-                    in_channels=data_config['in_channels'],
-                    out_channels=data_config['out_channels'], 
+                    in_channels=len(data_config['filter_in_channels']),
+                    out_channels=len(data_config['filter_out_channels']), 
                     grid_resolution=data_config['grid_resolution'], 
                     sequence_info=data_config["sequence_info"],
                     dimension=data_config['dimension'],

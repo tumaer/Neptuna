@@ -1,13 +1,11 @@
 dataset_name: SyntheticFlow
 dataset_directory_path: ./data/synthetic/SF/2D_copy
 dimension: 2
-in_channels: null #if not provided, will be computed inferred from the filter_channels
-out_channels: null #if not provided, will be computed inferred from the filter_channels
 sequence_info: [4, 3, 5]
 filter_frames: null 
 filter_groups: null
-filter_in_channels: ['density','schlieren', "velocity"]
-filter_out_channels: ['velocity_0', 'density', 'velocity_1']
+filter_in_channels: ['density','schlieren','velocity_0']
+filter_out_channels: ['velocity_0', 'density']
 conditioning_in_channels: ['schlieren'] # if null, then ensure filter_in_channels == filter_out_channels
 is_steady_state_prediction: False #assuming the last frame is the steady state
 grid_resolution: null #if not provided, will be inferred automatically from the dataset

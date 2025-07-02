@@ -2,8 +2,6 @@ dataset_name: KuramotoSivashinsky #should be from the names available in fetch_d
 #shape of this KS-1D dataset [50,51,1,160]
 dataset_directory_path: ./data/fluids/KS/1D
 dimension: 1
-in_channels: null #if not provided, will be computed inferred from the filter_channels
-out_channels: null #if not provided, will be computed inferred from the filter_channels
 sequence_info: [4, 3, 2]  # [input_seq_len, label_seq_len, stride]
 filter_frames: [null, null]  # [min_frame, max_frame]
 filter_groups: null

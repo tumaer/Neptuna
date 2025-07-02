@@ -81,7 +81,5 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
 
     cfg["data_config"]["filter_in_channels"] = filtered_in_channels
     cfg["data_config"]["filter_out_channels"] = filtered_out_channels
-    cfg["data_config"]["in_channels"] = len(filtered_in_channels)
-    cfg["data_config"]["out_channels"] = len(filtered_out_channels)
 
     return cfg 

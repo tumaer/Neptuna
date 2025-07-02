@@ -183,7 +183,7 @@ class Trainer(Trainer_):
                 else:
                     prediction = model(input_data=inputs["input_data"])
                 
-                prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], self.data_config["out_channels"], *spatial_dims)
+                prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
                 
                 if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length >= input_sequence length
                     inputs = {
@@ -213,7 +213,7 @@ class Trainer(Trainer_):
         else:
             prediction = model(input_data=inputs["input_data"]) 
         
-        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], self.data_config["out_channels"], *spatial_dims)
+        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
         return prediction
 
     ##custom function, not inside transformers library
@@ -223,7 +223,7 @@ class Trainer(Trainer_):
         else:
             prediction = model(input_data=inputs["input_data"]) 
         batch_size, _, _, *spatial_dims = inputs["input_data"].shape
-        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], self.data_config["out_channels"], *spatial_dims)
+        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
         return prediction
     
     def compute_eval_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
