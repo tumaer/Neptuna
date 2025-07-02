@@ -103,14 +103,22 @@ def plot_timestep(datasets: dict, t: int, output_path: Path, cmap_scalar: str,
     all datasets. Datasets with multiple channels are laid out in rows."""
     # Determine how many subplots are needed, accounting for possible absence of channel dim
     def n_channels(arr: np.ndarray) -> int:
-        if arr.ndim >= 5:   # T,C,D,H,W
+        """Return the number of visualisable channels for *arr*.
+
+        Heuristic:
+        • ndim ≥ 5 → assume layout (T,C,…) – return C.
+        • ndim == 4:
+            – If second dim ≤ 3 treat it as channel count (typical for vector
+              fields such as velocity with 2 or 3 components).
+            – Otherwise treat it as a depth dimension of a 3-D volume (no
+              channel) and return 1.
+        • everything else → 1 channel.
+        """
+        if arr.ndim >= 5:
             return arr.shape[1]
-        elif arr.ndim >= 3 and arr.ndim != 4:  # T,C?,H,W or T,H,W, etc.
-            return arr.shape[1] if arr.ndim >= 4 else 1
-        elif arr.ndim == 4:  # T,D,H,W (no channel)
-            return 1
-        else:
-            return 1
+        if arr.ndim == 4:
+            return arr.shape[1] if arr.shape[1] <= 3 else 1
+        return 1
 
     n_plots = sum(n_channels(arr) for arr in datasets.values())
     ncols = int(np.ceil(np.sqrt(n_plots)))  # square-ish layout
@@ -127,13 +135,16 @@ def plot_timestep(datasets: dict, t: int, output_path: Path, cmap_scalar: str,
             plot_counter += 1
             # Extract the frame/volume for plotting
             if arr.ndim >= 5:
-                img = arr[t, ch]              # 3-D volume
+                img = arr[t, ch]
             elif arr.ndim == 4:
-                img = arr[t]                   # 3-D volume without channels
+                if arr.shape[1] <= 3:
+                    img = arr[t, ch]
+                else:
+                    img = arr[t]
             elif arr.ndim >= 3:
-                # arr has at least (T, C?, H, W)
+                # (T, C?, H, W) or (T, H, W)
                 if n_ch > 1:
-                    img = arr[t, ch]          # 2-D image
+                    img = arr[t, ch]
                 else:
                     img = arr[t]
             else:
