@@ -43,7 +43,7 @@ def run(cfg):
         # ------------------------------------------------------------------
         # Evaluation -------------------------------------------------------
         # ------------------------------------------------------------------
-        eval_strategy="epoch",  # TODO: switch to "epoch" once ready
+        eval_strategy="steps",  # TODO: switch to "epoch" once ready
         eval_steps=5,  # update-steps between evaluations, has no meaning if eval_strategy is "epoch"
         eval_on_start=False,  # sanity-check eval before training starts
 
@@ -69,7 +69,7 @@ def run(cfg):
         # Logging ----------------------------------------------------------
         # ------------------------------------------------------------------
         log_level=cfg["train_config"].get("log_level", "info"),  # debug / info / warning / ...
-        logging_strategy="epoch",  # switch to "epoch" later if needed
+        logging_strategy="steps",  # switch to "epoch" later if needed
         logging_steps=1, #only used if logging_strategy is "steps"
         logging_nan_inf_filter=False,  # include NaNs in logs for debugging
 
