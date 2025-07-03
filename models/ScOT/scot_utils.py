@@ -1,6 +1,4 @@
-from transformers import (
-    PretrainedConfig,
-)
+from models.model_utils import cfd_PretrainedConfig
 from transformers.models.swinv2.modeling_swinv2 import (
     Swinv2Attention,
     Swinv2DropPath,
@@ -26,7 +24,7 @@ class ScOTOutput(ModelOutput):
     reshaped_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
 
 
-class ScOTConfig(PretrainedConfig):
+class ScOTConfig(cfd_PretrainedConfig):
     """https://github.com/huggingface/transformers/blob/v4.35.2/src/transformers/models/swinv2/configuration_swinv2.py"""
 
     model_type = "swinv2"

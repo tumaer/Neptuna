@@ -2,9 +2,7 @@
 # Github: https://github.com/camlab-ethz/poseidon?tab=readme-ov-file 
 # Paper: https://arxiv.org/abs/2405.19101
 
-from transformers import (
-    PreTrainedModel,
-)
+from models.model_utils import cfd_PreTrainedModel
 from transformers.models.swinv2.modeling_swinv2 import (
     Swinv2EncoderOutput,
 )
@@ -483,17 +481,19 @@ class ScOTDecoder(nn.Module):
 
     
 
-class ScOT(nn.Module):
+class ScOT(cfd_PreTrainedModel):
 
     main_input_name = "input_data"
     conditioning_input_name = "conditioning_input_data"
      
     def __init__(self, config):
-        super().__init__()
+        super().__init__(config)
 
         self.dimension = 2
 
         self.scot = self.build_ScOT()(config)
+
+        self.post_init()
 
     def build_ScOT(self):
         if self.dimension == 2:
@@ -501,15 +501,7 @@ class ScOT(nn.Module):
         else:
             raise NotImplementedError("Invalid dimensionality. Only 2D ScOT implemented.")
 
-    def _init_weights(self, module):
-        """Initialize the weights"""
-        if isinstance(module, (nn.Linear, nn.Conv2d)):
-            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
-            if module.bias is not None:
-                module.bias.data.zero_()
-        elif isinstance(module, nn.LayerNorm):
-            module.bias.data.zero_()
-            module.weight.data.fill_(1.0)
+    
 
     def forward(self, input_data: Tensor) -> Tensor:
 
@@ -523,7 +515,7 @@ class ScOT(nn.Module):
 
         return y
 
-class ScOT2D(PreTrainedModel):
+class ScOT2D(cfd_PreTrainedModel):
     """Inspired by https://github.com/huggingface/transformers/blob/v4.35.2/src/transformers/models/swinv2/modeling_swinv2.py#L1129"""
 
     def __init__(self, config, use_mask_token=False):
@@ -563,7 +555,15 @@ class ScOT2D(PreTrainedModel):
             ]
         )
 
-        self.post_init()
+    def _init_weights(self, module):
+        """Initialize the weights"""
+        if isinstance(module, (nn.Linear, nn.Conv2d)):
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
 
     def get_input_embeddings(self):
         return self.embeddings.patch_embeddings
