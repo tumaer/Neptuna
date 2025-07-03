@@ -1,0 +1,34 @@
+dataset_name: SyntheticFlow
+dataset_directory_path: ./data/synthetic/SF/2D/constant
+dimension: 2
+sequence_info: [4, 3, 5]
+filter_frames: null 
+filter_groups: null
+filter_in_channels: ['density','schlieren','velocity_0']
+filter_out_channels: ['velocity_0', 'density']
+conditioning_in_channels: ['schlieren'] # if null, then ensure filter_in_channels == filter_out_channels
+is_steady_state_prediction: False #assuming the last frame is the steady state
+grid_resolution: null #if not provided, will be inferred automatically from the dataset
+data_normalization_strategy: min_max_normalization #options: z_normalization, min_max_normalization
+eval_groups: null
+data_normalization_stats:
+  density:
+    mean: 49.5
+    std: 28.866069793701172
+    min: 0.0
+    max: 99.0
+  schlieren:
+    mean: 49.5
+    std: 28.866069793701172
+    min: 0.0
+    max: 99.0
+  velocity_0:
+    mean: 49.5
+    std: 28.866069793701172
+    min: 0.0
+    max: 99.0
+  velocity_1:
+    mean: 49.5
+    std: 28.866069793701172
+    min: 0.0
+    max: 99.0
