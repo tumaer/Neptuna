@@ -1,0 +1,14 @@
+dataset_name: PorousMedia
+dataset_directory_path: ./data/fluids/Porous_Media_trimmed/2D
+dimension: 2
+sequence_info: [1, 1, 1]
+filter_frames: null #in SS simulation, filter_frames is not used as the last frame is the steady state
+filter_groups: null #filter_groups: ["Re_100", "Re_300", "Re_400"]
+filter_in_channels: ["bounce_back_mask"]
+filter_out_channels: ["density", "velocity_0", "velocity_1"]
+conditioning_in_channels: null
+is_steady_state_prediction: True #assuming the last frame is the steady state
+grid_resolution: null #if not provided, will be inferred automatically from the dataset
+data_normalization_stats: null #if not provided, will be computed automatically from the dataset
+data_normalization_strategy: z_normalization #z_normalization, min_max_normalization
+eval_groups: null
