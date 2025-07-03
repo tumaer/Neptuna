@@ -7,6 +7,7 @@ filter_groups: null #filter_groups: ["Re_100", "Re_300", "Re_400"]
 filter_in_channels: ["density", "bounce_back_mask", "velocity"]
 filter_out_channels: ["velocity"]
 conditioning_in_channels: ["bounce_back_mask"]
+is_conditioning_parameters: False
 is_steady_state_prediction: True #assuming the last frame is the steady state
 grid_resolution: null #if not provided, will be inferred automatically from the dataset
 data_normalization_stats: null #if not provided, will be computed automatically from the dataset

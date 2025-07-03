@@ -412,6 +412,7 @@ class TransientDataset(Dataset):
         self.input_channels = filter_in_channels
         self.conditioning_in_channels = conditioning_in_channels
         self.output_channels = filter_out_channels
+        self.is_conditioning_parameters = kwargs["is_conditioning_parameters"] or False
 
         if len(self.input_channels) != len(self.output_channels):
             warnings.warn("Number of input and label channels are different")
@@ -547,8 +548,10 @@ class TransientDataset(Dataset):
             "group": group_name,
             "input_data": torch.from_numpy(inputs).float(),
             "label_including_rollouts": torch.from_numpy(labels).float(),
-            "conditioning_parameters": _parse_group_name_to_params(group_name),
         }
+
+        if self.is_conditioning_parameters:
+            sample["conditioning_parameters"] = _parse_group_name_to_params(group_name)
 
         if conditioning_inputs is not None:
             sample["conditioning_input_data"] = torch.from_numpy(conditioning_inputs).float()
@@ -585,6 +588,7 @@ class SteadyStateDataset(Dataset):
         self.input_channels = filter_in_channels
         self.conditioning_in_channels = conditioning_in_channels
         self.output_channels = filter_out_channels
+        self.is_conditioning_parameters = kwargs["is_conditioning_parameters"] or False
 
         if len(self.input_channels) != len(self.output_channels):
             warnings.warn("Number of input and label channels are different")
@@ -692,8 +696,10 @@ class SteadyStateDataset(Dataset):
             "group": group_name,
             "input_data": torch.from_numpy(inputs).float(),
             "label_including_rollouts": torch.from_numpy(labels).float(),
-            "conditioning_parameters": _parse_group_name_to_params(group_name),
         }
+
+        if self.is_conditioning_parameters:
+            sample["conditioning_parameters"] = _parse_group_name_to_params(group_name)
 
         if conditioning_inputs is not None:
             sample["conditioning_input_data"] = torch.from_numpy(conditioning_inputs).float()
