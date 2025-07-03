@@ -1,5 +1,5 @@
 dataset_name: SyntheticFlow
-dataset_directory_path: ./data/synthetic/SF/2D_copy
+dataset_directory_path: ./data/synthetic/SF/2D/blob
 dimension: 2
 sequence_info: [4, 3, 5]
 filter_frames: null 
