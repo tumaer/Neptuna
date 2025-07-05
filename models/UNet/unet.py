@@ -3,11 +3,11 @@ import torch
 from torch import Tensor
 import torch.nn as nn
 from utils import activation_func
-
+from models.model_utils import cfd_PreTrainedModel
 from .unet_utils import DownBlockND, UpBlockND, MiddleBlockND, DownsampleND, UpsampleND
 from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 
-class UNet(nn.Module): 
+class UNet(cfd_PreTrainedModel): 
     """Modern U-Net architecture for fluid dynamics simulation
 
     A flexible U-Net implementation that supports 1D, 2D, and 3D data processing for fluid dynamics
@@ -42,6 +42,7 @@ class UNet(nn.Module):
     
     def __init__(
         self,
+        config,
         in_channels: int,
         out_channels: int,
         latent_channels: int,
@@ -57,7 +58,7 @@ class UNet(nn.Module):
         use1x1: bool = False,
     ) -> None:
         
-        super().__init__()
+        super().__init__(config)
         self.dimension = dimension
 
         self.activation = activation_func.get_activation(activation_fn_name)
@@ -69,7 +70,8 @@ class UNet(nn.Module):
         in_size = in_channels*sequence_info[0]
         out_size = out_channels*sequence_info[1]
         
-        self.unet = self.build_UNet()(in_size=in_size, 
+        self.unet = self.build_UNet()(config=config,
+                                    in_size=in_size, 
                                    out_size=out_size, 
                                    latent_channels=latent_channels, 
                                    unet_depth=unet_depth, 
@@ -112,9 +114,10 @@ class UNet(nn.Module):
         return x
 
 #Unet based on the dimension
-class UNet1D(nn.Module):
+class UNet1D(cfd_PreTrainedModel):
     """1D U-Net"""
     def __init__(self, 
+                 config,
                  in_size: int, 
                  out_size: int,
                  latent_channels: int, 
@@ -129,7 +132,7 @@ class UNet1D(nn.Module):
                  use1x1: bool,
                  coord_features: bool = True
                  ):
-        super().__init__()
+        super().__init__(config)
 
         self.activation = activation_func.get_activation(activation_fn_name)
         self.coord_features = coord_features
@@ -258,9 +261,10 @@ class UNet1D(nn.Module):
 
         return x
 
-class UNet2D(nn.Module):
+class UNet2D(cfd_PreTrainedModel):
     """2D U-Net"""
     def __init__(self, 
+                 config,
                  in_size: int, 
                  out_size: int,
                  latent_channels: int, 
@@ -274,7 +278,7 @@ class UNet2D(nn.Module):
                  n_groups: int,
                  use1x1: bool,
                  coord_features: bool = True):
-        super().__init__()
+        super().__init__(config)
 
         self.activation = activation_func.get_activation(activation_fn_name)
         
@@ -404,9 +408,10 @@ class UNet2D(nn.Module):
 
         return x
     
-class UNet3D(nn.Module):
+class UNet3D(cfd_PreTrainedModel):
     """3D U-Net"""
     def __init__(self, 
+                 config,
                  in_size: int, 
                  out_size: int,
                  latent_channels: int, 
@@ -420,7 +425,7 @@ class UNet3D(nn.Module):
                  n_groups: int,
                  use1x1: bool,
                  coord_features: bool = True):
-        super().__init__()
+        super().__init__(config)
 
         self.activation = activation_func.get_activation(activation_fn_name)
         self.coord_features = coord_features

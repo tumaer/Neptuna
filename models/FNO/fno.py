@@ -7,10 +7,10 @@ from .fno_utils import ConvNdFCLayer, SpectralConvNd
 from .fno_utils import FullyConnected, build_lift_network, build_fno
 from utils import activation_func
 from typing import Optional, Union, Tuple, List
-
+from models.model_utils import cfd_PreTrainedModel
 from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 
-class FNO(nn.Module):
+class FNO(cfd_PreTrainedModel):
     """Fourier neural operator (FNO) model.
 
     Parameters
@@ -49,6 +49,7 @@ class FNO(nn.Module):
     conditioning_input_name = "conditioning_input_data"
     def __init__(
         self,
+        config,
         in_channels: int,
         out_channels: int,
         sequence_info: Optional[List[int]] = [1,1,1],
@@ -64,7 +65,7 @@ class FNO(nn.Module):
         activation_fn_name: str = "gelu",
         coord_features: bool = True,
     ) -> None:
-        super().__init__()
+        super().__init__(config)
         self.num_fno_layers = num_fno_layers
         self.num_fno_modes = num_fno_modes
         self.padding = padding
@@ -82,6 +83,7 @@ class FNO(nn.Module):
         out_size= out_channels*self.sequence_info[1]
         
         self.fno = self.build_FNO()(
+            config=config,
             in_size=in_size,
             out_size=out_size,
             num_fno_layers=self.num_fno_layers,
@@ -139,7 +141,7 @@ class FNO(nn.Module):
 
         return x
 
-class FNO1D(nn.Module):
+class FNO1D(cfd_PreTrainedModel):
     """1D FNO
 
     Parameters
@@ -281,7 +283,7 @@ class FNO1D(nn.Module):
         return torch.permute(output, (0, 2, 1))
 
 
-class FNO2D(nn.Module):
+class FNO2D(cfd_PreTrainedModel):
     """2D Spectral encoder for FNO
 
     Parameters
@@ -306,6 +308,7 @@ class FNO2D(nn.Module):
 
     def __init__(
         self,
+        config,
         in_size: int,
         out_size: int,
         num_fno_layers: int = 4,
@@ -319,7 +322,7 @@ class FNO2D(nn.Module):
         decoder_layers: int = 1,
         decoder_layer_size: int = 32,
     ) -> None:
-        super().__init__()
+        super().__init__(config)
         self.in_size = in_size
         self.out_size = out_size
         self.num_fno_layers = num_fno_layers
@@ -431,7 +434,7 @@ class FNO2D(nn.Module):
         return torch.permute(output, (0, 3, 1, 2))
     
 
-class FNO3D(nn.Module):
+class FNO3D(cfd_PreTrainedModel):
     """3D Spectral encoder for FNO
 
     Parameters
@@ -456,6 +459,7 @@ class FNO3D(nn.Module):
 
     def __init__(
         self,
+        config,
         in_size: int,
         out_size: int,
         num_fno_layers: int = 4,
@@ -469,7 +473,7 @@ class FNO3D(nn.Module):
         decoder_layers: int = 1,
         decoder_layer_size: int = 32,
     ) -> None:
-        super().__init__()
+        super().__init__(config)
 
         self.in_size = in_size
         self.out_size = out_size

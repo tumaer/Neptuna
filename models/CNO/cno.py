@@ -3,13 +3,14 @@ import torch.nn as nn
 from torch import Tensor
 from models.CNO.cno_utils import CNOBlock, LiftProjectBlock, ResNet
 from typing import List, Optional, Union, Callable, Tuple
+from models.model_utils import cfd_PreTrainedModel
 
 def _div_size(size, factor):
     if isinstance(size, int):
         return size // factor
     return tuple(s // factor for s in size)
 
-class CNO(nn.Module):
+class CNO(cfd_PreTrainedModel):
     """Convolutional Neural Operator (CNO) model for learning mappings between function spaces.
 
     The CNO architecture consists of an encoder-decoder structure with residual blocks, designed to learn
@@ -48,6 +49,7 @@ class CNO(nn.Module):
     conditioning_input_name = "conditioning_input_data"
 
     def __init__(self,
+                config,
                 in_channels: int,                    # Number of input channels.
                 out_channels: int,                   # Number of input channels.
                 grid_resolution: Union[int, List[int], Tuple[int]],  # Input and Output spatial size (required )
@@ -61,7 +63,7 @@ class CNO(nn.Module):
                 latent_channels: int = 64
                 ):
 
-        super().__init__()
+        super().__init__(config)
 
         self.cno_depth = int(cno_depth)         # Number of (D) & (U) Blocks
         self.lift_dim = channel_multiplier//2 # Input is lifted to the half of channel_multiplier dimension

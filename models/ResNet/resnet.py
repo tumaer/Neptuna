@@ -6,9 +6,10 @@ from utils import activation_func
 from typing import Optional, List
 from .resnet_utils import BasicBlockND,DilatedBasicBlockND, getblock, make_layer
 from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
+from models.model_utils import cfd_PreTrainedModel
 
 
-class ResNet(nn.Module):
+class ResNet(cfd_PreTrainedModel):
     """Class to support ResNet like feedforward architectures
 
     Args:
@@ -40,6 +41,7 @@ class ResNet(nn.Module):
     conditioning_input_name = "conditioning_input_data"
     def __init__(
         self,
+        config,
         in_channels: int,
         out_channels: int,
         block: str,
@@ -54,7 +56,7 @@ class ResNet(nn.Module):
         n_groups: int = 1,
         stride: int = 1,
     ) -> None:
-        super().__init__()
+        super().__init__(config)
         self.in_size = in_channels * sequence_info[0] 
         self.out_size = out_channels * sequence_info[1]
         self.latent_channels = latent_channels
@@ -67,6 +69,7 @@ class ResNet(nn.Module):
             raise NotImplementedError(f"Activation {activation_fn_name} not implemented")
         
         self.resnet = self.build_resnet()(
+            config=config,
             in_size=self.in_size,
             out_size=self.out_size,
             block=block,
@@ -112,7 +115,7 @@ class ResNet(nn.Module):
         
         return y
                                                    
-class ResNet1D(nn.Module):
+class ResNet1D(cfd_PreTrainedModel):
     """    Args:
         in_size : int
             Number of input channels
@@ -137,6 +140,7 @@ class ResNet1D(nn.Module):
     """
     def __init__(
         self,
+        config,
         in_size: int,
         out_size: int,
         block: str ,
@@ -149,7 +153,7 @@ class ResNet1D(nn.Module):
         n_groups: int = 1,
         stride: int = 1,
         ) -> None:
-        super().__init__()
+        super().__init__(config)
         self.in_size = in_size
         self.out_size = out_size
         self.latent_channels = latent_channels
@@ -238,7 +242,7 @@ class ResNet1D(nn.Module):
                         
         return x
 
-class ResNet2D(nn.Module):
+class ResNet2D(cfd_PreTrainedModel):
     """    Args:
         in_size : int
             Number of input channels
@@ -263,6 +267,7 @@ class ResNet2D(nn.Module):
     """
     def __init__(
         self,
+        config,
         in_size: int,
         out_size: int,
         block: str ,
@@ -275,7 +280,7 @@ class ResNet2D(nn.Module):
         n_groups: int = 1,
         stride: int = 1,
         ) -> None:
-        super().__init__()
+        super().__init__(config)
         self.in_size = in_size
         self.out_size = out_size
         self.latent_channels = latent_channels
@@ -365,7 +370,7 @@ class ResNet2D(nn.Module):
                         
         return x
 
-class ResNet3D(nn.Module):
+class ResNet3D(cfd_PreTrainedModel):
     """    Args:
         in_size : int
             Number of input channels
@@ -390,6 +395,7 @@ class ResNet3D(nn.Module):
     """
     def __init__(
         self,
+        config,
         in_size: int,
         out_size: int,
         block: str ,
@@ -402,7 +408,7 @@ class ResNet3D(nn.Module):
         n_groups: int = 1,
         stride: int = 1,
         ) -> None:
-        super().__init__()
+        super().__init__(config)
         self.in_size = in_size
         self.out_size = out_size
         self.latent_channels = latent_channels

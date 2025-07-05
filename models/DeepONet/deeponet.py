@@ -6,10 +6,11 @@ from torch import Tensor
 from utils import activation_func
 from .deeponet_utils import Ffn, CnnBranch,grid_to_points, points_to_grid, calc_resnet_out_shape, linspace_int_list
 from models.ResNet.resnet import ResNet1D, ResNet2D, ResNet3D
+from models.model_utils import cfd_PreTrainedModel
 
 
 
-class AutoDeepONet(nn.Module):
+class AutoDeepONet(cfd_PreTrainedModel):
     """
     Auto-regressive DeepONet for CFD.
 
@@ -53,6 +54,7 @@ class AutoDeepONet(nn.Module):
     conditioning_input_name = "conditioning_input_data"
     def __init__(
         self,
+        config,
         in_channels: int,
         out_channels: int,
         grid_resolution: Tuple[int],
@@ -75,7 +77,7 @@ class AutoDeepONet(nn.Module):
         ResNet_block: Optional[str] = "BasicBlock",
     ):
 
-        super().__init__()
+        super().__init__(config)
         self.in_size = in_channels * sequence_info[0] 
         self.out_size = out_channels * sequence_info[1]
         self.branch_depth = branch_depth
@@ -89,6 +91,7 @@ class AutoDeepONet(nn.Module):
         if isinstance(branch_net, str):
             if branch_net == "FFN":
                 self.AutoDeepONet = self.build_AutoDeepONet()(
+                    config=config,
                     in_size = self.in_size,
                     out_size = self.out_size,
                     grid_resolution = grid_resolution,
@@ -103,6 +106,7 @@ class AutoDeepONet(nn.Module):
                 )
             elif branch_net == "CNN":
                 self.AutoDeepONet = self.build_AutoDeepONet()(
+                    config=config,
                     in_size = self.in_size,
                     out_size = self.out_size,
                     grid_resolution = grid_resolution,
@@ -119,6 +123,7 @@ class AutoDeepONet(nn.Module):
                 )
             elif branch_net == "ResNet": #TODO:add kernal_size and stride to ResNet
                 self.AutoDeepONet = self.build_AutoDeepONet()(
+                    config=config,
                     in_size = self.in_size,
                     out_size = self.out_size,
                     grid_resolution = grid_resolution,
@@ -163,9 +168,10 @@ class AutoDeepONet(nn.Module):
                 "Invalid dimensionality. Only 1D, 2D, 3D ResNet implemented"
             )
     
-class AutoDeepONet1D(nn.Module):
+class AutoDeepONet1D(cfd_PreTrainedModel):
     def __init__(
         self,
+        config,
         in_size: int,
         out_size: int,
         grid_resolution: Tuple[int],
@@ -184,7 +190,7 @@ class AutoDeepONet1D(nn.Module):
         query_idxs: Optional[Tensor] = None,        
         ResNet_block: Optional[str] = "BasicBlock",
     ):
-        super().__init__()
+        super().__init__(config)
         self.out_size = out_size
         self.activation_fn = activation_fn
         self.branch_net_str = branch_net
@@ -305,9 +311,10 @@ class AutoDeepONet1D(nn.Module):
         x = points_to_grid(x, shape)  # (B, C_out , H)
         return x
 
-class AutoDeepONet2D(nn.Module):
+class AutoDeepONet2D(cfd_PreTrainedModel):
     def __init__(
         self,
+        config,
         in_size: int,
         out_size: int,
         grid_resolution: Tuple[int],
@@ -326,7 +333,7 @@ class AutoDeepONet2D(nn.Module):
         query_idxs: Optional[Tensor] = None,    
         ResNet_block: Optional[str] = "BasicBlock",    
     ):
-        super().__init__()
+        super().__init__(config)
         self.out_size = out_size
         self.activation_fn = activation_fn
         self.branch_net_str = branch_net
@@ -451,9 +458,10 @@ class AutoDeepONet2D(nn.Module):
         return x
 
 
-class AutoDeepONet3D(nn.Module):
+class AutoDeepONet3D(cfd_PreTrainedModel):
     def __init__(
         self,
+        config,
         in_size: int,
         out_size: int,
         grid_resolution: Tuple[int],
@@ -472,7 +480,7 @@ class AutoDeepONet3D(nn.Module):
         query_idxs: Optional[Tensor] = None,
         ResNet_block: Optional[str] = "BasicBlock",        
     ):
-        super().__init__()
+        super().__init__(config)
         self.out_size = out_size
         self.activation_fn = activation_fn
         self.branch_net_str = branch_net
