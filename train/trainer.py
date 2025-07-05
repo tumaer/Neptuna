@@ -22,6 +22,8 @@ class Trainer(Trainer_):
         self.output_log_config = output_log_config
         self.original_label_seq_len = self.data_config.sequence_info[1] #number of predicted timesteps from the model (#no rollout timesteps considered)
         
+        self.get_prediction_loss_for_eval_windows = False
+
         # Rebuild the callback handler with our custom implementation so that on_evaluate accepts **kwargs
         # Preserve the list of callbacks that may have been created by the HuggingFace Trainer during super().__init__.
         # NOTE: `CallbackHandler` here refers to our subclass imported from train.trainer_callback.
@@ -234,12 +236,7 @@ class Trainer(Trainer_):
         #########################################################
         #Autoregressive prediction (for eval and test)
         #########################################################
-        #here everything happens with torch.no_grad()
-        #channel_difference = (self.data_config.in_channels > self.data_config.out_channels) 
-        #Here we assume that the channel which is not predicted in the output is the last channel in the input (like Re or Ma).
-        ## inputs.keys() = dict_keys(['input_data', 'labels',])
-        ## inputs['input_data'].shape = torch.Size([B, C_input, x_resolution, y_resolution, ...]) 
-        ## inputs['labels'].shape = torch.Size([B, C_labels, x_resolution, y_resolution, ...])
+        # loss is computed per window for a batch of windows.
         if self.output_all_steps: #this is set to true when self.rollout_steps is set in main.py
             losses_ = []
             predictions_ = []
@@ -291,7 +288,7 @@ class Trainer(Trainer_):
                 
                 if self.output_all_steps:
                     predictions_.append(prediction.detach()) 
-                    losses_.append(loss)
+                    losses_.append(loss) 
                 else:
                     total_loss += loss 
 
@@ -303,7 +300,53 @@ class Trainer(Trainer_):
         else:
             loss = total_loss / (self.rollout_steps+1) #take the mean of the loss across all rollout_steps
 
-        return (loss, predictions) if return_outputs else loss
+        return (loss, predictions) if return_outputs else loss 
+        #loss is a scalar which is the same for all the windows of the batch.
+        # inside evalutaion_loop(), the loss is repeated batch times before appending to the list of all_losses. 
+
+
+    def compute_eval_without_loss(self, model, inputs):
+        #########################################################
+        #Autoregressive prediction (for eval and test)
+        #########################################################
+        predictions_ = []
+        
+        prediction = self._forward_model_eval_or_test(model,inputs) 
+        predictions_.append(prediction.detach()) 
+
+        if not self.data_config.is_steady_state_prediction:
+            for i in range(1,self.rollout_steps+1): 
+                #logger.debug(f"Eval/Test rollout step {i+1} of {self.rollout_steps+1}")
+                #prediction.shape = torch.Size([B, label_seq_length,C_labels, x_resolution, y_resolution, ...]) 
+                #recreate the inputs to be fed to the model for the next step
+                if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length > input_sequence length
+                    inputs = {
+                        **inputs,
+                        **{ #this part replaces the "input_data" of input with the output of the model. 
+                            #So the new input is the output from the previous step.
+                            "input_data": (
+                                prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the predictions so as to extract the input_sequence.
+                            )
+                        },
+                }
+                
+                else: #input_sequence length > label_sequence length (the more usual case)
+                    inputs = {
+                        **inputs,
+                        **{ #this part replaces the "input_data" of input with the output of the model. 
+                            #So the new input is the output from the previous step.
+                            "input_data": ( 
+                                torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1) #slice the outputs so as to extract the input_sequence.
+                            )
+                        },
+                }
+                
+                prediction = self._forward_model_eval_or_test(model,inputs) 
+                predictions_.append(prediction.detach()) 
+
+        predictions= torch.stack(predictions_, dim=1) #predictions.shape = torch.Size([B, rollout_steps+1, label_seq_length, C_output, *spatial_resolution])
+
+        return predictions
 
 
     ##overrides the one in the  base class from transformers library
@@ -445,7 +488,7 @@ class Trainer(Trainer_):
                         logits_mb = raw_outputs
                     logits = smp_nested_concat(logits_mb)
             else:
-                if has_labels or loss_without_labels: #enters here 
+                if (has_labels or loss_without_labels) and self.get_prediction_loss_for_eval_windows: 
                     with self.compute_loss_context_manager():
                         loss, outputs = self.compute_eval_loss( #this has the _model_perdict() function inside it
                             model, inputs, return_outputs=True
@@ -457,16 +500,15 @@ class Trainer(Trainer_):
                             v
                             for k, v in outputs.items()
                             if k not in ignore_keys + ["loss"]# ignores the keys
-                        ) 
+                        )
                     else: # Enters here as outputs is a tensor. logits is the outputs tensor (#NOTE: in the base class it is outputs[1:] as the 0th index is the loss)
                         logits = outputs
-                else: ##not sure why this 'else' is needed.
-                    # print a warning saying no labels are present
-                    warnings.warn("No labels are present, using the model to only generate predictions")
+                
+                else:
                     loss = None
                     with self.compute_loss_context_manager():
-                        outputs = self._forward_model_eval_or_test(model, inputs) #this is the only line which is different from the base class
-                        ##in the base class it is outputs = model(**inputs),but since we have the autoregressive code as well, we need to use the _forward_model_eval_or_test function
+                        outputs = self.compute_eval_without_loss(model, inputs)
+                        ##in the base class, the above line is outputs = model(**inputs)
                     if isinstance(outputs, dict):
                         logits = tuple(
                             v for k, v in outputs.items() if k not in ignore_keys
@@ -598,7 +640,8 @@ class Trainer(Trainer_):
 
             # Update containers
             if losses is not None:
-                losses = self.gather_function(losses.repeat(batch_size))  #WHY REPEAT?
+                losses = self.gather_function(losses.repeat(batch_size)) 
+                #NOTE: repeat is used to ensure that each window of the batch owns the same loss value.
                 all_losses.add(losses)
             if inputs_decode is not None:
                 inputs_decode = self.accelerator.pad_across_processes(inputs_decode, dim=1, pad_index=-100)
