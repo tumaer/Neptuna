@@ -7,7 +7,10 @@ filter_groups: null #filter_groups: ["Re_100", "Re_300", "Re_400"]
 filter_in_channels: null
 filter_out_channels: null
 conditioning_in_channels: null
-is_conditioning_parameters: True
+include_conditioning_parameters: True
+residual_config:
+  add_base_value: False
+  add_predicted_value: True
 is_steady_state_prediction: False #assuming the last frame is the steady state
 grid_resolution: null #if not provided, will be inferred automatically from the dataset
 data_normalization_stats: #if not provided, will be computed automatically from the dataset
