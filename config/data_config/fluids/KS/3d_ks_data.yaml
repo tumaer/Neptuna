@@ -7,6 +7,7 @@ filter_groups: null
 filter_in_channels: null
 filter_out_channels: null
 conditioning_in_channels: null
+is_conditioning_parameters: False
 is_steady_state_prediction: False #assuming the last frame is the steady state
 grid_resolution: null #if not provided, will be inferred automatically from the dataset
 data_normalization_stats: null #if not provided, will be computed automatically from the dataset

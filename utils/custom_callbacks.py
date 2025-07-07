@@ -237,10 +237,11 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
                     
                     stats = norm_stats[ch_name]
                     
-                    # Renormalize inputs
-                    inputs_renormed[:, :, c_idx] = re_normalize_data(
-                        self.inputs[:, :, c_idx], stats, norm_strategy
-                    )
+                    if "mask" not in ch_name.lower():
+                        # Renormalize inputs
+                        inputs_renormed[:, :, c_idx] = re_normalize_data(
+                            self.inputs[:, :, c_idx], stats, norm_strategy
+                        )
 
                 if self.conditioning_inputs is not None:
                 # Renormalize conditioning_inputs
@@ -250,10 +251,11 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
                         
                         stats = norm_stats[ch_name]
 
-                        # Renormalize conditioning_inputs
-                        conditioning_inputs_renormed[:, :, c_idx] = re_normalize_data(
-                            self.conditioning_inputs[:, :, c_idx], stats, norm_strategy
-                        )
+                        if "mask" not in ch_name.lower():
+                            # Renormalize conditioning_inputs
+                            conditioning_inputs_renormed[:, :, c_idx] = re_normalize_data(
+                                self.conditioning_inputs[:, :, c_idx], stats, norm_strategy
+                            )
                     
                 # Renormalize output channels (for labels and predictions)
                 for c_idx, ch_name in enumerate(output_channel_names):

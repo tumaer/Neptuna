@@ -6,6 +6,11 @@ import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 import imageio.v2 as imageio
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection  # for isometric rendering
+try:
+    from skimage.measure import marching_cubes
+except ImportError:  # skimage might be optional
+    marching_cubes = None
 
 """
 Install: pip install imageio-ffmpeg 
@@ -34,7 +39,7 @@ def parse_args():
         help="Frames-per-second for the output MP4 video.")
     parser.add_argument(
         "--title", default=None,
-        help="Optional title to add at the top of every generated figure. You can include '{t}' which will be replaced with the timestep index, e.g. 'Group {g} – t={t}'.")
+        help="Optional title template for the figure. Available placeholders: {t} (timestep), {g} (group), {proj} (volume projection mode), {slice} (slice index, if applicable). Example: 'Group {g} – t={t} – {proj}{slice}'.")
     parser.add_argument(
         "--frame-range", nargs=2, type=int, metavar=("START", "END"),
         help="Optional inclusive range of timestep indices to process (e.g. --frame-range 10 200)."
@@ -54,6 +59,13 @@ def parse_args():
     parser.add_argument(
         "--keep-frames", action="store_true",
         help="If set, keep the individual PNG frame images instead of deleting them after MP4 creation.")
+    # 3-D visualisation options
+    parser.add_argument(
+        "--volume-proj", choices=["slice", "max", "iso"], default="slice",
+        help="Method to project 3-D volumes onto 2-D for plotting. 'slice' shows a single slice (see --slice-index); 'max' shows a maximum-intensity projection along the first volume axis; 'iso' shows an isometric view of the volume.")
+    parser.add_argument(
+        "--slice-index", type=int, default=None,
+        help="Index of the slice to show when --volume-proj=slice. Defaults to the middle slice if not specified.")
     return parser.parse_args()
 
 
@@ -84,12 +96,29 @@ def load_group_datasets(group: h5py.Group):
     return data, time_dim
 
 
-def plot_timestep(datasets: dict, t: int, output_path: Path, cmap_scalar: str, title_tpl: str | None = None, group_name: str | None = None):
+def plot_timestep(datasets: dict, t: int, output_path: Path, cmap_scalar: str,
+                  title_tpl: str | None = None, group_name: str | None = None,
+                  volume_proj: str = "slice", slice_index: int | None = None):
     """Create a figure for timestep *t* containing one subplot per channel across
     all datasets. Datasets with multiple channels are laid out in rows."""
     # Determine how many subplots are needed, accounting for possible absence of channel dim
     def n_channels(arr: np.ndarray) -> int:
-        return arr.shape[1] if arr.ndim >= 3 else 1
+        """Return the number of visualisable channels for *arr*.
+
+        Heuristic:
+        • ndim ≥ 5 → assume layout (T,C,…) – return C.
+        • ndim == 4:
+            – If second dim ≤ 3 treat it as channel count (typical for vector
+              fields such as velocity with 2 or 3 components).
+            – Otherwise treat it as a depth dimension of a 3-D volume (no
+              channel) and return 1.
+        • everything else → 1 channel.
+        """
+        if arr.ndim >= 5:
+            return arr.shape[1]
+        if arr.ndim == 4:
+            return arr.shape[1] if arr.shape[1] <= 3 else 1
+        return 1
 
     n_plots = sum(n_channels(arr) for arr in datasets.values())
     ncols = int(np.ceil(np.sqrt(n_plots)))  # square-ish layout
@@ -97,29 +126,114 @@ def plot_timestep(datasets: dict, t: int, output_path: Path, cmap_scalar: str, t
 
     fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows), squeeze=False)
     axes_iter = iter(axes.flat)
+    plot_counter = 0  # keep track of subplot index for potential 3-D axes
 
     for dset_name, arr in datasets.items():
         n_ch = n_channels(arr)
         for ch in range(n_ch):
             ax = next(axes_iter)
-            # Extract the frame for plotting
-            if arr.ndim >= 3:
+            plot_counter += 1
+            # Extract the frame/volume for plotting
+            if arr.ndim >= 5:
                 img = arr[t, ch]
+            elif arr.ndim == 4:
+                if arr.shape[1] <= 3:
+                    img = arr[t, ch]
+                else:
+                    img = arr[t]
+            elif arr.ndim >= 3:
+                # (T, C?, H, W) or (T, H, W)
+                if n_ch > 1:
+                    img = arr[t, ch]
+                else:
+                    img = arr[t]
             else:
                 img = arr[t]
 
             # Choose plotting method based on dimensionality
-            if img.ndim == 2:
+            if volume_proj == "iso" and img.ndim == 3:
+                # Produce 3-D isometric plot of the volume
+                # Convert current 2-D axis to 3-D
+                ax.remove()
+                ax = fig.add_subplot(nrows, ncols, plot_counter, projection="3d")
+                # Use marching cubes if available, else fallback to voxel plot
+                try:
+                    cmap_sel = "coolwarm" if dset_name.lower().startswith("velocity") or (n_ch >= 2 and dset_name.lower().startswith("vel")) else cmap_scalar
+                    cmap_obj = plt.get_cmap(cmap_sel)
+                    vmin, vmax = float(img.min()), float(img.max())
+
+                    if marching_cubes is not None:
+                        verts, faces, normals, verts_intensity = marching_cubes(img, level=float(np.mean(img)))
+                        mesh = Poly3DCollection(verts[faces], alpha=0.7)
+                        if verts_intensity is None or len(verts_intensity) == 0:
+                            # derive vertex intensities by sampling original volume
+                            idx = np.clip(np.round(verts).astype(int), 0, np.array(img.shape) - 1)
+                            verts_intensity = img[idx[:, 0], idx[:, 1], idx[:, 2]]
+
+                        face_vals = verts_intensity[faces].mean(axis=1)
+                        colors = cmap_obj((face_vals - vmin) / (vmax - vmin + 1e-8))
+                        mesh.set_facecolors(colors)
+                        ax.add_collection3d(mesh)
+                        ax.set_xlim(0, img.shape[0])
+                        ax.set_ylim(0, img.shape[1])
+                        ax.set_zlim(0, img.shape[2])
+
+                        # Draw bounding box
+                        dx, dy, dz = img.shape
+                        corners = [
+                            (0, 0, 0), (dx, 0, 0), (dx, dy, 0), (0, dy, 0),
+                            (0, 0, dz), (dx, 0, dz), (dx, dy, dz), (0, dy, dz)
+                        ]
+                        edge_idx = [
+                            (0, 1), (1, 2), (2, 3), (3, 0),
+                            (4, 5), (5, 6), (6, 7), (7, 4),
+                            (0, 4), (1, 5), (2, 6), (3, 7)
+                        ]
+                        for i, j in edge_idx:
+                            xs = [corners[i][0], corners[j][0]]
+                            ys = [corners[i][1], corners[j][1]]
+                            zs = [corners[i][2], corners[j][2]]
+                            ax.plot(xs, ys, zs, color="black", linewidth=0.5)
+                    else:
+                        # Fallback rough voxel rendering
+                        filled = img > np.mean(img)
+                        img_norm = (img - vmin) / (vmax - vmin + 1e-8)
+                        voxel_colors = cmap_obj(img_norm)
+                        ax.voxels(filled, facecolors=voxel_colors, edgecolor="k")
+                    ax.set_axis_off()
+
+                    # Add colorbar for iso view
+                    from matplotlib.cm import ScalarMappable
+                    sm = ScalarMappable(cmap=cmap_obj, norm=plt.Normalize(vmin=vmin, vmax=vmax))
+                    sm.set_array([])
+                    fig.colorbar(sm, ax=ax, shrink=0.7)
+                except Exception as e:
+                    ax.text(0.5, 0.5, 0.5, f"ISO err: {e}", ha="center")
+                im_data = None  # nothing for 2-D processing further
+
+            elif img.ndim == 3:  # 3-D volume -> project to 2-D
+                if volume_proj == "max":
+                    img2d = img.max(axis=0)
+                else:  # 'slice'
+                    idx = slice_index if slice_index is not None else img.shape[0] // 2
+                    idx = max(0, min(idx, img.shape[0] - 1))
+                    img2d = img[idx]
+                im_data = img2d
+            else:
+                im_data = img
+
+            if im_data is not None and im_data.ndim == 2:
                 # 2D field -> image
                 if dset_name.lower().startswith("velocity") or (n_ch >= 2 and dset_name.lower().startswith("vel")):
-                    im = ax.imshow(img, cmap="coolwarm", origin="lower")
+                    im = ax.imshow(im_data, cmap="coolwarm", origin="lower")
                 else:
-                    im = ax.imshow(img, cmap=cmap_scalar, origin="lower")
+                    im = ax.imshow(im_data, cmap=cmap_scalar, origin="lower")
                 fig.colorbar(im, ax=ax, shrink=0.7)
-            elif img.ndim == 1:
-                ax.plot(img)
+            elif im_data is not None and im_data.ndim == 1:
+                ax.plot(im_data)
             else:
-                raise ValueError(f"Unsupported data dimensionality for plotting: {img.shape}")
+                if im_data is not None:
+                    raise ValueError(f"Unsupported data dimensionality for plotting: {im_data.shape}")
 
             # Title per subplot
             if n_ch > 1:
@@ -128,20 +242,28 @@ def plot_timestep(datasets: dict, t: int, output_path: Path, cmap_scalar: str, t
                 ax.set_title(f"{dset_name} t={t}")
 
             # Hide axes for images; keep for line plots
-            if img.ndim == 2:
+            if im_data is not None and im_data.ndim == 2:
                 ax.axis("off")
 
     # Hide any remaining unused axes
     for ax in axes_iter:
         ax.axis("off")
 
-    # Optional global title
+    # Build formatting dictionary for titles
+    title_vars = {"t": t, "proj": volume_proj, "slice": slice_index if slice_index is not None else ""}
+    if group_name is not None:
+        title_vars["g"] = group_name
+
     if title_tpl:
-        # Provide simple formatting variables
-        fmt_kwargs = {"t": t}
-        if group_name is not None:
-            fmt_kwargs["g"] = group_name
-        fig.suptitle(title_tpl.format(**fmt_kwargs), fontsize=16)
+        fig.suptitle(title_tpl.format(**title_vars), fontsize=16)
+    else:
+        # Default title showing group & timestep only
+        default_title = f"{group_name or ''}"
+        fig.suptitle(default_title.strip(), fontsize=16)
+
+    # Projection details placed just below the main title
+    proj_descr = f"{volume_proj}" if volume_proj != "slice" else f"slice {title_vars['slice']}"
+    fig.text(0.5, 0.92, proj_descr, ha="center", va="top", fontsize=10, style="italic")
 
     plt.tight_layout()
     fig.savefig(output_path, dpi=150)
@@ -197,7 +319,14 @@ def main():
             frame_paths = []
             for t in range(t_start, t_end + 1, args.step):
                 out_file = output_dir / f"{group_name}_t{t:04d}.png"
-                plot_timestep(datasets, t, out_file, cmap_scalar=args.cmap, title_tpl=args.title, group_name=group_name)
+                plot_timestep(
+                    datasets, t, out_file,
+                    cmap_scalar=args.cmap,
+                    title_tpl=args.title,
+                    group_name=group_name,
+                    volume_proj=args.volume_proj,
+                    slice_index=args.slice_index,
+                )
                 frame_paths.append(out_file)
 
             # Always create an MP4 video for the processed frames

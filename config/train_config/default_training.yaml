@@ -33,7 +33,7 @@ metric_for_best_model: "l2_error"
 # Number of rollouts to use for evaluation
 n_eval_rollouts: 4
 # Plot after epochs, note that plotting will be done continously after this epoch.
-plot_after_epoch: 3
+plot_after_epoch: null
 # Number of examples to plot
 n_plot_examples: 1
 

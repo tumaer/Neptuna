@@ -3,6 +3,8 @@ import torch
 from torch import Tensor
 import torch.nn as nn
 from utils import activation_func
+import torch.nn.functional as F
+
 from models.model_utils import cfd_PreTrainedModel
 from .unet_utils import DownBlockND, UpBlockND, MiddleBlockND, DownsampleND, UpsampleND
 from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
@@ -107,11 +109,8 @@ class UNet(cfd_PreTrainedModel):
             conditioning_input_data = None
 
         batch, input_seq, input_channels, *spatial = input_data.shape
-        x=input_data.reshape(batch, input_seq * input_channels, *spatial)
-
-        x = self.unet(x)
-
-        return x
+        x = input_data.reshape(batch, input_seq * input_channels, *spatial)
+        return self.unet(x)
 
 #Unet based on the dimension
 class UNet1D(cfd_PreTrainedModel):
@@ -229,13 +228,25 @@ class UNet1D(cfd_PreTrainedModel):
         else:
             self.final = nn.Conv1d(in_channels_up, out_size, kernel_size=(3,), padding=(1,))
 
+        # Overall downsampling factor for padding logic
+        self._ds_factor = 2 ** (unet_depth - 1)
+
     def forward(self, x: torch.Tensor):
         if x.dim() != 3:
             raise ValueError(
                 "Only 3D tensors [batch, in_channels, grid_x] accepted for 1D UNet"
             )
-        #add coord features
-        if self.coord_features: 
+        
+        # ---- Symmetric padding so length divisible by self._ds_factor ----
+        L_orig = x.shape[-1]
+        pad_L = (-L_orig) % self._ds_factor
+        left = pad_L // 2
+        right = pad_L - left
+        if pad_L:
+            x = F.pad(x, (left, right))
+
+        # add coord features after padding
+        if self.coord_features:
             coord_feat = oned_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
         
@@ -258,6 +269,10 @@ class UNet1D(cfd_PreTrainedModel):
                 x = m(x)
 
         x = self.final(self.activation(self.norm(x)))
+
+        # Crop back to original length if padded
+        if pad_L:
+            x = x[..., left:left + L_orig]
 
         return x
 
@@ -376,13 +391,28 @@ class UNet2D(cfd_PreTrainedModel):
         else:
             self.final = nn.Conv2d(in_channels_up, out_size, kernel_size=(3, 3), padding=(1, 1))
 
+        # Overall downsampling factor for padding logic
+        self._ds_factor = 2 ** (unet_depth - 1)
+
     def forward(self, x: torch.Tensor):
         if x.dim() != 4:
             raise ValueError(
                 "Only 4D tensors [batch, in_channels, grid_x, grid_y] accepted for 2D UNet"
             )
 
-        if self.coord_features: 
+        # ---- Pad so H and W divisible by self._ds_factor ----
+        H_orig, W_orig = x.shape[-2], x.shape[-1]
+        pad_H = (-H_orig) % self._ds_factor
+        pad_W = (-W_orig) % self._ds_factor
+        top = pad_H // 2
+        bottom = pad_H - top
+        left = pad_W // 2
+        right = pad_W - left
+        if pad_H or pad_W:
+            x = F.pad(x, (left, right, top, bottom))
+
+        # add coord features after padding
+        if self.coord_features:
             coord_feat = twod_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
 
@@ -395,7 +425,7 @@ class UNet2D(cfd_PreTrainedModel):
 
         x = self.middle(x)
 
-        for m in self.up:
+        for i, m in enumerate(self.up):
             if isinstance(m, UpsampleND):
                 x = m(x)
             else:
@@ -405,6 +435,10 @@ class UNet2D(cfd_PreTrainedModel):
                 x = m(x)
 
         x = self.final(self.activation(self.norm(x)))
+
+        # Crop back to original size if padded
+        if pad_H or pad_W:
+            x = x[..., top:top + H_orig, left:left + W_orig]
 
         return x
     
@@ -524,14 +558,33 @@ class UNet3D(cfd_PreTrainedModel):
         else:
             self.final = nn.Conv3d(in_channels_up, out_size, kernel_size=(3, 3, 3), padding=(1, 1, 1))
 
+        # Overall downsampling factor for padding logic
+        self._ds_factor = 2 ** (unet_depth - 1)
+
     def forward(self, x: torch.Tensor):
         if x.dim() != 5:
             raise ValueError(
                 "Only 5D tensors [batch, in_channels, grid_x, grid_y, grid_z] accepted for 3D ResNet"
             )
         
-        #add feature map
-        if self.coord_features: 
+        # ---- Pad so D, H, W divisible by self._ds_factor ----
+        D_orig, H_orig, W_orig = x.shape[-3], x.shape[-2], x.shape[-1]
+        pad_D = (-D_orig) % self._ds_factor
+        pad_H = (-H_orig) % self._ds_factor
+        pad_W = (-W_orig) % self._ds_factor
+
+        front = pad_D // 2
+        back = pad_D - front
+        top = pad_H // 2
+        bottom = pad_H - top
+        left = pad_W // 2
+        right = pad_W - left
+
+        if pad_D or pad_H or pad_W:
+            x = F.pad(x, (left, right, top, bottom, front, back))
+
+        # add feature map after padding
+        if self.coord_features:
             coord_feat = threed_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
 
@@ -554,5 +607,9 @@ class UNet3D(cfd_PreTrainedModel):
                 x = m(x)
 
         x = self.final(self.activation(self.norm(x)))
+
+        # Crop back if padded
+        if pad_D or pad_H or pad_W:
+            x = x[..., front:front + D_orig, top:top + H_orig, left:left + W_orig]
 
         return x

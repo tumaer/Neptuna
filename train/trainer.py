@@ -165,48 +165,50 @@ class Trainer(Trainer_):
     
     ##custom function, not inside transformers library
     def _forward_model_train(self, model, inputs):  
-        #########################################################
-        #Pushforward trick (for training)
-        #########################################################
-        #TODO: SS prediction is not supported yet
-        num_steps_in_one_epoch = self.state.max_steps//self.state.num_train_epochs
-        pushforward_unroll_steps = self.select_pushforward_unroll_steps_for_training(current_epoch = self.state.global_step//num_steps_in_one_epoch)
-        
+
         batch_size, _, _, *spatial_dims = inputs["input_data"].shape
         
-        with torch.no_grad(): #comment this out for multi-step autoregressive training
-            for unroll_step in range(pushforward_unroll_steps):
-                #print(f"Pushforward unroll step {unroll_step+1} of {pushforward_unroll_steps}")
-                if self.data_config.conditioning_in_channels is not None:
-                    #prediction = model(torch.cat([inputs["input_data"], inputs["conditioning_input_data"]], dim=2))
-                    prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
-                else:
-                    prediction = model(input_data=inputs["input_data"])
+        if not self.data_config.is_steady_state_prediction:
+            #########################################################
+            #Pushforward trick (for training)
+            #########################################################
+            num_steps_in_one_epoch = self.state.max_steps//self.state.num_train_epochs
+            pushforward_unroll_steps = self.select_pushforward_unroll_steps_for_training(current_epoch = self.state.global_step//num_steps_in_one_epoch)
                 
-                prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
-                
-                if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length >= input_sequence length
-                    inputs = {
-                                **inputs,
-                                **{ # This part replaces the "input_data" of input with the prediction of the model. 
-                                    # So the new input is the output from the previous step.
-                                    #prediction.shape = torch.Size([B, label_seq_len, C_labels, x_resolution, y_resolution])
-                                    "input_data": (
-                                        prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the outputs so as to extract the input_sequence.
-                                    )
-                                },
-                        }
+            with torch.no_grad(): #comment this out for multi-step autoregressive training
+                for unroll_step in range(pushforward_unroll_steps):
+                    #print(f"Pushforward unroll step {unroll_step+1} of {pushforward_unroll_steps}")
+                    if self.data_config.conditioning_in_channels is not None:
+                        #prediction = model(torch.cat([inputs["input_data"], inputs["conditioning_input_data"]], dim=2))
+                        prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
+                    else:
+                        prediction = model(input_data=inputs["input_data"])
                     
-                else: #input_sequence length > label_sequence length (the more usual case)
-                    inputs = {
-                        **inputs,
-                        **{ #this part replaces the "input_data" of input with the output of the model and concatenates part of the input whch is missing to make a complete input sequence
-                            #So the new input is the output from the previous step.
-                            "input_data": (
-                                torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1)
-                            )
-                        },
-                    }
+                    prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
+                    
+                    if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length >= input_sequence length
+                        inputs = {
+                                    **inputs,
+                                    **{ # This part replaces the "input_data" of input with the prediction of the model. 
+                                        # So the new input is the output from the previous step.
+                                        #prediction.shape = torch.Size([B, label_seq_len, C_labels, x_resolution, y_resolution])
+                                        "input_data": (
+                                            prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the outputs so as to extract the input_sequence.
+                                        )
+                                    },
+                            }
+                        
+                    else: #input_sequence length > label_sequence length (the more usual case)
+                        inputs = {
+                            **inputs,
+                            **{ #this part replaces the "input_data" of input with the output of the model and concatenates part of the input whch is missing to make a complete input sequence
+                                #So the new input is the output from the previous step.
+                                "input_data": (
+                                    torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1)
+                                )
+                            },
+                        }
+        
         # NOTE:compute chain restored, the input_data is corrupted by the pushforward rollout steps (if any).
         if self.data_config.conditioning_in_channels is not None:
             prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
@@ -218,11 +220,13 @@ class Trainer(Trainer_):
 
     ##custom function, not inside transformers library
     def _forward_model_eval_or_test(self, model, inputs):  
+        batch_size, _, _, *spatial_dims = inputs["input_data"].shape
+        
         if self.data_config.conditioning_in_channels is not None:
             prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
         else:
             prediction = model(input_data=inputs["input_data"]) 
-        batch_size, _, _, *spatial_dims = inputs["input_data"].shape
+        
         prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
         return prediction
     
@@ -242,40 +246,55 @@ class Trainer(Trainer_):
         else:
             total_loss = 0
         
-        for i in range(self.rollout_steps+1): #NOTE: +1 because at least one bunch of outputs is always predicted and rollout_steps is added on top of that.
-            #logger.debug(f"Eval/Test rollout step {i+1} of {self.rollout_steps+1}")
-            prediction = self._forward_model_eval_or_test(model,inputs) #prediction.shape = torch.Size([B, label_seq_length,C_labels, x_resolution, y_resolution, ...]) 
-            
-            loss_fn = nn.functional.mse_loss #this is the eval_loss, which is NOT used for saving the best model.
-            loss = loss_fn(prediction, inputs["label_including_rollouts"][:,i*self.data_config.sequence_info[1]:(i+1)*self.data_config.sequence_info[1]]) 
-            
-            if self.output_all_steps:
-                predictions_.append(prediction.detach()) 
-                losses_.append(loss)
-            else:
-                total_loss += loss #loss is added up across all rollout_steps and we obtain a scalar. This is divided by rollout_steps at the end of the "if" statement
-            
-            #recreate the inputs to be fed to the model for the next step
-            if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length > input_sequence length
-                inputs = {
-                    **inputs,
-                    **{ #this part replaces the "input_data" of input with the output of the model. 
-                        #So the new input is the output from the previous step.
-                        "input_data": (
-                            prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the predictions so as to extract the input_sequence.
-                        )
-                    },
-            }
-            else: #input_sequence length > label_sequence length (the more usual case)
-                inputs = {
-                    **inputs,
-                    **{ #this part replaces the "input_data" of input with the output of the model. 
-                        #So the new input is the output from the previous step.
-                        "input_data": ( 
-                            torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1) #slice the outputs so as to extract the input_sequence.
-                        )
-                    },
-            }
+        prediction = self._forward_model_eval_or_test(model,inputs) 
+
+        loss_fn = nn.functional.mse_loss #this is the eval_loss, which is NOT used for saving the best model.
+        loss = loss_fn(prediction, inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1]]) 
+        
+        if self.output_all_steps:
+            predictions_.append(prediction.detach()) 
+            losses_.append(loss)
+        else:
+            total_loss += loss #loss is added up across all rollout_steps and we obtain a scalar. This is divided by rollout_steps at the end of the "if" statement
+
+        if not self.data_config.is_steady_state_prediction:
+        
+            for i in range(1,self.rollout_steps+1): 
+                #logger.debug(f"Eval/Test rollout step {i+1} of {self.rollout_steps+1}")
+                #prediction.shape = torch.Size([B, label_seq_length,C_labels, x_resolution, y_resolution, ...]) 
+                #recreate the inputs to be fed to the model for the next step
+                if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length > input_sequence length
+                    inputs = {
+                        **inputs,
+                        **{ #this part replaces the "input_data" of input with the output of the model. 
+                            #So the new input is the output from the previous step.
+                            "input_data": (
+                                prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the predictions so as to extract the input_sequence.
+                            )
+                        },
+                }
+                else: #input_sequence length > label_sequence length (the more usual case)
+                    inputs = {
+                        **inputs,
+                        **{ #this part replaces the "input_data" of input with the output of the model. 
+                            #So the new input is the output from the previous step.
+                            "input_data": ( 
+                                torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1) #slice the outputs so as to extract the input_sequence.
+                            )
+                        },
+                }
+                
+                prediction = self._forward_model_eval_or_test(model,inputs) 
+
+                loss_fn = nn.functional.mse_loss #this is the eval_loss, which is NOT used for saving the best model.
+                loss = loss_fn(prediction, inputs["label_including_rollouts"][:,i*self.data_config.sequence_info[1]:(i+1)*self.data_config.sequence_info[1]]) 
+                
+                if self.output_all_steps:
+                    predictions_.append(prediction.detach()) 
+                    losses_.append(loss)
+                else:
+                    total_loss += loss 
+
                 
         if self.output_all_steps:
             predictions= torch.stack(predictions_, dim=1) #predictions.shape = torch.Size([B, rollout_steps+1, label_seq_length, C_output, *spatial_resolution])
