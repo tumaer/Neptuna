@@ -241,6 +241,7 @@ class AutoDeepONet1D(cfd_PreTrainedModel):
                 
             elif branch_net == "ResNet":
                 self.branch_net = ResNet1D(
+                    config=config,
                     in_size= in_size,
                     out_size= latent_channels,
                     block = ResNet_block,
@@ -384,6 +385,7 @@ class AutoDeepONet2D(cfd_PreTrainedModel):
                 
             elif branch_net == "ResNet":
                 self.branch_net = ResNet2D(
+                    config=config,
                     in_size= in_size,
                     out_size= latent_channels,
                     block = ResNet_block,
@@ -531,6 +533,7 @@ class AutoDeepONet3D(cfd_PreTrainedModel):
                 
             elif branch_net == "ResNet":
                 self.branch_net = ResNet3D(
+                    config=config,
                     in_size= in_size,
                     out_size= latent_channels,
                     block = ResNet_block,

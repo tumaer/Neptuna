@@ -166,6 +166,7 @@ class FNO1D(cfd_PreTrainedModel):
 
     def __init__(
         self,
+        config,
         in_size: int,
         out_size: int,
         num_fno_layers: int = 4,
@@ -179,7 +180,7 @@ class FNO1D(cfd_PreTrainedModel):
         decoder_layers: int = 1,
         decoder_layer_size: int = 32,
     ) -> None:
-        super().__init__()
+        super().__init__(config)
 
         self.in_size = in_size
         self.out_size = out_size

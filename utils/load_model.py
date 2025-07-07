@@ -84,7 +84,7 @@ def fetch_model(model_config: Dict,
     
     elif model_name == "deeponet_ffn":
         from models.DeepONet.deeponet import AutoDeepONet
-        config
+        config = PretrainedConfig()
         model = AutoDeepONet(
                     config=config,
                     in_channels=len(data_config['filter_in_channels']),
@@ -102,7 +102,7 @@ def fetch_model(model_config: Dict,
     
     elif model_name == "deeponet_cnn":
         from models.DeepONet.deeponet import AutoDeepONet
-        config
+        config = PretrainedConfig()
         model = AutoDeepONet(
                     config=config,
                     in_channels=len(data_config['filter_in_channels']),
