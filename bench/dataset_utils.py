@@ -21,11 +21,12 @@ def make_datasets(cfg: DictConfig):
         filter_groups=cfg["data_config"]["filter_groups"],
         filter_in_channels=cfg["data_config"]["filter_in_channels"],
         conditioning_in_channels=cfg["data_config"]["conditioning_in_channels"],
-        is_conditioning_parameters=cfg["data_config"]["is_conditioning_parameters"],
+        include_conditioning_parameters=cfg["data_config"]["include_conditioning_parameters"],
         filter_out_channels=cfg["data_config"]["filter_out_channels"],
         data_normalization_stats=cfg["data_config"]["data_normalization_stats"],
         data_normalization_strategy=cfg["data_config"]["data_normalization_strategy"],
         eval_split_ratio=cfg["train_config"]["eval_split_ratio"],
         eval_groups=cfg["data_config"]["eval_groups"],
         is_steady_state_prediction=cfg["data_config"]["is_steady_state_prediction"],
+        residual_config=cfg["data_config"]["residual_config"],
     ) 
