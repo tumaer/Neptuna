@@ -511,8 +511,25 @@ class cfd_PretrainedConfig(PretrainedConfig):
     """
     Base class for all configuration classes. Handles a few parameters common to all models' configurations as well as
     methods for loading/downloading/saving configurations.
-
     """
+
+    def __init__(
+        self,
+        in_channels: int = 1,       # Number of input_channels
+        out_channels: int = 1,      # Number of output channels
+        dimension: int = 1,
+        grid_resolution: Union[int, List[int], Tuple[int]] = [160], # Input and Output spatial size (required )
+        sequence_info: Optional[List[int]] = [1,1,1],
+        **kwargs
+    ):
+        super().__init__(**kwargs)
+    
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.dimension = dimension
+        self.sequence_info = sequence_info
+        self.grid_resolution = grid_resolution
+
     def save_pretrained(self, save_directory: Union[str, os.PathLike], push_to_hub: bool = False, **kwargs):
         """
         Save a configuration object to the directory `save_directory`, so that it can be re-loaded using the

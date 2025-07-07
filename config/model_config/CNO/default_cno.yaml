@@ -1,5 +1,5 @@
 model_name: CNO
-cno_depth: 4 #number of down/up sampling blocks in the network
+cno_depth: 6 #number of down/up sampling blocks in the network
 n_blocks: 4 #number of residual blocks per level (except the neck)
 n_blocks_bottleneck: 4 #number of residual blocks in the bottleneck
 channel_multiplier: 16 #base channel multiplier for network width
