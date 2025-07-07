@@ -72,6 +72,13 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
         else channel_names
     )
 
+    filter_cond_in_keywords = cfg["data_config"]["conditioning_in_channels"]
+    filtered_cond_in_channels = (
+        [n for n in channel_names if any(n.startswith(k) for k in filter_cond_in_keywords)]
+        if filter_cond_in_keywords
+        else None
+    )
+
     filter_out_keywords = cfg["data_config"]["filter_out_channels"]
     filtered_out_channels = (
         [n for n in channel_names if any(n.startswith(k) for k in filter_out_keywords)]
@@ -81,5 +88,5 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
 
     cfg["data_config"]["filter_in_channels"] = filtered_in_channels
     cfg["data_config"]["filter_out_channels"] = filtered_out_channels
-
+    cfg["data_config"]["conditioning_in_channels"] = filtered_cond_in_channels
     return cfg 
