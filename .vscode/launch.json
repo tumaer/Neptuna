@@ -42,7 +42,7 @@
           "env": {
               "HYDRA_FULL_ERROR": "1",
               "HYDRA_MAIN_DISABLE_RUN": "1",
-              "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "2.0"   // “-1” disables the warning entirely
+              "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "10.0"   // “-1” disables the warning entirely
               }
 
       },
