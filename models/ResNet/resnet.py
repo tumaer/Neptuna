@@ -10,86 +10,31 @@ from models.model_utils import cfd_PreTrainedModel
 
 
 class ResNet(cfd_PreTrainedModel):
-    """Class to support ResNet like feedforward architectures
+    """Class to support ResNet like feedforward architectures"""
 
-    Args:
-        in_channels : int
-            Number of input channels
-        out_channels : int
-            Number of output channels
-        block (str): 
-            BasicBlock, Dilblock only for now
-        num_blocks (List[int]): 
-            Number of blocks in each stage
-        sequence_info (List[List[int]]):
-            sequence_info[0][0]: input_seq_len, sequence_info[0][1]: label_seq_len,
-            sequence_info[0][2]: input_sequence_stride, sequence_info[0][3]: label_sequence_stride  
-        latent_channels (int): 
-            Number of channels in the latent space
-        dimension : int
-            Model dimensionality (supports 1,2,3)
-        activation_fn : str
-            Activation function, by default "gelu"
-        coord_features : bool, optional
-            Use coordinate grid as additional feature map, by default True
-        norm (bool): 
-            Whether to use normalization
-        n_groups : int
-            Number of groups for GroupNorm, by default 1 (equivalent with LayerNorm)
-    """
     main_input_name = "input_data"
     conditioning_input_name = "conditioning_input_data"
-    def __init__(
-        self,
-        config,
-        in_channels: int,
-        out_channels: int,
-        block: str,
-        num_blocks: list,
-        dimension: int,
-        sequence_info: Optional[List[int]] = [1,1,1],
-        latent_channels: int = 64,
-        activation_fn_name: str = "gelu",
-        coord_features: bool = True,
-        norm: bool = True,
-        padding: int = 9,
-        n_groups: int = 1,
-        stride: int = 1,
-    ) -> None:
+
+    def __init__(self, config) -> None:
         super().__init__(config)
-        self.in_size = in_channels * sequence_info[0] 
-        self.out_size = out_channels * sequence_info[1]
-        self.latent_channels = latent_channels
-        self.normalization = norm
-        self.coord_features = coord_features
-        self.dimension = dimension
+        self.config = config
                
-        self.activation: nn.Module = activation_func.get_activation(activation_fn_name)
+        self.activation: nn.Module = activation_func.get_activation(config.activation_fn_name)
         if self.activation is None:
-            raise NotImplementedError(f"Activation {activation_fn_name} not implemented")
+            raise NotImplementedError(f"Activation {config.activation_fn_name} not implemented")
         
         self.resnet = self.build_resnet()(
             config=config,
-            in_size=self.in_size,
-            out_size=self.out_size,
-            block=block,
-            num_blocks=num_blocks,    
-            latent_channels=self.latent_channels,
-            activation_fn=self.activation,
-            coord_features=self.coord_features,
-            norm=self.normalization,
-            padding=padding,
-            n_groups=n_groups,
-            stride=stride,
+            activation_fn=self.activation
         )
            
     def build_resnet(self):
         """Get the ResNet encoder based on the model dimensionality"""
-        if self.dimension == 1:
+        if self.config.dimension == 1:
             return ResNet1D
-        elif self.dimension == 2:
+        elif self.config.dimension == 2:
             return ResNet2D
-        elif self.dimension == 3:
+        elif self.config.dimension == 3:
             return ResNet3D
         else:
             raise NotImplementedError(
@@ -116,94 +61,52 @@ class ResNet(cfd_PreTrainedModel):
         return y
                                                    
 class ResNet1D(cfd_PreTrainedModel):
-    """    Args:
-        in_size : int
-            Number of input channels
-        out_size : int
-            Number of output channels
-        block : str
-            BasicBlock,Dilblock only for now
-        num_blocks (List[int]): 
-            Number of blocks in each stage
-        latent_channels (int): 
-            Number of channels in the hidden layers
-        activation_fn : str
-            Activation function, by default "gelu"
-        coord_features : bool, optional
-            Use coordinate grid as additional feature map, by default True
-        padding : int
-            Padding for the input tensor
-        norm (bool): 
-            Whether to use normalization
-        n_groups : int
-            Number of groups for GroupNorm, by default 1 (equivalent with LayerNorm)
-    """
-    def __init__(
-        self,
-        config,
-        in_size: int,
-        out_size: int,
-        block: str ,
-        num_blocks: list,
-        latent_channels: int = 64,
-        activation_fn: nn.Module = nn.GELU(),
-        coord_features: bool = True,
-        padding: int = 9,
-        norm: bool = True,
-        n_groups: int = 1,
-        stride: int = 1,
-        ) -> None:
+    def __init__(self, config, activation_fn: nn.Module = nn.GELU()) -> None:
         super().__init__(config)
-        self.in_size = in_size
-        self.out_size = out_size
-        self.latent_channels = latent_channels
-        self.activation = activation_fn                
-        self.coord_features = coord_features
-        self.padding = padding   
-        self.num_blocks = num_blocks
-        self.normalization = norm
-            
+
+        self.activation = activation_fn
+
         self.conv_in1 = nn.Conv1d(
-            self.in_size,
-            self.latent_channels,
+            config.in_size,
+            config.latent_channels,
             kernel_size=1,
             bias=True,
         )
         self.conv_in2 = nn.Conv1d(
-            self.latent_channels,
-            self.latent_channels,
+            config.latent_channels,
+            config.latent_channels,
             kernel_size=1,
             bias=True,
         )
         
-        self.block = getblock(block)
+        self.block = getblock(config.block)
         
         self.layers = nn.ModuleList(
             [
                 make_layer(
                     self.block,
-                    self.latent_channels,
-                    self.latent_channels,
-                    num_blocks[i],
-                    stride = stride,
+                    config.latent_channels,
+                    config.latent_channels,
+                    config.num_blocks[i],
+                    stride = config.stride,
                     dimension = 1,
                     activation_fn = self.activation,
-                    norm = self.normalization,
-                    n_groups = n_groups,
+                    norm = config.norm,
+                    n_groups = config.n_groups,
                 )
-                for i in range(len(num_blocks))
+                for i in range(len(config.num_blocks))
             ]
         )
         
         self.conv_out1 = nn.Conv1d(
-            self.latent_channels,
-            self.latent_channels,
+            config.latent_channels,
+            config.latent_channels,
             kernel_size=1,
             bias=True,
         )
         self.conv_out2 = nn.Conv1d(
-            self.latent_channels,
-            self.out_size,
+            config.latent_channels,
+            config.out_size,
             kernel_size=1,
             bias=True,
         )           
@@ -215,23 +118,23 @@ class ResNet1D(cfd_PreTrainedModel):
             )
         
         #add feature map
-        if self.coord_features: 
+        if self.config.coord_features: 
             coord_feat = oned_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
         
         #encoder    
         x = self.activation(self.conv_in1(x.float())) 
         x = self.activation(self.conv_in2(x.float())) 
-        if self.padding > 0:
-            x = F.pad(x, [0, self.padding])
+        if self.config.padding > 0:
+            x = F.pad(x, [0, self.config.padding])
             
         #main part
         for layer in self.layers:
             x = layer(x)
             
         #decoder    
-        if self.padding > 0:
-            x = x[..., : -self.padding]
+        if self.config.padding > 0:
+            x = x[..., : -self.config.padding]
 
         x = self.activation(self.conv_out1(x))
         x = self.conv_out2(x)
@@ -239,94 +142,51 @@ class ResNet1D(cfd_PreTrainedModel):
         return x
 
 class ResNet2D(cfd_PreTrainedModel):
-    """    Args:
-        in_size : int
-            Number of input channels
-        out_size : int
-            Number of output channels
-        block : str
-            BasicBlock,Dilblock only for now
-        num_blocks (List[int]): 
-            Number of blocks in each stage
-        latent_channels (int): 
-            Number of channels in the hidden layers
-        activation_fn : str
-            Activation function, by default "gelu"
-        coord_features : bool, optional
-            Use coordinate grid as additional feature map, by default True
-        padding : int
-            Padding for the input tensor
-        norm (bool): 
-            Whether to use normalization
-        n_groups : int
-            Number of groups for GroupNorm, by default 1 (equivalent with LayerNorm)
-    """
-    def __init__(
-        self,
-        config,
-        in_size: int,
-        out_size: int,
-        block: str ,
-        num_blocks: list,
-        latent_channels: int = 64,
-        activation_fn: nn.Module = nn.GELU(),
-        coord_features: bool = True,
-        padding: int = 9,
-        norm: bool = True,
-        n_groups: int = 1,
-        stride: int = 1,
-        ) -> None:
+    def __init__(self, config, activation_fn: nn.Module = nn.GELU()) -> None:
         super().__init__(config)
-        self.in_size = in_size
-        self.out_size = out_size
-        self.latent_channels = latent_channels
-        self.activation = activation_fn                
-        self.coord_features = coord_features
-        self.padding = padding   
-        self.num_blocks = num_blocks
-        self.normalization = norm
-            
+        self.activation = activation_fn
+
         self.conv_in1 = nn.Conv2d(
-            self.in_size,
-            self.latent_channels,
+            config.in_size,
+            config.latent_channels,
             kernel_size=1,
             bias=True,
         )
         self.conv_in2 = nn.Conv2d(
-            self.latent_channels,
-            self.latent_channels,
+            config.latent_channels,
+            config.latent_channels,
             kernel_size=1,
             bias=True,
         )
         
-        self.block = getblock(block)
+        self.block = getblock(config.block)
         
         self.layers = nn.ModuleList(
             [
                 make_layer(
                     self.block,
-                    self.latent_channels,
-                    self.latent_channels,
-                    num_blocks[i],
-                    stride = stride,
+                    config.latent_channels,
+                    config.latent_channels,
+                    config.num_blocks[i],
+                    stride = config.stride,
                     dimension = 2,
                     activation_fn = self.activation,
-                    norm = self.normalization,
-                    n_groups = n_groups,
+                    norm = config.norm,
+                    n_groups = config.n_groups,
                 )
-                for i in range(len(num_blocks))
+                for i in range(len(config.num_blocks))
             ]
         )
         
         self.conv_out1 = nn.Conv2d(
-            self.latent_channels,
-            self.latent_channels,
+            config.latent_channels,
+            config.latent_channels,
             kernel_size=1,
             bias=True,
         )
         self.conv_out2 = nn.Conv2d(
-            self.latent_channels,
-            self.out_size,
+            config.latent_channels,
+            config.out_size,
             kernel_size=1,
             bias=True,
         )           
@@ -339,23 +199,23 @@ class ResNet2D(cfd_PreTrainedModel):
             )
         
         #add feature map
-        if self.coord_features: 
+        if self.config.coord_features: 
             coord_feat = twod_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
         
         #encoder    
         x = self.activation(self.conv_in1(x.float())) 
         x = self.activation(self.conv_in2(x.float())) 
-        if self.padding > 0:
-            x = F.pad(x, [0, self.padding, 0, self.padding])
+        if self.config.padding > 0:
+            x = F.pad(x, [0, self.config.padding, 0, self.config.padding])
             
         #main part
         for layer in self.layers:
             x = layer(x)
             
         #decoder    
-        if self.padding > 0:
-            x = x[..., : -self.padding, : -self.padding]
+        if self.config.padding > 0:
+            x = x[..., : -self.config.padding, : -self.config.padding]
 
         x = self.activation(self.conv_out1(x))
         x = self.conv_out2(x)
@@ -363,94 +223,52 @@ class ResNet2D(cfd_PreTrainedModel):
         return x
 
 class ResNet3D(cfd_PreTrainedModel):
-    """    Args:
-        in_size : int
-            Number of input channels
-        out_size : int
-            Number of output channels
-        block : str
-            BasicBlock,Dilblock only for now
-        num_blocks (List[int]): 
-            Number of blocks in each stage
-        latent_channels (int): 
-            Number of channels in the hidden layers
-        activation_fn : str
-            Activation function, by default "gelu"
-        coord_features : bool, optional
-            Use coordinate grid as additional feature map, by default True
-        padding : int
-            Padding for the input tensor
-        norm (bool): 
-            Whether to use normalization
-        n_groups : int
-            Number of groups for GroupNorm, by default 1 (equivalent with LayerNorm)
-    """
-    def __init__(
-        self,
-        config,
-        in_size: int,
-        out_size: int,
-        block: str ,
-        num_blocks: list,
-        latent_channels: int = 64,
-        activation_fn: nn.Module = nn.GELU(),
-        coord_features: bool = True,
-        padding: int = 9,
-        norm: bool = True,
-        n_groups: int = 1,
-        stride: int = 1,
-        ) -> None:
+
+    def __init__(self, config, activation_fn: nn.Module = nn.GELU()) -> None:
         super().__init__(config)
-        self.in_size = in_size
-        self.out_size = out_size
-        self.latent_channels = latent_channels
-        self.activation = activation_fn                
-        self.coord_features = coord_features
-        self.padding = padding   
-        self.num_blocks = num_blocks
-        self.normalization = norm
+        self.activation = activation_fn 
             
         self.conv_in1 = nn.Conv3d(
-            self.in_size,
-            self.latent_channels,
+            config.in_size,
+            config.latent_channels,
             kernel_size=1,
             bias=True,
         )
         self.conv_in2 = nn.Conv3d(
-            self.latent_channels,
-            self.latent_channels,
+            config.latent_channels,
+            config.latent_channels,
             kernel_size=1,
             bias=True,
         )
         
-        self.block = getblock(block)
+        self.block = getblock(config.block)
         
         self.layers = nn.ModuleList(
             [
                 make_layer(
                     self.block,
-                    self.latent_channels,
-                    self.latent_channels,
-                    num_blocks[i],
-                    stride = stride,
+                    config.latent_channels,
+                    config.latent_channels,
+                    config.num_blocks[i],
+                    stride = config.stride,
                     dimension = 3,
                     activation_fn = self.activation,
-                    norm = self.normalization,
-                    n_groups = n_groups,
+                    norm = config.norm,
+                    n_groups = config.n_groups,
                 )
-                for i in range(len(num_blocks))
+                for i in range(len(config.num_blocks))
             ]
         )
         
         self.conv_out1 = nn.Conv3d(
-            self.latent_channels,
-            self.latent_channels,
+            config.latent_channels,
+            config.latent_channels,
             kernel_size=1,
             bias=True,
         )
         self.conv_out2 = nn.Conv3d(
-            self.latent_channels,
-            self.out_size,
+            config.latent_channels,
+            config.out_size,
             kernel_size=1,
             bias=True,
         )                  
@@ -462,7 +280,7 @@ class ResNet3D(cfd_PreTrainedModel):
             )
         
         #add feature map
-        if self.coord_features: 
+        if self.config.coord_features: 
             coord_feat = threed_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
         
@@ -470,16 +288,16 @@ class ResNet3D(cfd_PreTrainedModel):
         x = self.activation(self.conv_in1(x.float())) 
         x = self.activation(self.conv_in2(x.float())) 
         # 3D padding: (pad_left, pad_right, pad_top, pad_bottom, pad_front, pad_back)
-        if self.padding > 0:
-            x = F.pad(x, (0, self.padding, 0, self.padding, 0, self.padding))
+        if self.config.padding > 0:
+            x = F.pad(x, (0, self.config.padding, 0, self.config.padding, 0, self.config.padding))
             
         #main part
         for layer in self.layers:
             x = layer(x)
             
         #decoder    
-        if self.padding > 0:
-            x = x[..., : -self.padding, : -self.padding, : -self.padding]
+        if self.config.padding > 0:
+            x = x[..., : -self.config.padding, : -self.config.padding, : -self.config.padding]
         x = self.activation(self.conv_out1(x))
         x = self.conv_out2(x)
                         

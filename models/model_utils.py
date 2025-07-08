@@ -520,7 +520,7 @@ class cfd_PretrainedConfig(PretrainedConfig):
         dimension: int = 1,
         grid_resolution: Union[int, List[int], Tuple[int]] = [160], # Input and Output spatial size (required )
         sequence_info: Optional[List[int]] = [1,1,1],
-        coord_features: bool = False,
+        coord_features: bool = True,
         **kwargs
     ):
         super().__init__(**kwargs)

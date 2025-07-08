@@ -3,8 +3,54 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from models.DeepONet.deeponet_utils import BasicBlockND4DeepONet
-#######################################################################
-#######################################################################
+from models.model_utils import cfd_PretrainedConfig
+
+
+class ResNetConfig(cfd_PretrainedConfig):
+    """
+    Args:
+        block (str): 
+            BasicBlock, Dilblock only for now
+        num_blocks (List[int]): 
+            Number of blocks in each stage
+        latent_channels (int): 
+            Number of channels in the latent space
+        activation_fn : str
+            Activation function, by default "gelu"
+        coord_features : bool, optional
+            Use coordinate grid as additional feature map, by default True
+        norm (bool): 
+            Whether to use normalization
+        n_groups : int
+            Number of groups for GroupNorm, by default 1 (equivalent with LayerNorm)
+    """
+
+    model_type = "ResNet"
+    
+    def __init__(
+        self,
+        num_blocks: list = [1, 1, 1, 1],
+        block: str = "BasicBlock",
+        latent_channels: int = 64,
+        norm: bool = True,
+        n_groups: int = 1,
+        activation_fn_name : str = "gelu",
+        padding: int = 1,
+        stride: int = 1,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.num_blocks = num_blocks
+        self.block = block
+        self.latent_channels = latent_channels
+        self.norm = norm
+        self.n_groups = n_groups
+        self.activation_fn_name = activation_fn_name
+        self.padding = padding
+        self.stride = stride
+        
+
+
 class BasicBlockND(nn.Module):
     """including two 3x3 convolutions layers with BatchNorm and activation for 1,2,3D input.
 

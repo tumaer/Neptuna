@@ -31,9 +31,8 @@ def fetch_model(model_config: Dict,
         
     elif model_name == "resnet":
         from models.ResNet.resnet import ResNet
-        config = PretrainedConfig()
-        model = ResNet(
-                    config=config,
+        from models.ResNet.resnet_utils import ResNetConfig
+        config = ResNetConfig(
                     in_channels=len(data_config['filter_in_channels']),
                     out_channels=len(data_config['filter_out_channels']), 
                     sequence_info=data_config["sequence_info"],
@@ -45,7 +44,8 @@ def fetch_model(model_config: Dict,
                     n_groups=model_config['n_groups'],
                     activation_fn_name=model_config['activation_fn_name'],
                     coord_features=True
-                    )
+        )
+        model = ResNet(config=config)
     
     elif model_name == "dilresnet":
         from models.ResNet.resnet import ResNet
