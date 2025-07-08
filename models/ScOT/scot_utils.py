@@ -36,11 +36,7 @@ class ScOTConfig(cfd_PretrainedConfig):
 
     def __init__(
         self,
-        resolution_x=224,
-        resolution_y=224,
         patch_size=4,
-        in_channels=3,
-        out_channels=1,
         embed_dim=96,
         depths=[2, 2, 6, 2],
         num_heads=[3, 6, 12, 24],
@@ -57,19 +53,13 @@ class ScOTConfig(cfd_PretrainedConfig):
         layer_norm_eps=1e-5,
         residual_model="convnext",  # "convnext" or "resnet"
         use_conditioning=False,
-        input_steps=4,
-        output_steps=3,
         output_hidden_states=False,
         output_attentions=False,
-        coord_features=True,
         **kwargs,
     ):
         super().__init__(**kwargs)
 
-        self.resolution_x = resolution_x
-        self.resolution_y = resolution_y
         self.patch_size = patch_size
-        self.in_channels = in_channels
         self.embed_dim = embed_dim
         self.depths = depths
         self.num_layers = len(depths)
@@ -90,13 +80,9 @@ class ScOTConfig(cfd_PretrainedConfig):
         # this indicates the channel dimension after the last stage of the model
         self.hidden_size = int(embed_dim * 2 ** (len(depths) - 1)) # actually not used but recomputed as num_features
         self.pretrained_window_sizes = (0, 0, 0, 0)
-        self.out_channels = out_channels
         self.residual_model = residual_model
-        self.input_steps = input_steps
-        self.output_steps = output_steps
         self.output_hidden_states = output_hidden_states
         self.output_attentions = output_attentions
-        self.coord_features = coord_features
 
 
 class LayerNorm(nn.LayerNorm):
@@ -226,17 +212,17 @@ class ScOTPatchEmbeddings(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        resolution_x, resolution_y, patch_size = config.resolution_x, config.resolution_y, config.patch_size # 128, 4
+        resolution, patch_size = config.grid_resolution, config.patch_size # 128, 4
         in_channels, hidden_size = config.in_channels, config.embed_dim # 4, 48
-        self.input_steps = config.input_steps
-        resolution = (resolution_x, resolution_y)
         self.coord_features = config.coord_features
+        self.config = config
         
         patch_size = ( # (4, 4)
             patch_size
             if isinstance(patch_size, collections.abc.Iterable)
             else (patch_size, patch_size)
         )
+        print("!!!", resolution)
         num_patches = (resolution[1] // patch_size[1]) * (
             resolution[0] // patch_size[0]
         )# 1024 = (128 / 4) * (128 / 4)
@@ -250,7 +236,7 @@ class ScOTPatchEmbeddings(nn.Module):
         ) # (32, 32) = 128 / 4
 
         self.projection = nn.Conv2d( 
-            in_channels * self.input_steps + (2 if self.coord_features else 0), hidden_size, kernel_size=patch_size, stride=patch_size
+            in_channels * config.sequence_info[0] + (2 if self.coord_features else 0), hidden_size, kernel_size=patch_size, stride=patch_size
         )
 
     def maybe_pad(self, input_data, height, width):
@@ -266,7 +252,7 @@ class ScOTPatchEmbeddings(nn.Module):
         self, input_data: Optional[torch.FloatTensor]
     ) -> Tuple[torch.Tensor, Tuple[int]]:
         _, in_channels, height, width = input_data.shape # 4, 128, 128
-        if in_channels != (self.in_channels * self.input_steps) + (2 if self.coord_features else 0):
+        if in_channels != (self.in_channels * self.config.sequence_info[0]) + (2 if self.coord_features else 0):
             raise ValueError(
                 "Make sure that the channel dimension of the pixel values match with the one set in the configuration."
             )
@@ -564,12 +550,11 @@ class ScOTPatchRecovery(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        resolution_x, resolution_y, patch_size = config.resolution_x, config.resolution_y, config.patch_size # 128, 4
+        resolution, patch_size = config.grid_resolution, config.patch_size # 128, 4
         out_channels, hidden_size = ( # 4, 48
             config.out_channels,
             config.embed_dim,
         )
-        resolution = (resolution_x, resolution_y)
         patch_size = ( # 4, 4
             patch_size
             if isinstance(patch_size, collections.abc.Iterable)
@@ -582,7 +567,6 @@ class ScOTPatchRecovery(nn.Module):
         self.patch_size = patch_size
         self.resolution = resolution
         self.out_channels = out_channels
-        self.output_steps = config.output_steps
         self.grid_size = ( # 32, 32
             resolution[0] // patch_size[0],
             resolution[1] // patch_size[1],
@@ -590,14 +574,14 @@ class ScOTPatchRecovery(nn.Module):
 
         self.projection = nn.ConvTranspose2d(
             in_channels=hidden_size, # 48
-            out_channels=out_channels * self.output_steps, # 4
+            out_channels=out_channels * config.sequence_info[1], # 4
             kernel_size=patch_size, # (4, 4)
             stride=patch_size, # (4, 4)
         )
         # the following is not done in Pangu
         self.mixup = nn.Conv2d(
-            out_channels * self.output_steps, # 48
-            out_channels * self.output_steps, # 48
+            out_channels * config.sequence_info[1], # 48
+            out_channels * config.sequence_info[1], # 48
             kernel_size=5,
             stride=1,
             padding=2,

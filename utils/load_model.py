@@ -176,11 +176,12 @@ def fetch_model(model_config: Dict,
             raise ValueError("Model is not yet implemented for other dimension than 2")
         
         config = ScOTConfig(
-                    resolution_x=data_config['grid_resolution'][0],
-                    resolution_y=data_config['grid_resolution'][1],
                     patch_size=model_config['patch_size'],
                     in_channels=len(data_config['filter_in_channels']),
                     out_channels=len(data_config['filter_out_channels']),
+                    grid_resolution=data_config['grid_resolution'],
+                    dimension=data_config['dimension'],
+                    sequence_info=data_config['sequence_info'],
                     embed_dim=model_config['embed_dim'], # base dimensionality of patch embeddings (size of feature vector used to represent each patch)
                     depths=model_config['depths'], #number of transformer blocks in encoder / decoder stages e.g. 4 stages each with 4 transformer blocks
                     num_heads=model_config['num_heads'], # used in Swinv2SelfAttention (HF) (see ScOTEncoder: each stage has own num_heads
@@ -198,8 +199,6 @@ def fetch_model(model_config: Dict,
                     layer_norm_eps=model_config['layer_norm_eps'], # used in layer_norm both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
                     residual_model=model_config['residual_model'], # either convnext or resnet
                     use_conditioning=model_config['use_conditioning'], # if True ConditionalLayerNorm is used otherwise LayerNorm
-                    input_steps=data_config['sequence_info'][0],
-                    output_steps=data_config['sequence_info'][1],
                     output_hidden_states=model_config['output_hidden_states'],
                     output_attentions=model_config['output_attentions'],
                     coord_features=True

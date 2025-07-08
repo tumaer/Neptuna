@@ -524,7 +524,7 @@ class ScOT2D(cfd_PreTrainedModel):
         self.config = config
         self.num_layers_encoder = len(config.depths)
         self.num_layers_decoder = len(config.depths)
-        self.num_features = int(config.embed_dim * 2 ** (self.num_layers_encoder - 1) * config.output_steps) # the channel size at the final stage of the encoder
+        self.num_features = int(config.embed_dim * 2 ** (self.num_layers_encoder - 1) * config.sequence_info[1]) # the channel size at the final stage of the encoder
 
 
         self.embeddings = ScOTEmbeddings(config, use_mask_token=use_mask_token) # creates patch embeddings from input
