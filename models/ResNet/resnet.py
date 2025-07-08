@@ -19,13 +19,13 @@ class ResNet(cfd_PreTrainedModel):
         super().__init__(config)
         self.config = config
                
-        self.activation: nn.Module = activation_func.get_activation(config.activation_fn_name)
-        if self.activation is None:
+        activation: nn.Module = activation_func.get_activation(config.activation_fn_name)
+        if activation is None:
             raise NotImplementedError(f"Activation {config.activation_fn_name} not implemented")
         
         self.resnet = self.build_resnet()(
             config=config,
-            activation_fn=self.activation
+            activation_fn=activation
         )
            
     def build_resnet(self):

@@ -1,8 +1,8 @@
 model_name: FNO
 decoder_layers: 2
-decoder_layer_size: 128
+decoder_layer_size: 8 #128
 decoder_activation_fn_name: 'silu'
-latent_channels: 32   #number of channels in the latent space after lifting.
+latent_channels: 16 #32   #number of channels in the latent space after lifting.
 n_fno_layers: 4
 fno_modes: 16 #can also be a list of integers, e.g.[32, 64, 32] for 3D. 
 #NOTE: The last dimension of the fno_modes should not exceed the ((grid_resolution[-1]+padding)//2) +1.

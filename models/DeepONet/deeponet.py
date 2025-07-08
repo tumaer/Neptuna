@@ -23,13 +23,17 @@ class AutoDeepONet(cfd_PreTrainedModel):
         
         self.config = config
 
+        activation_fn: nn.Module = activation_func.get_activation(config.activation_fn_name)
+        if activation_fn is None:
+            raise NotImplementedError(f"Activation {config.activation_fn_name} not implemented")
+
         if isinstance(config.branch_net_str, str):
             if config.branch_net_str == "FFN":
-                self.AutoDeepONet = self.build_AutoDeepONet()(config=config)
+                self.AutoDeepONet = self.build_AutoDeepONet()(config=config, activation_fn=activation_fn)
             elif config.branch_net_str == "CNN":
-                self.AutoDeepONet = self.build_AutoDeepONet()(config=config)
+                self.AutoDeepONet = self.build_AutoDeepONet()(config=config, activation_fn=activation_fn)
             elif config.branch_net_str == "ResNet": #TODO:add kernal_size and stride to ResNet
-                self.AutoDeepONet = self.build_AutoDeepONet()(config=config)
+                self.AutoDeepONet = self.build_AutoDeepONet()(config=config, activation_fn=activation_fn)
 
     def forward(self, 
                 input_data: Tensor,
@@ -63,12 +67,10 @@ class AutoDeepONet(cfd_PreTrainedModel):
             )
     
 class AutoDeepONet1D(cfd_PreTrainedModel):
-    def __init__(self, config):
+    def __init__(self, config, activation_fn: nn.Module):
         super().__init__(config)    
 
-        self.activation_fn: nn.Module = activation_func.get_activation(config.activation_fn_name)
-        if self.activation_fn is None:
-            raise NotImplementedError(f"Activation {config.activation_fn_name} not implemented")
+        self.activation_fn = activation_fn
         
         if isinstance(config.branch_net_str, str):
             if config.branch_net_str == "FFN":
@@ -186,12 +188,10 @@ class AutoDeepONet1D(cfd_PreTrainedModel):
         return x
 
 class AutoDeepONet2D(cfd_PreTrainedModel):
-    def __init__(self, config):
+    def __init__(self, config, activation_fn: nn.Module):
         super().__init__(config)
 
-        self.activation_fn: nn.Module = activation_func.get_activation(config.activation_fn_name)
-        if self.activation_fn is None:
-            raise NotImplementedError(f"Activation {config.activation_fn_name} not implemented")
+        self.activation_fn = activation_fn
             
         if isinstance(config.branch_net_str, str):
             if config.branch_net_str == "FFN":
@@ -313,12 +313,10 @@ class AutoDeepONet2D(cfd_PreTrainedModel):
 
 
 class AutoDeepONet3D(cfd_PreTrainedModel):
-    def __init__(self, config):
+    def __init__(self, config, activation_fn: nn.Module):
         super().__init__(config) 
 
-        self.activation_fn: nn.Module = activation_func.get_activation(config.activation_fn_name)
-        if self.activation_fn is None:
-            raise NotImplementedError(f"Activation {config.activation_fn_name} not implemented")
+        self.activation_fn = activation_fn
             
         if isinstance(config.branch_net_str, str):
             if config.branch_net_str == "FFN":

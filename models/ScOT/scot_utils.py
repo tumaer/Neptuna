@@ -11,7 +11,7 @@ from transformers.utils import ModelOutput
 from dataclasses import dataclass
 import torch
 from torch import nn
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 import math
 import collections
 
@@ -25,7 +25,29 @@ class ScOTOutput(ModelOutput):
 
 
 class ScOTConfig(cfd_PretrainedConfig):
-    """https://github.com/huggingface/transformers/blob/v4.35.2/src/transformers/models/swinv2/configuration_swinv2.py"""
+    """
+    Configuration class for the SCOT model. https://github.com/huggingface/transformers/blob/v4.35.2/src/transformers/models/swinv2/configuration_swinv2.py
+
+    Args:
+        patch_size (int): Size of the patches to be extracted. Default is 4.
+        depths (List[int]): Number of layers in each stage of the model. Default is [2, 2, 6, 2].
+        num_heads (List[int]): Number of attention heads in each stage. Default is [3, 6, 12, 24].
+        skip_connections (List[bool]): Whether to use skip connections in each stage. Default is [True, True, True].
+        window_size (int): Size of the attention window. Default is 7.
+        mlp_ratio (float): Ratio of the hidden size in the MLP block. Default is 4.0.
+        qkv_bias (bool): Whether to use bias in the query, key, and value projections. Default is True.
+        hidden_dropout_prob (float): Dropout probability for hidden layers. Default is 0.0.
+        attention_probs_dropout_prob (float): Dropout probability for attention probabilities. Default is 0.0.
+        drop_path_rate (float): Drop path rate for stochastic depth. Default is 0.1.
+        hidden_act (str): Activation function to use. Default is "gelu".
+        use_absolute_embeddings (bool): Whether to use absolute positional embeddings. Default is False.
+        initializer_range (float): Range of the initializer for weights. Default is 0.02.
+        layer_norm_eps (float): Epsilon value for layer normalization. Default is 1e-5.
+        residual_model (str): Type of residual model to use ("convnext" or "resnet"). Default is "convnext".
+        use_conditioning (bool): Whether to use conditioning in the model. Default is False.
+        output_hidden_states (bool): Whether to output hidden states. Default is False.
+        output_attentions (bool): Whether to output attention weights. Default is False.
+        **kwargs: Additional keyword arguments passed to the parent class."""
 
     model_type = "swinv2"
 
@@ -36,24 +58,24 @@ class ScOTConfig(cfd_PretrainedConfig):
 
     def __init__(
         self,
-        patch_size=4,
-        depths=[2, 2, 6, 2],
-        num_heads=[3, 6, 12, 24],
-        skip_connections=[True, True, True],
-        window_size=7,
-        mlp_ratio=4.0,
-        qkv_bias=True,
-        hidden_dropout_prob=0.0,
-        attention_probs_dropout_prob=0.0,
-        drop_path_rate=0.1,
-        hidden_act="gelu",
-        use_absolute_embeddings=False,
-        initializer_range=0.02,
-        layer_norm_eps=1e-5,
-        residual_model="convnext",  # "convnext" or "resnet"
-        use_conditioning=False,
-        output_hidden_states=False,
-        output_attentions=False,
+        patch_size: int = 4,
+        depths: List[int] = [2, 2, 6, 2],
+        num_heads: List[int] = [3, 6, 12, 24],
+        skip_connections: List[bool] = [True, True, True],
+        window_size: int = 7,
+        mlp_ratio: float = 4.0,
+        qkv_bias: bool = True,
+        hidden_dropout_prob: float = 0.0,
+        attention_probs_dropout_prob: float = 0.0,
+        drop_path_rate: float = 0.1,
+        hidden_act: str = "gelu",
+        use_absolute_embeddings: bool = False,
+        initializer_range: float = 0.02,
+        layer_norm_eps: float = 1e-5,
+        residual_model: str = "convnext",  # "convnext" or "resnet"
+        use_conditioning: bool = False,
+        output_hidden_states: bool = False,
+        output_attentions: bool = False,
         **kwargs,
     ):
         super().__init__(**kwargs)

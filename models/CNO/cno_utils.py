@@ -14,6 +14,17 @@ def _to_tuple(x):
         return (int(x),)
 
 class CNOConfig(cfd_PretrainedConfig):
+    """
+    Configuration class for the CNO model.
+
+    Args:
+        cno_depth (int): Number of (D) or (U) blocks in the network. Default is 4.
+        n_blocks (int): Number of (R) blocks per level (except the neck). Default is 4.
+        n_blocks_bottleneck (int): Number of (R) blocks in the neck. Default is 4.
+        channel_multiplier (int): Multiplier for the number of channels at each level. Default is 16.
+        norm (bool): Whether to apply normalization. Default is True.
+        **kwargs: Additional keyword arguments passed to the parent class.
+    """
 
     model_type = "CNO"
 

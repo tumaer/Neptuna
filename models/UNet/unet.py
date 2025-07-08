@@ -48,11 +48,11 @@ class UNet(cfd_PreTrainedModel):
 
         self.config = config
 
-        self.activation = activation_func.get_activation(config.activation_fn_name)
-        if self.activation is None:
+        activation = activation_func.get_activation(config.activation_fn_name)
+        if activation is None:
             raise NotImplementedError(f"Activation {config.activation_fn_name} not implemented")
         
-        self.unet = self.build_UNet()(config=config, activation=self.activation)
+        self.unet = self.build_UNet()(config=config, activation=activation)
        
     def build_UNet(self):
         """Get the appropriate upsampler based on the dimension."""

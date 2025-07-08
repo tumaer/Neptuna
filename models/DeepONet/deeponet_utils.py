@@ -28,8 +28,6 @@ class DeepONetConfig(cfd_PretrainedConfig):
             Padding for the CNN branch network, not used for FFN and ResNet
         stride : Optional[int]
             Stride for the CNN branch network, not used for FNN and ResNet
-        latent_channels : Optional[int]
-            Number of latent channels
         num_blocks (List[int]): 
             Number of blocks in each stage, only used for ResNet branch network
         ResNet_block : Optional[str]
@@ -71,6 +69,9 @@ class DeepONetConfig(cfd_PretrainedConfig):
         self.num_blocks = num_blocks
         self.ResNet_block = ResNet_block
         self.out_ffn_depth = out_ffn_depth
+
+        self.in_size = self.in_channels
+        self.out_size = self.out_channels
 
 
 

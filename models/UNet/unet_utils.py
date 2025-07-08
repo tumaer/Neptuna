@@ -8,6 +8,15 @@ from utils import activation_func
 class UNetConfig(cfd_PretrainedConfig):
     """
     Args:
+        activation_fn_name (str): Name of the activation function to use. Default is "gelu".
+        norm (bool): Whether to apply normalization. Default is False.
+        n_groups (int): Number of groups for group normalization. Default is 1.
+        channel_multiplier (Union[Tuple[int, ...], List[int]]): Multipliers for the number of channels at each stage of the UNet. Default is (1, 2, 2, 4).
+        is_attn (Union[Tuple[bool, ...], List[bool]]): Flags indicating whether attention is applied at each stage. Default is (False, False, False, False).
+        mid_attn (bool): Whether to apply attention in the middle block. Default is False.
+        n_blocks (int): Number of blocks in each stage of the UNet. Default is 2.
+        use1x1 (bool): Whether to use 1x1 convolutions. Default is False.
+        **kwargs: Additional keyword arguments passed to the parent class.
         
     """
 

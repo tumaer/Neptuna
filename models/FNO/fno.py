@@ -18,8 +18,12 @@ class FNO(cfd_PreTrainedModel):
     def __init__(self, config) -> None:
         super().__init__(config)
 
+        activation_fn = activation_func.get_activation(config.activation_fn_name)
+        if activation_fn is None:
+            raise NotImplementedError(f"Activation {config.activation_fn_name} not implemented")
+
         self.config = config
-        self.fno = self.build_FNO()(config=config)
+        self.fno = self.build_FNO()(config=config, activation_fn=activation_fn)
 
     def build_FNO(self):
         """Get the FNO encoder based on the model dimensionality"""
@@ -67,12 +71,10 @@ class FNO(cfd_PreTrainedModel):
 class FNO1D(cfd_PreTrainedModel):
     """1D FNO"""
 
-    def __init__(self, config) -> None:
+    def __init__(self, config, activation_fn: nn.Module) -> None:
         super().__init__(config)
 
-        self.activation_fn = activation_func.get_activation(config.activation_fn_name)
-        if self.activation_fn is None:
-            raise NotImplementedError(f"Activation {config.activation_fn_name} not implemented")
+        self.activation_fn = activation_fn
 
         # Padding values for spectral conv
         if isinstance(config.padding, int):
@@ -165,12 +167,10 @@ class FNO1D(cfd_PreTrainedModel):
 class FNO2D(cfd_PreTrainedModel):
     """2D Spectral encoder for FNO"""
 
-    def __init__(self, config) -> None:
+    def __init__(self, config, activation_fn: nn.Module) -> None:
         super().__init__(config)
 
-        self.activation_fn = activation_func.get_activation(config.activation_fn_name)
-        if self.activation_fn is None:
-            raise NotImplementedError(f"Activation {config.activation_fn_name} not implemented")
+        self.activation_fn = activation_fn
 
         # Padding values for spectral conv
         if isinstance(config.padding, int):
@@ -271,12 +271,10 @@ class FNO2D(cfd_PreTrainedModel):
 class FNO3D(cfd_PreTrainedModel):
     """3D Spectral encoder for FNO"""
 
-    def __init__(self, config) -> None:
+    def __init__(self, config, activation_fn: nn.Module) -> None:
         super().__init__(config)
 
-        self.activation_fn = activation_func.get_activation(config.activation_fn_name)
-        if self.activation_fn is None:
-            raise NotImplementedError(f"Activation {config.activation_fn_name} not implemented")
+        self.activation_fn = activation_fn
 
         # Padding values for spectral conv
         if isinstance(config.padding, int):

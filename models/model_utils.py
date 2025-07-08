@@ -511,6 +511,15 @@ class cfd_PretrainedConfig(PretrainedConfig):
     """
     Base class for all configuration classes. Handles a few parameters common to all models' configurations as well as
     methods for loading/downloading/saving configurations.
+     Args:
+        in_channels (int): Number of input channels for the model.
+        out_channels (int): Number of output channels for the model.
+        dimension (int): Dimensionality of the input data (e.g., 1D, 2D, or 3D).
+        grid_resolution (Union[int, List[int], Tuple[int]]): Input and output spatial size.
+        sequence_info (Optional[List[int]]): Sequence information for the model. Elements of List are: input sequence length, output sequence length, stride
+        coord_features (bool): Whether to include coordinate features in the model. Default is True.
+        latent_channels (int): Number of latent channels in the model.
+        **kwargs: Additional keyword arguments passed to the parent class.
     """
 
     def __init__(

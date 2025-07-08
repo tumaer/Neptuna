@@ -11,24 +11,12 @@ class FNOConfig(cfd_PretrainedConfig):
 
     Parameters
     ----------
-    in_channels : int
-        Number of input channels
-    out_channels : int
-        Number of output channels
-    sequence_info : List[int], optional
-        Configuration for input/output sequences [input_seq_len, output_seq_len, stride], by default [1,1,1]
     decoder_layers : int, optional
         Number of decoder layers, by default 1
     decoder_layer_size : int, optional
         Number of neurons in decoder layers, by default 32
     decoder_activation_fn : str, optional
         Activation function for decoder, by default "silu"
-    dimension : int
-        Model dimensionality (supports 1, 2, 3).
-    num_fno_layers : int, optional
-        Number of spectral convolutional layers, by default 4
-    fno_layer_size : int, optional
-        Latent features size in spectral convolutions, by default 32
     num_fno_layers : int, optional
         Number of spectral convolutional layers, by default 4
     num_fno_modes : Union[int, List[int]], optional
@@ -38,10 +26,8 @@ class FNOConfig(cfd_PretrainedConfig):
     padding_type : str, optional
         Type of padding for spectral convolutions, by default "constant"
         padding_type options: 'constant', 'reflect', 'replicate' or 'circular'
-    activation_fn : str, optional
-        Activation function, by default "gelu"
-    coord_features : bool, optional
-        Use coordinate grid as additional feature map, by default True
+    activation_fn_name : str, optional
+        Activation function, by default "gelu"´
     """
 
     model_type = "FNO"
