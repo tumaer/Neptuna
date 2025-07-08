@@ -2,8 +2,75 @@ from typing import Callable,List, Optional, Union, Tuple
 import torch
 import torch.nn as nn
 from torch import Tensor
+from models.model_utils import cfd_PretrainedConfig
 from utils.activation_func import get_activation
 #from modulus>models>layers>fully_connected_layers.py
+
+class FNOConfig(cfd_PretrainedConfig):
+    """Fourier neural operator (FNO) model.
+
+    Parameters
+    ----------
+    in_channels : int
+        Number of input channels
+    out_channels : int
+        Number of output channels
+    sequence_info : List[int], optional
+        Configuration for input/output sequences [input_seq_len, output_seq_len, stride], by default [1,1,1]
+    decoder_layers : int, optional
+        Number of decoder layers, by default 1
+    decoder_layer_size : int, optional
+        Number of neurons in decoder layers, by default 32
+    decoder_activation_fn : str, optional
+        Activation function for decoder, by default "silu"
+    dimension : int
+        Model dimensionality (supports 1, 2, 3).
+    num_fno_layers : int, optional
+        Number of spectral convolutional layers, by default 4
+    fno_layer_size : int, optional
+        Latent features size in spectral convolutions, by default 32
+    num_fno_layers : int, optional
+        Number of spectral convolutional layers, by default 4
+    num_fno_modes : Union[int, List[int]], optional
+        Number of Fourier modes kept in spectral convolutions, by default 16
+    padding : int, optional
+        Domain padding for spectral convolutions, by default 8
+    padding_type : str, optional
+        Type of padding for spectral convolutions, by default "constant"
+        padding_type options: 'constant', 'reflect', 'replicate' or 'circular'
+    activation_fn : str, optional
+        Activation function, by default "gelu"
+    coord_features : bool, optional
+        Use coordinate grid as additional feature map, by default True
+    """
+
+    model_type = "FNO"
+    
+    def __init__(
+        self,
+        decoder_layers: int = 1,
+        decoder_layer_size: int = 32,
+        decoder_activation_fn_name: str = "silu",
+        latent_channels: int = 32,
+        num_fno_layers: int = 4,
+        num_fno_modes: Union[int, List[int]] = 16,
+        padding: Union[int, List[int]] = 8,
+        padding_type: str = "constant",
+        activation_fn_name: str = "gelu",
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.decoder_layers = decoder_layers
+        self.decoder_layer_size = decoder_layer_size
+        self.decoder_activation_fn_name = decoder_activation_fn_name
+        self.latent_channels = latent_channels
+        self.num_fno_layers = num_fno_layers
+        self.num_fno_modes = num_fno_modes
+        self.padding = padding
+        self.padding_type = padding_type
+        self.activation_fn_name = activation_fn_name
+        
+
 class ConvNdFCLayer(nn.Module):
     """Channel-wise FC like layer with 1,2,3D convolutions
 

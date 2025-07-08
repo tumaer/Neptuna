@@ -162,10 +162,6 @@ class ResNet1D(cfd_PreTrainedModel):
         self.padding = padding   
         self.num_blocks = num_blocks
         self.normalization = norm
-        
-        # Add relative coordinate feature
-        if self.coord_features:
-            self.in_size = self.in_size + 1
             
         self.conv_in1 = nn.Conv1d(
             self.in_size,
@@ -289,10 +285,6 @@ class ResNet2D(cfd_PreTrainedModel):
         self.padding = padding   
         self.num_blocks = num_blocks
         self.normalization = norm
-        
-        # Add relative coordinate feature
-        if self.coord_features:
-            self.in_size = self.in_size + 2
             
         self.conv_in1 = nn.Conv2d(
             self.in_size,
@@ -417,10 +409,6 @@ class ResNet3D(cfd_PreTrainedModel):
         self.padding = padding   
         self.num_blocks = num_blocks
         self.normalization = norm
-        
-        # Add relative coordinate feature
-        if self.coord_features:
-            self.in_size = self.in_size + 3
             
         self.conv_in1 = nn.Conv3d(
             self.in_size,

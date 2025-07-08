@@ -4,6 +4,7 @@ from torch import Tensor
 from models.CNO.cno_utils import CNOBlock, LiftProjectBlock, ResNet
 from typing import List, Optional, Union, Callable, Tuple
 from models.model_utils import cfd_PreTrainedModel
+from utils.feature_utils import twod_meshgrid
 
 def _div_size(size, factor):
     if isinstance(size, int):
@@ -158,7 +159,11 @@ class CNO(cfd_PreTrainedModel):
         
         batch, input_seq, input_channels, *spatial = input_data.shape
         x = input_data.reshape(batch, input_seq * input_channels, *spatial)
-                        
+        
+        if self.config.coord_features:
+            coord_feat = twod_meshgrid(list(input_data.shape), input_data.device)
+            input_data = torch.cat((input_data, coord_feat), dim=1)
+            
         x = self.lift(x) #Execute Lift
         skip = []
        

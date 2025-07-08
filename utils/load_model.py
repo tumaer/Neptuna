@@ -1,5 +1,4 @@
 from typing import Dict
-from models.DeepONet.deeponet_utils import DeepONetConfig
 from models.model_utils import PretrainedConfig
 
 def fetch_model(model_config: Dict,
@@ -11,9 +10,8 @@ def fetch_model(model_config: Dict,
 
     if model_name == "fno":
         from models.FNO.fno import FNO
-        config = PretrainedConfig()
-        model = FNO(
-                    config=config,
+        from models.FNO.fno_utils import FNOConfig
+        config = FNOConfig(
                     dimension=data_config['dimension'],
                     in_channels=len(data_config['filter_in_channels']),
                     out_channels=len(data_config['filter_out_channels']), 
@@ -27,7 +25,9 @@ def fetch_model(model_config: Dict,
                     decoder_layer_size=model_config['decoder_layer_size'],
                     decoder_activation_fn_name=model_config['decoder_activation_fn_name'],
                     activation_fn_name=model_config['activation_fn_name'],
-                    )         
+                    coord_features=True
+                    )
+        model = FNO(config=config)         
         
     elif model_name == "resnet":
         from models.ResNet.resnet import ResNet
@@ -44,6 +44,7 @@ def fetch_model(model_config: Dict,
                     norm=model_config['norm'],
                     n_groups=model_config['n_groups'],
                     activation_fn_name=model_config['activation_fn_name'],
+                    coord_features=True
                     )
     
     elif model_name == "dilresnet":
@@ -61,6 +62,7 @@ def fetch_model(model_config: Dict,
                     norm=model_config['norm'],
                     n_groups=model_config['n_groups'],
                     activation_fn_name=model_config['activation_fn_name'],
+                    coord_features=True
                     )
     
     elif model_name == "unet":
@@ -81,6 +83,7 @@ def fetch_model(model_config: Dict,
                     n_blocks=model_config['n_blocks'],
                     use1x1=model_config['use1x1'],
                     activation_fn_name=model_config['activation_fn_name'],
+                    coord_features=True
                     )
     
     elif model_name == "deeponet_ffn":
@@ -97,7 +100,8 @@ def fetch_model(model_config: Dict,
                     width=model_config['width'],
                     branch_net = "FFN",
                     act_on_output=model_config['act_on_output'], #only for FFN
-                    activation_fn_name=model_config['activation_fn_name']
+                    activation_fn_name=model_config['activation_fn_name'],
+                    coord_features=True
         )
         model = AutoDeepONet(config=config)
     
@@ -117,7 +121,9 @@ def fetch_model(model_config: Dict,
                     latent_channels=model_config['latent_channels'],
                     branch_net = "CNN",
                     width=model_config['width'],
-                    activation_fn_name=model_config['activation_fn_name'])
+                    activation_fn_name=model_config['activation_fn_name'],
+                    coord_features=True
+                    )
         model = AutoDeepONet(config=config)
     
     elif model_name == "deeponet_resnet":
@@ -138,6 +144,7 @@ def fetch_model(model_config: Dict,
                     activation_fn_name=model_config['activation_fn_name'],
                     ResNet_block= model_config['ResNet_block'],
                     num_blocks= model_config['num_blocks'],
+                    coord_features=True
         )
         model = AutoDeepONet(config=config)
     
@@ -155,7 +162,8 @@ def fetch_model(model_config: Dict,
                     n_blocks_bottleneck=model_config['n_blocks_bottleneck'],
                     channel_multiplier=model_config['channel_multiplier'],
                     norm=model_config['norm'],
-                    latent_channels=model_config['latent_channels']
+                    latent_channels=model_config['latent_channels'],
+                    coord_features=True
                     # Special activation function for CNO (defined in cno_utils.py))
                     )
         model = CNO(config=config)

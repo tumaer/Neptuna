@@ -135,8 +135,6 @@ class UNet1D(cfd_PreTrainedModel):
 
         self.activation = activation_func.get_activation(activation_fn_name)
         self.coord_features = coord_features
-        if self.coord_features:
-            in_size = in_size + 1
         
         # Project image into feature map
         if use1x1: #false by default
@@ -297,9 +295,6 @@ class UNet2D(cfd_PreTrainedModel):
 
         self.activation = activation_func.get_activation(activation_fn_name)
         
-        self.coord_features = coord_features
-        if self.coord_features:
-            in_size = in_size + 2
         
         # Project image into feature map
         if use1x1: #false by default
@@ -463,9 +458,6 @@ class UNet3D(cfd_PreTrainedModel):
 
         self.activation = activation_func.get_activation(activation_fn_name)
         self.coord_features = coord_features
-        # Add relative coordinate feature
-        if self.coord_features:
-            in_size = in_size + 3
         
         # Project image into feature map
         if use1x1: #false by default

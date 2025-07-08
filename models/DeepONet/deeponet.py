@@ -120,7 +120,7 @@ class AutoDeepONet1D(cfd_PreTrainedModel):
                     block = config.ResNet_block,
                     num_blocks = config.num_blocks,
                     latent_channels= config.latent_channels,
-                    coord_features= False,
+                    coord_features= config.coord_features,
                     padding= 0,
                 )
                 length_new = config.latent_channels * calc_resnet_out_shape(
@@ -243,7 +243,7 @@ class AutoDeepONet2D(cfd_PreTrainedModel):
                     block = config.ResNet_block,
                     num_blocks = config.num_blocks,
                     latent_channels= config.latent_channels,
-                    coord_features= False,
+                    coord_features= config.coord_features,
                     padding= 0,
                 )
                 length_new = config.latent_channels * calc_resnet_out_shape(
@@ -370,7 +370,7 @@ class AutoDeepONet3D(cfd_PreTrainedModel):
                     block = config.ResNet_block,
                     num_blocks = config.num_blocks,
                     latent_channels= config.latent_channels,#TODO:change this!!!!!
-                    coord_features= False,
+                    coord_features= config.coord_features,
                     padding= 0,
                 )
                 length_new = config.latent_channels * calc_resnet_out_shape(
