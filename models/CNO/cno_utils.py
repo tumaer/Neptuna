@@ -29,8 +29,6 @@ class CNOConfig(cfd_PretrainedConfig):
     ):
         super().__init__(**kwargs)
 
-        self.in_size = self.in_channels * self.sequence_info[0] 
-        self.out_size = self.out_channels * self.sequence_info[1]
         self.cno_depth = int(cno_depth)         # Number of (D) & (U) Blocks
         self.n_blocks = n_blocks
         self.n_blocks_bottleneck = n_blocks_bottleneck

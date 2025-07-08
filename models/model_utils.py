@@ -528,6 +528,10 @@ class cfd_PretrainedConfig(PretrainedConfig):
         self.out_channels = out_channels
         self.dimension = dimension
         self.sequence_info = sequence_info
+
+        self.in_size = self.in_channels * self.sequence_info[0] 
+        self.out_size = self.out_channels * self.sequence_info[1]
+
         self.grid_resolution = grid_resolution
 
     def save_pretrained(self, save_directory: Union[str, os.PathLike], push_to_hub: bool = False, **kwargs):

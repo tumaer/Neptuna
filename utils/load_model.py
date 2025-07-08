@@ -1,4 +1,5 @@
 from typing import Dict
+from models.DeepONet.deeponet_utils import DeepONetConfig
 from models.model_utils import PretrainedConfig
 
 def fetch_model(model_config: Dict,
@@ -84,9 +85,8 @@ def fetch_model(model_config: Dict,
     
     elif model_name == "deeponet_ffn":
         from models.DeepONet.deeponet import AutoDeepONet
-        config = PretrainedConfig()
-        model = AutoDeepONet(
-                    config=config,
+        from models.DeepONet.deeponet_utils import DeepONetConfig
+        config = DeepONetConfig(
                     in_channels=len(data_config['filter_in_channels']),
                     out_channels=len(data_config['filter_out_channels']), 
                     grid_resolution=data_config['grid_resolution'],
@@ -97,14 +97,14 @@ def fetch_model(model_config: Dict,
                     width=model_config['width'],
                     branch_net = "FFN",
                     act_on_output=model_config['act_on_output'], #only for FFN
-                    activation_fn_name=model_config['activation_fn_name'],
-                    )
+                    activation_fn_name=model_config['activation_fn_name']
+        )
+        model = AutoDeepONet(config=config)
     
     elif model_name == "deeponet_cnn":
         from models.DeepONet.deeponet import AutoDeepONet
-        config = PretrainedConfig()
-        model = AutoDeepONet(
-                    config=config,
+        from models.DeepONet.deeponet_utils import DeepONetConfig
+        config = DeepONetConfig(                    
                     in_channels=len(data_config['filter_in_channels']),
                     out_channels=len(data_config['filter_out_channels']), 
                     grid_resolution=data_config['grid_resolution'],
@@ -117,14 +117,13 @@ def fetch_model(model_config: Dict,
                     latent_channels=model_config['latent_channels'],
                     branch_net = "CNN",
                     width=model_config['width'],
-                    activation_fn_name=model_config['activation_fn_name'],
-                    )
+                    activation_fn_name=model_config['activation_fn_name'])
+        model = AutoDeepONet(config=config)
     
     elif model_name == "deeponet_resnet":
         from models.DeepONet.deeponet import AutoDeepONet
-        config= PretrainedConfig()
-        model = AutoDeepONet(
-                    config=config,
+        from models.DeepONet.deeponet_utils import DeepONetConfig
+        config= DeepONetConfig(
                     in_channels=len(data_config['filter_in_channels']),
                     out_channels=len(data_config['filter_out_channels']), 
                     grid_resolution=data_config['grid_resolution'],
@@ -139,7 +138,8 @@ def fetch_model(model_config: Dict,
                     activation_fn_name=model_config['activation_fn_name'],
                     ResNet_block= model_config['ResNet_block'],
                     num_blocks= model_config['num_blocks'],
-                    )
+        )
+        model = AutoDeepONet(config=config)
     
     elif model_name == "cno":
         from models.CNO.cno_utils import CNOConfig

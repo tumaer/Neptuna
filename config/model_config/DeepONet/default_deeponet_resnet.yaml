@@ -3,7 +3,7 @@ branch_depth: 4
 trunk_depth: 4
 padding: 1
 latent_channels: 32
-width: 128
+width: 32 #128
 ResNet_block: "BasicBlockND4DeepONet"
 activation_fn_name: "ReLU"
 num_blocks: [1,1,1,1] #blocks are as a list as different resnet blocks can be potentially combined.
