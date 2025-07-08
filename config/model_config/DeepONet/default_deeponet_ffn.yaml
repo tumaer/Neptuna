@@ -1,5 +1,5 @@
 model_name: DeepONet_FFN
-width: 32 #128
+width: 128
 branch_depth: 4
 trunk_depth: 4
 activation_fn_name: "ReLU"
