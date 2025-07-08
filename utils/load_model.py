@@ -44,14 +44,13 @@ def fetch_model(model_config: Dict,
                     n_groups=model_config['n_groups'],
                     activation_fn_name=model_config['activation_fn_name'],
                     coord_features=True
-        )
+                    )
         model = ResNet(config=config)
     
     elif model_name == "dilresnet":
         from models.ResNet.resnet import ResNet
-        config = PretrainedConfig()
-        model = ResNet(
-                    config=config,
+        from models.ResNet.resnet_utils import ResNetConfig
+        config = ResNetConfig(
                     in_channels=len(data_config['filter_in_channels']),
                     out_channels=len(data_config['filter_out_channels']), 
                     sequence_info=data_config["sequence_info"],
@@ -64,12 +63,12 @@ def fetch_model(model_config: Dict,
                     activation_fn_name=model_config['activation_fn_name'],
                     coord_features=True
                     )
+        model = ResNet(config=config)
     
     elif model_name == "unet":
         from models.UNet.unet import UNet
-        config = PretrainedConfig()
-        model= UNet(
-                    config=config,
+        from models.UNet.unet_utils import UNetConfig
+        config = UNetConfig(
                     dimension=data_config['dimension'],
                     in_channels=len(data_config['filter_in_channels']),
                     out_channels=len(data_config['filter_out_channels']), 
@@ -85,6 +84,7 @@ def fetch_model(model_config: Dict,
                     activation_fn_name=model_config['activation_fn_name'],
                     coord_features=True
                     )
+        model= UNet(config=config)
     
     elif model_name == "deeponet_ffn":
         from models.DeepONet.deeponet import AutoDeepONet
