@@ -23,8 +23,7 @@ class CNOConfig(cfd_PretrainedConfig):
         n_blocks: int = 4,                                  # Number of (R) blocks per level (except the neck)
         n_blocks_bottleneck: int = 4,                       # Number of (R) blocks in the neck
         channel_multiplier: int = 16, 
-        norm: bool = True,             
-        latent_channels: int = 64,
+        norm: bool = True,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -33,7 +32,6 @@ class CNOConfig(cfd_PretrainedConfig):
         self.n_blocks = n_blocks
         self.n_blocks_bottleneck = n_blocks_bottleneck
         self.norm = norm
-        self.latent_channels = latent_channels
         self.lift_dim = channel_multiplier//2 # Input is lifted to the half of channel_multiplier dimension
         self.channel_multiplier = channel_multiplier  # The growth of the channels
 

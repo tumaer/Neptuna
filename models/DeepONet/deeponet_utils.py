@@ -52,7 +52,6 @@ class DeepONetConfig(cfd_PretrainedConfig):
         kernel_size: Optional[int] = 3, 
         padding: Optional[int] = 1, 
         stride: Optional[int] = 2,
-        latent_channels: Optional[int] = 32,
         num_blocks: Optional[List[int]] = [1],
         ResNet_block: Optional[str] = "BasicBlock",
         out_ffn_depth: Optional[int] = 3,
@@ -69,7 +68,6 @@ class DeepONetConfig(cfd_PretrainedConfig):
         self.kernel_size = kernel_size
         self.padding = padding
         self.stride = stride
-        self.latent_channels = latent_channels
         self.num_blocks = num_blocks
         self.ResNet_block = ResNet_block
         self.out_ffn_depth = out_ffn_depth

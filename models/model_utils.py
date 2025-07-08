@@ -521,6 +521,7 @@ class cfd_PretrainedConfig(PretrainedConfig):
         grid_resolution: Union[int, List[int], Tuple[int]] = [160], # Input and Output spatial size (required )
         sequence_info: Optional[List[int]] = [1,1,1],
         coord_features: bool = True,
+        latent_channels: int = 32,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -534,6 +535,7 @@ class cfd_PretrainedConfig(PretrainedConfig):
         self.out_size = self.out_channels * self.sequence_info[1]
 
         self.grid_resolution = grid_resolution
+        self.latent_channels = latent_channels
 
         self.coord_features = coord_features
         # Add relative coordinate feature

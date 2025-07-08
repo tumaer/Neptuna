@@ -51,7 +51,6 @@ class FNOConfig(cfd_PretrainedConfig):
         decoder_layers: int = 1,
         decoder_layer_size: int = 32,
         decoder_activation_fn_name: str = "silu",
-        latent_channels: int = 32,
         num_fno_layers: int = 4,
         num_fno_modes: Union[int, List[int]] = 16,
         padding: Union[int, List[int]] = 8,
@@ -63,7 +62,6 @@ class FNOConfig(cfd_PretrainedConfig):
         self.decoder_layers = decoder_layers
         self.decoder_layer_size = decoder_layer_size
         self.decoder_activation_fn_name = decoder_activation_fn_name
-        self.latent_channels = latent_channels
         self.num_fno_layers = num_fno_layers
         self.num_fno_modes = num_fno_modes
         self.padding = padding

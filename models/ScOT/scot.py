@@ -240,7 +240,7 @@ class ScOTEncoder(nn.Module):
             [
                 ScOTEncodeStage(
                     config=config,
-                    dim=int(config.embed_dim * 2**i_layer), # 48, 96, 192, 384 doubles at each layer
+                    dim=int(config.latent_channels * 2**i_layer), # 48, 96, 192, 384 doubles at each layer
                     input_resolution=(
                         grid_size[0] // (2**i_layer), # 32, 16, 8, 4 half at each layer
                         grid_size[1] // (2**i_layer),
@@ -367,7 +367,7 @@ class ScOTDecoder(nn.Module):
             [
                 ScOTDecodeStage(
                     config=config,
-                    dim=int(config.embed_dim * 2**i_layer), # 384, 192, 96, 48 halves at each decode stage
+                    dim=int(config.latent_channels * 2**i_layer), # 384, 192, 96, 48 halves at each decode stage
                     input_resolution=(
                         grid_size[0] // (2**i_layer), # 4, 8, 16, 32 doubles at each decode stage
                         grid_size[1] // (2**i_layer),
@@ -524,7 +524,7 @@ class ScOT2D(cfd_PreTrainedModel):
         self.config = config
         self.num_layers_encoder = len(config.depths)
         self.num_layers_decoder = len(config.depths)
-        self.num_features = int(config.embed_dim * 2 ** (self.num_layers_encoder - 1) * config.sequence_info[1]) # the channel size at the final stage of the encoder
+        self.num_features = int(config.latent_channels * 2 ** (self.num_layers_encoder - 1) * config.sequence_info[1]) # the channel size at the final stage of the encoder
 
 
         self.embeddings = ScOTEmbeddings(config, use_mask_token=use_mask_token) # creates patch embeddings from input
@@ -544,7 +544,7 @@ class ScOT2D(cfd_PreTrainedModel):
                 (
                     nn.ModuleList(
                         [
-                            res_model(config, config.embed_dim * 2**i)
+                            res_model(config, config.latent_channels * 2**i)
                             for _ in range(depth)
                         ]
                     )

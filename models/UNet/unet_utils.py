@@ -15,7 +15,6 @@ class UNetConfig(cfd_PretrainedConfig):
     
     def __init__(
         self,
-        latent_channels: int = 32,
         activation_fn_name: str = "gelu",
         norm: bool = False,
         n_groups: int = 1,
@@ -27,7 +26,6 @@ class UNetConfig(cfd_PretrainedConfig):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self.latent_channels = latent_channels
         self.activation_fn_name = activation_fn_name
         self.norm = norm
         self.n_groups = n_groups

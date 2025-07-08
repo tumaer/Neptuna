@@ -37,7 +37,6 @@ class ScOTConfig(cfd_PretrainedConfig):
     def __init__(
         self,
         patch_size=4,
-        embed_dim=96,
         depths=[2, 2, 6, 2],
         num_heads=[3, 6, 12, 24],
         skip_connections=[True, True, True],
@@ -60,7 +59,6 @@ class ScOTConfig(cfd_PretrainedConfig):
         super().__init__(**kwargs)
 
         self.patch_size = patch_size
-        self.embed_dim = embed_dim
         self.depths = depths
         self.num_layers = len(depths)
         self.num_heads = num_heads
@@ -78,7 +76,7 @@ class ScOTConfig(cfd_PretrainedConfig):
         self.initializer_range = initializer_range
         # we set the hidden_size attribute in order to make Swinv2 work with VisionEncoderDecoderModel
         # this indicates the channel dimension after the last stage of the model
-        self.hidden_size = int(embed_dim * 2 ** (len(depths) - 1)) # actually not used but recomputed as num_features
+        self.hidden_size = int(self.latent_channels * 2 ** (len(depths) - 1)) # actually not used but recomputed as num_features
         self.pretrained_window_sizes = (0, 0, 0, 0)
         self.residual_model = residual_model
         self.output_hidden_states = output_hidden_states
@@ -213,7 +211,7 @@ class ScOTPatchEmbeddings(nn.Module):
     def __init__(self, config):
         super().__init__()
         resolution, patch_size = config.grid_resolution, config.patch_size # 128, 4
-        in_channels, hidden_size = config.in_channels, config.embed_dim # 4, 48
+        in_channels, hidden_size = config.in_channels, config.latent_channels # 4, 48
         self.coord_features = config.coord_features
         self.config = config
         
@@ -222,7 +220,6 @@ class ScOTPatchEmbeddings(nn.Module):
             if isinstance(patch_size, collections.abc.Iterable)
             else (patch_size, patch_size)
         )
-        print("!!!", resolution)
         num_patches = (resolution[1] // patch_size[1]) * (
             resolution[0] // patch_size[0]
         )# 1024 = (128 / 4) * (128 / 4)
@@ -280,13 +277,13 @@ class ScOTEmbeddings(nn.Module):
         num_patches = self.patch_embeddings.num_patches # 1024
         self.patch_grid = self.patch_embeddings.grid_size # (32, 32)
         self.mask_token = ( # None
-            nn.Parameter(torch.zeros(1, 1, config.embed_dim))
+            nn.Parameter(torch.zeros(1, 1, config.latent_channels))
             if use_mask_token
             else None
         )
         if config.use_absolute_embeddings: # absolute position information into the patch embeddings (spatial structure of trajectory)
             self.position_embeddings = nn.Parameter( # zeros of shape (1: broadcast the same positional embeddings across all inputs in the batch, number of patches, dimensionality of each token)
-                torch.zeros(1, num_patches, config.embed_dim)
+                torch.zeros(1, num_patches, config.latent_channels)
             )
         else:
             self.position_embeddings = None
@@ -294,7 +291,7 @@ class ScOTEmbeddings(nn.Module):
             layer_norm = ConditionalLayerNorm
         else:
             layer_norm = LayerNorm
-        self.norm = layer_norm(config.embed_dim)
+        self.norm = layer_norm(config.latent_channels)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(
@@ -553,7 +550,7 @@ class ScOTPatchRecovery(nn.Module):
         resolution, patch_size = config.grid_resolution, config.patch_size # 128, 4
         out_channels, hidden_size = ( # 4, 48
             config.out_channels,
-            config.embed_dim,
+            config.latent_channels,
         )
         patch_size = ( # 4, 4
             patch_size

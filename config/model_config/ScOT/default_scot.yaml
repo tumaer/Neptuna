@@ -1,7 +1,7 @@
 model_name: ScOT
 patch_size: 4  # patch embedding resolution: resolution/patch_size -> padding if not divisible
 embed_dim: 4 #48
-depths: [1, 1] #, 4, 4]
+depths: [1, 1] #[4, 4, 4, 4]
 num_heads: [1, 2] #[3, 6, 12, 24]
 skip_connections: [1, 1] #[2, 2, 2, 0]
 window_size: 16 # (window_size - patch_embedding_resolution % window_size) % window_size -> padding before window-based self-attention

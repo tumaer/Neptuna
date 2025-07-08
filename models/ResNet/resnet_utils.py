@@ -31,7 +31,6 @@ class ResNetConfig(cfd_PretrainedConfig):
         self,
         num_blocks: list = [1, 1, 1, 1],
         block: str = "BasicBlock",
-        latent_channels: int = 64,
         norm: bool = True,
         n_groups: int = 1,
         activation_fn_name : str = "gelu",
@@ -42,7 +41,6 @@ class ResNetConfig(cfd_PretrainedConfig):
         super().__init__(**kwargs)
         self.num_blocks = num_blocks
         self.block = block
-        self.latent_channels = latent_channels
         self.norm = norm
         self.n_groups = n_groups
         self.activation_fn_name = activation_fn_name
