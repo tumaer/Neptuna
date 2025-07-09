@@ -98,11 +98,16 @@ class Trainer(Trainer_):
             n_eval_rollouts=self.train_config["n_eval_rollouts"],
             filter_frames=self.data_config["filter_frames"],
             filter_groups=self.data_config["filter_groups"],
-            channels=self.data_config["filter_channels"],
+            filter_in_channels=self.data_config["filter_in_channels"],
+            conditioning_in_channels=self.data_config["conditioning_in_channels"],
+            include_conditioning_parameters=self.data_config["include_conditioning_parameters"],
+            filter_out_channels=self.data_config["filter_out_channels"],
             data_normalization_stats=self.data_config["data_normalization_stats"],
             data_normalization_strategy=self.data_config["data_normalization_strategy"],
             eval_split_ratio=self.train_config["eval_split_ratio"],
             eval_groups=self.data_config["eval_groups"],
+            is_steady_state_prediction=self.data_config["is_steady_state_prediction"],
+            residual_config=self.data_config["residual_config"],
         )
         
     ##overrides the one in the  base class from transformers library
