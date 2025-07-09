@@ -79,6 +79,8 @@ def run(cfg):
         save_strategy="best",  # switch to "epoch" once validation present
         save_steps=5, #only used if save_strategy is "steps"
         save_total_limit=2,  # keep only last N checkpoints
+        push_to_hub=False, # push to Hugging Face Hub, requires login before (run `huggingface-cli login` in terminal)
+        hub_strategy="checkpoint",  # push last checkpoint to Hub (alternatives: "end", "every_save", "checkpoint", "all_checkpoints")
     
         # ------------------------------------------------------------------
         # Reproducibility --------------------------------------------------
