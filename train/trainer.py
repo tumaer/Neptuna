@@ -25,6 +25,7 @@ class Trainer(Trainer_):
         self.get_prediction_loss_for_eval_windows = False #TODO: Find a way to not hardcode this.
 
         self.residual_config = data_config["residual_config"]
+        self.pushforward_config = train_config["pushforward_config"]
 
         # Rebuild the callback handler with our custom implementation so that on_evaluate accepts **kwargs
         # Preserve the list of callbacks that may have been created by the HuggingFace Trainer during super().__init__.
@@ -93,7 +94,7 @@ class Trainer(Trainer_):
             dataset_name=self.data_config["dataset_name"],
             dataset_directory_path=self.data_config["dataset_directory_path"],
             sequence_info=self.data_config["sequence_info"],
-            max_pf_train_rollouts=self.train_config["pushforward"]["max_allowed_unroll_steps"][-1],
+            pushforward_config=self.train_config["pushforward_config"],
             n_eval_rollouts=self.train_config["n_eval_rollouts"],
             filter_frames=self.data_config["filter_frames"],
             filter_groups=self.data_config["filter_groups"],
@@ -215,53 +216,54 @@ class Trainer(Trainer_):
         batch_size, _, _, *spatial_dims = inputs["input_data"].shape
         
         if not self.data_config.is_steady_state_prediction:
-            #########################################################
-            #Pushforward trick (for training)
-            #########################################################
-            num_steps_in_one_epoch = self.state.max_steps//self.state.num_train_epochs
-            pushforward_unroll_steps = self.select_pushforward_unroll_steps_for_training(current_epoch = self.state.global_step//num_steps_in_one_epoch)
-            
-            base_value = inputs["input_data"][:,-1:,]
-            with torch.no_grad(): #comment this out for multi-step autoregressive training
-                for unroll_step in range(pushforward_unroll_steps):
-                    #print(f"Pushforward unroll step {unroll_step+1} of {pushforward_unroll_steps}")
-                    if self.data_config.conditioning_in_channels is not None:
-                        prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
-                    else:
-                        prediction = model(input_data=inputs["input_data"])
-                    
-                    prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
-                    
-                    if self.residual_config is not None:
-                        raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
-                    
-                    if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length >= input_sequence length
-                        inputs = {
-                                    **inputs,
-                                    **{ # This part replaces the "input_data" of input with the prediction of the model. 
-                                        # So the new input is the output from the previous step.
-                                        #prediction.shape = torch.Size([B, label_seq_len, C_labels, x_resolution, y_resolution])
-                                            "input_data": (
-                                                prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the outputs so as to extract the input_sequence.
-                                            ) if self.residual_config is None else (
-                                                raw_prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the outputs so as to extract the input_sequence.
-                                            )
-                                    },
-                            }
+            #TODO: Add more training strategies here in continuation of the if statement. 
+            if self.pushforward_config is not None:
+                #########################################################
+                #Pushforward trick (for training)
+                #########################################################
+                num_steps_in_one_epoch = self.state.max_steps//self.state.num_train_epochs
+                pushforward_unroll_steps = self.select_pushforward_unroll_steps_for_training(current_epoch = self.state.global_step//num_steps_in_one_epoch)
+                base_value = inputs["input_data"][:,-1:,]
+                with torch.no_grad(): #comment this out for multi-step autoregressive training
+                    for unroll_step in range(pushforward_unroll_steps):
+                        #print(f"Pushforward unroll step {unroll_step+1} of {pushforward_unroll_steps}")
+                        if self.data_config.conditioning_in_channels is not None:
+                            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
+                        else:
+                            prediction = model(input_data=inputs["input_data"])
                         
-                    else: #input_sequence length > label_sequence length (the more usual case)
+                        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
+                        
+                        if self.residual_config is not None:
+                            raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
+                        
+                        if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length >= input_sequence length
                             inputs = {
-                            **inputs,
-                            **{ #this part replaces the "input_data" of input with the output of the model and concatenates part of the input whch is missing to make a complete input sequence
-                                #So the new input is the output from the previous step.
-                                "input_data": (
-                                    torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1)
-                                ) if self.residual_config is None else (
-                                    torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], raw_prediction.detach()], dim=1)
-                                )
-                            },
-                                    }
-                        
+                                        **inputs,
+                                        **{ # This part replaces the "input_data" of input with the prediction of the model. 
+                                            # So the new input is the output from the previous step.
+                                            #prediction.shape = torch.Size([B, label_seq_len, C_labels, x_resolution, y_resolution])
+                                                "input_data": (
+                                                    prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the outputs so as to extract the input_sequence.
+                                                ) if self.residual_config is None else (
+                                                    raw_prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the outputs so as to extract the input_sequence.
+                                                )
+                                        },
+                                }
+                            
+                        else: #input_sequence length > label_sequence length (the more usual case)
+                                inputs = {
+                                **inputs,
+                                **{ #this part replaces the "input_data" of input with the output of the model and concatenates part of the input whch is missing to make a complete input sequence
+                                    #So the new input is the output from the previous step.
+                                    "input_data": (
+                                        torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1)
+                                    ) if self.residual_config is None else (
+                                        torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], raw_prediction.detach()], dim=1)
+                                    )
+                                },
+                                        }
+                    
         # NOTE:compute chain restored, the input_data is corrupted by the pushforward rollout steps (if any).
         if self.data_config.conditioning_in_channels is not None:
             prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
@@ -445,9 +447,9 @@ class Trainer(Trainer_):
 
     def select_pushforward_unroll_steps_for_training(self, current_epoch):
         current_epoch_tensor = torch.tensor(current_epoch)
-        deciding_epochs = torch.tensor(self.train_config["pushforward"]["deciding_epochs"])
-        max_unrolls = self.train_config["pushforward"]["max_allowed_unroll_steps"]
-        relative_probabilities = self.train_config["pushforward"]["relative_probabilities"]
+        deciding_epochs = torch.tensor(self.train_config["pushforward_config"]["deciding_epochs"])
+        max_unrolls = self.train_config["pushforward_config"]["max_allowed_unroll_steps"]
+        relative_probabilities = self.train_config["pushforward_config"]["relative_probabilities"]
 
         assert all(deciding_epochs[i] <= deciding_epochs[i + 1] for i in range(len(deciding_epochs) - 1))
 

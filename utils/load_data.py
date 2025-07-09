@@ -240,7 +240,10 @@ def fetch_dataset(dataset_name: str,
     if not is_steady_state:
         if mode == "train":
             #for pushforward training trick, we need to create a train index map with the extra sequence length
-            n_max_pf_train_rollouts = kwargs.get("max_pf_train_rollouts") or 0
+            if kwargs.get("pushforward_config") is not None:
+                n_max_pf_train_rollouts = kwargs["pushforward_config"]["max_allowed_unroll_steps"][-1] 
+            else:
+                n_max_pf_train_rollouts = 0
             n_eval_rollouts = kwargs.get("n_eval_rollouts") or 0
 
             train_index_map, eval_index_map, all_groups = create_train_eval_transient_index_map(

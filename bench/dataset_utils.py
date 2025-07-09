@@ -15,7 +15,7 @@ def make_datasets(cfg: DictConfig):
         dataset_name=cfg["data_config"]["dataset_name"],
         dataset_directory_path=cfg["data_config"]["dataset_directory_path"],
         sequence_info=cfg["data_config"]["sequence_info"],
-        max_pf_train_rollouts=cfg["train_config"]["pushforward"]["max_allowed_unroll_steps"][-1],
+        pushforward_config=cfg["train_config"]["pushforward_config"],
         n_eval_rollouts=cfg["train_config"]["n_eval_rollouts"],
         filter_frames=cfg["data_config"]["filter_frames"],
         filter_groups=cfg["data_config"]["filter_groups"],
