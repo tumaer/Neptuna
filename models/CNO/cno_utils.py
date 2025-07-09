@@ -2,7 +2,7 @@ import torch
 from omegaconf import ListConfig
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List, Optional, Union, Callable, Tuple
+from typing import List, Union, Tuple
 from models.model_utils import PretrainedConfig
 
 def _to_tuple(x):

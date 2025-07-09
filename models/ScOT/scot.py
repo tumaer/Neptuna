@@ -2,11 +2,10 @@
 # Github: https://github.com/camlab-ethz/poseidon?tab=readme-ov-file 
 # Paper: https://arxiv.org/abs/2405.19101
 
-from models.model_utils import PreTrainedModel
+from transformers import PreTrainedModel
 from transformers.models.swinv2.modeling_swinv2 import (
     Swinv2EncoderOutput,
 )
-from transformers.models.swinv2.configuration_swinv2 import Swinv2Config
 import torch
 from torch import nn, Tensor
 from typing import Optional, Union, Tuple, List

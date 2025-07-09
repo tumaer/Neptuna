@@ -2,8 +2,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from models.CNO.cno_utils import CNOBlock, LiftProjectBlock, ResNet
-from typing import List, Optional, Union, Callable, Tuple
-from models.model_utils import PreTrainedModel
+from transformers import PreTrainedModel
 from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 
 def _div_size(size, factor):

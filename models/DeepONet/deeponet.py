@@ -1,4 +1,3 @@
-from typing import List, Optional, Union, Callable, Tuple
 from itertools import product
 import torch
 import torch.nn as nn
@@ -7,7 +6,7 @@ from models.ResNet.resnet_utils import ResNetConfig
 from utils import activation_func
 from .deeponet_utils import FFN, CnnBranch,grid_to_points, points_to_grid, calc_resnet_out_shape, linspace_int_list
 from models.ResNet.resnet import ResNet1D, ResNet2D, ResNet3D
-from models.model_utils import PreTrainedModel
+from transformers import PreTrainedModel
 
 
 

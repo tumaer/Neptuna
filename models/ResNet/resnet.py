@@ -3,10 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from utils import activation_func
-from typing import Optional, List
-from .resnet_utils import BasicBlockND,DilatedBasicBlockND, getblock, make_layer
+from .resnet_utils import getblock, make_layer
 from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
-from models.model_utils import PreTrainedModel
+from transformers import PreTrainedModel
 
 
 class ResNet(PreTrainedModel):

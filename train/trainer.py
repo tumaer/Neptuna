@@ -900,8 +900,7 @@ class Trainer(Trainer_):
             self.control = self.callback_handler.on_save(self.args, self.state, self.control)
 
         RANK = int(os.environ.get("LOCAL_RANK", -1))
-        if self.control.should_plot and (RANK == 0 or RANK == -1):
-            print("hi")      
+        if self.control.should_plot and (RANK == 0 or RANK == -1):  
             self.control = self.callback_handler.on_plot(self.args, self.state, self.control, is_new_best_metric=is_new_best_metric)
             
     ### overrides the one in the base class from transformers library

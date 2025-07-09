@@ -1,13 +1,12 @@
-from typing import List, Tuple, Union
+from typing import List, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from .fno_utils import ConvNdFCLayer, SpectralConvNd
 from .fno_utils import FullyConnected, build_lift_network, build_fno
 from utils import activation_func
-from typing import Optional, Union, Tuple, List
-from models.model_utils import PreTrainedModel
+from typing import Tuple, List
+from transformers import PreTrainedModel
 from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 
 class FNO(PreTrainedModel):

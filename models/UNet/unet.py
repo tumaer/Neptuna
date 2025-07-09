@@ -5,7 +5,7 @@ import torch.nn as nn
 from utils import activation_func
 import torch.nn.functional as F
 
-from models.model_utils import PreTrainedModel
+from transformers import PreTrainedModel
 from .unet_utils import DownBlockND, UpBlockND, MiddleBlockND, DownsampleND, UpsampleND
 from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 
