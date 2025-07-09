@@ -221,7 +221,7 @@ class Trainer(Trainer_):
             num_steps_in_one_epoch = self.state.max_steps//self.state.num_train_epochs
             pushforward_unroll_steps = self.select_pushforward_unroll_steps_for_training(current_epoch = self.state.global_step//num_steps_in_one_epoch)
             
-            base_value = inputs["input_data"][:,-1:,:,:,:]
+            base_value = inputs["input_data"][:,-1:,]
             with torch.no_grad(): #comment this out for multi-step autoregressive training
                 for unroll_step in range(pushforward_unroll_steps):
                     #print(f"Pushforward unroll step {unroll_step+1} of {pushforward_unroll_steps}")
@@ -378,7 +378,7 @@ class Trainer(Trainer_):
         prediction = self._forward_model_eval_or_test(model,inputs) 
 
         if self.residual_config is not None:
-            base_value = inputs["input_data"][:,-1:,:,:,:]
+            base_value = inputs["input_data"][:,-1:,]
             raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
 
         predictions_.append(raw_prediction.detach() if self.residual_config is not None else prediction.detach()) 
@@ -605,7 +605,7 @@ class Trainer(Trainer_):
 
         #NOTE: Obtaining the raw_labels for plotting the target values
         if self.residual_config is not None:
-            base_value = inputs["input_data"][:,-1:,:,:,:]
+            base_value = inputs["input_data"][:,-1:,]
             if self.residual_config["add_predicted_value"]:
                 # Vectorized cumulative addition along the temporal dimension for efficiency.
                 # Each timestep accumulates the sum of all previous timesteps plus the base value.
