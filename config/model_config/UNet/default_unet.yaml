@@ -1,6 +1,6 @@
 #model_config:
 model_name: UNet
-latent_channels: 4 #64
+latent_channels: 64
 activation_fn_name: gelu
 norm: False #whether to use GroupNorm in ResidualBlockND
 n_groups: 1
