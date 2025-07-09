@@ -1,0 +1,18 @@
+dataset_name: LaserDroplet
+dataset_directory_path: ./data/fluids/Laser_Droplet/2D
+dimension: 2
+sequence_info: [3, 1, 1]
+filter_frames: null 
+filter_groups: null
+filter_in_channels: null
+filter_out_channels: null
+conditioning_in_channels: null
+include_conditioning_parameters: True
+residual_config:
+  add_base_value: True
+  add_predicted_value: False
+is_steady_state_prediction: False 
+grid_resolution: null
+data_normalization_stats: null 
+data_normalization_strategy: z_normalization
+eval_groups: null
