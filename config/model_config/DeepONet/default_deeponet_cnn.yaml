@@ -3,6 +3,6 @@ branch_depth: 4
 trunk_depth: 4
 kernel_size: 4
 padding: 10
-latent_channels: 32
-width: 128
+latent_channels: 4 #32
+width: 4 #128
 activation_fn_name: "ReLU"

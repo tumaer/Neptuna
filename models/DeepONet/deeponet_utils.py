@@ -1,10 +1,82 @@
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 import torch.nn as nn
 from torch import Tensor
 import numpy as np
 
+from models.model_utils import PretrainedConfig
 
-class Ffn(nn.Module):
+class DeepONetConfig(PretrainedConfig):
+    """
+    Args:
+        branch_net : str
+            Type of branch network (FFN, CNN, ResNet)
+        query_idxs : Optional[Tensor]
+            Indices for the trunk network
+        branch_depth : int
+            Depth of the branch network, not used for ResNet
+        trunk_depth : int
+            Depth of the trunk network
+        width : int
+            Dimension of the hidden layers, if CNN or ResNet is used for branch net, this argument is only applied to trunk net
+        activation_fn : str
+            Activation function
+        act_on_output : bool
+            Whether to apply activation function on the output of the branch network, only used for FFN
+        kernel_size : Optional[int]
+            Kernel size for the CNN branch network, not used for FFN or ResNet
+        padding : Optional[int]
+            Padding for the CNN branch network, not used for FFN and ResNet
+        stride : Optional[int]
+            Stride for the CNN branch network, not used for FNN and ResNet
+        num_blocks (List[int]): 
+            Number of blocks in each stage, only used for ResNet branch network
+        ResNet_block : Optional[str]
+            Type of ResNet block, only used for ResNet branch network
+        out_ffn_depth : Optional[int]
+            Output depth for the FNN branch network
+        """
+
+    model_type = "DeepONet"
+
+    def __init__(
+        self,
+        branch_net: str = "FFN",
+        query_idxs: Optional[Tensor] = None,
+        branch_depth: int = 4,
+        trunk_depth: int = 4,
+        width: int = 100,
+        activation_fn_name: str = "gelu",
+        act_on_output: bool = False,        
+        kernel_size: Optional[int] = 3, 
+        padding: Optional[int] = 1, 
+        stride: Optional[int] = 2,
+        num_blocks: Optional[List[int]] = [1],
+        ResNet_block: Optional[str] = "BasicBlock",
+        out_ffn_depth: Optional[int] = 3,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.branch_net_str = branch_net
+        self.query_idxs = query_idxs
+        self.branch_depth = branch_depth
+        self.trunk_depth = trunk_depth
+        self.width = width
+        self.activation_fn_name = activation_fn_name
+        self.act_on_output = act_on_output
+        self.kernel_size = kernel_size
+        self.padding = padding
+        self.stride = stride
+        self.num_blocks = num_blocks
+        self.ResNet_block = ResNet_block
+        self.out_ffn_depth = out_ffn_depth
+
+        if self.coord_features:
+            self.in_size = self.in_size - self.dimension
+
+
+
+
+class FFN(nn.Module):
     """
     A general fully connected multi-layer neural network.
     """

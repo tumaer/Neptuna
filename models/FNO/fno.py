@@ -1,108 +1,36 @@
-from typing import List, Tuple, Union
+from typing import List, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from .fno_utils import ConvNdFCLayer, SpectralConvNd
 from .fno_utils import FullyConnected, build_lift_network, build_fno
 from utils import activation_func
-from typing import Optional, Union, Tuple, List
-
+from typing import Tuple, List
+from transformers import PreTrainedModel
 from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 
-class FNO(nn.Module):
-    """Fourier neural operator (FNO) model.
+class FNO(PreTrainedModel):
+    """Fourier neural operator (FNO) model."""
 
-    Parameters
-    ----------
-    in_channels : int
-        Number of input channels
-    out_channels : int
-        Number of output channels
-    sequence_info : List[int], optional
-        Configuration for input/output sequences [input_seq_len, output_seq_len, stride], by default [1,1,1]
-    decoder_layers : int, optional
-        Number of decoder layers, by default 1
-    decoder_layer_size : int, optional
-        Number of neurons in decoder layers, by default 32
-    decoder_activation_fn : str, optional
-        Activation function for decoder, by default "silu"
-    dimension : int
-        Model dimensionality (supports 1, 2, 3).
-    latent_channels : int, optional
-        Latent features size in spectral convolutions, by default 32
-    num_fno_layers : int, optional
-        Number of spectral convolutional layers, by default 4
-    num_fno_modes : Union[int, List[int]], optional
-        Number of Fourier modes kept in spectral convolutions, by default 16
-    padding : int, optional
-        Domain padding for spectral convolutions, by default 8
-    padding_type : str, optional
-        Type of padding for spectral convolutions, by default "constant"
-        padding_type options: 'constant', 'reflect', 'replicate' or 'circular'
-    activation_fn : str, optional
-        Activation function, by default "gelu"
-    coord_features : bool, optional
-        Use coordinate grid as additional feature map, by default True
-    """
     main_input_name = "input_data"
     conditioning_input_name = "conditioning_input_data"
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        sequence_info: Optional[List[int]] = [1,1,1],
-        decoder_layers: int = 1,
-        decoder_layer_size: int = 32,
-        decoder_activation_fn_name: str = "silu",
-        dimension: int = 2,
-        latent_channels: int = 32,
-        num_fno_layers: int = 4,
-        num_fno_modes: Union[int, List[int]] = 16,
-        padding: int = 8,
-        padding_type: str = "constant",
-        activation_fn_name: str = "gelu",
-        coord_features: bool = True,
-    ) -> None:
-        super().__init__()
-        self.num_fno_layers = num_fno_layers
-        self.num_fno_modes = num_fno_modes
-        self.padding = padding
-        self.padding_type = padding_type
-        self.activation_fn = activation_func.get_activation(activation_fn_name)
+    def __init__(self, config) -> None:
+        super().__init__(config)
 
-        if self.activation_fn is None:
-            raise NotImplementedError(f"Activation {activation_fn_name} not implemented")
+        activation_fn = activation_func.get_activation(config.activation_fn_name)
+        if activation_fn is None:
+            raise NotImplementedError(f"Activation {config.activation_fn_name} not implemented")
 
-        self.coord_features = coord_features
-        self.dimension = dimension
-        self.sequence_info = sequence_info
-        
-        in_size= in_channels*sequence_info[0]
-        out_size= out_channels*self.sequence_info[1]
-        
-        self.fno = self.build_FNO()(
-            in_size=in_size,
-            out_size=out_size,
-            num_fno_layers=self.num_fno_layers,
-            fno_layer_size=latent_channels,
-            num_fno_modes=self.num_fno_modes,
-            padding=self.padding,
-            padding_type=self.padding_type,
-            activation_fn=self.activation_fn,
-            coord_features=self.coord_features,
-            decoder_activation_fn_name=decoder_activation_fn_name,
-            decoder_layers=decoder_layers,
-            decoder_layer_size=decoder_layer_size,
-        )
+        self.config = config
+        self.fno = self.build_FNO()(config=config, activation_fn=activation_fn)
 
     def build_FNO(self):
         """Get the FNO encoder based on the model dimensionality"""
-        if self.dimension == 1:
+        if self.config.dimension == 1:
             return FNO1D
-        elif self.dimension == 2:
+        elif self.config.dimension == 2:
             return FNO2D
-        elif self.dimension == 3:
+        elif self.config.dimension == 3:
             return FNO3D
         else:
             raise NotImplementedError(
@@ -139,96 +67,50 @@ class FNO(nn.Module):
 
         return x
 
-class FNO1D(nn.Module):
-    """1D FNO
+class FNO1D(PreTrainedModel):
+    """1D FNO"""
 
-    Parameters
-    ----------
-    in_channels : int, optional
-        Number of input channels, by default 1
-    num_fno_layers : int, optional
-        Number of spectral convolutional layers, by default 4
-    fno_layer_size : int, optional
-        Latent features size in spectral convolutions, by default 32
-    num_fno_modes : Union[int, List[int]], optional
-        Number of Fourier modes kept in spectral convolutions, by default 16
-    padding :  Union[int, List[int]], optional
-        Domain padding for spectral convolutions, by default 8
-    padding_type : str, optional
-        Type of padding for spectral convolutions, by default "constant"
-    activation_fn : nn.Module, optional
-        Activation function, by default nn.GELU
-    coord_features : bool, optional
-        Use coordinate grid as additional feature map, by default True
-    """
+    def __init__(self, config, activation_fn: nn.Module) -> None:
+        super().__init__(config)
 
-    def __init__(
-        self,
-        in_size: int,
-        out_size: int,
-        num_fno_layers: int = 4,
-        fno_layer_size: int = 32,
-        num_fno_modes: Union[int, List[int]] = 16,
-        padding: Union[int, List[int]] = 8,
-        padding_type: str = "constant",
-        activation_fn: nn.Module = nn.GELU(),
-        coord_features: bool = True,
-        decoder_activation_fn_name: str = "silu",
-        decoder_layers: int = 1,
-        decoder_layer_size: int = 32,
-    ) -> None:
-        super().__init__()
-
-        self.in_size = in_size
-        self.out_size = out_size
-        self.num_fno_layers = num_fno_layers
-        self.fno_width = fno_layer_size
         self.activation_fn = activation_fn
-        self.decoder_activation_fn_name = decoder_activation_fn_name
-        self.decoder_layers = decoder_layers
-        self.decoder_layer_size = decoder_layer_size
-
-        # Add relative coordinate feature
-        self.coord_features = coord_features
-        if self.coord_features:
-            self.in_size = self.in_size + 1
 
         # Padding values for spectral conv
-        if isinstance(padding, int):
-            padding = [padding]
+        if isinstance(config.padding, int):
+            padding = [config.padding]
         self.pad = padding[:1]
         self.ipad = [-pad if pad > 0 else None for pad in self.pad]
-        self.padding_type = padding_type
+        self.padding_type = config.padding_type
 
-        if isinstance(num_fno_modes, int):
-            num_fno_modes = [num_fno_modes]
+        if isinstance(config.num_fno_modes, int):
+            num_fno_modes = [config.num_fno_modes]
 
         # build lift
         self.lift_network = build_lift_network(
-            in_channels=self.in_size,
-            fno_width=self.fno_width,
+            in_channels=config.in_size,
+            fno_width=config.latent_channels,
             activation_fn=self.activation_fn,
             dimension=1,
         )
         # build main part
         self.spconv_layers,self.conv_layers = build_fno(
-            fno_width=self.fno_width,
+            fno_width=config.latent_channels,
             num_fno_modes=num_fno_modes,
-            num_fno_layers=self.num_fno_layers,
+            num_fno_layers=config.num_fno_layers,
             dimension=1,
         )
 
     def decoder_net(self) -> nn.Module:
         return FullyConnected(
-            in_features=self.fno_width,
-            layer_size=self.decoder_layer_size,
-            out_features=self.out_size,
-            num_layers=self.decoder_layers,
-            activation_fn=self.decoder_activation_fn_name,
+            in_features=self.config.latent_channels,
+            layer_size=self.config.decoder_layer_size,
+            out_features=self.config.out_size,
+            num_layers=self.config.decoder_layers,
+            activation_fn=self.config.decoder_activation_fn_name,
         )
 
     def forward(self, x: Tensor) -> Tensor:
-        if self.coord_features:
+        if self.config.coord_features:
             coord_feat = oned_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
 
@@ -281,93 +163,47 @@ class FNO1D(nn.Module):
         return torch.permute(output, (0, 2, 1))
 
 
-class FNO2D(nn.Module):
-    """2D Spectral encoder for FNO
+class FNO2D(PreTrainedModel):
+    """2D Spectral encoder for FNO"""
 
-    Parameters
-    ----------
-    in_channels : int, optional
-        Number of input channels, by default 1
-    num_fno_layers : int, optional
-        Number of spectral convolutional layers, by default 4
-    fno_layer_size : int, optional
-        Latent features size in spectral convolutions, by default 32
-    num_fno_modes : Union[int, List[int]], optional
-        Number of Fourier modes kept in spectral convolutions, by default 16
-    padding :  Union[int, List[int]], optional
-        Domain padding for spectral convolutions, by default 8
-    padding_type : str, optional
-        Type of padding for spectral convolutions, by default "constant"
-    activation_fn : nn.Module, optional
-        Activation function, by default nn.GELU
-    coord_features : bool, optional
-        Use coordinate grid as additional feature map, by default True
-    """
+    def __init__(self, config, activation_fn: nn.Module) -> None:
+        super().__init__(config)
 
-    def __init__(
-        self,
-        in_size: int,
-        out_size: int,
-        num_fno_layers: int = 4,
-        fno_layer_size: int = 32,
-        num_fno_modes: Union[int, List[int]] = 16,
-        padding: Union[int, List[int]] = 8,
-        padding_type: str = "constant",
-        activation_fn: nn.Module = nn.GELU(),
-        coord_features: bool = True,
-        decoder_activation_fn_name: str = "silu",
-        decoder_layers: int = 1,
-        decoder_layer_size: int = 32,
-    ) -> None:
-        super().__init__()
-        self.in_size = in_size
-        self.out_size = out_size
-        self.num_fno_layers = num_fno_layers
-        self.fno_width = fno_layer_size
-        
         self.activation_fn = activation_fn
-        self.decoder_activation_fn_name = decoder_activation_fn_name
-        self.decoder_layers = decoder_layers
-        self.decoder_layer_size = decoder_layer_size
-        
-        # Add relative coordinate feature
-        self.coord_features = coord_features
-        if self.coord_features:
-            self.in_size = self.in_size + 2
 
         # Padding values for spectral conv
-        if isinstance(padding, int):
-            padding = [padding, padding]
+        if isinstance(config.padding, int):
+            padding = [config.padding, config.padding]
         padding = padding + [0, 0]  # Pad with zeros for smaller lists
         self.pad = padding[:2]
         self.ipad = [-pad if pad > 0 else None for pad in self.pad]
-        self.padding_type = padding_type
+        self.padding_type = config.padding_type
 
-        if isinstance(num_fno_modes, int):
-            num_fno_modes = [num_fno_modes, num_fno_modes]
+        if isinstance(config.num_fno_modes, int):
+            num_fno_modes = [config.num_fno_modes, config.num_fno_modes]
 
         # build lift
         self.lift_network = build_lift_network(
-            in_channels=self.in_size,
-            fno_width=self.fno_width,
+            in_channels=config.in_size,
+            fno_width=config.latent_channels,
             activation_fn=self.activation_fn,
             dimension=2,
         )
         # build main part
         self.spconv_layers,self.conv_layers = build_fno(
-            fno_width=self.fno_width,
+            fno_width=config.latent_channels,
             num_fno_modes=num_fno_modes,
-            num_fno_layers=self.num_fno_layers,
+            num_fno_layers=config.num_fno_layers,
             dimension=2,
         )
 
     def decoder_net(self) -> nn.Module:
         return FullyConnected(
-            in_features=self.fno_width,
-            layer_size=self.decoder_layer_size,
-            out_features=self.out_size,
-            num_layers=self.decoder_layers,
-            activation_fn=self.decoder_activation_fn_name,
+            in_features=self.config.latent_channels,
+            layer_size=self.config.decoder_layer_size,
+            out_features=self.config.out_size,
+            num_layers=self.config.decoder_layers,
+            activation_fn=self.config.decoder_activation_fn_name,
         )
 
     def forward(self, x: Tensor) -> Tensor:
@@ -376,7 +212,7 @@ class FNO2D(nn.Module):
                 "Only 4D tensors [batch, in_channels, grid_x, grid_y] accepted for 2D FNO"
             )
 
-        if self.coord_features: #TODO: Do this for ALL the models
+        if self.config.coord_features: #TODO: Do this for ALL the models
             coord_feat = twod_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
 
@@ -431,97 +267,51 @@ class FNO2D(nn.Module):
         return torch.permute(output, (0, 3, 1, 2))
     
 
-class FNO3D(nn.Module):
-    """3D Spectral encoder for FNO
+class FNO3D(PreTrainedModel):
+    """3D Spectral encoder for FNO"""
 
-    Parameters
-    ----------
-    in_channels : int, optional
-        Number of input channels, by default 1
-    num_fno_layers : int, optional
-        Number of spectral convolutional layers, by default 4
-    fno_layer_size : int, optional
-        Latent features size in spectral convolutions, by default 32
-    num_fno_modes : Union[int, List[int]], optional
-        Number of Fourier modes kept in spectral convolutions, by default 16
-    padding :  Union[int, List[int]], optional
-        Domain padding for spectral convolutions, by default 8
-    padding_type : str, optional
-        Type of padding for spectral convolutions, by default "constant"
-    activation_fn : nn.Module, optional
-        Activation function, by default nn.GELU
-    coord_features : bool, optional
-        Use coordinate grid as additional feature map, by default True
-    """
+    def __init__(self, config, activation_fn: nn.Module) -> None:
+        super().__init__(config)
 
-    def __init__(
-        self,
-        in_size: int,
-        out_size: int,
-        num_fno_layers: int = 4,
-        fno_layer_size: int = 32,
-        num_fno_modes: Union[int, List[int]] = 16,
-        padding: Union[int, List[int]] = 8,
-        padding_type: str = "constant",
-        activation_fn: nn.Module = nn.GELU(),
-        coord_features: bool = True,
-        decoder_activation_fn_name: str = "silu",
-        decoder_layers: int = 1,
-        decoder_layer_size: int = 32,
-    ) -> None:
-        super().__init__()
-
-        self.in_size = in_size
-        self.out_size = out_size
-        self.num_fno_layers = num_fno_layers
-        self.fno_width = fno_layer_size
-        
         self.activation_fn = activation_fn
-        self.decoder_activation_fn_name = decoder_activation_fn_name
-        self.decoder_layers = decoder_layers
-        self.decoder_layer_size = decoder_layer_size
-        # Add relative coordinate feature
-        self.coord_features = coord_features
-        if self.coord_features:
-            self.in_size = self.in_size + 3
 
         # Padding values for spectral conv
-        if isinstance(padding, int):
-            padding = [padding, padding, padding]
+        if isinstance(config.padding, int):
+            padding = [config.padding, config.padding, config.padding]
         padding = padding + [0, 0, 0]  # Pad with zeros for smaller lists
         self.pad = padding[:3]
         self.ipad = [-pad if pad > 0 else None for pad in self.pad]
-        self.padding_type = padding_type
+        self.padding_type = config.padding_type
 
-        if isinstance(num_fno_modes, int):
-            num_fno_modes = [num_fno_modes, num_fno_modes, num_fno_modes]
+        if isinstance(config.num_fno_modes, int):
+            num_fno_modes = [config.num_fno_modes, config.num_fno_modes, config.num_fno_modes]
 
         # build lift
         self.lift_network = build_lift_network(
-            in_channels=self.in_size,
-            fno_width=self.fno_width,
+            in_channels=config.in_size,
+            fno_width=config.latent_channels,
             activation_fn=self.activation_fn,
             dimension=3,
         )
         # build main part
         self.spconv_layers,self.conv_layers = build_fno(
-            fno_width=self.fno_width,
+            fno_width=config.latent_channels,
             num_fno_modes=num_fno_modes,
-            num_fno_layers=self.num_fno_layers,
+            num_fno_layers=config.num_fno_layers,
             dimension=3,
         )
 
     def decoder_net(self) -> nn.Module:
         return FullyConnected(
-            in_features=self.fno_width,
-            layer_size=self.decoder_layer_size,
-            out_features=self.out_size,
-            num_layers=self.decoder_layers,
-            activation_fn=self.decoder_activation_fn_name,
+            in_features=self.config.latent_channels,
+            layer_size=self.config.decoder_layer_size,
+            out_features=self.config.out_size,
+            num_layers=self.config.decoder_layers,
+            activation_fn=self.config.decoder_activation_fn_name,
         )
 
     def forward(self, x: Tensor) -> Tensor:
-        if self.coord_features:
+        if self.config.coord_features:
             coord_feat = threed_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
 

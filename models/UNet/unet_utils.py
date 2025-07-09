@@ -1,8 +1,48 @@
 
-from typing import Optional
+from typing import List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
+from models.model_utils import PretrainedConfig
 from utils import activation_func
+
+class UNetConfig(PretrainedConfig):
+    """
+    Args:
+        activation_fn_name (str): Name of the activation function to use. Default is "gelu".
+        norm (bool): Whether to apply normalization. Default is False.
+        n_groups (int): Number of groups for group normalization. Default is 1.
+        channel_multiplier (Union[Tuple[int, ...], List[int]]): Multipliers for the number of channels at each stage of the UNet. Default is (1, 2, 2, 4).
+        is_attn (Union[Tuple[bool, ...], List[bool]]): Flags indicating whether attention is applied at each stage. Default is (False, False, False, False).
+        mid_attn (bool): Whether to apply attention in the middle block. Default is False.
+        n_blocks (int): Number of blocks in each stage of the UNet. Default is 2.
+        use1x1 (bool): Whether to use 1x1 convolutions. Default is False.
+        **kwargs: Additional keyword arguments passed to the parent class.
+        
+    """
+
+    model_type = "UNet"
+    
+    def __init__(
+        self,
+        activation_fn_name: str = "gelu",
+        norm: bool = False,
+        n_groups: int = 1,
+        channel_multiplier: Union[Tuple[int, ...], List[int]] = (1, 2, 2, 4),
+        is_attn: Union[Tuple[bool, ...], List[bool]] = (False, False, False, False),
+        mid_attn: bool = False,
+        n_blocks: int = 2,
+        use1x1: bool = False,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.activation_fn_name = activation_fn_name
+        self.norm = norm
+        self.n_groups = n_groups
+        self.channel_multiplier = channel_multiplier
+        self.is_attn = is_attn
+        self.mid_attn = mid_attn
+        self.n_blocks = n_blocks
+        self.use1x1 = use1x1
 
 class ResidualBlockND(nn.Module):
     """Residual Block for 1D, 2D, or 3D data.

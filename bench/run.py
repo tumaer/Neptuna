@@ -80,6 +80,8 @@ def run(cfg):
         save_strategy="best",  # switch to "epoch" once validation present
         save_steps=5, #only used if save_strategy is "steps"
         save_total_limit=2,  # keep only last N checkpoints
+        push_to_hub=False, # push to Hugging Face Hub, requires login before (run `huggingface-cli login` in terminal)
+        hub_strategy="end",  # push last checkpoint to Hub (alternatives: "end", "every_save", "checkpoint", "all_checkpoints")
     
         # ------------------------------------------------------------------
         # Reproducibility --------------------------------------------------
@@ -103,7 +105,7 @@ def run(cfg):
         auto_find_batch_size=False,
         full_determinism=False,  # turn on for reproducible distributed training
         torch_compile=False,
-        use_cpu=False, #use_cpu even if other devices are present
+        use_cpu=True, #use_cpu even if other devices are present
         label_names=["label_including_rollouts"],
         disable_tqdm=True if cfg["output_log_config"]["logging"]["wandb"] else False,
 
@@ -212,9 +214,14 @@ def run(cfg):
     # ------------------------------------------------------------------
     if  cfg["hyperparam_opt_config"]["optimize"] is False:
         start = time.time()
-        #trainer.train(resume_from_checkpoint=f"./checkpoints/{config['data_config']['dataset_name']}/checkpoint-30")
+        #{cfg['data_config']['dataset_name']}
+        #trainer.train(resume_from_checkpoint=f"./checkpoints/KuramotoSivashinsky_2D_ScOT_09072025_074058/checkpoint-15")
         trainer.train(resume_from_checkpoint=False)
         print(f"Total train time: {time.time() - start:.2f} s")
+        if training_args.push_to_hub:
+          # Push the trained model to the Hugging Face Hub
+          print("Pushing model to Hugging Face Hub...")
+          trainer.push_to_hub()
     else:
         #get the sampler from the config, it could be GridSampler, RandomSampler, TPESampler
         sampler = get_optuna_sampler(cfg["hyperparam_opt_config"]["optuna_sampler"], config=cfg)
@@ -229,6 +236,7 @@ def run(cfg):
             sampler=sampler,
             pruner=NopPruner()
         )
+        
         # --------------------------------------------------------------
         # Save HPO results to CSV -------------------------------------
         # --------------------------------------------------------------

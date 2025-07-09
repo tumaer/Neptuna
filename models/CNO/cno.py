@@ -2,14 +2,15 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from models.CNO.cno_utils import CNOBlock, LiftProjectBlock, ResNet
-from typing import List, Optional, Union, Callable, Tuple
+from transformers import PreTrainedModel
+from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 
 def _div_size(size, factor):
     if isinstance(size, int):
         return size // factor
     return tuple(s // factor for s in size)
 
-class CNO(nn.Module):
+class CNO(PreTrainedModel):
     """Convolutional Neural Operator (CNO) model for learning mappings between function spaces.
 
     The CNO architecture consists of an encoder-decoder structure with residual blocks, designed to learn
@@ -47,65 +48,47 @@ class CNO(nn.Module):
     main_input_name = "input_data"  
     conditioning_input_name = "conditioning_input_data"
 
-    def __init__(self,
-                in_channels: int,                    # Number of input channels.
-                out_channels: int,                   # Number of input channels.
-                grid_resolution: Union[int, List[int], Tuple[int]],  # Input and Output spatial size (required )
-                cno_depth: int,                  # Number of (D) or (U) blocks in the network
-                dimension: int,
-                sequence_info: Optional[List[int]] = [1,1,1],
-                n_blocks: int = 4,                 # Number of (R) blocks per level (except the neck)
-                n_blocks_bottleneck: int = 4,            # Number of (R) blocks in the neck
-                channel_multiplier: int = 16, 
-                norm: bool = True,             
-                latent_channels: int = 64
-                ):
+    def __init__(self, config):
+        super().__init__(config)
 
-        super().__init__()
-
-        self.cno_depth = int(cno_depth)         # Number of (D) & (U) Blocks
-        self.lift_dim = channel_multiplier//2 # Input is lifted to the half of channel_multiplier dimension
-        self.in_size = in_channels * sequence_info[0] 
-        self.out_size = out_channels * sequence_info[1]
-        self.channel_multiplier = channel_multiplier  # The growth of the channels
-        self.dimension = dimension
+        self.config = config
 
         ######## Num of channels/features - evolution ########
 
-        self.encoder_features = [self.lift_dim] # How the features in Encoder evolve (number of features)
-        for i in range(self.cno_depth):
-            self.encoder_features.append(2 ** i *   self.channel_multiplier)
+        self.encoder_features = [config.lift_dim] # How the features in Encoder evolve (number of features)
+        for i in range(config.cno_depth):
+            self.encoder_features.append(2 ** i * config.channel_multiplier)
 
         self.decoder_features_in = self.encoder_features[1:] # How the features in Decoder evolve (number of features)
         self.decoder_features_in.reverse()
         self.decoder_features_out = self.encoder_features[:-1]
         self.decoder_features_out.reverse()
 
-        for i in range(1, self.cno_depth):
+        for i in range(1, config.cno_depth):
             self.decoder_features_in[i] = 2*self.decoder_features_in[i] #Pad the outputs of the resnets (we must multiply by 2 then)
 
         ######## Spatial sizes of channels - evolution ########
 
         self.encoder_sizes = []
         self.decoder_sizes = []
-        for i in range(self.cno_depth + 1):
-            self.encoder_sizes.append(_div_size(grid_resolution, 2 ** i))
-            self.decoder_sizes.append(_div_size(grid_resolution, 2 ** (self.cno_depth - i)))
+        for i in range(config.cno_depth + 1):
+            self.encoder_sizes.append(_div_size(config.grid_resolution, 2 ** i))
+            self.decoder_sizes.append(_div_size(config.grid_resolution, 2 ** (config.cno_depth - i)))
 
 
         ######## Define Lift and Projection blocks ########
 
-        self.lift   = LiftProjectBlock(in_channels = self.in_size,
+        self.lift   = LiftProjectBlock(in_channels = config.in_size,
                                        out_channels = self.encoder_features[0],
-                                        dimension = self.dimension,
-                                        grid_resolution = grid_resolution,
-                                        latent_channels = latent_channels)
+                                        dimension = config.dimension,
+                                        grid_resolution = config.grid_resolution,
+                                        latent_channels = config.latent_channels)
 
         self.project   = LiftProjectBlock(in_channels = self.encoder_features[0] + self.decoder_features_out[-1],
-                                          out_channels = self.out_size,
-                                          dimension = self.dimension,
-                                          grid_resolution = grid_resolution,
-                                          latent_channels = latent_channels)
+                                          out_channels = config.out_size,
+                                          dimension = config.dimension,
+                                          grid_resolution = config.grid_resolution,
+                                          latent_channels = config.latent_channels)
 
         ######## Define Encoder, ED Linker and Decoder networks ########
 
@@ -113,27 +96,27 @@ class CNO(nn.Module):
                                                         out_channels = self.encoder_features[i+1],
                                                         in_grid_resolution      = self.encoder_sizes[i],
                                                         out_grid_resolution     = self.encoder_sizes[i+1],
-                                                        dimension = self.dimension,
-                                                        norm       = norm))
-                                                for i in range(self.cno_depth)])
+                                                        dimension = config.dimension,
+                                                        norm       = config.norm))
+                                                for i in range(config.cno_depth)])
 
         # After the ResNets are executed, the sizes of encoder and decoder might not match (if out_size>1)
         # We must ensure that the sizes are the same, by aplying CNO Blocks
         self.ED_expansion     = nn.ModuleList([(CNOBlock(in_channels = self.encoder_features[i],
                                                         out_channels = self.encoder_features[i],
                                                         in_grid_resolution      = self.encoder_sizes[i],
-                                                        out_grid_resolution     = self.decoder_sizes[self.cno_depth - i],
-                                                        dimension = self.dimension,
-                                                        norm       = norm))
-                                                for i in range(self.cno_depth + 1)])
+                                                        out_grid_resolution     = self.decoder_sizes[config.cno_depth - i],
+                                                        dimension = config.dimension,
+                                                        norm       = config.norm))
+                                                for i in range(config.cno_depth + 1)])
 
         self.decoder         = nn.ModuleList([(CNOBlock(in_channels  = self.decoder_features_in[i],
                                                         out_channels = self.decoder_features_out[i],
                                                         in_grid_resolution      = self.decoder_sizes[i],
                                                         out_grid_resolution     = self.decoder_sizes[i+1],
-                                                        dimension = self.dimension,
-                                                        norm       = norm))
-                                                for i in range(self.cno_depth)])
+                                                        dimension = config.dimension,
+                                                        norm       = config.norm))
+                                                for i in range(config.cno_depth)])
 
         #### Define ResNets Blocks 
 
@@ -143,22 +126,22 @@ class CNO(nn.Module):
         # Outputs of the middle networks are patched (or padded) to corresponding sets of feature maps in the decoder
 
         self.res_nets = []
-        self.n_blocks = int(n_blocks)
-        self.n_blocks_bottleneck = int(n_blocks_bottleneck)
+        self.n_blocks = int(config.n_blocks)
+        self.n_blocks_bottleneck = int(config.n_blocks_bottleneck)
 
         # Define the ResNet networks (before the neck)
-        for l in range(self.cno_depth):
+        for l in range(config.cno_depth):
             self.res_nets.append(ResNet(channels = self.encoder_features[l],
                                         grid_resolution = self.encoder_sizes[l],
                                         num_blocks = self.n_blocks,
-                                        dimension = self.dimension,
-                                        norm = norm))
+                                        dimension = config.dimension,
+                                        norm = config.norm))
 
-        self.res_net_neck = ResNet(channels = self.encoder_features[self.cno_depth],
-                                    grid_resolution = self.encoder_sizes[self.cno_depth],
+        self.res_net_neck = ResNet(channels = self.encoder_features[config.cno_depth],
+                                    grid_resolution = self.encoder_sizes[config.cno_depth],
                                     num_blocks = self.n_blocks_bottleneck,
-                                    dimension = self.dimension,
-                                    norm = norm)
+                                    dimension = config.dimension,
+                                    norm = config.norm)
 
         self.res_nets = torch.nn.Sequential(*self.res_nets)
 
@@ -174,13 +157,22 @@ class CNO(nn.Module):
             conditioning_input_data = None                   
         
         batch, input_seq, input_channels, *spatial = input_data.shape
-        x = input_data.reshape(batch, input_seq * input_channels, *spatial)
-                        
+        input_data = input_data.reshape(batch, input_seq * input_channels, *spatial)
+        
+        if self.config.coord_features:
+            if self.config.dimension == 1:
+                coord_feat = oned_meshgrid(list(input_data.shape), input_data.device)
+            elif self.config.dimension == 2:
+                coord_feat = twod_meshgrid(list(input_data.shape), input_data.device)
+            elif self.config.dimension == 3:
+                coord_feat = threed_meshgrid(list(input_data.shape), input_data.device)
+            x = torch.cat((input_data, coord_feat), dim=1)
+            
         x = self.lift(x) #Execute Lift
         skip = []
        
         # Execute Encoder
-        for i in range(self.cno_depth):
+        for i in range(self.config.cno_depth):
 
             #Apply ResNet & save the result
             z = self.res_nets[i](x)
@@ -193,13 +185,13 @@ class CNO(nn.Module):
         x = self.res_net_neck(x)
 
         # Execute Decode
-        for i in range(self.cno_depth):
+        for i in range(self.config.cno_depth):
 
             # Apply (I) block (ED_expansion) & cat if needed
             if i == 0:
-                x = self.ED_expansion[self.cno_depth - i](x) #BottleNeck : no cat
+                x = self.ED_expansion[self.config.cno_depth - i](x) #BottleNeck : no cat
             else:
-                x = torch.cat((x, self.ED_expansion[self.cno_depth - i](skip[-i])),1)
+                x = torch.cat((x, self.ED_expansion[self.config.cno_depth - i](skip[-i])),1)
 
             # Apply (U) block
             x = self.decoder[i](x)

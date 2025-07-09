@@ -2,7 +2,8 @@ import torch
 from omegaconf import ListConfig
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List, Optional, Union, Callable, Tuple
+from typing import List, Union, Tuple
+from models.model_utils import PretrainedConfig
 
 def _to_tuple(x):
     if isinstance(x, ListConfig):
@@ -11,7 +12,41 @@ def _to_tuple(x):
         return tuple(int(i) for i in x)
     else:
         return (int(x),)
-    
+
+class CNOConfig(PretrainedConfig):
+    """
+    Configuration class for the CNO model.
+
+    Args:
+        cno_depth (int): Number of (D) or (U) blocks in the network. Default is 4.
+        n_blocks (int): Number of (R) blocks per level (except the neck). Default is 4.
+        n_blocks_bottleneck (int): Number of (R) blocks in the neck. Default is 4.
+        channel_multiplier (int): Multiplier for the number of channels at each level. Default is 16.
+        norm (bool): Whether to apply normalization. Default is True.
+        **kwargs: Additional keyword arguments passed to the parent class.
+    """
+
+    model_type = "CNO"
+
+    def __init__(
+        self,
+        cno_depth: int = 4,                                   # Number of (D) or (U) blocks in the network
+        n_blocks: int = 4,                                  # Number of (R) blocks per level (except the neck)
+        n_blocks_bottleneck: int = 4,                       # Number of (R) blocks in the neck
+        channel_multiplier: int = 16, 
+        norm: bool = True,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+
+        self.cno_depth = int(cno_depth)         # Number of (D) & (U) Blocks
+        self.n_blocks = n_blocks
+        self.n_blocks_bottleneck = n_blocks_bottleneck
+        self.norm = norm
+        self.lift_dim = channel_multiplier//2 # Input is lifted to the half of channel_multiplier dimension
+        self.channel_multiplier = channel_multiplier  # The growth of the channels
+
+
 class CNO_LReLu(nn.Module):
     def __init__(self,
                 in_grid_resolution: Union[int, List[int], Tuple[int]],
