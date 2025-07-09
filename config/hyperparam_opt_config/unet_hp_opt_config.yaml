@@ -4,11 +4,11 @@ metric_for_tuning_hp: ['eval_l2_error', 'eval_l1_error']
 optuna_sampler: TPESampler
 search_domain:
   train_config:
-    max_steps:
+    num_train_epochs:
       method: categorical
-      choices: [10, 15]
+      choices: [0.05, 0.1]
 
-    pushforward:
+    pushforward_config:
       max_allowed_unroll_steps:
         method: categorical
         choices: [[1,1,1], [0,1,3]]
