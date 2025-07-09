@@ -3,15 +3,15 @@ import torch.nn as nn
 from torch import Tensor
 from models.CNO.cno_utils import CNOBlock, LiftProjectBlock, ResNet
 from typing import List, Optional, Union, Callable, Tuple
-from models.model_utils import cfd_PreTrainedModel
-from utils.feature_utils import twod_meshgrid
+from models.model_utils import PreTrainedModel
+from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 
 def _div_size(size, factor):
     if isinstance(size, int):
         return size // factor
     return tuple(s // factor for s in size)
 
-class CNO(cfd_PreTrainedModel):
+class CNO(PreTrainedModel):
     """Convolutional Neural Operator (CNO) model for learning mappings between function spaces.
 
     The CNO architecture consists of an encoder-decoder structure with residual blocks, designed to learn
@@ -158,11 +158,16 @@ class CNO(cfd_PreTrainedModel):
             conditioning_input_data = None                   
         
         batch, input_seq, input_channels, *spatial = input_data.shape
-        x = input_data.reshape(batch, input_seq * input_channels, *spatial)
+        input_data = input_data.reshape(batch, input_seq * input_channels, *spatial)
         
         if self.config.coord_features:
-            coord_feat = twod_meshgrid(list(input_data.shape), input_data.device)
-            input_data = torch.cat((input_data, coord_feat), dim=1)
+            if self.config.dimension == 1:
+                coord_feat = oned_meshgrid(list(input_data.shape), input_data.device)
+            elif self.config.dimension == 2:
+                coord_feat = twod_meshgrid(list(input_data.shape), input_data.device)
+            elif self.config.dimension == 3:
+                coord_feat = threed_meshgrid(list(input_data.shape), input_data.device)
+            x = torch.cat((input_data, coord_feat), dim=1)
             
         x = self.lift(x) #Execute Lift
         skip = []

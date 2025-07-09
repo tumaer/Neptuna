@@ -2,11 +2,11 @@ from typing import Callable,List, Optional, Union, Tuple
 import torch
 import torch.nn as nn
 from torch import Tensor
-from models.model_utils import cfd_PretrainedConfig
+from models.model_utils import PretrainedConfig
 from utils.activation_func import get_activation
 #from modulus>models>layers>fully_connected_layers.py
 
-class FNOConfig(cfd_PretrainedConfig):
+class FNOConfig(PretrainedConfig):
     """Fourier neural operator (FNO) model.
 
     Parameters

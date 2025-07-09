@@ -3,9 +3,9 @@ import torch.nn as nn
 from torch import Tensor
 import numpy as np
 
-from models.model_utils import cfd_PretrainedConfig
+from models.model_utils import PretrainedConfig
 
-class DeepONetConfig(cfd_PretrainedConfig):
+class DeepONetConfig(PretrainedConfig):
     """
     Args:
         branch_net : str
@@ -70,13 +70,13 @@ class DeepONetConfig(cfd_PretrainedConfig):
         self.ResNet_block = ResNet_block
         self.out_ffn_depth = out_ffn_depth
 
-        self.in_size = self.in_channels
-        self.out_size = self.out_channels
+        if self.coord_features:
+            self.in_size = self.in_size - self.dimension
 
 
 
 
-class Ffn(nn.Module):
+class FFN(nn.Module):
     """
     A general fully connected multi-layer neural network.
     """

@@ -6,10 +6,10 @@ from utils import activation_func
 from typing import Optional, List
 from .resnet_utils import BasicBlockND,DilatedBasicBlockND, getblock, make_layer
 from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
-from models.model_utils import cfd_PreTrainedModel
+from models.model_utils import PreTrainedModel
 
 
-class ResNet(cfd_PreTrainedModel):
+class ResNet(PreTrainedModel):
     """Class to support ResNet like feedforward architectures"""
 
     main_input_name = "input_data"
@@ -60,7 +60,7 @@ class ResNet(cfd_PreTrainedModel):
         
         return y
                                                    
-class ResNet1D(cfd_PreTrainedModel):
+class ResNet1D(PreTrainedModel):
     def __init__(self, config, activation_fn: nn.Module = nn.GELU()) -> None:
         super().__init__(config)
 
@@ -141,7 +141,7 @@ class ResNet1D(cfd_PreTrainedModel):
                         
         return x
 
-class ResNet2D(cfd_PreTrainedModel):
+class ResNet2D(PreTrainedModel):
     def __init__(self, config, activation_fn: nn.Module = nn.GELU()) -> None:
         super().__init__(config)
         self.activation = activation_fn
@@ -222,7 +222,7 @@ class ResNet2D(cfd_PreTrainedModel):
                         
         return x
 
-class ResNet3D(cfd_PreTrainedModel):
+class ResNet3D(PreTrainedModel):
 
     def __init__(self, config, activation_fn: nn.Module = nn.GELU()) -> None:
         super().__init__(config)

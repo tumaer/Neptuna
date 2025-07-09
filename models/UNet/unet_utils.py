@@ -2,10 +2,10 @@
 from typing import List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
-from models.model_utils import cfd_PretrainedConfig
+from models.model_utils import PretrainedConfig
 from utils import activation_func
 
-class UNetConfig(cfd_PretrainedConfig):
+class UNetConfig(PretrainedConfig):
     """
     Args:
         activation_fn_name (str): Name of the activation function to use. Default is "gelu".

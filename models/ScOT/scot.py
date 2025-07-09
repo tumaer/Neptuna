@@ -2,7 +2,7 @@
 # Github: https://github.com/camlab-ethz/poseidon?tab=readme-ov-file 
 # Paper: https://arxiv.org/abs/2405.19101
 
-from models.model_utils import cfd_PreTrainedModel
+from models.model_utils import PreTrainedModel
 from transformers.models.swinv2.modeling_swinv2 import (
     Swinv2EncoderOutput,
 )
@@ -481,7 +481,7 @@ class ScOTDecoder(nn.Module):
 
     
 
-class ScOT(cfd_PreTrainedModel):
+class ScOT(PreTrainedModel):
 
     main_input_name = "input_data"
     conditioning_input_name = "conditioning_input_data"
@@ -508,14 +508,14 @@ class ScOT(cfd_PreTrainedModel):
         if input_data is None:
             raise ValueError("input_data cannot be None")
         
-        batch, input_seq, channels, x_dim, y_dim = input_data.shape
-        input_data = input_data.reshape(batch, input_seq * channels, x_dim, y_dim)
+        batch, input_seq, channels, *spatial = input_data.shape
+        input_data = input_data.reshape(batch, input_seq * channels, *spatial)
         
         y = self.scot(input_data)
 
         return y
 
-class ScOT2D(cfd_PreTrainedModel):
+class ScOT2D(PreTrainedModel):
     """Inspired by https://github.com/huggingface/transformers/blob/v4.35.2/src/transformers/models/swinv2/modeling_swinv2.py#L1129"""
 
     def __init__(self, config, use_mask_token=False):

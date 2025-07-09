@@ -5,11 +5,11 @@ import torch.nn as nn
 from utils import activation_func
 import torch.nn.functional as F
 
-from models.model_utils import cfd_PreTrainedModel
+from models.model_utils import PreTrainedModel
 from .unet_utils import DownBlockND, UpBlockND, MiddleBlockND, DownsampleND, UpsampleND
 from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 
-class UNet(cfd_PreTrainedModel): 
+class UNet(PreTrainedModel): 
     """Modern U-Net architecture for fluid dynamics simulation
 
     A flexible U-Net implementation that supports 1D, 2D, and 3D data processing for fluid dynamics
@@ -81,7 +81,7 @@ class UNet(cfd_PreTrainedModel):
         return self.unet(x)
 
 #Unet based on the dimension
-class UNet1D(cfd_PreTrainedModel):
+class UNet1D(PreTrainedModel):
     """1D U-Net"""
     def __init__(self, config, activation: nn.Module):
         super().__init__(config)
@@ -228,7 +228,7 @@ class UNet1D(cfd_PreTrainedModel):
 
         return x
 
-class UNet2D(cfd_PreTrainedModel):
+class UNet2D(PreTrainedModel):
     """2D U-Net"""
     def __init__(self, config, activation: nn.Module):
         super().__init__(config)
@@ -378,7 +378,7 @@ class UNet2D(cfd_PreTrainedModel):
 
         return x
     
-class UNet3D(cfd_PreTrainedModel):
+class UNet3D(PreTrainedModel):
     """3D U-Net"""
     def __init__(self, config, activation: nn.Module):
         super().__init__(config)

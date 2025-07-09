@@ -7,10 +7,10 @@ from .fno_utils import ConvNdFCLayer, SpectralConvNd
 from .fno_utils import FullyConnected, build_lift_network, build_fno
 from utils import activation_func
 from typing import Optional, Union, Tuple, List
-from models.model_utils import cfd_PreTrainedModel
+from models.model_utils import PreTrainedModel
 from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 
-class FNO(cfd_PreTrainedModel):
+class FNO(PreTrainedModel):
     """Fourier neural operator (FNO) model."""
 
     main_input_name = "input_data"
@@ -68,7 +68,7 @@ class FNO(cfd_PreTrainedModel):
 
         return x
 
-class FNO1D(cfd_PreTrainedModel):
+class FNO1D(PreTrainedModel):
     """1D FNO"""
 
     def __init__(self, config, activation_fn: nn.Module) -> None:
@@ -164,7 +164,7 @@ class FNO1D(cfd_PreTrainedModel):
         return torch.permute(output, (0, 2, 1))
 
 
-class FNO2D(cfd_PreTrainedModel):
+class FNO2D(PreTrainedModel):
     """2D Spectral encoder for FNO"""
 
     def __init__(self, config, activation_fn: nn.Module) -> None:
@@ -268,7 +268,7 @@ class FNO2D(cfd_PreTrainedModel):
         return torch.permute(output, (0, 3, 1, 2))
     
 
-class FNO3D(cfd_PreTrainedModel):
+class FNO3D(PreTrainedModel):
     """3D Spectral encoder for FNO"""
 
     def __init__(self, config, activation_fn: nn.Module) -> None:

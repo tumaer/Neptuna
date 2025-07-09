@@ -3,10 +3,10 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from models.DeepONet.deeponet_utils import BasicBlockND4DeepONet
-from models.model_utils import cfd_PretrainedConfig
+from models.model_utils import PretrainedConfig
 
 
-class ResNetConfig(cfd_PretrainedConfig):
+class ResNetConfig(PretrainedConfig):
     """
     Args:
         block (str): 

@@ -3,7 +3,7 @@ from omegaconf import ListConfig
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Optional, Union, Callable, Tuple
-from models.model_utils import cfd_PretrainedConfig
+from models.model_utils import PretrainedConfig
 
 def _to_tuple(x):
     if isinstance(x, ListConfig):
@@ -13,7 +13,7 @@ def _to_tuple(x):
     else:
         return (int(x),)
 
-class CNOConfig(cfd_PretrainedConfig):
+class CNOConfig(PretrainedConfig):
     """
     Configuration class for the CNO model.
 

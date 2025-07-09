@@ -1,4 +1,4 @@
-from transformers import PreTrainedModel, PretrainedConfig
+from transformers import PreTrainedModel as PreTrainedModel_, PretrainedConfig as PretrainedConfig_
 import collections
 import copy
 import functools
@@ -97,9 +97,9 @@ from transformers.modeling_utils import (
 #import smdistributed.modelparallel.torch as smp
 
 
-class cfd_PreTrainedModel(PreTrainedModel):
+class PreTrainedModel(PreTrainedModel_):
 
-    def __init__(self, config: PretrainedConfig, *inputs, **kwargs):
+    def __init__(self, config: PretrainedConfig_, *inputs, **kwargs):
         super().__init__(config, *inputs, **kwargs)
 
 
@@ -507,7 +507,7 @@ class cfd_PreTrainedModel(PreTrainedModel):
                 token=token,
             )
 
-class cfd_PretrainedConfig(PretrainedConfig):
+class PretrainedConfig(PretrainedConfig_):
     """
     Base class for all configuration classes. Handles a few parameters common to all models' configurations as well as
     methods for loading/downloading/saving configurations.
@@ -531,6 +531,7 @@ class cfd_PretrainedConfig(PretrainedConfig):
         sequence_info: Optional[List[int]] = [1,1,1],
         coord_features: bool = True,
         latent_channels: int = 32,
+        include_input_seq_len: bool = True,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -540,8 +541,9 @@ class cfd_PretrainedConfig(PretrainedConfig):
         self.dimension = dimension
         self.sequence_info = sequence_info
 
-        self.in_size = self.in_channels * self.sequence_info[0] 
-        self.out_size = self.out_channels * self.sequence_info[1]
+        if include_input_seq_len:
+            self.in_size = self.in_channels * self.sequence_info[0] 
+            self.out_size = self.out_channels * self.sequence_info[1]
 
         self.grid_resolution = grid_resolution
         self.latent_channels = latent_channels
@@ -629,6 +631,7 @@ class cfd_PretrainedConfig(PretrainedConfig):
         else:
             config_dict = self.to_dict()
 
+        # NOTE: default dumpts List objects in the PretrainedConfig to json, since only json.dumps throws an error
         def default(o):
             return OmegaConf.to_container(o, resolve=True)
         return json.dumps(config_dict, indent=2, sort_keys=True, default=default) + "\n"

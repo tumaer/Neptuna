@@ -1,5 +1,5 @@
 model_name: ScOT
-patch_size: 4  # patch embedding resolution: resolution/patch_size -> padding if not divisible
+patch_size: 8  # patch embedding resolution: resolution/patch_size -> padding if not divisible
 embed_dim: 4 #48
 depths: [1, 1] #[4, 4, 4, 4]
 num_heads: [1, 2] #[3, 6, 12, 24]

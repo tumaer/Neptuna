@@ -3,14 +3,15 @@ from itertools import product
 import torch
 import torch.nn as nn
 from torch import Tensor
+from models.ResNet.resnet_utils import ResNetConfig
 from utils import activation_func
-from .deeponet_utils import Ffn, CnnBranch,grid_to_points, points_to_grid, calc_resnet_out_shape, linspace_int_list
+from .deeponet_utils import FFN, CnnBranch,grid_to_points, points_to_grid, calc_resnet_out_shape, linspace_int_list
 from models.ResNet.resnet import ResNet1D, ResNet2D, ResNet3D
-from models.model_utils import cfd_PreTrainedModel
+from models.model_utils import PreTrainedModel
 
 
 
-class AutoDeepONet(cfd_PreTrainedModel):
+class AutoDeepONet(PreTrainedModel):
     """
     Auto-regressive DeepONet for CFD.
 
@@ -66,7 +67,7 @@ class AutoDeepONet(cfd_PreTrainedModel):
                 "Invalid dimensionality. Only 1D, 2D, 3D ResNet implemented"
             )
     
-class AutoDeepONet1D(cfd_PreTrainedModel):
+class AutoDeepONet1D(PreTrainedModel):
     def __init__(self, config, activation_fn: nn.Module):
         super().__init__(config)    
 
@@ -76,14 +77,14 @@ class AutoDeepONet1D(cfd_PreTrainedModel):
             if config.branch_net_str == "FFN":
                 branch_dim = config.in_size * config.grid_resolution[0]
                 self.branch_dims = [branch_dim] + [config.width] * config.branch_depth
-                self.branch_net = Ffn(
+                self.branch_net = FFN(
                     dims = self.branch_dims,
                     activation_fn = self.activation_fn,
                     act_on_output = config.act_on_output,
                 )
                 self.trunk_dims = linspace_int_list(config.width, config.trunk_depth, 1, False)
                 #self.trunk_dims = [1] + [self.width] * self.trunk_depth        
-                self.trunk_net = Ffn(
+                self.trunk_net = FFN(
                     dims = self.trunk_dims, 
                     activation_fn = self.activation_fn,
                 )
@@ -102,12 +103,12 @@ class AutoDeepONet1D(cfd_PreTrainedModel):
                 length_new = config.latent_channels * self.branch_net.calc_out_shape()[0]
                 self.trunk_dims = linspace_int_list(length_new, config.trunk_depth, 1, False)
                 #self.trunk_dims = [1] + [self.width] * self.trunk_depth + [length_new]
-                self.trunk_net = Ffn(
+                self.trunk_net = FFN(
                     dims = self.trunk_dims, 
                     activation_fn = self.activation_fn,
                 )
                 dims_outffn = linspace_int_list(length_new, config.out_ffn_depth, 1, True)  
-                self.out_Ffn = Ffn(
+                self.out_Ffn = FFN(
                     dims = dims_outffn,
                     #dims = [length_new] * out_ffn_depth  + [1], 
                     activation_fn = self.activation_fn,
@@ -115,8 +116,7 @@ class AutoDeepONet1D(cfd_PreTrainedModel):
                 )
                 
             elif config.branch_net_str == "ResNet":
-                self.branch_net = ResNet1D(
-                    config=config,
+                resNetConfig = ResNetConfig(
                     in_size= config.in_size,
                     out_size= config.latent_channels,
                     block = config.ResNet_block,
@@ -124,23 +124,25 @@ class AutoDeepONet1D(cfd_PreTrainedModel):
                     latent_channels= config.latent_channels,
                     coord_features= config.coord_features,
                     padding= 0,
-                )
+                    include_input_seq_len = False
+                    )
+                self.branch_net = ResNet1D(config=resNetConfig)
                 length_new = config.latent_channels * calc_resnet_out_shape(
                     in_shape = config.grid_resolution,
                     num_blocks = config.num_blocks,
                     if_maxpool = False if config.ResNet_block == "BasicBlock" else True
                 )[0]
-                self.trunk_dims = linspace_int_list(length_new, self.trunk_depth, 1, False)
+                self.trunk_dims = linspace_int_list(length_new, config.trunk_depth, 1, False)
                 #self.trunk_dims = [1] + [self.width] * self.trunk_depth + [length_new]
-                self.trunk_net = Ffn(
+                self.trunk_net = FFN(
                     dims = self.trunk_dims, 
-                    activation_fn = self.activation,
+                    activation_fn = self.activation_fn,
                 )
                 dims_outffn = linspace_int_list(length_new, config.out_ffn_depth, 1, True)  
-                self.out_Ffn = Ffn(
+                self.out_Ffn = FFN(
                     dims = dims_outffn,
                     #dims = [length_new] * out_ffn_depth  + [1], 
-                    activation_fn = self.activation,
+                    activation_fn = self.activation_fn,
                     act_on_output = False,  
                 )
             else:
@@ -187,7 +189,7 @@ class AutoDeepONet1D(cfd_PreTrainedModel):
         x = points_to_grid(x, shape)  # (B, C_out , H)
         return x
 
-class AutoDeepONet2D(cfd_PreTrainedModel):
+class AutoDeepONet2D(PreTrainedModel):
     def __init__(self, config, activation_fn: nn.Module):
         super().__init__(config)
 
@@ -197,14 +199,14 @@ class AutoDeepONet2D(cfd_PreTrainedModel):
             if config.branch_net_str == "FFN":
                 branch_dim = config.in_size * config.grid_resolution[0] * config.grid_resolution[1]
                 self.branch_dims = [branch_dim] + [config.width] * config.branch_depth
-                self.branch_net = Ffn(
+                self.branch_net = FFN(
                     dims = self.branch_dims,
                     activation_fn = self.activation_fn,
                     act_on_output = config.act_on_output,
                 )
                 self.trunk_dims = linspace_int_list(self.config.width, self.config.trunk_depth, 2, False)
                 #self.trunk_dims = [2] + [self.width] * self.trunk_depth        
-                self.trunk_net = Ffn(
+                self.trunk_net = FFN(
                     dims = self.trunk_dims, 
                     activation_fn = self.activation_fn,
                 )
@@ -223,12 +225,12 @@ class AutoDeepONet2D(cfd_PreTrainedModel):
                 length_new = config.latent_channels * self.branch_net.calc_out_shape()[0] * self.branch_net.calc_out_shape()[1] 
                 self.trunk_dims = linspace_int_list(length_new, self.config.trunk_depth, 2, False)
                 #self.trunk_dims = [2] + [self.width] * self.trunk_depth + [length_new]
-                self.trunk_net = Ffn(
+                self.trunk_net = FFN(
                     dims = self.trunk_dims, 
                     activation_fn = self.activation_fn,
                 )
                 dims_outffn = linspace_int_list(length_new, config.out_ffn_depth, 1, True)  
-                self.out_Ffn = Ffn(
+                self.out_Ffn = FFN(
                     dims = dims_outffn,
                     #dims = [length_new] * out_ffn_depth  + [1], 
                     activation_fn = self.activation_fn,
@@ -236,16 +238,17 @@ class AutoDeepONet2D(cfd_PreTrainedModel):
                 )
                 
             elif config.branch_net_str == "ResNet":
-                self.branch_net = ResNet2D(
-                    config=config,
+                resNetConfig = ResNetConfig(
                     in_size= config.in_size,
                     out_size= config.latent_channels,
                     block = config.ResNet_block,
                     num_blocks = config.num_blocks,
                     latent_channels= config.latent_channels,
-                    coord_features= config.coord_features,
+                    coord_features= False, #config.coord_features,
                     padding= 0,
+                    include_input_seq_len = False
                 )
+                self.branch_net = ResNet2D(config=resNetConfig)
                 length_new = config.latent_channels * calc_resnet_out_shape(
                     in_shape = config.grid_resolution,
                     num_blocks = config.num_blocks,
@@ -255,12 +258,12 @@ class AutoDeepONet2D(cfd_PreTrainedModel):
                                                     if_maxpool = False if config.ResNet_block == "BasicBlock" else True)[1]
                 self.trunk_dims = linspace_int_list(length_new, self.config.trunk_depth, 2, False)
                 #self.trunk_dims = [2] + [self.width] * self.trunk_depth + [length_new]
-                self.trunk_net = Ffn(
+                self.trunk_net = FFN(
                     dims = self.trunk_dims, 
                     activation_fn = self.activation_fn,
                 )
                 dims_outffn = linspace_int_list(length_new, config.out_ffn_depth, 1, True)  
-                self.out_Ffn = Ffn(
+                self.out_Ffn = FFN(
                     dims = dims_outffn,
                     #dims = [length_new] * out_ffn_depth  + [1], 
                     activation_fn = self.activation_fn,
@@ -312,7 +315,7 @@ class AutoDeepONet2D(cfd_PreTrainedModel):
         return x
 
 
-class AutoDeepONet3D(cfd_PreTrainedModel):
+class AutoDeepONet3D(PreTrainedModel):
     def __init__(self, config, activation_fn: nn.Module):
         super().__init__(config) 
 
@@ -322,14 +325,14 @@ class AutoDeepONet3D(cfd_PreTrainedModel):
             if config.branch_net_str == "FFN":
                 branch_dim = config.in_size * config.grid_resolution[0] * config.grid_resolution[1] * config.grid_resolution[2]
                 self.branch_dims = [branch_dim] + [config.width] * config.branch_depth
-                self.branch_net = Ffn(
+                self.branch_net = FFN(
                     dims = self.branch_dims,
                     activation_fn = self.activation_fn,
                     act_on_output = config.act_on_output,
                 )
                 self.trunk_dims = linspace_int_list(self.config.width, self.config.trunk_depth, 3, False)
                 #self.trunk_dims = [3] + [self.width] * self.trunk_depth        
-                self.trunk_net = Ffn(
+                self.trunk_net = FFN(
                     dims = self.trunk_dims, 
                     activation_fn = self.activation_fn,
                 )
@@ -348,12 +351,12 @@ class AutoDeepONet3D(cfd_PreTrainedModel):
                 length_new = config.latent_channels * self.branch_net.calc_out_shape()[0] * self.branch_net.calc_out_shape()[1] * self.branch_net.calc_out_shape()[2]
                 self.trunk_dims = linspace_int_list(length_new, self.config.trunk_depth, 3, False)
                 #self.trunk_dims = [3] + [self.width] * self.trunk_depth + [length_new]
-                self.trunk_net = Ffn(
+                self.trunk_net = FFN(
                     dims = self.trunk_dims, 
                     activation_fn = self.activation_fn,
                 )
                 dims_outffn = linspace_int_list(length_new, config.out_ffn_depth, 1, True)  
-                self.out_Ffn = Ffn(
+                self.out_Ffn = FFN(
                     dims = dims_outffn,
                     #dims = [length_new] * out_ffn_depth  + [1], 
                     activation_fn = self.activation_fn,
@@ -361,8 +364,7 @@ class AutoDeepONet3D(cfd_PreTrainedModel):
                 )
                 
             elif config.branch_net_str == "ResNet":
-                self.branch_net = ResNet3D(
-                    config=config,
+                resNetConfig = ResNetConfig(
                     in_size= config.in_size,
                     out_size= config.latent_channels,
                     block = config.ResNet_block,
@@ -370,7 +372,9 @@ class AutoDeepONet3D(cfd_PreTrainedModel):
                     latent_channels= config.latent_channels,#TODO:change this!!!!!
                     coord_features= config.coord_features,
                     padding= 0,
+                    include_input_seq_len = False
                 )
+                self.branch_net = ResNet3D(config=resNetConfig)
                 length_new = config.latent_channels * calc_resnet_out_shape(
                     in_shape = config.grid_resolution,
                     num_blocks = config.num_blocks,
@@ -383,12 +387,12 @@ class AutoDeepONet3D(cfd_PreTrainedModel):
                                                     if_maxpool = False if config.ResNet_block == "BasicBlock" else True)[2]
                 self.trunk_dims = linspace_int_list(length_new, self.config.trunk_depth, 3, False)
                 #self.trunk_dims = [3] + [self.width] * self.trunk_depth + [length_new]
-                self.trunk_net = Ffn(
+                self.trunk_net = FFN(
                     dims = self.trunk_dims, 
                     activation_fn = self.activation_fn,
                 )
                 dims_outffn = linspace_int_list(length_new, config.out_ffn_depth, 1, True)  
-                self.out_Ffn = Ffn(
+                self.out_Ffn = FFN(
                     dims = dims_outffn,
                     #dims = [length_new] * out_ffn_depth  + [1], 
                     activation_fn = self.activation_fn,
