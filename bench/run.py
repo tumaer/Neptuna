@@ -80,7 +80,7 @@ def run(cfg):
         save_steps=5, #only used if save_strategy is "steps"
         save_total_limit=2,  # keep only last N checkpoints
         push_to_hub=False, # push to Hugging Face Hub, requires login before (run `huggingface-cli login` in terminal)
-        hub_strategy="checkpoint",  # push last checkpoint to Hub (alternatives: "end", "every_save", "checkpoint", "all_checkpoints")
+        hub_strategy="end",  # push last checkpoint to Hub (alternatives: "end", "every_save", "checkpoint", "all_checkpoints")
     
         # ------------------------------------------------------------------
         # Reproducibility --------------------------------------------------
@@ -231,3 +231,7 @@ def run(cfg):
             sampler=sampler,
             pruner=NopPruner()
         )
+    if training_args.push_to_hub:
+        # Push the trained model to the Hugging Face Hub
+        print("Pushing model to Hugging Face Hub...")
+        trainer.push_to_hub()
