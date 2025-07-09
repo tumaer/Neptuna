@@ -1,7 +1,7 @@
 dataset_name: SyntheticFlow
 dataset_directory_path: ./data/synthetic/SF/2D/constant
 dimension: 2
-sequence_info: [3, 4, 2]
+sequence_info: [4, 3, 2]
 filter_frames: null 
 filter_groups: null
 filter_in_channels: ['density','velocity',"schlieren"]
@@ -16,23 +16,23 @@ grid_resolution: null #if not provided, will be inferred automatically from the 
 data_normalization_strategy: min_max_normalization #options: z_normalization, min_max_normalization
 eval_groups: null
 data_normalization_stats:
-  density:
-    mean: 49.5
-    std: 28.866069793701172
-    min: 0.0
-    max: 99.0
-  schlieren:
-    mean: 49.5
-    std: 28.866069793701172
-    min: 0.0
-    max: 99.0
-  velocity_0:
-    mean: 49.5
-    std: 28.866069793701172
-    min: 0.0
-    max: 99.0
-  velocity_1:
-    mean: 49.5
-    std: 28.866069793701172
-    min: 0.0
-    max: 99.0
+  # density:
+  #   mean: 49.5
+  #   std: 28.866069793701172
+  #   min: 0.0
+  #   max: 99.0
+  # schlieren:
+  #   mean: 49.5
+  #   std: 28.866069793701172
+  #   min: 0.0
+  #   max: 99.0
+  # velocity_0:
+  #   mean: 49.5
+  #   std: 28.866069793701172
+  #   min: 0.0
+  #   max: 99.0
+  # velocity_1:
+  #   mean: 49.5
+  #   std: 28.866069793701172
+  #   min: 0.0
+  #   max: 99.0
