@@ -21,7 +21,37 @@ import random
 import warnings
 from utils.feature_utils import normalize_data
 
-def build_eval_groups(filtered_groups, eval_split_ratio):
+#NOTE: This function is not used in the current implementation.
+def build_eval_groups_extremes(filtered_groups, eval_split_ratio):
+    """Select evaluation groups biased toward extremes and middle samples.
+
+    The function first determines the target number of evaluation groups as
+    ``round(len(filtered_groups) * eval_split_ratio)``.  It then splits this
+    quota approximately 50-50 between *extreme* and *middle* groups:
+
+    1. *Extreme* groups are taken alternately from the end (largest index) and
+       the beginning (smallest index) of ``filtered_groups`` until the extreme
+       quota is reached.
+    2. The remaining quota is filled by uniform random sampling (without
+       replacement) from the groups that lie between the extremes.
+
+    The random seed is fixed to 42 so that repeated runs with the same inputs
+    yield identical splits.
+
+    Parameters
+    ----------
+    filtered_groups : list
+        Sequence of group names remaining after any filtering and already
+        sorted in the desired order (e.g. by Reynolds number).
+    eval_split_ratio : float
+        Fraction of groups to include in the evaluation split (0 ≤ ratio ≤ 1).
+
+    Returns
+    -------
+    list
+        The combined list of extreme and middle group names to be used for
+        evaluation.
+    """
     
     # Set random seed for reproducibility of sampling groups from the middle for eval
     random.seed(42) 
@@ -60,6 +90,41 @@ def build_eval_groups(filtered_groups, eval_split_ratio):
     eval_groups.extend(middle_sample)
     eval_groups = list(dict.fromkeys(eval_groups))  # ensure uniqueness
     return eval_groups
+
+# ---------------------------------------------------------------------------
+# random sampling of evaluation groups
+# ---------------------------------------------------------------------------
+def build_eval_groups(filtered_groups, eval_split_ratio):
+    """Randomly pick evaluation groups based on *eval_split_ratio*.
+
+    This simple strategy samples groups uniformly at random (without
+    replacement). The sampling is seeded for reproducibility so that repeated
+    runs with the same inputs yield the same split.
+
+    Parameters
+    ----------
+    filtered_groups : list
+        Sequence of group names remaining after any filtering.
+    eval_split_ratio : float
+        Fraction of groups to include in the evaluation split (0 ≤ ratio ≤ 1).
+
+    Returns
+    -------
+    list
+        Randomly-selected evaluation group names.
+    """
+
+    # Reuse the global seed for deterministic behaviour.
+    random.seed(42)
+
+    total_groups = len(filtered_groups)
+    n_eval_groups = int(round(total_groups * eval_split_ratio))
+
+    # Guard against corner cases where the ratio rounds to 0.
+    if n_eval_groups <= 0:
+        return []
+
+    return random.sample(filtered_groups, n_eval_groups)
 
 #---------------------------------------
 # Helper functions for steady-state data
