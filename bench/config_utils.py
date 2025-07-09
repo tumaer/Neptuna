@@ -55,11 +55,59 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     # ------------------------------------------------------------------
     if cfg["data_config"]["data_normalization_stats"] is None:
         stats, channel_names, _ = compute_statistics(
-            [f"{cfg['data_config']['dataset_directory_path']}/train.h5"]
+            h5_paths=[f"{cfg['data_config']['dataset_directory_path']}/train.h5"], 
+            residual_config=cfg["data_config"]["residual_config"],
+            # the following arguments should be adjusted depending on the h5_paths 
+            # (if multiple h5-files are provided)
+            filter_groups=cfg["data_config"]["filter_groups"],
+            filter_frames=cfg["data_config"]["filter_frames"],
+            frame_stride=cfg["data_config"]["sequence_info"][2],
+            on_fly_stats=False
         )
         cfg["data_config"]["data_normalization_stats"] = stats
     else:
         channel_names = list(cfg["data_config"]["data_normalization_stats"].keys())
+        if (cfg["data_config"]["residual_config"] is not None) and (len(cfg["data_config"]["data_normalization_stats"]) != 2*len(channel_names)):
+            raise ValueError(f"Insufficient statistics provided in the data_normalization_stats dictionary. Please provide statistics also for the residual channels.")
+        # check if the desired quantities are present for the given normalization strategy
+        if cfg["data_config"]["data_normalization_strategy"] == "z_normalization":
+            missing_stats = {}
+            for ch_name, stat_dict in cfg["data_config"]["data_normalization_stats"].items():
+                missing = [k for k in ("mean", "std") if k not in stat_dict]
+                if missing:
+                    missing_stats[ch_name] = missing
+                    
+            if missing_stats:
+                details = "; ".join(f"{ch}: {', '.join(miss)}" for ch, miss in missing_stats.items())
+                raise ValueError(
+                    "Insufficient statistics. The following keys are missing -> " + details
+                )
+        elif cfg["data_config"]["data_normalization_strategy"] == "min_max_normalization":
+            missing_stats = {}
+            for ch_name, stat_dict in cfg["data_config"]["data_normalization_stats"].items():
+                missing = [k for k in ("min", "max") if k not in stat_dict]
+                if missing:
+                    missing_stats[ch_name] = missing
+
+            if missing_stats:
+                details = "; ".join(f"{ch}: {', '.join(miss)}" for ch, miss in missing_stats.items())
+                raise ValueError(
+                    "Insufficient statistics for min-max normalization. The following keys are missing -> "
+                    + details
+                )
+        elif cfg["data_config"]["data_normalization_strategy"] == "robust_normalization":
+            missing_stats = {}
+            for ch_name, stat_dict in cfg["data_config"]["data_normalization_stats"].items():
+                missing = [k for k in ("median", "iqr") if k not in stat_dict]
+                if missing:
+                    missing_stats[ch_name] = missing
+
+            if missing_stats:
+                details = "; ".join(f"{ch}: {', '.join(miss)}" for ch, miss in missing_stats.items())
+                raise ValueError(
+                    "Insufficient statistics for robust normalization. The following keys are missing -> "
+                    + details
+                )
 
     # ------------------------------------------------------------------
     # 4) Channel selection ----------------------------------------------
@@ -89,4 +137,5 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     cfg["data_config"]["filter_in_channels"] = filtered_in_channels
     cfg["data_config"]["filter_out_channels"] = filtered_out_channels
     cfg["data_config"]["conditioning_in_channels"] = filtered_cond_in_channels
+
     return cfg 
