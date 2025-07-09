@@ -2,8 +2,8 @@
 # Training parameters
 ########################################################
 # Batch size for train and eval
-per_device_train_batch_size: 64 #4
-per_device_eval_batch_size: 64 #4
+per_device_train_batch_size: 6 #4
+per_device_eval_batch_size: 6 #4
 # Number of training epochs
 num_train_epochs: 2 #128
 # Number of training steps( overrides num_epochs)
