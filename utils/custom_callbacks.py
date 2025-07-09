@@ -6,6 +6,7 @@ from transformers.trainer_callback import TrainerControl as TrainerControl_
 from dataclasses import dataclass
 import wandb
 from transformers.integrations.integration_utils import logger
+from omegaconf import ListConfig
 import tempfile
 import numpy as np
 
@@ -175,6 +176,9 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
         self._should_plot = False
         self.global_step = None
         self.trial = None
+        # Track which epoch thresholds (if any) have already triggered a plot so that we don't
+        # repeatedly plot for the same threshold when `plot_after_epoch` is a list.
+        self._plotted_thresholds = set()
         
     def on_evaluate(self, args, state, control, **kwargs):
         # Mark that an evaluation just happened
@@ -203,7 +207,27 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
 
             # Plot only after the configured epoch threshold (default 0 when null)
             plot_after_epoch = self.train_config.get("plot_after_epoch") or 0
-            if state.epoch >= plot_after_epoch:
+
+            # --------------------------------------------------------------
+            # Decide whether to plot for the current epoch.
+            # --------------------------------------------------------------
+            should_plot = False
+            # Case 1: `plot_after_epoch` is an iterable (list/tuple/set) of
+            # epoch numbers. We want to plot *once* for each threshold when
+            # it is first crossed.
+            if isinstance(plot_after_epoch, (ListConfig, list, tuple, set)):
+                for thr in plot_after_epoch:
+                    if state.epoch >= thr and thr not in self._plotted_thresholds:
+                        should_plot = True
+                        self._plotted_thresholds.add(thr)
+                        break  # Plot at most once per call
+            # Case 2: `plot_after_epoch` is a single number – plot
+            # continuously for every evaluation after the threshold is
+            # reached.
+            else:
+                should_plot = state.epoch >= plot_after_epoch
+
+            if should_plot:
                 # ------------------------------------------------------------------
                 # Renormalize inputs, labels and predictions for visualization
                 # ------------------------------------------------------------------

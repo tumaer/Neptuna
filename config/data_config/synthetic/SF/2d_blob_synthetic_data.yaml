@@ -8,6 +8,10 @@ filter_in_channels: ['density','schlieren','velocity_0']
 filter_out_channels: ['velocity_0', 'density']
 conditioning_in_channels: ['schlieren'] # if null, then ensure filter_in_channels == filter_out_channels
 is_steady_state_prediction: False #assuming the last frame is the steady state
+include_conditioning_parameters: False
+residual_config:
+  add_base_value: False
+  add_predicted_value: True
 grid_resolution: null #if not provided, will be inferred automatically from the dataset
 #data_normalization_stats: null #if not provided, will be computed automatically from the dataset
 data_normalization_strategy: z_normalization #options: z_normalization, min_max_normalization

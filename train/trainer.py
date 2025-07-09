@@ -22,10 +22,14 @@ class Trainer(Trainer_):
         self.output_log_config = output_log_config
         self.original_label_seq_len = self.data_config.sequence_info[1] #number of predicted timesteps from the model (#no rollout timesteps considered)
         
+        self.get_prediction_loss_for_eval_windows = False #TODO: Find a way to not hardcode this.
+
+        self.residual_config = data_config["residual_config"]
+        self.pushforward_config = train_config["pushforward_config"]
+
         # Rebuild the callback handler with our custom implementation so that on_evaluate accepts **kwargs
         # Preserve the list of callbacks that may have been created by the HuggingFace Trainer during super().__init__.
         # NOTE: `CallbackHandler` here refers to our subclass imported from train.trainer_callback.
-
         existing_callbacks = getattr(self.callback_handler, "callbacks", [])
         # Re-instantiate using our custom CallbackHandler class so the overridden methods are used.
         self.callback_handler = CallbackHandler(
@@ -40,6 +44,49 @@ class Trainer(Trainer_):
         if self.output_log_config["logging"]["wandb"]:
             self.callback_handler.remove_callback(WandbCallback_)
             self.add_callback(WandbCallback())
+
+    def _compute_raw_prediction(self, prediction: torch.Tensor, base_value: torch.Tensor):
+        """Vectorised residual addition.
+
+        Parameters
+        ----------
+        prediction : torch.Tensor
+            Shape (B, T, C, *spatial_dims). Raw model output for a single window.
+        base_value : torch.Tensor
+            Shape (B, 1, C, *spatial_dims). Last known physical state used as an additive baseline.
+
+        Returns
+        -------
+        Tuple[torch.Tensor, torch.Tensor]
+            raw_prediction : The residual-augmented prediction with the same shape as *prediction*.
+            new_base_value : The latest timestep of *raw_prediction* (when add_predicted_value=True) or the
+                              unchanged *base_value* (when add_base_value=True). This is fed into subsequent
+                              autoregressive steps.
+        """
+        #prediction.shape = torch.Size([B, label_seq_length, C_labels, x_resolution, y_resolution, ...])
+        #base_value.shape = torch.Size([B, 1, C_labels, x_resolution, y_resolution, ...]) which is the last time step of the input data
+        if self.residual_config["add_predicted_value"]:
+            # Cumulative sum along temporal axis replicates the iterative loop:
+            # for i in range(self.data_config.sequence_info[1]):
+            #     raw_prediction.append(prediction[:,i:i+1,:,:,:] + base_value)
+            #     base_value = raw_prediction[-1]
+            # raw_prediction = torch.cat(raw_prediction, dim=1)
+            # Assume the base_value is x_0 and the prediction is dx1 (x1-x0), dx2 (x2-x1), dx3 (x3-x2)
+            #step 1: cumsum along the temporal axis: dx1 (x1-x0), dx1+dx2 (x2-x0), dx1+dx2+dx3 (x3-x0)
+            #step 2: add the base_value (x0) to the cumulative sum to obtain: x1, x2, x3. 
+            # The + operator, broadcasts the base_value (B, 1) to the shape of the cumulative sum (B, label_seq_length).
+            raw_prediction = prediction.cumsum(dim=1) + base_value
+            new_base_value = raw_prediction[:, -1:]
+        else:  # add_base_value == True (add_predicted_value is False)
+            # for i in range(self.data_config.sequence_info[1]):
+            #     raw_prediction.append(prediction[:,i:i+1,:,:,:] + base_value)
+            # raw_prediction = torch.cat(raw_prediction, dim=1)
+            # Assume the base_value is x_0 (B, 1 , ...)and the prediction is dx1 (x1-x0), dx2 (x2-x0), dx3 (x3-x0) of shape (B, label_seq_length, ...).
+            # step 1: add the base_value, x_0 to the prediction: dx1+x0, dx2+x0, dx3+x0 resulting in x1, x2, x3 of shape (B, label_seq_length, ...).
+            # The + operator, broadcasts the base_value (B, 1) to the shape of the prediction (B, label_seq_length).
+            raw_prediction = prediction + base_value
+            new_base_value = base_value
+        return raw_prediction, new_base_value
     
     def _rebuild_datasets(self):
         """Recreate train and evaluation datasets after hyper-parameters were updated during an HP search trial."""
@@ -47,15 +94,20 @@ class Trainer(Trainer_):
             dataset_name=self.data_config["dataset_name"],
             dataset_directory_path=self.data_config["dataset_directory_path"],
             sequence_info=self.data_config["sequence_info"],
-            max_pf_train_rollouts=self.train_config["pushforward"]["max_allowed_unroll_steps"][-1],
+            pushforward_config=self.train_config["pushforward_config"],
             n_eval_rollouts=self.train_config["n_eval_rollouts"],
             filter_frames=self.data_config["filter_frames"],
             filter_groups=self.data_config["filter_groups"],
-            channels=self.data_config["filter_channels"],
+            filter_in_channels=self.data_config["filter_in_channels"],
+            conditioning_in_channels=self.data_config["conditioning_in_channels"],
+            include_conditioning_parameters=self.data_config["include_conditioning_parameters"],
+            filter_out_channels=self.data_config["filter_out_channels"],
             data_normalization_stats=self.data_config["data_normalization_stats"],
             data_normalization_strategy=self.data_config["data_normalization_strategy"],
             eval_split_ratio=self.train_config["eval_split_ratio"],
             eval_groups=self.data_config["eval_groups"],
+            is_steady_state_prediction=self.data_config["is_steady_state_prediction"],
+            residual_config=self.data_config["residual_config"],
         )
         
     ##overrides the one in the  base class from transformers library
@@ -169,46 +221,54 @@ class Trainer(Trainer_):
         batch_size, _, _, *spatial_dims = inputs["input_data"].shape
         
         if not self.data_config.is_steady_state_prediction:
-            #########################################################
-            #Pushforward trick (for training)
-            #########################################################
-            num_steps_in_one_epoch = self.state.max_steps//self.state.num_train_epochs
-            pushforward_unroll_steps = self.select_pushforward_unroll_steps_for_training(current_epoch = self.state.global_step//num_steps_in_one_epoch)
-                
-            with torch.no_grad(): #comment this out for multi-step autoregressive training
-                for unroll_step in range(pushforward_unroll_steps):
-                    #print(f"Pushforward unroll step {unroll_step+1} of {pushforward_unroll_steps}")
-                    if self.data_config.conditioning_in_channels is not None:
-                        #prediction = model(torch.cat([inputs["input_data"], inputs["conditioning_input_data"]], dim=2))
-                        prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
-                    else:
-                        prediction = model(input_data=inputs["input_data"])
-                    
-                    prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
-                    
-                    if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length >= input_sequence length
-                        inputs = {
-                                    **inputs,
-                                    **{ # This part replaces the "input_data" of input with the prediction of the model. 
-                                        # So the new input is the output from the previous step.
-                                        #prediction.shape = torch.Size([B, label_seq_len, C_labels, x_resolution, y_resolution])
-                                        "input_data": (
-                                            prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the outputs so as to extract the input_sequence.
-                                        )
-                                    },
-                            }
+            #TODO: Add more training strategies here in continuation of the if statement. 
+            if self.pushforward_config is not None:
+                #########################################################
+                #Pushforward trick (for training)
+                #########################################################
+                num_steps_in_one_epoch = self.state.max_steps//self.state.num_train_epochs
+                pushforward_unroll_steps = self.select_pushforward_unroll_steps_for_training(current_epoch = self.state.global_step//num_steps_in_one_epoch)
+                base_value = inputs["input_data"][:,-1:,]
+                with torch.no_grad(): #comment this out for multi-step autoregressive training
+                    for unroll_step in range(pushforward_unroll_steps):
+                        #print(f"Pushforward unroll step {unroll_step+1} of {pushforward_unroll_steps}")
+                        if self.data_config.conditioning_in_channels is not None:
+                            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
+                        else:
+                            prediction = model(input_data=inputs["input_data"])
                         
-                    else: #input_sequence length > label_sequence length (the more usual case)
-                        inputs = {
-                            **inputs,
-                            **{ #this part replaces the "input_data" of input with the output of the model and concatenates part of the input whch is missing to make a complete input sequence
-                                #So the new input is the output from the previous step.
-                                "input_data": (
-                                    torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1)
-                                )
-                            },
-                        }
-        
+                        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
+                        
+                        if self.residual_config is not None:
+                            raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
+                        
+                        if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length >= input_sequence length
+                            inputs = {
+                                        **inputs,
+                                        **{ # This part replaces the "input_data" of input with the prediction of the model. 
+                                            # So the new input is the output from the previous step.
+                                            #prediction.shape = torch.Size([B, label_seq_len, C_labels, x_resolution, y_resolution])
+                                                "input_data": (
+                                                    prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the outputs so as to extract the input_sequence.
+                                                ) if self.residual_config is None else (
+                                                    raw_prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the outputs so as to extract the input_sequence.
+                                                )
+                                        },
+                                }
+                            
+                        else: #input_sequence length > label_sequence length (the more usual case)
+                                inputs = {
+                                **inputs,
+                                **{ #this part replaces the "input_data" of input with the output of the model and concatenates part of the input whch is missing to make a complete input sequence
+                                    #So the new input is the output from the previous step.
+                                    "input_data": (
+                                        torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1)
+                                    ) if self.residual_config is None else (
+                                        torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], raw_prediction.detach()], dim=1)
+                                    )
+                                },
+                                        }
+                    
         # NOTE:compute chain restored, the input_data is corrupted by the pushforward rollout steps (if any).
         if self.data_config.conditioning_in_channels is not None:
             prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
@@ -230,16 +290,14 @@ class Trainer(Trainer_):
         prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
         return prediction
     
+    #NOTE: There are two functions for eval_loss: 
+    # 1) compute_eval_loss, one which computes the mse loss of each window of the batch, takes the mean across the batch and assigns the same scalar value to all entries of the batch. 
+    # 2) compute_eval_without_loss, no window loss is computed, the predictions are accumulated as the batches get processed and loss is computed inside compute_metrics inside run.py
     def compute_eval_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         #########################################################
         #Autoregressive prediction (for eval and test)
         #########################################################
-        #here everything happens with torch.no_grad()
-        #channel_difference = (self.data_config.in_channels > self.data_config.out_channels) 
-        #Here we assume that the channel which is not predicted in the output is the last channel in the input (like Re or Ma).
-        ## inputs.keys() = dict_keys(['input_data', 'labels',])
-        ## inputs['input_data'].shape = torch.Size([B, C_input, x_resolution, y_resolution, ...]) 
-        ## inputs['labels'].shape = torch.Size([B, C_labels, x_resolution, y_resolution, ...])
+        # loss is computed per window for a batch of windows.
         if self.output_all_steps: #this is set to true when self.rollout_steps is set in main.py
             losses_ = []
             predictions_ = []
@@ -251,8 +309,12 @@ class Trainer(Trainer_):
         loss_fn = nn.functional.mse_loss #this is the eval_loss, which is NOT used for saving the best model.
         loss = loss_fn(prediction, inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1]]) 
         
+        if self.residual_config is not None:
+            base_value = inputs["input_data"][:,-1:,:,:,:]
+            raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
+
         if self.output_all_steps:
-            predictions_.append(prediction.detach()) 
+            predictions_.append(raw_prediction.detach() if self.residual_config is not None else prediction.detach()) 
             losses_.append(loss)
         else:
             total_loss += loss #loss is added up across all rollout_steps and we obtain a scalar. This is divided by rollout_steps at the end of the "if" statement
@@ -270,6 +332,8 @@ class Trainer(Trainer_):
                             #So the new input is the output from the previous step.
                             "input_data": (
                                 prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the predictions so as to extract the input_sequence.
+                            ) if self.residual_config is None else (
+                                raw_prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the predictions so as to extract the input_sequence.
                             )
                         },
                 }
@@ -279,7 +343,9 @@ class Trainer(Trainer_):
                         **{ #this part replaces the "input_data" of input with the output of the model. 
                             #So the new input is the output from the previous step.
                             "input_data": ( 
-                                torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1) #slice the outputs so as to extract the input_sequence.
+                                torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1) #slice a part of the input_data so as to extract the input_sequence.
+                            ) if self.residual_config is None else (
+                                torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], raw_prediction.detach()], dim=1) #slice a part of the input_data so as to extract the input_sequence.
                             )
                         },
                 }
@@ -289,21 +355,82 @@ class Trainer(Trainer_):
                 loss_fn = nn.functional.mse_loss #this is the eval_loss, which is NOT used for saving the best model.
                 loss = loss_fn(prediction, inputs["label_including_rollouts"][:,i*self.data_config.sequence_info[1]:(i+1)*self.data_config.sequence_info[1]]) 
                 
+                if self.residual_config is not None:
+                    raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
+                
                 if self.output_all_steps:
-                    predictions_.append(prediction.detach()) 
-                    losses_.append(loss)
+                    predictions_.append(raw_prediction.detach() if self.residual_config is not None else prediction.detach()) 
+                    losses_.append(loss) 
                 else:
                     total_loss += loss 
 
                 
         if self.output_all_steps:
             predictions= torch.stack(predictions_, dim=1) #predictions.shape = torch.Size([B, rollout_steps+1, label_seq_length, C_output, *spatial_resolution])
-            loss = torch.stack(losses_, dim=0).mean() #mean() across the rollout steps
+            loss = torch.stack(losses_, dim=0) #shape: (rollout_steps+1)
 
         else:
             loss = total_loss / (self.rollout_steps+1) #take the mean of the loss across all rollout_steps
 
-        return (loss, predictions) if return_outputs else loss
+        return (loss, predictions) if return_outputs else loss 
+        #loss is a scalar which is the same for all the windows of the batch.
+        # inside evalutaion_loop(), the loss is repeated batch times before appending to the list of all_losses. 
+
+    def compute_eval_without_loss(self, model, inputs):
+        #########################################################
+        #Autoregressive prediction (for eval and test)
+        #########################################################
+        predictions_ = []
+        
+        prediction = self._forward_model_eval_or_test(model,inputs) 
+
+        if self.residual_config is not None:
+            base_value = inputs["input_data"][:,-1:,]
+            raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
+
+        predictions_.append(raw_prediction.detach() if self.residual_config is not None else prediction.detach()) 
+
+        if not self.data_config.is_steady_state_prediction:
+            for i in range(1,self.rollout_steps+1): 
+                #logger.debug(f"Eval/Test rollout step {i+1} of {self.rollout_steps+1}")
+                #prediction.shape = torch.Size([B, label_seq_length,C_labels, x_resolution, y_resolution, ...]) 
+                #recreate the inputs to be fed to the model for the next step
+                if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length > input_sequence length
+                    inputs = {
+                        **inputs,
+                        **{ #this part replaces the "input_data" of input with the output of the model. 
+                            #So the new input is the output from the previous step.
+                            "input_data": (
+                                prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the predictions so as to extract the input_sequence.
+                            )if self.residual_config is None else (
+                                raw_prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the predictions so as to extract the input_sequence.
+                            )
+                        },
+                }
+                
+                else: #input_sequence length > label_sequence length (the more usual case)
+                    inputs = {
+                        **inputs,
+                        **{ #this part replaces the "input_data" of input with the output of the model. 
+                            #So the new input is the output from the previous step.
+                            "input_data": ( 
+                                torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1) ##slice a part of the input_data so as to extract the input_sequence.
+                            )if self.residual_config is None else (
+                                torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], raw_prediction.detach()], dim=1) #slice a part of the input_data so as to extract the input_sequence.
+                            )
+                        },
+                }
+                
+                prediction = self._forward_model_eval_or_test(model,inputs)
+                
+                if self.residual_config is not None:
+                    raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
+                
+                predictions_.append(raw_prediction.detach() if self.residual_config is not None else prediction.detach()) 
+
+        predictions= torch.stack(predictions_, dim=1) #predictions.shape = torch.Size([B, rollout_steps+1, label_seq_length, C_output, *spatial_resolution])
+
+        return predictions
 
 
     ##overrides the one in the  base class from transformers library
@@ -315,7 +442,7 @@ class Trainer(Trainer_):
         prediction = self._forward_model_train(model, inputs)
         #compute the training loss here. Assume l2 loss 
         loss_fn = nn.functional.mse_loss
-        #loss is computed only for the last rollout (pushforward trick!), therefore no need to update the labels, just slice from the end of the labels_including_rollouts tensor
+        #loss is computed only for the last rollout (pushforward trick!) (one-step MSE-loss), therefore no need to update the labels, just slice from the end of the "labels_including_rollouts" tensor
         loss = loss_fn(prediction, inputs["label_including_rollouts"][:,-self.data_config.sequence_info[1]:,]) 
         #the loss which is printed is rounded-off to 4 decimal places
         #printing happening inside the function: _maybe_log_save_evaluate() #TODO: Check 
@@ -325,9 +452,9 @@ class Trainer(Trainer_):
 
     def select_pushforward_unroll_steps_for_training(self, current_epoch):
         current_epoch_tensor = torch.tensor(current_epoch)
-        deciding_epochs = torch.tensor(self.train_config["pushforward"]["deciding_epochs"])
-        max_unrolls = self.train_config["pushforward"]["max_allowed_unroll_steps"]
-        relative_probabilities = self.train_config["pushforward"]["relative_probabilities"]
+        deciding_epochs = torch.tensor(self.train_config["pushforward_config"]["deciding_epochs"])
+        max_unrolls = self.train_config["pushforward_config"]["max_allowed_unroll_steps"]
+        relative_probabilities = self.train_config["pushforward_config"]["relative_probabilities"]
 
         assert all(deciding_epochs[i] <= deciding_epochs[i + 1] for i in range(len(deciding_epochs) - 1))
 
@@ -445,28 +572,27 @@ class Trainer(Trainer_):
                         logits_mb = raw_outputs
                     logits = smp_nested_concat(logits_mb)
             else:
-                if has_labels or loss_without_labels: #enters here 
+                if (has_labels or loss_without_labels) and self.get_prediction_loss_for_eval_windows: #NOTE: self.get_prediction_loss_for_eval_windows is added on top of the base class
                     with self.compute_loss_context_manager():
-                        loss, outputs = self.compute_eval_loss( #this has the _model_perdict() function inside it
+                        loss, outputs = self.compute_eval_loss( 
                             model, inputs, return_outputs=True
                         ) #return_output is true only when doing eval or inference.. By default it is false
-                    loss = loss.mean().detach() #mean() is used when: self.output_all_steps = True which results in loss being a tensor of shape (num_rollout_steps,) and we take the mean
+                    loss = loss.mean().detach() #mean() is used when: self.output_all_steps = True which results in loss being a tensor of shape (num_rollout_steps+1,) and we take the mean
 
                     if isinstance(outputs, dict): 
                         logits = tuple( 
                             v
                             for k, v in outputs.items()
                             if k not in ignore_keys + ["loss"]# ignores the keys
-                        ) 
+                        )
                     else: # Enters here as outputs is a tensor. logits is the outputs tensor (#NOTE: in the base class it is outputs[1:] as the 0th index is the loss)
                         logits = outputs
-                else: ##not sure why this 'else' is needed.
-                    # print a warning saying no labels are present
-                    warnings.warn("No labels are present, using the model to only generate predictions")
+                
+                else:
                     loss = None
                     with self.compute_loss_context_manager():
-                        outputs = self._forward_model_eval_or_test(model, inputs) #this is the only line which is different from the base class
-                        ##in the base class it is outputs = model(**inputs),but since we have the autoregressive code as well, we need to use the _forward_model_eval_or_test function
+                        outputs = self.compute_eval_without_loss(model, inputs)
+                        ##in the base class, the above line is outputs = model(**inputs)
                     if isinstance(outputs, dict):
                         logits = tuple(
                             v for k, v in outputs.items() if k not in ignore_keys
@@ -484,6 +610,21 @@ class Trainer(Trainer_):
         if len(logits) == 1 and isinstance(logits, tuple): 
             logits = logits[0] 
 
+        #NOTE: Obtaining the raw_labels for plotting the target values
+        if self.residual_config is not None:
+            base_value = inputs["input_data"][:,-1:,]
+            if self.residual_config["add_predicted_value"]:
+                # Vectorized cumulative addition along the temporal dimension for efficiency.
+                # Each timestep accumulates the sum of all previous timesteps plus the base value.
+                # Code equivalent to the following loop:
+                # for i in range(labels.shape[1]):
+                #     labels[:,i:i+1,:,:,:] = labels[:,i:i+1,:,:,:] + base_value
+                #     base_value = labels[:,i:i+1,:,:,:]
+                labels.copy_(labels.cumsum(dim=1) + base_value)
+            else:
+                # Constant base value addition can be broadcast efficiently.
+                labels.add_(base_value)
+        
         return (loss, logits, labels)
 
     ### overrides the one in the base class from transformers library
@@ -598,7 +739,8 @@ class Trainer(Trainer_):
 
             # Update containers
             if losses is not None:
-                losses = self.gather_function(losses.repeat(batch_size))  #WHY REPEAT?
+                losses = self.gather_function(losses.repeat(batch_size)) 
+                #NOTE: repeat is used to ensure that each window of the batch owns the same loss value.
                 all_losses.add(losses)
             if inputs_decode is not None:
                 inputs_decode = self.accelerator.pad_across_processes(inputs_decode, dim=1, pad_index=-100)

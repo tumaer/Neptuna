@@ -86,15 +86,16 @@ def get_grid_resolution(dataset_directory_path: str) -> List[int]:
 
 def re_normalize_data(arr: np.ndarray, stats: Dict[str, float], norm_strategy: str) -> np.ndarray:
     """Reverts normalization applied during loading for a single channel.
+    Mainly used for plotting the normalized data.
     
     Parameters
     ----------
     arr : np.ndarray
         The normalized data to revert (any shape).
     stats : Dict[str, float]
-        Dictionary containing either {"mean", "std"} or {"min", "max"}.
+        Dictionary containing either {"mean", "std"} or {"min", "max"} or {"median", "iqr"}. 
     norm_strategy : str
-        Either "z_normalization" or "min_max_normalization".
+        Either "z_normalization" or "min_max_normalization" or "robust_normalization" or "no_normalization".
     
     Returns
     -------
@@ -105,6 +106,10 @@ def re_normalize_data(arr: np.ndarray, stats: Dict[str, float], norm_strategy: s
         return arr * stats["std"] + stats["mean"]
     elif norm_strategy == "min_max_normalization":
         return arr * (stats["max"] - stats["min"]) + stats["min"]
+    elif norm_strategy == "robust_normalization":
+        return arr * stats["iqr"] + stats["median"]
+    elif norm_strategy == "no_normalization":
+        return arr
     else:
         raise ValueError(f"Unknown normalization strategy: {norm_strategy}")
 
@@ -120,18 +125,24 @@ def normalize_data(arr: np.ndarray, stats: Dict[str, float], strategy: str) -> n
     arr : np.ndarray
         The data to normalize (any shape).
     stats : Dict[str, float]
-        Dictionary containing either {"mean", "std"} or {"min", "max"}.
+        Dictionary containing either {"mean", "std"} or {"min", "max"} or {"median", "iqr"}.
     strategy : str
-        Either "z_normalization" or "min_max_normalization" (no-op otherwise).
+        Either "z_normalization" or "min_max_normalization" or "robust_normalization" or "no_normalization".
 
     Returns
     -------
     np.ndarray
         Normalized array (new copy).
     """
+    eps = 1e-12  # small constant to prevent divide-by-zero
+
     if strategy == "z_normalization":
-        return (arr - stats["mean"]) / stats["std"]
+        return (arr - stats["mean"]) / (stats["std"]  + eps)
     elif strategy == "min_max_normalization":
-        return (arr - stats["min"]) / (stats["max"] - stats["min"])
+        return (arr - stats["min"]) / ((stats["max"] - stats["min"]) + eps)
+    elif strategy == "robust_normalization":
+        return (arr - stats["median"]) / (stats["iqr"] + eps)
+    elif strategy == "no_normalization":
+        return arr
     else:
         raise ValueError(f"Unknown normalization strategy: {strategy}")

@@ -9,7 +9,7 @@ num_train_epochs: 2 #128
 # Number of training steps( overrides num_epochs)
 #max_steps: null
 # Parameters related to the push-forward trick during training
-pushforward:
+pushforward_config: #null
   # At which training step to introduce next unroll stage
   deciding_epochs: [-1, 2, 50]
   # For how many steps to unroll
@@ -33,7 +33,7 @@ metric_for_best_model: "l2_error"
 # Number of rollouts to use for evaluation
 n_eval_rollouts: 4
 # Plot after epochs, note that plotting will be done continously after this epoch.
-plot_after_epoch: null
+plot_after_epoch: null #[0.05, 0.1] or 0.05
 # Number of examples to plot
 n_plot_examples: 1
 

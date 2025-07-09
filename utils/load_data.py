@@ -21,7 +21,37 @@ import random
 import warnings
 from utils.feature_utils import normalize_data
 
-def build_eval_groups(filtered_groups, eval_split_ratio):
+#NOTE: This function is not used in the current implementation.
+def build_eval_groups_extremes(filtered_groups, eval_split_ratio):
+    """Select evaluation groups biased toward extremes and middle samples.
+
+    The function first determines the target number of evaluation groups as
+    ``round(len(filtered_groups) * eval_split_ratio)``.  It then splits this
+    quota approximately 50-50 between *extreme* and *middle* groups:
+
+    1. *Extreme* groups are taken alternately from the end (largest index) and
+       the beginning (smallest index) of ``filtered_groups`` until the extreme
+       quota is reached.
+    2. The remaining quota is filled by uniform random sampling (without
+       replacement) from the groups that lie between the extremes.
+
+    The random seed is fixed to 42 so that repeated runs with the same inputs
+    yield identical splits.
+
+    Parameters
+    ----------
+    filtered_groups : list
+        Sequence of group names remaining after any filtering and already
+        sorted in the desired order (e.g. by Reynolds number).
+    eval_split_ratio : float
+        Fraction of groups to include in the evaluation split (0 ≤ ratio ≤ 1).
+
+    Returns
+    -------
+    list
+        The combined list of extreme and middle group names to be used for
+        evaluation.
+    """
     
     # Set random seed for reproducibility of sampling groups from the middle for eval
     random.seed(42) 
@@ -60,6 +90,41 @@ def build_eval_groups(filtered_groups, eval_split_ratio):
     eval_groups.extend(middle_sample)
     eval_groups = list(dict.fromkeys(eval_groups))  # ensure uniqueness
     return eval_groups
+
+# ---------------------------------------------------------------------------
+# random sampling of evaluation groups
+# ---------------------------------------------------------------------------
+def build_eval_groups(filtered_groups, eval_split_ratio):
+    """Randomly pick evaluation groups based on *eval_split_ratio*.
+
+    This simple strategy samples groups uniformly at random (without
+    replacement). The sampling is seeded for reproducibility so that repeated
+    runs with the same inputs yield the same split.
+
+    Parameters
+    ----------
+    filtered_groups : list
+        Sequence of group names remaining after any filtering.
+    eval_split_ratio : float
+        Fraction of groups to include in the evaluation split (0 ≤ ratio ≤ 1).
+
+    Returns
+    -------
+    list
+        Randomly-selected evaluation group names.
+    """
+
+    # Reuse the global seed for deterministic behaviour.
+    random.seed(42)
+
+    total_groups = len(filtered_groups)
+    n_eval_groups = int(round(total_groups * eval_split_ratio))
+
+    # Guard against corner cases where the ratio rounds to 0.
+    if n_eval_groups <= 0:
+        return []
+
+    return random.sample(filtered_groups, n_eval_groups)
 
 #---------------------------------------
 # Helper functions for steady-state data
@@ -150,7 +215,6 @@ def create_train_eval_transient_index_map(h5file_path: str,
                     eval_split_ratio: Optional[float] = 0.2, #TODO: Handle the case where evel-split ratio is 0.0
                     eval_groups: Optional[list] = None,
                     ) -> list:
-    
     print("train_or_eval_h5_file_path:", h5file_path)
 
     with h5py.File(h5file_path, 'r') as f:
@@ -241,7 +305,10 @@ def fetch_dataset(dataset_name: str,
     if not is_steady_state:
         if mode == "train":
             #for pushforward training trick, we need to create a train index map with the extra sequence length
-            n_max_pf_train_rollouts = kwargs.get("max_pf_train_rollouts") or 0
+            if kwargs.get("pushforward_config") is not None:
+                n_max_pf_train_rollouts = kwargs["pushforward_config"]["max_allowed_unroll_steps"][-1] 
+            else:
+                n_max_pf_train_rollouts = 0
             n_eval_rollouts = kwargs.get("n_eval_rollouts") or 0
 
             train_index_map, eval_index_map, all_groups = create_train_eval_transient_index_map(
@@ -412,20 +479,17 @@ class TransientDataset(Dataset):
         self.input_channels = filter_in_channels
         self.conditioning_in_channels = conditioning_in_channels
         self.output_channels = filter_out_channels
-        self.is_conditioning_parameters = kwargs["is_conditioning_parameters"] or False
+        self.include_conditioning_parameters = kwargs["include_conditioning_parameters"] or False
+
+        self.residual_config = kwargs["residual_config"]
+        if self.residual_config is not None:
+            assert not (self.residual_config["add_base_value"] and self.residual_config["add_predicted_value"]), "Both add_base_value and add_predicted_value cannot be true"
 
         if len(self.input_channels) != len(self.output_channels):
             warnings.warn("Number of input and label channels are different")
-
-        #NOTE: It is possible that the self.input_channels and self.output_channels are completely different
-        # For example, in the case of steady state prediction, the input_channels could be the binary mask and the output could be the steady state density and velocity 
-        
-        if len(self.input_channels) != len(self.output_channels) and self.conditioning_in_channels is None and self.is_steady_state_prediction is True:
-            #TODO: SS prediction is not supported yet
-            raise NotImplementedError("SS prediction is not supported yet")
         
         #NOTE: Following assert statements ensure smoother AR rollout
-        if self.conditioning_in_channels is not None and self.is_steady_state_prediction is False:
+        if self.conditioning_in_channels is not None:
             assert set(conditioning_in_channels).issubset(set(self.input_channels)), "conditioning_in_channels must be a subset of input_channels"
             assert not set(conditioning_in_channels).intersection(set(self.output_channels)), "conditioning_in_channels must not overlap with output_channels"
             assert set(self.output_channels + self.conditioning_in_channels) == set(self.input_channels), "For AR rollout,output_channels + conditioning_in_channels must be the same as input_channels"
@@ -440,6 +504,15 @@ class TransientDataset(Dataset):
     def __getitem__(self, idx):
         #many2many train-test strategy:
         group_name, start_idx, end_idx = self.index_map[idx]
+        # Build input index sequences
+        input_indices = [i for i in range(start_idx, start_idx + (self.input_seq_len * self.stride), self.stride)]
+        # Build label index sequences
+        label_indices = [i for i in range(start_idx + (self.input_seq_len * self.stride), end_idx + 1, self.stride)]
+        
+        if self.residual_config is not None:
+            base_input_index = input_indices[-1]
+            label_indices = [base_input_index] + label_indices
+        
         with h5py.File(self.h5file_path, 'r') as f:
             group = f[group_name]
             # Separate containers for normal input/label channels and conditioning channels
@@ -461,13 +534,11 @@ class TransientDataset(Dataset):
                         if base_name in group and suffix.isdigit():
                             channel_name = base_name
                             component_idx = int(suffix)
+                            base_name = None
                         else:
                             raise KeyError(f"Channel '{channel}' could not be resolved in the HDF5 group '{group_name}'.")
                     else:
                         raise KeyError(f"Channel '{channel}' not found in the HDF5 group '{group_name}'.")
-
-                # Build input index sequences
-                input_indices = [i for i in range(start_idx, start_idx + (self.input_seq_len * self.stride), self.stride)]
 
                 # Fetch data for input sequences
                 if component_idx is None:
@@ -490,7 +561,7 @@ class TransientDataset(Dataset):
                     conditioning_input_chunks.append(input_seq_per_channel)
                 else:
                     input_chunks.append(input_seq_per_channel)
-
+            
             # Process output channels
             for channel in self.output_channels:
                 # Resolve the dataset name and, if needed, the component index (e.g. "velocity_0" -> dataset "velocity", comp_idx 0)
@@ -504,25 +575,37 @@ class TransientDataset(Dataset):
                         if base_name in group and suffix.isdigit():
                             channel_name = base_name
                             component_idx = int(suffix)
+                            base_name = None
                         else:
                             raise KeyError(f"Channel '{channel}' could not be resolved in the HDF5 group '{group_name}'.")
                     else:
                         raise KeyError(f"Channel '{channel}' not found in the HDF5 group '{group_name}'.")
 
-                # Build label index sequences
-                label_indices = [i for i in range(start_idx + (self.input_seq_len * self.stride), end_idx + 1, self.stride)]
-
                 # Fetch data for label sequences
                 if component_idx is None:
                     # Use the entire dataset slice (shape retains original channel dimension)
-                    label_seq_per_channel = np.stack([group[channel_name][i] for i in label_indices], axis=0)
+                    if self.residual_config is None:
+                        label_seq_per_channel = np.stack([group[channel_name][i] for i in label_indices], axis=0)
+                    else: # here the label_indices include the final index of the input sequence at its first index
+                        if self.residual_config["add_predicted_value"]: # add the previous value
+                            label_seq_per_channel = np.stack([group[channel_name][label_indices[i]] - group[channel_name][label_indices[i-1]] for i in range(1, len(label_indices))], axis=0)
+                        else: #add the base_value
+                            label_seq_per_channel = np.stack([group[channel_name][label_indices[i]] - group[channel_name][label_indices[0]] for i in range(1, len(label_indices))], axis=0)
                 else:   
                     # Extract the specific component and keep a singleton channel dim for consistency
-                    label_seq_per_channel = np.stack([group[channel_name][i][component_idx:component_idx + 1] for i in label_indices], axis=0)
+                    if self.residual_config is None:
+                        label_seq_per_channel = np.stack([group[channel_name][i][component_idx:component_idx + 1] for i in label_indices], axis=0)
+                    else:
+                        if self.residual_config["add_predicted_value"]:
+                            label_seq_per_channel = np.stack([group[channel_name][label_indices[i]][component_idx:component_idx + 1] - group[channel_name][label_indices[i-1]][component_idx:component_idx + 1] for i in range(1, len(label_indices))], axis=0)
+                        else: #add the base_value
+                            label_seq_per_channel = np.stack([group[channel_name][label_indices[i]][component_idx:component_idx + 1] - group[channel_name][label_indices[0]][component_idx:component_idx + 1] for i in range(1, len(label_indices))], axis=0)
 
+                # Select appropriate normalisation stats depending on residual mode
+                norm_key = channel if self.residual_config is None else f"{channel}_residual"
                 label_seq_per_channel = normalize_data(
-                    label_seq_per_channel,
-                    self.data_normalization_stats[channel],
+                    label_seq_per_channel, #label_seq_per_channel is the residual of that particular channel if residual_config is not None
+                    self.data_normalization_stats[norm_key],
                     self.data_normalization_strategy,
                 )
 
@@ -533,12 +616,11 @@ class TransientDataset(Dataset):
             # labels are the label sequences for all channels, shape = [label_seq_len, C_total, X_res, Y_res, Z_res]
             inputs = np.concatenate(input_chunks, axis=1)
             labels = np.concatenate(label_chunks, axis=1)
-
             # Build conditioning input tensor only if such channels exist
             conditioning_inputs = None
             if self.conditioning_in_channels is not None and len(conditioning_input_chunks) > 0:
-                conditioning_inputs = np.concatenate(conditioning_input_chunks, axis=1)
-
+                conditioning_inputs = np.concatenate(conditioning_input_chunks, axis=1)            
+            
         # ------------------------------------------------------------------
         # Assemble the sample dictionary and add conditioning tensors only if
         # they are available.
@@ -550,14 +632,13 @@ class TransientDataset(Dataset):
             "label_including_rollouts": torch.from_numpy(labels).float(),
         }
 
-        if self.is_conditioning_parameters:
+        if self.include_conditioning_parameters:
             sample["conditioning_parameters"] = _parse_group_name_to_params(group_name)
 
         if conditioning_inputs is not None:
             sample["conditioning_input_data"] = torch.from_numpy(conditioning_inputs).float()
 
         return  sample
-
 
 class SteadyStateDataset(Dataset):
     def __init__(self, 
@@ -573,7 +654,8 @@ class SteadyStateDataset(Dataset):
                  **kwargs
                  ):
         super().__init__()
-        
+        #NOTE: It is possible that the self.input_channels and self.output_channels are completely different
+        # For example, in the case of steady state prediction, the input_channels could be the binary mask and the output could be the steady state density and velocity 
         assert mode in ["train", "eval", "test"]
         assert index_map is not None, "index_map must be provided"
         assert filter_in_channels is not None and len(filter_in_channels) > 0, "filter_in_channels must be provided and non-empty"
@@ -588,7 +670,7 @@ class SteadyStateDataset(Dataset):
         self.input_channels = filter_in_channels
         self.conditioning_in_channels = conditioning_in_channels
         self.output_channels = filter_out_channels
-        self.is_conditioning_parameters = kwargs["is_conditioning_parameters"] or False
+        self.include_conditioning_parameters = kwargs["include_conditioning_parameters"] or False
 
         if len(self.input_channels) != len(self.output_channels):
             warnings.warn("Number of input and label channels are different")
@@ -698,7 +780,7 @@ class SteadyStateDataset(Dataset):
             "label_including_rollouts": torch.from_numpy(labels).float(),
         }
 
-        if self.is_conditioning_parameters:
+        if self.include_conditioning_parameters:
             sample["conditioning_parameters"] = _parse_group_name_to_params(group_name)
 
         if conditioning_inputs is not None:

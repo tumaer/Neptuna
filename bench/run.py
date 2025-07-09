@@ -16,6 +16,7 @@ from utils.hp_optimization import (
 )
 from optuna.pruners import NopPruner
 from utils.custom_callbacks import PlotOnEvalAndSaveCallback
+import csv
 __all__ = ["run"]
 
 def run(cfg):
@@ -217,6 +218,10 @@ def run(cfg):
         #trainer.train(resume_from_checkpoint=f"./checkpoints/KuramotoSivashinsky_2D_ScOT_09072025_074058/checkpoint-15")
         trainer.train(resume_from_checkpoint=False)
         print(f"Total train time: {time.time() - start:.2f} s")
+        if training_args.push_to_hub:
+          # Push the trained model to the Hugging Face Hub
+          print("Pushing model to Hugging Face Hub...")
+          trainer.push_to_hub()
     else:
         #get the sampler from the config, it could be GridSampler, RandomSampler, TPESampler
         sampler = get_optuna_sampler(cfg["hyperparam_opt_config"]["optuna_sampler"], config=cfg)
@@ -231,7 +236,25 @@ def run(cfg):
             sampler=sampler,
             pruner=NopPruner()
         )
-    if training_args.push_to_hub:
-        # Push the trained model to the Hugging Face Hub
-        print("Pushing model to Hugging Face Hub...")
-        trainer.push_to_hub()
+        
+        # --------------------------------------------------------------
+        # Save HPO results to CSV -------------------------------------
+        # --------------------------------------------------------------
+        results_dir = cfg["output_log_config"]["logging"]["output_dir"]
+        os.makedirs(results_dir, exist_ok=True)
+        csv_path = os.path.join(results_dir, "hp_search_results.csv")
+
+        # Collect all parameter names across trials to build consistent header
+        param_keys = set()
+        for t in study.trials:
+            param_keys.update(t.params.keys())
+        fieldnames = ["trial_number", "value", "state"] + sorted(param_keys)
+
+        with open(csv_path, mode="w", newline="") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+            writer.writeheader()
+            for t in study.trials:
+                row = {"trial_number": t.number, "value": t.value, "state": t.state.name}
+                row.update(t.params)
+                writer.writerow(row)
+        print(f"Saved hyperparameter optimisation results to {csv_path}")
