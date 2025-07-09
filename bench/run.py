@@ -16,6 +16,7 @@ from utils.hp_optimization import (
 )
 from optuna.pruners import NopPruner
 from utils.custom_callbacks import PlotOnEvalAndSaveCallback
+import csv
 __all__ = ["run"]
 
 def run(cfg):
@@ -228,3 +229,24 @@ def run(cfg):
             sampler=sampler,
             pruner=NopPruner()
         )
+        # --------------------------------------------------------------
+        # Save HPO results to CSV -------------------------------------
+        # --------------------------------------------------------------
+        results_dir = cfg["output_log_config"]["logging"]["output_dir"]
+        os.makedirs(results_dir, exist_ok=True)
+        csv_path = os.path.join(results_dir, "hp_search_results.csv")
+
+        # Collect all parameter names across trials to build consistent header
+        param_keys = set()
+        for t in study.trials:
+            param_keys.update(t.params.keys())
+        fieldnames = ["trial_number", "value", "state"] + sorted(param_keys)
+
+        with open(csv_path, mode="w", newline="") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+            writer.writeheader()
+            for t in study.trials:
+                row = {"trial_number": t.number, "value": t.value, "state": t.state.name}
+                row.update(t.params)
+                writer.writerow(row)
+        print(f"Saved hyperparameter optimisation results to {csv_path}")
