@@ -1,18 +1,20 @@
 dataset_name: PorousMedia
 dataset_directory_path: ./data/fluids/Porous_Media_trimmed/2D
 dimension: 2
-sequence_info: [1, 1, 1]
-filter_frames: null #in SS simulation, filter_frames is not used as the last frame is the steady state
-filter_groups: null #filter_groups: ["Re_100", "Re_300", "Re_400"]
-filter_in_channels: ["density", "bounce_back_mask", "velocity"]
-filter_out_channels: ["velocity"]
-conditioning_in_channels: ["bounce_back_mask"]
-include_conditioning_parameters: False
-residual_config:
-  add_base_value: False
-  add_predicted_value: True
-is_steady_state_prediction: True #assuming the last frame is the steady state
 grid_resolution: null #if not provided, will be inferred automatically from the dataset
-data_normalization_stats: null #if not provided, will be computed automatically from the dataset
-data_normalization_strategy: z_normalization #z_normalization, min_max_normalization
 eval_groups: null
+is_steady_state_prediction: True #assuming the last frame is the steady state
+sequence_info: [1, 1, 1] #fixed for SS
+filter_frames: null #fixed for SS
+filter_groups: null 
+filter_in_channels: ["bounce_back_mask"]
+filter_out_channels: ["density","velocity"]
+conditioning_in_channels: null
+#NOTE: For steady state simulations all mappings are possible
+include_conditioning_parameters: False
+residual_config: null #fixed for SS
+  # add_base_value_with_raw_loss: True
+  # add_predicted_value_with_diff_loss: False
+  # add_predicted_value_with_raw_loss: False
+data_normalization_stats: null #if not provided, will be computed automatically from the dataset
+data_normalization_strategy: z_normalization #z_normalization, min_max_normalization, robust_normalization

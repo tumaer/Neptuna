@@ -590,10 +590,13 @@
                 "hydra.output_subdir=null",
                 "data_config=fluids/KVS/2d_kvs_data_default",
                 "model_config=UNet/default_unet"
+                
               ],
             "env": {
                 "HYDRA_FULL_ERROR": "1",
-                "HYDRA_MAIN_DISABLE_RUN": "1"
+                "HYDRA_MAIN_DISABLE_RUN": "1",
+                "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "10.0" 
+
                 }
 
         },

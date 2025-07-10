@@ -2,6 +2,9 @@ dataset_name: KuramotoSivashinsky #should be from the names available in fetch_d
 #shape of this KS-1D dataset [50,51,1,160]
 dataset_directory_path: ./data/fluids/KS/1D
 dimension: 1
+grid_resolution: null #if not provided, will be inferred automatically from the dataset
+eval_groups: null #["seed 000000", "seed 000049"]
+is_steady_state_prediction: False
 sequence_info: [4, 3, 2]  # [input_seq_len, label_seq_len, stride]
 filter_frames: [null, null]  # [min_frame, max_frame]
 filter_groups: null
@@ -9,11 +12,9 @@ filter_in_channels: null
 filter_out_channels: null
 conditioning_in_channels: null
 include_conditioning_parameters: False
-residual_config:
-  add_base_value: False
-  add_predicted_value: True
-is_steady_state_prediction: False #assuming the last frame is the steady state
-grid_resolution: null #if not provided, will be inferred automatically from the dataset
+residual_config: null
+  # add_base_value_with_raw_loss: False
+  # add_predicted_value_with_diff_loss: True
+  # add_predicted_value_with_raw_loss: False
 data_normalization_stats: null #if not provided, will be computed automatically from the dataset
-data_normalization_strategy: z_normalization #options: z_normalization, min_max_normalization
-eval_groups: null #["seed 000000", "seed 000049"]
+data_normalization_strategy: z_normalization #z_normalization, min_max_normalization, robust_normalization

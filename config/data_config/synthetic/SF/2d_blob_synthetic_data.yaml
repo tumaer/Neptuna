@@ -1,39 +1,20 @@
 dataset_name: SyntheticFlow
 dataset_directory_path: ./data/synthetic/SF/2D/blob
 dimension: 2
+grid_resolution: null #if not provided, will be inferred automatically from the dataset
+eval_groups: null
+is_steady_state_prediction: False #assuming the last frame is the steady state
 sequence_info: [4, 3, 5]
 filter_frames: null 
 filter_groups: null
-filter_in_channels: ['density','schlieren','velocity_0']
-filter_out_channels: ['velocity_0', 'density']
-conditioning_in_channels: ['schlieren'] # if null, then ensure filter_in_channels == filter_out_channels
-is_steady_state_prediction: False #assuming the last frame is the steady state
+filter_in_channels: null # available: ['density','schlieren','velocity']
+filter_out_channels: null
+conditioning_in_channels: null
+#NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels 
 include_conditioning_parameters: False
-residual_config:
-  add_base_value: False
-  add_predicted_value: True
-grid_resolution: null #if not provided, will be inferred automatically from the dataset
-#data_normalization_stats: null #if not provided, will be computed automatically from the dataset
-data_normalization_strategy: z_normalization #options: z_normalization, min_max_normalization
-eval_groups: null
-data_normalization_stats:
-  velocity_0:
-    mean: -1.9557773456302385e-10
-    std: 0.052069760859012604
-    min: -1.0
-    max: 1.0
-  density:
-    mean: 0.07444427829039724
-    std: 0.17860168120578726
-    min: 1.2290040430054032e-16
-    max: 0.9998964667320251
-  schlieren:
-    mean: 0.020350065278379542
-    std: 0.0381493794388677
-    min: 5.683059562901953e-16
-    max: 0.17021316289901733
-  velocity_1:
-    mean: 0.0
-    std: 0.05220845341682434
-    min: -1.0
-    max: 1.0
+residual_config: null
+  # add_base_value_with_raw_loss: True
+  # add_predicted_value_with_diff_loss: False
+  # add_predicted_value_with_raw_loss: False
+data_normalization_stats: null
+data_normalization_strategy: z_normalization #z_normalization, min_max_normalization, robust_normalization

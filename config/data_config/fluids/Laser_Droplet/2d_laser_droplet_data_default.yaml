@@ -1,18 +1,20 @@
 dataset_name: LaserDroplet
 dataset_directory_path: ./data/fluids/Laser_Droplet/2D
 dimension: 2
+grid_resolution: null
+eval_groups: null
+is_steady_state_prediction: False 
 sequence_info: [3, 1, 1]
 filter_frames: null 
 filter_groups: null
 filter_in_channels: null
 filter_out_channels: null
 conditioning_in_channels: null
+#NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels
 include_conditioning_parameters: True
-residual_config:
-  add_base_value: True
-  add_predicted_value: False
-is_steady_state_prediction: False 
-grid_resolution: null
-data_normalization_stats: null 
-data_normalization_strategy: z_normalization
-eval_groups: null
+residual_config: null
+  # add_base_value_with_raw_loss: True
+  # add_predicted_value_with_diff_loss: False
+  # add_predicted_value_with_raw_loss: False
+data_normalization_stats: null #if not provided, will be computed automatically from the dataset
+data_normalization_strategy: z_normalization #z_normalization, min_max_normalization, robust_normalization
