@@ -191,6 +191,7 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
         self.train_config = kwargs['train_config']
         self.output_log_config = kwargs['output_log_config']
         self.global_step = state.global_step
+        self.residual_config = kwargs['data_config']['residual_config']
         control.should_plot = True
 
     def on_plot(self, args, state, control, **kwargs):
@@ -286,7 +287,8 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
                     if ch_name not in norm_stats:
                         raise ValueError(f"Stats for output channel {ch_name} are unavailable.")
                     
-                    stats = norm_stats[ch_name]
+                    norm_key = ch_name if ((self.residual_config is None) or (self.residual_config["add_base_value_with_raw_loss"]) or (self.residual_config["add_predicted_value_with_raw_loss"])) else f"{ch_name}_residual"
+                    stats = norm_stats[norm_key]
                     
                     # Renormalize labels and predictions
                     labels_renormed[:, :, c_idx] = re_normalize_data(
@@ -295,7 +297,14 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
                     predictions_renormed[:, :, c_idx] = re_normalize_data(
                         self.predictions[:, :, c_idx], stats, norm_strategy
                     )
-
+                #--------------------------------
+                #NOTE: Comment this section out to visualize the residuals instead of the raw values
+                if self.residual_config["add_predicted_value_with_diff_loss"]:
+                    #Create raw values for plotting
+                    base_value = inputs_renormed[:, -1:, ]
+                    labels_renormed = labels_renormed.cumsum(axis=1) + base_value
+                    predictions_renormed = predictions_renormed.cumsum(axis=1) + base_value
+                #--------------------------------
                 run_dir = os.path.join(part_1, part_2) if part_2 is not None else part_1
 
                 fig_dict = plot_examples(
