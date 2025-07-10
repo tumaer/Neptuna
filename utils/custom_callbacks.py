@@ -299,7 +299,7 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
                     )
                 #--------------------------------
                 #NOTE: Comment this section out to visualize the residuals instead of the raw values
-                if self.residual_config["add_predicted_value_with_diff_loss"]:
+                if self.residual_config is not None and (self.residual_config["add_predicted_value_with_diff_loss"]):
                     #Create raw values for plotting
                     base_value = inputs_renormed[:, -1:, ]
                     labels_renormed = labels_renormed.cumsum(axis=1) + base_value
