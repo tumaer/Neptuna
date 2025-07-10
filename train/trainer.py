@@ -333,12 +333,15 @@ class Trainer(Trainer_):
         else:
             if self.residual_config["add_predicted_value_with_diff_loss"]:
                 #here the labels are the residuals.
+                base_value = inputs["input_data"][:,-1:,]
+                raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
+                #raw predictions are needed for continuing the autoregressive rollout.
                 loss = loss_fn(prediction, inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1]]) 
 
             if (self.residual_config["add_predicted_value_with_raw_loss"] or self.residual_config["add_base_value_with_raw_loss"]):
                 base_value = inputs["input_data"][:,-1:,]
                 raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
-                #here the labels are the raw values.
+                #here the labels are the raw values. raw_predictions are needed for both loss computation and for continuing the autoregressive rollout.
                 loss = loss_fn(raw_prediction, inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1]])
 
         if self.output_all_steps:            
@@ -403,6 +406,7 @@ class Trainer(Trainer_):
                 
                 else:
                     if self.residual_config["add_predicted_value_with_diff_loss"]:
+                        raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
                         #here the labels are the residuals.
                         loss = loss_fn(prediction, inputs["label_including_rollouts"][:,i*self.data_config.sequence_info[1]:(i+1)*self.data_config.sequence_info[1]]) 
 
