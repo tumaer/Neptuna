@@ -21,7 +21,7 @@ class Trainer(Trainer_):
         self.output_log_config = output_log_config
         self.original_label_seq_len = self.data_config.sequence_info[1] #number of predicted timesteps from the model (#no rollout timesteps considered)
         
-        self.get_prediction_loss_for_eval_windows = True #TODO: Find a way to not hardcode this.
+        self.get_prediction_loss_for_eval_windows = False #TODO: Find a way to not hardcode this.
 
         self.residual_config = data_config["residual_config"]
         self.pushforward_config = train_config["pushforward_config"]
@@ -215,8 +215,7 @@ class Trainer(Trainer_):
         return self.accelerator.prepare(eval_dataloader)
     
     ##custom function, not inside transformers library
-    def _forward_model_train(self, model, inputs):  
-
+    def _forward_model_train(self, model, inputs):
         batch_size, _, _, *spatial_dims = inputs["input_data"].shape
         base_value = inputs["input_data"][:,-1:,]
         if not self.data_config.is_steady_state_prediction:
@@ -267,7 +266,10 @@ class Trainer(Trainer_):
                                     )
                                 },
                                         }
-                    
+        else: 
+            #steady state prediction
+            pushforward_unroll_steps = 0
+            
         # NOTE:compute chain restored, the input_data is corrupted by the pushforward rollout steps (if any).
         if self.data_config.conditioning_in_channels is not None:
             prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
