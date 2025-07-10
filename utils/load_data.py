@@ -483,8 +483,9 @@ class TransientDataset(Dataset):
 
         self.residual_config = kwargs["residual_config"]
         if self.residual_config is not None:
-            assert not (self.residual_config["add_base_value_with_raw_loss"] and self.residual_config["add_predicted_value_with_diff_loss"] and self.residual_config["add_predicted_value_with_raw_loss"]), "Only one can be true at a time"
-
+            assert not (self.residual_config["add_base_value_with_raw_loss"] and self.residual_config["add_predicted_value_with_diff_loss"] and self.residual_config["add_predicted_value_with_raw_loss"]), "Only one can be true at a time, currently more than one is true"
+            #all 3 of them should not be false at the same time.
+            assert (self.residual_config["add_base_value_with_raw_loss"] or self.residual_config["add_predicted_value_with_diff_loss"] or self.residual_config["add_predicted_value_with_raw_loss"]), "Only one can be true at a time, currently all are false, set the residual_config to null in the data_config"
         if len(self.input_channels) != len(self.output_channels):
             warnings.warn("Number of input and label channels are different")
         
