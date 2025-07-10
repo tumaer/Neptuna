@@ -219,7 +219,8 @@ class Trainer(Trainer_):
         batch_size, _, _, *spatial_dims = inputs["input_data"].shape
         base_value = inputs["input_data"][:,-1:,]
         if not self.data_config.is_steady_state_prediction:
-            #TODO: Add more training strategies here in continuation of the if statement. 
+            #TODO: Add more training strategies here in continuation of the if statement.
+            pushforward_unroll_steps = 0
             if self.pushforward_config is not None:
                 #########################################################
                 #Pushforward trick (for training)
