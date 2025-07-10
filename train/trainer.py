@@ -6,7 +6,6 @@ from transformers import Trainer as Trainer_
 import numpy as np
 from utils.load_data import fetch_dataset
 from utils.custom_callbacks import WandbCallback #custom callbacks
-#from train.trainer_callback import CallbackHandler
 from utils.custom_callbacks import CallbackHandler 
 from transformers.integrations.integration_utils import WandbCallback as WandbCallback_
 from utils.trainer_utils import EvalPrediction
@@ -22,7 +21,7 @@ class Trainer(Trainer_):
         self.output_log_config = output_log_config
         self.original_label_seq_len = self.data_config.sequence_info[1] #number of predicted timesteps from the model (#no rollout timesteps considered)
         
-        self.get_prediction_loss_for_eval_windows = False #TODO: Find a way to not hardcode this.
+        self.get_prediction_loss_for_eval_windows = True #TODO: Find a way to not hardcode this.
 
         self.residual_config = data_config["residual_config"]
         self.pushforward_config = train_config["pushforward_config"]
@@ -51,7 +50,7 @@ class Trainer(Trainer_):
         Parameters
         ----------
         prediction : torch.Tensor
-            Shape (B, T, C, *spatial_dims). Raw model output for a single window.
+            Shape (B, T, C, *spatial_dims). Prediction is the residual of the channel values.
         base_value : torch.Tensor
             Shape (B, 1, C, *spatial_dims). Last known physical state used as an additive baseline.
 
@@ -65,7 +64,7 @@ class Trainer(Trainer_):
         """
         #prediction.shape = torch.Size([B, label_seq_length, C_labels, x_resolution, y_resolution, ...])
         #base_value.shape = torch.Size([B, 1, C_labels, x_resolution, y_resolution, ...]) which is the last time step of the input data
-        if self.residual_config["add_predicted_value_with_diff_loss"] and self.residual_config["add_predicted_value_with_raw_loss"]:
+        if self.residual_config["add_predicted_value_with_diff_loss"] or self.residual_config["add_predicted_value_with_raw_loss"]:
             # Cumulative sum along temporal axis replicates the iterative loop:
             # for i in range(self.data_config.sequence_info[1]):
             #     raw_prediction.append(prediction[:,i:i+1,:,:,:] + base_value)
@@ -219,7 +218,7 @@ class Trainer(Trainer_):
     def _forward_model_train(self, model, inputs):  
 
         batch_size, _, _, *spatial_dims = inputs["input_data"].shape
-        
+        base_value = inputs["input_data"][:,-1:,]
         if not self.data_config.is_steady_state_prediction:
             #TODO: Add more training strategies here in continuation of the if statement. 
             if self.pushforward_config is not None:
@@ -228,7 +227,6 @@ class Trainer(Trainer_):
                 #########################################################
                 num_steps_in_one_epoch = self.state.max_steps//self.state.num_train_epochs
                 pushforward_unroll_steps = self.select_pushforward_unroll_steps_for_training(current_epoch = self.state.global_step//num_steps_in_one_epoch)
-                base_value = inputs["input_data"][:,-1:,]
                 with torch.no_grad(): #comment this out for multi-step autoregressive training
                     for unroll_step in range(pushforward_unroll_steps):
                         #print(f"Pushforward unroll step {unroll_step+1} of {pushforward_unroll_steps}")
@@ -240,6 +238,7 @@ class Trainer(Trainer_):
                         prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
                         
                         if self.residual_config is not None:
+                            #NOTE: In all the three cases, we need the raw values to do rollout
                             raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
                         
                         if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length >= input_sequence length
@@ -276,6 +275,12 @@ class Trainer(Trainer_):
             prediction = model(input_data=inputs["input_data"]) 
         
         prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
+        
+        if self.residual_config is not None and (self.residual_config["add_predicted_value_with_raw_loss"] or self.residual_config["add_base_value_with_raw_loss"]):
+            #NOTE: For the cases: add_predicted_value_with_raw_loss or add_base_value_with_raw_loss, we need the raw values before loss is computed inside compute_loss().
+            raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
+            prediction = raw_prediction
+
         return prediction, pushforward_unroll_steps
 
     ##overrides the one in the  base class from transformers library
@@ -285,9 +290,10 @@ class Trainer(Trainer_):
         # Pushforward trick (for training)
         ########################################################
         prediction, pushforward_unroll_steps = self._forward_model_train(model, inputs)
-        #compute the training loss here. Assume l2 loss 
+        #compute the training loss here. Assume l2 loss.
         loss_fn = nn.functional.mse_loss
         #loss is computed only for the last rollout (pushforward trick!) (one-step MSE-loss), therefore no need to update the labels, just slice from the end of the "labels_including_rollouts" tensor
+        #labels are automatically either the raw_values or the residuals. This is taken care inside load_data.py.
         loss = loss_fn(prediction, inputs["label_including_rollouts"][:,(self.data_config.sequence_info[1]*pushforward_unroll_steps):(self.data_config.sequence_info[1]*(pushforward_unroll_steps+1)) ,]) 
         #return_outputs is true only when doing eval or test. By default it is false for training.
         return (loss, prediction) if return_outputs else loss
@@ -320,25 +326,33 @@ class Trainer(Trainer_):
         
         prediction = self._forward_model_eval_or_test(model,inputs) 
 
-        loss_fn = nn.functional.mse_loss #this is the eval_loss, which is NOT used for saving the best model.
-        loss = loss_fn(prediction, inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1]]) 
+        loss_fn = nn.functional.mse_loss   #this is the eval_loss, which is NOT used for saving the best model.
+        if self.residual_config is None:
+            loss = loss_fn(prediction, inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1]]) 
         
-        if self.residual_config is not None:
-            base_value = inputs["input_data"][:,-1:,]
-            raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
+        else:
+            if self.residual_config["add_predicted_value_with_diff_loss"]:
+                #here the labels are the residuals.
+                loss = loss_fn(prediction, inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1]]) 
+
+            if (self.residual_config["add_predicted_value_with_raw_loss"] or self.residual_config["add_base_value_with_raw_loss"]):
+                base_value = inputs["input_data"][:,-1:,]
+                raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
+                #here the labels are the raw values.
+                loss = loss_fn(raw_prediction, inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1]])
 
         if self.output_all_steps:            
             if self.residual_config is None:
-                # raw values are added 
+                # raw values are added  
                 predictions_.append(prediction.detach())
             elif self.residual_config is not None and self.residual_config["add_predicted_value_with_diff_loss"]:
                 # predictions correspond to the difference and they are accumulated for the metrics.
                 predictions_.append(prediction.detach())
             elif self.residual_config is not None and self.residual_config["add_predicted_value_with_raw_loss"]:
-                # raw_predictions correspond to the raw values and they are accumulated for the metrics.
+                # raw_predictions are accumulated for the metrics as the loss is computed with the raw values.
                 predictions_.append(raw_prediction.detach())
             else: #add_base_value_with_raw_loss
-                # raw_predictions correspond to the raw values and they are accumulated for the metrics.
+                # raw_predictions are accumulated for the metrics as the loss is computed with the raw values.
                 predictions_.append(raw_prediction.detach())
 
             #predictions_.append(raw_prediction.detach() if self.residual_config is not None else prediction.detach()) 
@@ -379,12 +393,25 @@ class Trainer(Trainer_):
                 
                 prediction = self._forward_model_eval_or_test(model,inputs) 
 
-                loss_fn = nn.functional.mse_loss #this is the eval_loss, which is NOT used for saving the best model.
-                loss = loss_fn(prediction, inputs["label_including_rollouts"][:,i*self.data_config.sequence_info[1]:(i+1)*self.data_config.sequence_info[1]]) 
+                #loss = loss_fn(prediction, inputs["label_including_rollouts"][:,i*self.data_config.sequence_info[1]:(i+1)*self.data_config.sequence_info[1]]) 
+                #if self.residual_config is not None:
+                #    raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
+
+                if self.residual_config is None:
+                    #here the predictions are the raw values and also the corresponding labels. 
+                    loss = loss_fn(prediction, inputs["label_including_rollouts"][:,i*self.data_config.sequence_info[1]:(i+1)*self.data_config.sequence_info[1]]) 
                 
-                if self.residual_config is not None:
-                    raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
-                
+                else:
+                    if self.residual_config["add_predicted_value_with_diff_loss"]:
+                        #here the labels are the residuals.
+                        loss = loss_fn(prediction, inputs["label_including_rollouts"][:,i*self.data_config.sequence_info[1]:(i+1)*self.data_config.sequence_info[1]]) 
+
+                    if (self.residual_config["add_predicted_value_with_raw_loss"] or self.residual_config["add_base_value_with_raw_loss"]):
+                        #here the base_value is not reinitalized, it is continued from the previous step.
+                        raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
+                        #here the labels are the raw values.
+                        loss = loss_fn(raw_prediction, inputs["label_including_rollouts"][:,i*self.data_config.sequence_info[1]:(i+1)*self.data_config.sequence_info[1]])                
+
                 if self.output_all_steps:
                     if self.residual_config is None:
                         predictions_.append(prediction.detach())
@@ -520,7 +547,7 @@ class Trainer(Trainer_):
         if self.rollout_steps is not None and output_all_steps:
             self.output_all_steps = True
     
-    ##overrides the one in the  base class from transformers library
+    ##overrides the one in the base class from transformers library
     def prediction_step( 
         self,
         model: nn.Module,
