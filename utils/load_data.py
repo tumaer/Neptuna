@@ -483,7 +483,7 @@ class TransientDataset(Dataset):
 
         self.residual_config = kwargs["residual_config"]
         if self.residual_config is not None:
-            assert not (self.residual_config["add_base_value"] and self.residual_config["add_predicted_value"]), "Both add_base_value and add_predicted_value cannot be true"
+            assert not (self.residual_config["add_base_value_with_raw_loss"] and self.residual_config["add_predicted_value_with_diff_loss"] and self.residual_config["add_predicted_value_with_raw_loss"]), "Only one can be true at a time"
 
         if len(self.input_channels) != len(self.output_channels):
             warnings.warn("Number of input and label channels are different")
@@ -587,22 +587,26 @@ class TransientDataset(Dataset):
                     if self.residual_config is None:
                         label_seq_per_channel = np.stack([group[channel_name][i] for i in label_indices], axis=0)
                     else: # here the label_indices include the final index of the input sequence at its first index
-                        if self.residual_config["add_predicted_value"]: # add the previous value
+                        if self.residual_config["add_predicted_value_with_diff_loss"]: # add the previous value
                             label_seq_per_channel = np.stack([group[channel_name][label_indices[i]] - group[channel_name][label_indices[i-1]] for i in range(1, len(label_indices))], axis=0)
-                        else: #add the base_value
-                            label_seq_per_channel = np.stack([group[channel_name][label_indices[i]] - group[channel_name][label_indices[0]] for i in range(1, len(label_indices))], axis=0)
+                        elif self.residual_config["add_predicted_value_with_raw_loss"]:
+                            label_seq_per_channel = np.stack([group[channel_name][label_indices[i]] for i in range(1, len(label_indices))], axis=0)
+                        else: #add_base_value_with_raw_loss
+                            label_seq_per_channel = np.stack([group[channel_name][label_indices[i]] for i in range(1, len(label_indices))], axis=0)
                 else:   
                     # Extract the specific component and keep a singleton channel dim for consistency
                     if self.residual_config is None:
                         label_seq_per_channel = np.stack([group[channel_name][i][component_idx:component_idx + 1] for i in label_indices], axis=0)
                     else:
-                        if self.residual_config["add_predicted_value"]:
+                        if self.residual_config["add_predicted_value_with_diff_loss"]:
                             label_seq_per_channel = np.stack([group[channel_name][label_indices[i]][component_idx:component_idx + 1] - group[channel_name][label_indices[i-1]][component_idx:component_idx + 1] for i in range(1, len(label_indices))], axis=0)
-                        else: #add the base_value
-                            label_seq_per_channel = np.stack([group[channel_name][label_indices[i]][component_idx:component_idx + 1] - group[channel_name][label_indices[0]][component_idx:component_idx + 1] for i in range(1, len(label_indices))], axis=0)
+                        elif self.residual_config["add_predicted_value_with_raw_loss"]:
+                            label_seq_per_channel = np.stack([group[channel_name][label_indices[i]][component_idx:component_idx + 1] for i in range(1, len(label_indices))], axis=0)
+                        else: #add_base_value_with_raw_loss
+                            label_seq_per_channel = np.stack([group[channel_name][label_indices[i]][component_idx:component_idx + 1] for i in range(1, len(label_indices))], axis=0)
 
                 # Select appropriate normalisation stats depending on residual mode
-                norm_key = channel if self.residual_config is None else f"{channel}_residual"
+                norm_key = channel if ((self.residual_config is None) or (self.residual_config["add_base_value_with_raw_loss"]) or (self.residual_config["add_predicted_value_with_raw_loss"])) else f"{channel}_residual"
                 label_seq_per_channel = normalize_data(
                     label_seq_per_channel, #label_seq_per_channel is the residual of that particular channel if residual_config is not None
                     self.data_normalization_stats[norm_key],

@@ -65,7 +65,7 @@ class Trainer(Trainer_):
         """
         #prediction.shape = torch.Size([B, label_seq_length, C_labels, x_resolution, y_resolution, ...])
         #base_value.shape = torch.Size([B, 1, C_labels, x_resolution, y_resolution, ...]) which is the last time step of the input data
-        if self.residual_config["add_predicted_value"]:
+        if self.residual_config["add_predicted_value_with_diff_loss"] and self.residual_config["add_predicted_value_with_raw_loss"]:
             # Cumulative sum along temporal axis replicates the iterative loop:
             # for i in range(self.data_config.sequence_info[1]):
             #     raw_prediction.append(prediction[:,i:i+1,:,:,:] + base_value)
@@ -276,7 +276,21 @@ class Trainer(Trainer_):
             prediction = model(input_data=inputs["input_data"]) 
         
         prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
-        return prediction
+        return prediction, pushforward_unroll_steps
+
+    ##overrides the one in the  base class from transformers library
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):   
+        #return_outputs is true only when doing eval or test. By default it is false for training.
+        ########################################################
+        # Pushforward trick (for training)
+        ########################################################
+        prediction, pushforward_unroll_steps = self._forward_model_train(model, inputs)
+        #compute the training loss here. Assume l2 loss 
+        loss_fn = nn.functional.mse_loss
+        #loss is computed only for the last rollout (pushforward trick!) (one-step MSE-loss), therefore no need to update the labels, just slice from the end of the "labels_including_rollouts" tensor
+        loss = loss_fn(prediction, inputs["label_including_rollouts"][:,(self.data_config.sequence_info[1]*pushforward_unroll_steps):(self.data_config.sequence_info[1]*(pushforward_unroll_steps+1)) ,]) 
+        #return_outputs is true only when doing eval or test. By default it is false for training.
+        return (loss, prediction) if return_outputs else loss
 
     ##custom function, not inside transformers library
     def _forward_model_eval_or_test(self, model, inputs):  
@@ -310,11 +324,24 @@ class Trainer(Trainer_):
         loss = loss_fn(prediction, inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1]]) 
         
         if self.residual_config is not None:
-            base_value = inputs["input_data"][:,-1:,:,:,:]
+            base_value = inputs["input_data"][:,-1:,]
             raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
 
-        if self.output_all_steps:
-            predictions_.append(raw_prediction.detach() if self.residual_config is not None else prediction.detach()) 
+        if self.output_all_steps:            
+            if self.residual_config is None:
+                # raw values are added 
+                predictions_.append(prediction.detach())
+            elif self.residual_config is not None and self.residual_config["add_predicted_value_with_diff_loss"]:
+                # predictions correspond to the difference and they are accumulated for the metrics.
+                predictions_.append(prediction.detach())
+            elif self.residual_config is not None and self.residual_config["add_predicted_value_with_raw_loss"]:
+                # raw_predictions correspond to the raw values and they are accumulated for the metrics.
+                predictions_.append(raw_prediction.detach())
+            else: #add_base_value_with_raw_loss
+                # raw_predictions correspond to the raw values and they are accumulated for the metrics.
+                predictions_.append(raw_prediction.detach())
+
+            #predictions_.append(raw_prediction.detach() if self.residual_config is not None else prediction.detach()) 
             losses_.append(loss)
         else:
             total_loss += loss #loss is added up across all rollout_steps and we obtain a scalar. This is divided by rollout_steps at the end of the "if" statement
@@ -359,12 +386,18 @@ class Trainer(Trainer_):
                     raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
                 
                 if self.output_all_steps:
-                    predictions_.append(raw_prediction.detach() if self.residual_config is not None else prediction.detach()) 
+                    if self.residual_config is None:
+                        predictions_.append(prediction.detach())
+                    elif self.residual_config is not None and self.residual_config["add_predicted_value_with_diff_loss"]:
+                        predictions_.append(prediction.detach())
+                    elif self.residual_config is not None and self.residual_config["add_predicted_value_with_raw_loss"]:
+                        predictions_.append(raw_prediction.detach())
+                    else: #add_base_value_with_raw_loss
+                        predictions_.append(raw_prediction.detach())
                     losses_.append(loss) 
                 else:
                     total_loss += loss 
 
-                
         if self.output_all_steps:
             predictions= torch.stack(predictions_, dim=1) #predictions.shape = torch.Size([B, rollout_steps+1, label_seq_length, C_output, *spatial_resolution])
             loss = torch.stack(losses_, dim=0) #shape: (rollout_steps+1)
@@ -381,14 +414,26 @@ class Trainer(Trainer_):
         #Autoregressive prediction (for eval and test)
         #########################################################
         predictions_ = []
-        
         prediction = self._forward_model_eval_or_test(model,inputs) 
 
         if self.residual_config is not None:
             base_value = inputs["input_data"][:,-1:,]
             raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
 
-        predictions_.append(raw_prediction.detach() if self.residual_config is not None else prediction.detach()) 
+        #predictions_.append(raw_prediction.detach() if self.residual_config is not None else prediction.detach()) 
+        if self.output_all_steps:            
+            if self.residual_config is None:
+                # raw values are added 
+                predictions_.append(prediction.detach())
+            elif self.residual_config is not None and self.residual_config["add_predicted_value_with_diff_loss"]:
+                # predictions correspond to the difference and they are accumulated for the metrics.
+                predictions_.append(prediction.detach())
+            elif self.residual_config is not None and self.residual_config["add_predicted_value_with_raw_loss"]:
+                # raw_predictions correspond to the raw values and they are accumulated for the metrics.
+                predictions_.append(raw_prediction.detach())
+            else: #add_base_value_with_raw_loss
+                # raw_predictions correspond to the raw values and they are accumulated for the metrics.
+                predictions_.append(raw_prediction.detach())
 
         if not self.data_config.is_steady_state_prediction:
             for i in range(1,self.rollout_steps+1): 
@@ -426,29 +471,20 @@ class Trainer(Trainer_):
                 if self.residual_config is not None:
                     raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
                 
-                predictions_.append(raw_prediction.detach() if self.residual_config is not None else prediction.detach()) 
+                #predictions_.append(raw_prediction.detach() if self.residual_config is not None else prediction.detach()) 
+                if self.output_all_steps:
+                    if self.residual_config is None:
+                        predictions_.append(prediction.detach())
+                    elif self.residual_config is not None and self.residual_config["add_predicted_value_with_diff_loss"]:
+                        predictions_.append(prediction.detach())
+                    elif self.residual_config is not None and self.residual_config["add_predicted_value_with_raw_loss"]:
+                        predictions_.append(raw_prediction.detach())
+                    else: #add_base_value_with_raw_loss
+                        predictions_.append(raw_prediction.detach())
 
-        predictions= torch.stack(predictions_, dim=1) #predictions.shape = torch.Size([B, rollout_steps+1, label_seq_length, C_output, *spatial_resolution])
-
+        predictions= torch.stack(predictions_, dim=1) 
+        #predictions.shape = torch.Size([B, rollout_steps+1, label_seq_length, C_output, *spatial_resolution])
         return predictions
-
-
-    ##overrides the one in the  base class from transformers library
-    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):   
-        #return_outputs is true only when doing eval or test. By default it is false for training.
-        ########################################################
-        # Pushforward trick (for training)
-        ########################################################
-        prediction = self._forward_model_train(model, inputs)
-        #compute the training loss here. Assume l2 loss 
-        loss_fn = nn.functional.mse_loss
-        #loss is computed only for the last rollout (pushforward trick!) (one-step MSE-loss), therefore no need to update the labels, just slice from the end of the "labels_including_rollouts" tensor
-        loss = loss_fn(prediction, inputs["label_including_rollouts"][:,-self.data_config.sequence_info[1]:,]) 
-        #the loss which is printed is rounded-off to 4 decimal places
-        #printing happening inside the function: _maybe_log_save_evaluate() #TODO: Check 
-        #print(f"loss of unrolled steps: {loss}")
-        #return_outputs is true only when doing eval or test. By default it is false for training.
-        return (loss, prediction) if return_outputs else loss
 
     def select_pushforward_unroll_steps_for_training(self, current_epoch):
         current_epoch_tensor = torch.tensor(current_epoch)
@@ -474,7 +510,9 @@ class Trainer(Trainer_):
         sample_idx = torch.multinomial(prob_choices, num_samples=1, generator=gen).item()
         unroll_steps = unroll_choices[sample_idx]
 
-        return unroll_steps
+        # Convert the 0-D tensor to a native Python int before returning so callers can use it
+        # directly in range() and arithmetic operations without needing an explicit .item() call.
+        return unroll_steps.item()
 
     ##custom function used for eval and testing, not inside transformers library
     def set_eval_or_test_rollout_steps(self, rollout_steps=None, output_all_steps=False): 
@@ -609,21 +647,6 @@ class Trainer(Trainer_):
         logits = nested_detach(logits)
         if len(logits) == 1 and isinstance(logits, tuple): 
             logits = logits[0] 
-
-        #NOTE: Obtaining the raw_labels for plotting the target values
-        if self.residual_config is not None:
-            base_value = inputs["input_data"][:,-1:,]
-            if self.residual_config["add_predicted_value"]:
-                # Vectorized cumulative addition along the temporal dimension for efficiency.
-                # Each timestep accumulates the sum of all previous timesteps plus the base value.
-                # Code equivalent to the following loop:
-                # for i in range(labels.shape[1]):
-                #     labels[:,i:i+1,:,:,:] = labels[:,i:i+1,:,:,:] + base_value
-                #     base_value = labels[:,i:i+1,:,:,:]
-                labels.copy_(labels.cumsum(dim=1) + base_value)
-            else:
-                # Constant base value addition can be broadcast efficiently.
-                labels.add_(base_value)
         
         return (loss, logits, labels)
 
@@ -713,6 +736,7 @@ class Trainer(Trainer_):
         observed_num_examples = 0
         #########################################################
         # Main evaluation loop
+        #########################################################
         for step, inputs in enumerate(dataloader):
             # Update the observed num examples
             observed_batch_size = find_batch_size(inputs)
@@ -1015,11 +1039,19 @@ class Trainer(Trainer_):
 
             # reset tr_loss to zero
             tr_loss -= tr_loss
-            ##TODO: Change this to use scientific notation.
-            logs["loss"] = round(tr_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
+            #NOTE: Implemented scientific notation for logs (improvement over base class)
+            #logs["loss"] = round(tr_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
+            loss_value = tr_loss_scalar / (self.state.global_step - self._globalstep_last_logged)
+            # Format the loss in scientific notation with 4-digit precision (e.g. 1.2345e-04)
+            # Keeping it as a **string** ensures the exact formatting is preserved when logged.
+            logs["loss"] = f"{loss_value:.4e}"
             if grad_norm is not None:
-                logs["grad_norm"] = grad_norm.detach().item() if isinstance(grad_norm, torch.Tensor) else grad_norm
-            logs["learning_rate"] = self._get_learning_rate()
+                # logs["grad_norm"] = grad_norm.detach().item() if isinstance(grad_norm, torch.Tensor) else grad_norm
+                grad_norm_value = grad_norm.detach().item() if isinstance(grad_norm, torch.Tensor) else grad_norm
+                logs["grad_norm"] = f"{grad_norm_value:.4e}"
+            # logs["learning_rate"] = self._get_learning_rate()
+            learning_rate_value = self._get_learning_rate()
+            logs["learning_rate"] = f"{learning_rate_value:.4e}"
 
             self._total_loss_scalar += tr_loss_scalar
             self._globalstep_last_logged = self.state.global_step
@@ -1270,7 +1302,9 @@ def test_pushforward_unroll_steps():
             sample_idx = torch.multinomial(prob_choices, num_samples=1, generator=gen).item()
             unroll_steps = unroll_choices[sample_idx]
 
-            return unroll_steps
+            # Convert the 0-D tensor to a native Python int before returning so callers can use it
+            # directly in range() and arithmetic operations without needing an explicit .item() call.
+            return unroll_steps.item()
 
     # Test configuration
     pushforward_config = {
@@ -1323,7 +1357,7 @@ def test_pushforward_unroll_steps():
         for epoch in range(500):
             try:
                 unroll_steps = trainer.select_pushforward_unroll_steps_for_training(epoch)
-                run_results.append(unroll_steps.item())
+                run_results.append(unroll_steps)
             except ValueError:
                 run_results.append(-1)  # Use -1 to represent error
         all_runs.append(run_results)
