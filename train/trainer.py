@@ -1078,14 +1078,17 @@ class Trainer(Trainer_):
             loss_value = tr_loss_scalar / (self.state.global_step - self._globalstep_last_logged)
             # Format the loss in scientific notation with 4-digit precision (e.g. 1.2345e-04)
             # Convert back to float so W&B logs a numeric value while retaining 4-digit scientific notation.
-            logs["loss"] = float(f"{loss_value:.4e}")
+            #logs["loss"] = float(f"{loss_value:.4e}")
+            logs["loss"] = loss_value
             if grad_norm is not None:
                 # logs["grad_norm"] = grad_norm.detach().item() if isinstance(grad_norm, torch.Tensor) else grad_norm
                 grad_norm_value = grad_norm.detach().item() if isinstance(grad_norm, torch.Tensor) else grad_norm
-                logs["grad_norm"] = float(f"{grad_norm_value:.4e}")
+                #logs["grad_norm"] = float(f"{grad_norm_value:.4e}")
+                logs["grad_norm"] = grad_norm_value
             # logs["learning_rate"] = self._get_learning_rate()
             learning_rate_value = self._get_learning_rate()
-            logs["learning_rate"] = float(f"{learning_rate_value:.4e}")
+            #logs["learning_rate"] = float(f"{learning_rate_value:.4e}")
+            logs["learning_rate"] = learning_rate_value
 
             self._total_loss_scalar += tr_loss_scalar
             self._globalstep_last_logged = self.state.global_step
