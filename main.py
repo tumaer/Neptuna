@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
-from bench.config_utils import prepare_config
+from utils.config_utils import prepare_config
 from bench.run import run
 
 
 @hydra.main(version_base="1.3", config_path="./config", config_name="defaults.yaml")
-def main(cfg: DictConfig):  
+def main(cfg: DictConfig):
     """Hydra entry-point – patches the config then delegates to bench.run.run."""
     print("#" * 79, "\nStarting a benchmarking run with the following config:")
     print(OmegaConf.to_yaml(cfg))
@@ -16,10 +16,11 @@ def main(cfg: DictConfig):
     cfg = prepare_config(cfg)
     run(cfg)
 
+
 if __name__ == "__main__":
     main()
 
 
-## NOTE: 
+## NOTE:
 ### How to get the number of iterations as seen in the progress bar?: number_of_training_iterations = (len(train_index_map)/batch_size) * num_epochs
-### Number of eval iterations: number_of_eval_iterations = (len(eval_index_map)/batch_size) there are no epochs during eval 
+### Number of eval iterations: number_of_eval_iterations = (len(eval_index_map)/batch_size) there are no epochs during eval
