@@ -89,8 +89,9 @@ def plot_examples(
     save_dir="plots",
     log_to_wandb: bool = False,
     is_best_metric: bool = False
-):
-    os.makedirs(save_dir, exist_ok=True)
+):  
+    if not log_to_wandb:
+        os.makedirs(save_dir, exist_ok=True)
 
     N, T_in, C, *spatial_shape = input_array.shape
     T_pred = prediction_array.shape[1]
