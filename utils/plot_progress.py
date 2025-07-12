@@ -1,3 +1,37 @@
+"""
+Data Visualization and Progress Plotting for Model Training.
+
+This module provides comprehensive visualization tools for monitoring model training progress
+and evaluating prediction quality across different data dimensions and configurations.
+Designed specifically for time-series and scientific computing applications with support
+for multi-dimensional data visualization and error analysis.
+
+Key Features:
+- Multi-dimensional data plotting (1D, 2D, 3D spatial data)
+- Autoregressive prediction visualization with rollout steps
+- Side-by-side comparison of predictions, targets, and error metrics
+- Support for conditioning inputs and multi-channel data
+- Parallel processing for efficient plot generation
+- Integration with Weights & Biases for experiment tracking
+- Customizable time labeling and spatial aspect ratio handling
+
+Supported Data Types:
+- 1D: Time series, signal data with line plots and legends
+- 2D: Spatial fields, images with colormaps and scientific notation
+- 3D: Volumetric data (placeholder for future implementation)
+
+Visualization Layout:
+- Input data with temporal progression
+- Optional conditioning inputs
+- Model predictions vs ground truth targets
+- Absolute and relative error analysis
+- Configurable time step labeling and channel organization
+
+Notes:
+    This module uses a non-interactive matplotlib backend ('Agg') to support
+    headless environments and server-side plot generation. All plots are saved
+    to disk or logged to experiment tracking systems rather than displayed.
+"""
 from concurrent.futures import ThreadPoolExecutor
 import os
 import numpy as np
@@ -6,16 +40,36 @@ matplotlib.use('Agg')  # Set non-interactive backend before importing pyplot
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import wandb
-# -------------------------------------------------------------
-# Figure cache to avoid expensive figure re-construction on each
-# call to `plot_examples`.  We keep one Figure per unique grid
-# layout (nrows, ncols) so that consecutive examples only update
-# the existing artists.
-# -------------------------------------------------------------
-
-_FIG_CACHE: dict[tuple[int, int], matplotlib.figure.Figure] = {}
 
 def _plot_data(ax, data, ndim, ch_names=None):
+    """
+    Plot data on given axes with dimension-specific formatting and styling.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        The axes object to plot on.
+    data : numpy.ndarray
+        Data array with shape (C, *spatial_dims) where C is number of channels.
+    ndim : int
+        Number of spatial dimensions (1, 2, or 3).
+    ch_names : Optional[List[str]]
+        Channel names for labeling. If None, uses default naming.
+
+    Returns
+    -------
+    Union[None, List[matplotlib.axes.Axes]]
+        For multi-channel 2D data, returns list of sub-axes created.
+        For other cases, returns None.
+
+    Notes
+    -----
+    - 1D data: Creates line plots with legends and visible ticks
+    - 2D data: Creates heatmaps with colorbars and scientific notation
+    - 3D data: Currently shows placeholder text (not implemented)
+    - Automatically handles aspect ratios for square vs rectangular domains
+    - Uses 'coolwarm' colormap for 2D visualizations
+    """
     C = data.shape[0]  # number of channels
 
     if ndim == 1:
@@ -54,8 +108,6 @@ def _plot_data(ax, data, ndim, ch_names=None):
                 sub_ax = fig.add_subplot(gs[0, c])
                 im = sub_ax.imshow(data[c], cmap="coolwarm", aspect=aspect)
                 sub_ax.set_title(ch_names[c], fontsize=8)
-                #sub_ax.set_xticks([])
-                #sub_ax.set_yticks([])
                 cbar = fig.colorbar(im, ax=sub_ax, fraction=0.046, pad=0.05, orientation='horizontal', location='bottom')
                 cbar.ax.tick_params(labelsize=12)
                 cbar.formatter.set_scientific(True)
@@ -89,7 +141,80 @@ def plot_examples(
     save_dir="plots",
     log_to_wandb: bool = False,
     is_best_metric: bool = False
-):  
+):
+    """
+    Generate comprehensive visualization plots comparing model predictions with targets.
+
+    Creates side-by-side comparison plots showing input data, predictions, ground truth,
+    and error metrics across multiple examples and time steps. Supports various data
+    dimensions and handles conditioning inputs for complex model architectures.
+
+    Parameters
+    ----------
+    input_array : numpy.ndarray
+        Input data with shape (N, T_in, C, *spatial_shape) where:
+        - N: batch size
+        - T_in: input time steps
+        - C: number of input channels
+        - *spatial_shape: spatial dimensions (H, W for 2D)
+    prediction_array : numpy.ndarray
+        Model predictions with shape (N, T_pred, C_out, *spatial_shape).
+    target_array : numpy.ndarray
+        Ground truth targets with shape (N, T_pred, C_out, *spatial_shape).
+    only_input_channel_names : List[str]
+        Names of input channels for labeling and legends.
+    output_channel_names : List[str]
+        Names of output channels for labeling and legends.
+    conditioning_input_array : Optional[numpy.ndarray]
+        Optional conditioning inputs with shape (N, T_in, C_cond, *spatial_shape).
+    conditioning_input_channel_names : Optional[List[str]]
+        Names of conditioning input channels.
+    checkpoint_step : Optional[int]
+        Training checkpoint step number for plot titles.
+    epoch : Optional[int]
+        Training epoch number for plot titles.
+    extra_info : Optional[str]
+        Additional information string for plot titles (e.g., dataset name).
+    ndim : int, default=1
+        Number of spatial dimensions (1, 2, or 3).
+    num_examples : int, default=5
+        Number of examples to plot from the batch.
+    stride : int, default=1
+        Time step stride for temporal labeling.
+    save_dir : str, default="plots"
+        Directory to save plots when not logging to W&B.
+    log_to_wandb : bool, default=False
+        Whether to log plots to Weights & Biases instead of saving to disk.
+    is_best_metric : bool, default=False
+        Whether this represents the best metric checkpoint for special handling.
+
+    Returns
+    -------
+    Dict[str, wandb.Image]
+        Dictionary of plot figures for W&B logging when log_to_wandb=True.
+        Empty dictionary when saving to disk.
+
+    Notes
+    -----
+    Plot Layout:
+    - Column 1: Input data (temporal progression)
+    - Column 2: Conditioning inputs (if provided)
+    - Column 3: Model predictions
+    - Column 4: Ground truth targets
+    - Column 5: Absolute error |pred - target|
+    - Column 6: Relative error |pred - target| / |target|
+
+    Time Labeling:
+    - Input columns: "t - N" to "t" (historical data)
+    - Prediction columns: "t + 1" to "t + T_pred" (future predictions)
+
+    Special Features:
+    - Automatic aspect ratio handling for 2D spatial data
+    - Scientific notation for colorbars
+    - Parallel processing for efficient plot generation
+    - Best metric checkpoint handling with file renaming
+    - Configurable figure sizing based on data dimensions and channel counts
+    """
     if not log_to_wandb:
         os.makedirs(save_dir, exist_ok=True)
 
