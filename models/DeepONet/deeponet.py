@@ -4,17 +4,13 @@ import torch.nn as nn
 from torch import Tensor
 from models.ResNet.resnet_utils import ResNetConfig
 from utils import activation_func
-from .deeponet_utils import FFN, CnnBranch,grid_to_points, points_to_grid, calc_resnet_out_shape, linspace_int_list
+from .deeponet_utils import FFN, CnnBranch, grid_to_points, points_to_grid, calc_resnet_out_shape, linspace_int_list
 from models.ResNet.resnet import ResNet1D, ResNet2D, ResNet3D
 from transformers import PreTrainedModel
-
-
 
 class AutoDeepONet(PreTrainedModel):
     """
     Auto-regressive DeepONet for CFD.
-
-    
     """
     main_input_name = "input_data"  
     conditioning_input_name = "conditioning_input_data"

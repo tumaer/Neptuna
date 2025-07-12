@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch import Tensor
 import numpy as np
 
-from models.model_utils import PretrainedConfig
+from utils.model_utils import PretrainedConfig
 
 class DeepONetConfig(PretrainedConfig):
     """
@@ -33,7 +33,7 @@ class DeepONetConfig(PretrainedConfig):
         ResNet_block : Optional[str]
             Type of ResNet block, only used for ResNet branch network
         out_ffn_depth : Optional[int]
-            Output depth for the FNN branch network
+            Output depth for the FFN branch network
         """
 
     model_type = "DeepONet"
@@ -72,8 +72,6 @@ class DeepONetConfig(PretrainedConfig):
 
         if self.coord_features:
             self.in_size = self.in_size - self.dimension
-
-
 
 
 class FFN(nn.Module):

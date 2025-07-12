@@ -1,4 +1,4 @@
-from models.model_utils import PretrainedConfig
+from utils.model_utils import PretrainedConfig
 from transformers.models.swinv2.modeling_swinv2 import (
     Swinv2Attention,
     Swinv2DropPath,

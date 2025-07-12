@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch import Tensor
 from utils import activation_func
 from .resnet_utils import getblock, make_layer
-from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
+from utils.grid_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 from transformers import PreTrainedModel
 
 

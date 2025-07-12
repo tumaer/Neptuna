@@ -7,7 +7,7 @@ from .fno_utils import FullyConnected, build_lift_network, build_fno
 from utils import activation_func
 from typing import Tuple, List
 from transformers import PreTrainedModel
-from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
+from utils.grid_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 
 class FNO(PreTrainedModel):
     """Fourier neural operator (FNO) model."""

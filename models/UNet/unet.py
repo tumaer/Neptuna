@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from transformers import PreTrainedModel
 from .unet_utils import DownBlockND, UpBlockND, MiddleBlockND, DownsampleND, UpsampleND
-from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
+from utils.grid_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 
 class UNet(PreTrainedModel): 
     """Modern U-Net architecture for fluid dynamics simulation

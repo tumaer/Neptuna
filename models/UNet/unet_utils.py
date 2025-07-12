@@ -2,7 +2,7 @@
 from typing import List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
-from models.model_utils import PretrainedConfig
+from utils.model_utils import PretrainedConfig
 from utils import activation_func
 
 class UNetConfig(PretrainedConfig):

@@ -3,7 +3,7 @@ from omegaconf import ListConfig
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Union, Tuple
-from models.model_utils import PretrainedConfig
+from utils.model_utils import PretrainedConfig
 
 def _to_tuple(x):
     if isinstance(x, ListConfig):

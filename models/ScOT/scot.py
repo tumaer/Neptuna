@@ -10,7 +10,7 @@ import torch
 from torch import nn, Tensor
 from typing import Optional, Union, Tuple, List
 import collections
-from utils.feature_utils import twod_meshgrid
+from utils.grid_utils import twod_meshgrid
 from .scot_utils import ScOTOutput, ScOTEmbeddings, ScOTPatchRecovery, ScOTPatchMerging, ScOTPatchUnmerging, ScOTLayer, LayerNorm, ConvNeXtBlock, ResNetBlock, ConditionalLayerNorm
 
 class ScOTEncodeStage(nn.Module):

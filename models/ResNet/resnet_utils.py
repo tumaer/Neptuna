@@ -3,8 +3,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from models.DeepONet.deeponet_utils import BasicBlockND4DeepONet
-from models.model_utils import PretrainedConfig
-
+from utils.model_utils import PretrainedConfig
 
 class ResNetConfig(PretrainedConfig):
     """
