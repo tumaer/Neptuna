@@ -24,6 +24,8 @@ class FNO(PreTrainedModel):
         self.config = config
         self.fno = self.build_FNO()(config=config, activation_fn=activation_fn)
 
+        self.decoder_net = self.fno.decoder_net()
+
     def build_FNO(self):
         """Get the FNO encoder based on the model dimensionality"""
         if self.config.dimension == 1:
@@ -59,8 +61,7 @@ class FNO(PreTrainedModel):
         x_latent, x_shape = self.fno.grid_to_points(x_latent)
 
         # Decoder
-        decoder_net = (self.fno.decoder_net()).to(x_latent.device)
-        x = decoder_net(x_latent)
+        x = self.decoder_net(x_latent)
 
         # Convert back into grid
         x = self.fno.points_to_grid(x, x_shape)
