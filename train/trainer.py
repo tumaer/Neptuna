@@ -1,3 +1,37 @@
+"""
+Custom Trainer Implementation.
+
+This module provides an extended Trainer class that builds upon the HuggingFace
+transformers Trainer with specialized features.
+
+Key Features:
+- Autoregressive prediction with configurable rollout steps
+- Pushforward training strategy for improved temporal stability
+- Residual learning with multiple configuration modes
+- Custom callback system with visualization and logging
+- Support for conditioning inputs and steady-state prediction
+- Hyperparameter search with nested configuration support
+
+Classes:
+    Trainer: Extended trainer class with scientific computing features
+    
+Training Strategies:
+    - Pushforward Training: Gradually increases unroll steps during training with some probabilities to introduce noise generated during rollouts of validation/testing
+    - Residual Learning: Supports multiple residual computation modes
+    - Autoregressive Rollout: Multi-step prediction for evaluation
+    - Steady-State Prediction: Specialized handling for equilibrium problems
+
+Evaluation Modes:
+    - Window-based Loss: Computes loss per evaluation window
+    - Rollout Evaluation: Multi-step autoregressive prediction
+    - Memory-efficient Processing: Handles large datasets with batch accumulation
+
+Integration Points:
+    - HuggingFace transformers training infrastructure
+    - Custom datasets
+    - Weights & Biases logging and visualization
+    - Hyperparameter optimization frameworks
+"""
 import torch
 from torch import nn
 from typing import List, Optional, Dict, Tuple, Union, Any
@@ -11,6 +45,37 @@ from transformers.integrations.integration_utils import WandbCallback as WandbCa
 from utils.trainer_utils import EvalPrediction
 
 class Trainer(Trainer_):
+    """    
+    This class extends the HuggingFace Trainer with specialized features.
+    
+    Parameters
+    ----------
+    model_config : Dict
+        Model configuration dictionary containing architecture parameters.
+    data_config : Dict
+        Data configuration dictionary with dataset and preprocessing parameters.
+    train_config : Dict
+        Training configuration dictionary with optimization and strategy parameters.
+    output_log_config : Dict
+        Output and logging configuration dictionary.
+    **kwargs
+        Additional keyword arguments passed to the base Trainer class.
+        
+    Attributes
+    ----------
+    eval_or_test_rollout_steps : Optional[int]
+        Number of rollout steps for validation/testing.
+    output_all_steps : bool
+        Whether to output predictions during validation/testing.
+    original_label_seq_len : int
+        Original sequence length for labels without rollout.
+    get_prediction_loss_for_eval_windows : bool
+        Whether to compute prediction loss for validation/testing windows.
+    residual_config : Dict
+        Configuration for residual learning strategies.
+    pushforward_config : Dict
+        Configuration for pushforward training strategy.
+    """
     def __init__(self, model_config, data_config, train_config, output_log_config, **kwargs):
         super().__init__(**kwargs)
         self.eval_or_test_rollout_steps = None
@@ -45,7 +110,8 @@ class Trainer(Trainer_):
             self.add_callback(WandbCallback())
 
     def _compute_raw_prediction(self, prediction: torch.Tensor, base_value: torch.Tensor):
-        """Vectorised residual addition.
+        """
+        Compute raw predictions from residual predictions using vectorized operations.
 
         Parameters
         ----------
@@ -88,7 +154,12 @@ class Trainer(Trainer_):
         return raw_prediction, new_base_value
     
     def _rebuild_datasets(self):
-        """Recreate train and evaluation datasets after hyper-parameters were updated during an HP search trial."""
+        """
+        Recreate training and evaluation datasets with updated hyperparameters.
+        
+        This method is called during hyperparameter search to rebuild datasets
+        with the new configuration parameters after a trial update.
+        """
         self.train_dataset, self.eval_dataset = fetch_dataset(
             dataset_name=self.data_config["dataset_name"],
             dataset_directory_path=self.data_config["dataset_directory_path"],
@@ -112,12 +183,12 @@ class Trainer(Trainer_):
     ##overrides the one in the  base class from transformers library
     def get_train_dataloader(self) -> DataLoader:
         """
-        Returns the training [`~torch.utils.data.DataLoader`].
+        Create and return the training dataloader with custom sampling strategy.
 
-        Will use no sampler if `train_dataset` does not implement `__len__`, a random sampler (adapted to distributed
-        training if necessary) otherwise.
-
-        Subclassing to use the default collator from the base class.
+        Returns
+        -------
+        DataLoader
+            Configured training dataloader with custom sampler and collation.
         """
         if self.train_dataset is None:
             raise ValueError("Trainer: training requires a train_dataset.")
@@ -151,16 +222,20 @@ class Trainer(Trainer_):
 
         return self.accelerator.prepare(DataLoader(train_dataset, **dataloader_params)) 
     
-    ##overrides the one in the  base class from transformers library
+    ##overrides the one in the base class from transformers library
     def get_eval_dataloader(self, eval_dataset: Optional[Union[str, Dataset]] = None) -> DataLoader:
         """
         Returns the evaluation [`~torch.utils.data.DataLoader`].
 
-        Subclass and override this method if you want to inject some custom behavior.
-
-        Args:
+        Parameters
+        ----------
             eval_dataset (`str` or `torch.utils.data.Dataset`, *optional*):
                 If a `str`, will use `self.eval_dataset[eval_dataset]` as the evaluation dataset. If a `Dataset`, will override `self.eval_dataset` and must implement `__len__`. If it is a [`~datasets.Dataset`], columns not accepted by the `model.forward()` method are automatically removed.
+    
+        Returns
+        -------
+        DataLoader
+            Configured evaluation dataloader with sequential sampling.
         """
         if eval_dataset is None and self.eval_dataset is None:
             raise ValueError("Trainer: evaluation requires an eval_dataset.")
@@ -216,6 +291,22 @@ class Trainer(Trainer_):
     
     ##custom function, not inside transformers library
     def _forward_model_train(self, model, inputs):
+        """
+        Forward pass for training with pushforward strategy support.
+
+        Parameters
+        ----------
+        model : torch.nn.Module
+            The model to forward.
+        inputs : Dict[str, torch.Tensor]
+            Input tensors including data and optional conditioning inputs.
+
+        Returns
+        -------
+        Tuple[torch.Tensor, int]
+            prediction : Model predictions with shape (B, T, C, *spatial_dims).
+            pushforward_unroll_steps : Number of pushforward steps performed.
+        """
         batch_size, _, _, *spatial_dims = inputs["input_data"].shape
         base_value = inputs["input_data"][:,-1:,]
         if not self.data_config.is_steady_state_prediction:
@@ -286,8 +377,27 @@ class Trainer(Trainer_):
 
         return prediction, pushforward_unroll_steps
 
-    ##overrides the one in the  base class from transformers library
-    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):   
+    ##overrides the one in the base class from transformers library
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None): 
+        """
+        Compute training loss with pushforward strategy support.
+
+        Parameters
+        ----------
+        model : torch.nn.Module
+            The model to compute loss for.
+        inputs : Dict[str, torch.Tensor]
+            Input tensors and labels.
+        return_outputs : bool, default=False
+            Whether to return model outputs along with loss.
+        num_items_in_batch : Optional[int]
+            Number of items in the batch.
+
+        Returns
+        -------
+        Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]
+            Loss tensor, or tuple of (loss, outputs) if return_outputs=True.
+        """
         #return_outputs is true only when doing eval or test. By default it is false for training.
         ########################################################
         # Pushforward trick (for training)
@@ -302,7 +412,22 @@ class Trainer(Trainer_):
         return (loss, prediction) if return_outputs else loss
 
     ##custom function, not inside transformers library
-    def _forward_model_eval_or_test(self, model, inputs):  
+    def _forward_model_eval_or_test(self, model, inputs):
+        """
+        Forward pass for evaluation or testing without pushforward strategy.
+
+        Parameters
+        ----------
+        model : torch.nn.Module
+            The model to forward.
+        inputs : Dict[str, torch.Tensor]
+            Input tensors including data and optional conditioning inputs.
+
+        Returns
+        -------
+        torch.Tensor
+            Model predictions with shape (B, T, C, *spatial_dims).
+        """
         batch_size, _, _, *spatial_dims = inputs["input_data"].shape
         
         if self.data_config.conditioning_in_channels is not None:
@@ -317,6 +442,25 @@ class Trainer(Trainer_):
     # 1) compute_eval_loss, one which computes the mse loss of each window of the batch, takes the mean across the batch and assigns the same scalar value to all entries of the batch. 
     # 2) compute_eval_without_loss, no window loss is computed, the predictions are accumulated as the batches get processed and loss is computed inside compute_metrics inside run.py
     def compute_eval_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        """
+        Compute evaluation loss with autoregressive rollout and window-based loss computation.
+
+        Parameters
+        ----------
+        model : torch.nn.Module
+            The model to evaluate.
+        inputs : Dict[str, torch.Tensor]
+            Input tensors and labels.
+        return_outputs : bool, default=False
+            Whether to return model outputs along with loss.
+        num_items_in_batch : Optional[int]
+            Number of items in the batch.
+
+        Returns
+        -------
+        Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]
+            Loss tensor, or tuple of (loss, outputs) if return_outputs=True.
+        """
         #########################################################
         #Autoregressive prediction (for eval and test)
         #########################################################
@@ -444,6 +588,21 @@ class Trainer(Trainer_):
         # inside evalutaion_loop(), the loss is repeated batch times before appending to the list of all_losses. 
 
     def compute_eval_without_loss(self, model, inputs):
+        """
+        Compute evaluation predictions without loss computation for memory efficiency.
+
+        Parameters
+        ----------
+        model : torch.nn.Module
+            The model to evaluate.
+        inputs : Dict[str, torch.Tensor]
+            Input tensors.
+
+        Returns
+        -------
+        torch.Tensor
+            Stacked predictions with shape (B, rollout_steps+1, T, C, *spatial_dims).
+        """
         #########################################################
         #Autoregressive prediction (for eval and test)
         #########################################################
@@ -521,6 +680,24 @@ class Trainer(Trainer_):
         return predictions
 
     def select_pushforward_unroll_steps_for_training(self, current_epoch):
+        """
+        Select number of pushforward unroll steps based on training epoch and configuration.
+
+        Parameters
+        ----------
+        current_epoch : int
+            Current training epoch.
+
+        Returns
+        -------
+        int
+            Number of unroll steps to perform for pushforward training.
+
+        Raises
+        ------
+        ValueError
+            If current epoch is before the first deciding epoch threshold.
+        """
         current_epoch_tensor = torch.tensor(current_epoch)
         deciding_epochs = torch.tensor(self.train_config["pushforward_config"]["deciding_epochs"])
         max_unrolls = self.train_config["pushforward_config"]["max_allowed_unroll_steps"]
@@ -548,8 +725,18 @@ class Trainer(Trainer_):
         # directly in range() and arithmetic operations without needing an explicit .item() call.
         return unroll_steps.item()
 
-    ##custom function used for eval and testing, not inside transformers library
-    def set_eval_or_test_rollout_steps(self, rollout_steps=None, output_all_steps=False): 
+    ##custom function, not inside transformers library
+    def set_eval_or_test_rollout_steps(self, rollout_steps=None, output_all_steps=False):
+        """
+        Configure rollout steps for evaluation or testing.
+
+        Parameters
+        ----------
+        rollout_steps : Optional[int]
+            Number of autoregressive rollout steps. If None, no rollout is performed.
+        output_all_steps : bool, default=False
+            Whether to output predictions for all rollout steps.
+        """
         self.rollout_steps = rollout_steps 
         if self.rollout_steps is not None and output_all_steps:
             self.output_all_steps = True
@@ -563,27 +750,23 @@ class Trainer(Trainer_):
         ignore_keys: Optional[List[str]] = None,
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
-        Perform an evaluation step on `model` using `inputs`.
+        Perform a single prediction step with custom loss computation and output handling.
 
-        Subclass and override to inject custom behavior.
+        Parameters
+        ----------
+        model : nn.Module
+            The model to evaluate.
+        inputs : Dict[str, Union[torch.Tensor, Any]]
+            Input tensors and labels.
+        prediction_loss_only : bool
+            Whether to return only the loss (True if compute_metrics is not provided).
+        ignore_keys : Optional[List[str]]
+            Keys to ignore when gathering predictions.
 
-        Args:
-            model (`nn.Module`):
-                The model to evaluate.
-            inputs (`Dict[str, Union[torch.Tensor, Any]]`):
-                The inputs and targets of the model.
-
-                The dictionary will be unpacked before being fed to the model. Most models expect the targets under the
-                argument `labels`. Check your model's documentation for all accepted arguments.
-            prediction_loss_only (`bool`):
-                Whether or not to return the loss only.
-            ignore_keys (`List[str]`, *optional*):
-                A list of keys in the output of your model (if it is a dictionary) that should be ignored when
-                gathering predictions.
-
-        Return:
-            Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]: A tuple with the loss,
-            logits and labels (each being optional).
+        Returns
+        -------
+        Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]
+            Tuple containing (loss, logits, labels).
         """
         has_labels = (
             False
@@ -694,9 +877,25 @@ class Trainer(Trainer_):
         metric_key_prefix: str = "eval",
     ) -> EvalLoopOutput:
         """
-        Prediction/evaluation loop, shared by `Trainer.evaluate()` and `Trainer.predict()`.
+        Extended evaluation loop with conditioning input support and custom metric computation.
 
-        Works both with or without labels.
+        Parameters
+        ----------
+        dataloader : DataLoader
+            Evaluation dataloader.
+        description : str
+            Description of the evaluation phase.
+        prediction_loss_only : Optional[bool]
+            Whether to compute only prediction loss.
+        ignore_keys : Optional[List[str]]
+            Keys to ignore during evaluation.
+        metric_key_prefix : str, default="eval"
+            Prefix for metric keys.
+
+        Returns
+        -------
+        EvalLoopOutput
+            Evaluation results including predictions, labels, and metrics.
         """
         args = self.args
 
@@ -928,42 +1127,21 @@ class Trainer(Trainer_):
         metric_key_prefix: str = "eval",
     ) -> dict[str, float]:
         """
-        Run evaluation and returns metrics.
+        Run evaluation with custom callback support and extended metric computation.
 
-        The calling script will be responsible for providing a method to compute metrics, as they are task-dependent
-        (pass it to the init `compute_metrics` argument).
+        Parameters
+        ----------
+        eval_dataset : Optional[Union[Dataset, Dict[str, Dataset]]]
+            Evaluation dataset(s). If None, uses self.eval_dataset.
+        ignore_keys : Optional[List[str]]
+            Keys to ignore during evaluation.
+        metric_key_prefix : str, default="eval"
+            Prefix for metric keys.
 
-        You can also subclass and override this method to inject custom behavior.
-
-        Args:
-            eval_dataset (Union[`Dataset`, Dict[str, `Dataset`]), *optional*):
-                Pass a dataset if you wish to override `self.eval_dataset`. If it is a [`~datasets.Dataset`], columns
-                not accepted by the `model.forward()` method are automatically removed. If it is a dictionary, it will
-                evaluate on each dataset, prepending the dictionary key to the metric name. Datasets must implement the
-                `__len__` method.
-
-                <Tip>
-
-                If you pass a dictionary with names of datasets as keys and datasets as values, evaluate will run
-                separate evaluations on each dataset. This can be useful to monitor how training affects other
-                datasets or simply to get a more fine-grained evaluation.
-                When used with `load_best_model_at_end`, make sure `metric_for_best_model` references exactly one
-                of the datasets. If you, for example, pass in `{"data1": data1, "data2": data2}` for two datasets
-                `data1` and `data2`, you could specify `metric_for_best_model="eval_data1_loss"` for using the
-                loss on `data1` and `metric_for_best_model="eval_data2_loss"` for the loss on `data2`.
-
-                </Tip>
-
-            ignore_keys (`List[str]`, *optional*):
-                A list of keys in the output of your model (if it is a dictionary) that should be ignored when
-                gathering predictions.
-            metric_key_prefix (`str`, *optional*, defaults to `"eval"`):
-                An optional prefix to be used as the metrics key prefix. For example the metrics "bleu" will be named
-                "eval_bleu" if the prefix is "eval" (default)
-
-        Returns:
-            A dictionary containing the evaluation loss and the potential metrics computed from the predictions. The
-            dictionary also contains the epoch number which comes from the training state.
+        Returns
+        -------
+        Dict[str, float]
+            Dictionary of evaluation metrics.
         """
         # handle multiple eval datasets
         override = eval_dataset is not None
@@ -1040,6 +1218,23 @@ class Trainer(Trainer_):
 
     ### overrides the one in the base class from transformers library
     def _evaluate(self, trial, ignore_keys_for_eval, skip_scheduler=False):
+        """
+        Internal evaluation method with learning rate scheduler support.
+
+        Parameters
+        ----------
+        trial : Any
+            Hyperparameter search trial object.
+        ignore_keys_for_eval : List[str]
+            Keys to ignore during evaluation.
+        skip_scheduler : bool, default=False
+            Whether to skip learning rate scheduler step.
+
+        Returns
+        -------
+        Dict[str, float]
+            Evaluation metrics.
+        """
         metrics = self.evaluate(ignore_keys=ignore_keys_for_eval)
         self._report_to_hp_search(trial, self.state.global_step, metrics)
 
@@ -1062,6 +1257,26 @@ class Trainer(Trainer_):
 
     ### overrides the one in the base class from transformers library
     def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time):
+        """
+        Handle logging, saving, and evaluation during training with custom plotting support.
+
+        Parameters
+        ----------
+        tr_loss : torch.Tensor
+            Training loss tensor.
+        grad_norm : Union[torch.Tensor, float]
+            Gradient norm value.
+        model : torch.nn.Module
+            The model being trained.
+        trial : Any
+            Hyperparameter search trial object.
+        epoch : int
+            Current training epoch.
+        ignore_keys_for_eval : List[str]
+            Keys to ignore during evaluation.
+        start_time : float
+            Training start time.
+        """
         if self.control.should_log and self.state.global_step > self._globalstep_last_logged:
             if is_torch_xla_available():
                 xm.mark_step()
@@ -1116,7 +1331,14 @@ class Trainer(Trainer_):
             
     ### overrides the one in the base class from transformers library
     def _hp_search_setup(self, trial: Union["optuna.Trial", dict[str, Any]]):
-        """HP search setup code"""
+        """
+        Set up hyperparameter search with nested configuration support.
+
+        Parameters
+        ----------
+        trial : Union[optuna.Trial, Dict[str, Any]]
+            Hyperparameter search trial object or parameter dictionary.
+        """
         self._trial = trial
 
         if self.hp_search_backend is None or trial is None:
@@ -1222,58 +1444,33 @@ class Trainer(Trainer_):
         **kwargs,
     ) -> Union[BestRun, list[BestRun]]:
         """
-        Launch an hyperparameter search using `optuna` or `Ray Tune` or `SigOpt`. The optimized quantity is determined
-        by `compute_objective`, which defaults to a function returning the evaluation loss when no metric is provided,
-        the sum of all metrics otherwise.
+        Launch hyperparameter search with support for nested configuration parameters.
 
-        <Tip warning={true}>
+        Parameters
+        ----------
+        hp_space : Optional[Callable[[optuna.Trial], Dict[str, float]]]
+            Function defining the hyperparameter search space.
+        compute_objective : Optional[Callable[[Dict[str, float]], float]]
+            Function computing the objective to optimize.
+        n_trials : int, default=20
+            Number of trial runs to test.
+        direction : Union[str, List[str]], default="minimize"
+            If it's single objective optimization, direction is `str`, can be `"minimize"` or `"maximize"`, you
+            should pick `"minimize"` when optimizing the validation loss, `"maximize"` when optimizing one or
+            several metrics. If it's multi objectives optimization, direction is `List[str]`, can be List of
+            `"minimize"` and `"maximize"`, you should pick `"minimize"` when optimizing the validation loss,
+            `"maximize"` when optimizing one or several metrics.
+        backend : Optional[Union[str, HPSearchBackend]]
+            Hyperparameter search backend to use: "optuna", "ray", "sigopt", "wandb"
+        hp_name : Optional[Callable[[optuna.Trial], str]]
+            Function defining trial/run names.
+        **kwargs
+            Additional backend-specific keyword arguments.
 
-        To use this method, you need to have provided a `model_init` when initializing your [`Trainer`]: we need to
-        reinitialize the model at each new run. This is incompatible with the `optimizers` argument, so you need to
-        subclass [`Trainer`] and override the method [`~Trainer.create_optimizer_and_scheduler`] for custom
-        optimizer/scheduler.
-
-        </Tip>
-
-        Args:
-            hp_space (`Callable[["optuna.Trial"], Dict[str, float]]`, *optional*):
-                A function that defines the hyperparameter search space. Will default to
-                [`~trainer_utils.default_hp_space_optuna`] or [`~trainer_utils.default_hp_space_ray`] or
-                [`~trainer_utils.default_hp_space_sigopt`] depending on your backend.
-            compute_objective (`Callable[[Dict[str, float]], float]`, *optional*):
-                A function computing the objective to minimize or maximize from the metrics returned by the `evaluate`
-                method. Will default to [`~trainer_utils.default_compute_objective`].
-            n_trials (`int`, *optional*, defaults to 100):
-                The number of trial runs to test.
-            direction (`str` or `List[str]`, *optional*, defaults to `"minimize"`):
-                If it's single objective optimization, direction is `str`, can be `"minimize"` or `"maximize"`, you
-                should pick `"minimize"` when optimizing the validation loss, `"maximize"` when optimizing one or
-                several metrics. If it's multi objectives optimization, direction is `List[str]`, can be List of
-                `"minimize"` and `"maximize"`, you should pick `"minimize"` when optimizing the validation loss,
-                `"maximize"` when optimizing one or several metrics.
-            backend (`str` or [`~training_utils.HPSearchBackend`], *optional*):
-                The backend to use for hyperparameter search. Will default to optuna or Ray Tune or SigOpt, depending
-                on which one is installed. If all are installed, will default to optuna.
-            hp_name (`Callable[["optuna.Trial"], str]]`, *optional*):
-                A function that defines the trial/run name. Will default to None.
-            kwargs (`Dict[str, Any]`, *optional*):
-                Additional keyword arguments for each backend:
-
-                - `optuna`: parameters from
-                  [optuna.study.create_study](https://optuna.readthedocs.io/en/stable/reference/generated/optuna.study.create_study.html)
-                  and also the parameters `timeout`, `n_jobs` and `gc_after_trial` from
-                  [optuna.study.Study.optimize](https://optuna.readthedocs.io/en/stable/reference/generated/optuna.study.Study.html#optuna.study.Study.optimize)
-                - `ray`: parameters from [tune.run](https://docs.ray.io/en/latest/tune/api_docs/execution.html#tune-run).
-                  If `resources_per_trial` is not set in the `kwargs`, it defaults to 1 CPU core and 1 GPU (if available).
-                  If `progress_reporter` is not set in the `kwargs`,
-                  [ray.tune.CLIReporter](https://docs.ray.io/en/latest/tune/api/doc/ray.tune.CLIReporter.html) is used.
-                - `sigopt`: the parameter `proxies` from
-                  [sigopt.Connection.set_proxies](https://docs.sigopt.com/support/faq#how-do-i-use-sigopt-with-a-proxy).
-
-        Returns:
-            [`trainer_utils.BestRun` or `List[trainer_utils.BestRun]`]: All the information about the best run or best
-            runs for multi-objective optimization. Experiment summary can be found in `run_summary` attribute for Ray
-            backend.
+        Returns
+        -------
+        Union[BestRun, List[BestRun]]
+            Best run(s) information and study object.
         """
         if backend is None:
             backend = default_hp_search_backend()

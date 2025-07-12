@@ -1,20 +1,84 @@
-# Library to compute dataset statistics (mean, std, min, max) and metadata across
-# one or multiple HDF5 files. Designed to be imported and called from other
-# modules (e.g. `main.py`) instead of running as a standalone script.
+"""
+HDF5 Dataset Statistics Computation Utilities.
+
+This module provides comprehensive statistical analysis capabilities for HDF5 datasets
+commonly used in scientific computing and machine learning applications. It computes
+essential statistics (mean, standard deviation, min, max, median, IQR) across multiple
+files and groups, with support for temporal residual analysis and flexible data filtering.
+
+Key Features:
+- Multi-file statistical aggregation.
+- Temporal residual statistics for time-series data
+- Flexible filtering by groups, frames, and temporal stride
+- Support for both on-the-fly and batch statistical computation
+- Automatic channel expansion for multi-component fields
+- Numerical precision(float64 internally)
+
+Main Functions:
+    compute_statistics: Primary API for computing dataset statistics
+    
+Internal Classes:
+    _StatsAggregator: Utility class for accumulating statistics across data chunks
+
+Statistical Measures:
+    For each channel, the following statistics are computed:
+    - mean: Arithmetic mean across all selected data points
+    - std: Standard deviation (combined across groups using RMS)
+    - min: Global minimum value
+    - max: Global maximum value  
+    - median: Median value (only when on_fly_stats=False)
+    - iqr: Interquartile range (Q75 - Q25, only when on_fly_stats=False)
+
+Residual Analysis:
+    When residual_config is provided, additional statistics are computed for
+    temporal residuals (frame-to-frame differences). These are stored with
+    the suffix "_residual" and use the same statistical measures as the
+    original channels.
+
+Memory Considerations:
+    The module offers two computation modes:
+    - on_fly_stats=True: Memory-efficient but cannot compute median and IQR
+    - on_fly_stats=False: Higher memory usage but complete statistics
+"""
 
 import h5py
 import numpy as np
-import os
 from typing import List, Dict, Tuple
 
 
 __all__ = [
-    "compute_statistics",  # main API
+    "compute_statistics",
 ]
 
 
 class _StatsAggregator:
-    """Utility container to accumulate stats for a single channel across groups/files."""
+    """
+    Utility container to accumulate statistics for a single channel across groups/files.
+    
+    This class provides a memory-efficient way to compute combined statistics
+    across multiple data chunks without loading all data into memory simultaneously.
+    It maintains separate lists of statistics from each chunk and combines them
+    appropriately at the end.
+    
+    Attributes
+    ----------
+    means : List[float]
+        List of mean values from each processed data chunk.
+    stds : List[float]
+        List of standard deviations from each processed data chunk.
+    mins : List[float]
+        List of minimum values from each processed data chunk.
+    maxs : List[float]
+        List of maximum values from each processed data chunk.
+    
+    Examples
+    --------
+    >>> agg = _StatsAggregator()
+    >>> agg.add(np.array([1, 2, 3, 4, 5]))
+    >>> agg.add(np.array([6, 7, 8, 9, 10]))
+    >>> combined_stats = agg.combined()
+    >>> print(combined_stats['mean'])  # Combined mean of both arrays
+    """
 
     def __init__(self):
         self.means: List[float] = []
@@ -23,10 +87,22 @@ class _StatsAggregator:
         self.maxs: List[float] = []
 
     def add(self, arr: np.ndarray):
-        """Accumulate statistics for *arr* in float-64 precision irrespective of
-        the input array dtype. This avoids precision loss when datasets are
-        stored in single-precision formats (e.g. FP32)."""
-
+        """
+        Accumulate statistics for a data array.
+        
+        This method computes statistics for the input array in float64 precision
+        to avoid numerical precision issues, regardless of the input array's dtype.
+        
+        Parameters
+        ----------
+        arr : numpy.ndarray
+            Input array of any shape and numeric dtype. Will be flattened
+            internally for statistical computation.
+            
+        Notes
+        -----
+        All computations are performed in float64 precision.
+        """
         # Promote to float64 for numerically stable statistics.
         flat = arr.reshape(-1).astype(np.float64)
 
@@ -38,6 +114,24 @@ class _StatsAggregator:
         self.maxs.append(float(np.max(flat)))
 
     def combined(self) -> Dict[str, float]:
+        """
+        Compute final combined statistics from all accumulated chunks.
+        
+        Returns
+        -------
+        Dict[str, float]
+            Dictionary containing combined statistics with keys:
+            - 'mean': Average of all chunk means
+            - 'std': Root-mean-square of all chunk standard deviations
+            - 'min': Global minimum across all chunks
+            - 'max': Global maximum across all chunks
+            
+        Notes
+        -----
+        The combined standard deviation is computed as the RMS of individual
+        standard deviations, which provides a reasonable approximation when
+        chunk sizes are similar.
+        """
         return {
             "mean": float(np.mean(self.means)),
             "std": float(_combined_std(self.stds)),
@@ -47,18 +141,70 @@ class _StatsAggregator:
 
 
 def _combined_std(std_devs: List[float]) -> float:
-    """Root-mean-square of individual standard deviations."""
+    """
+    Compute combined standard deviation from individual standard deviations.
+    
+    This function computes the root-mean-square (RMS) of individual standard
+    deviations, which provides a reasonable approximation for the combined
+    standard deviation when the underlying data chunks have similar sizes.
+    
+    Parameters
+    ----------
+    std_devs : List[float]
+        List of standard deviations from individual data chunks.
+        
+    Returns
+    -------
+    float
+        Combined standard deviation computed as RMS of input values.
+        
+    Notes
+    -----
+    The RMS formula used is: sqrt(mean(std_i^2)) where std_i are the individual
+    standard deviations. This is an approximation that works well when chunk
+    sizes are similar but may not be exact for highly variable chunk sizes.
+    """
     variances = [s ** 2 for s in std_devs]
     return float(np.sqrt(np.mean(variances, dtype=np.float64)))
 
 
 def _discover_metadata(first_h5_path: str, filter_groups: List[str] | None = None) -> Tuple[List[str], int]:
-    """Extract expanded channel names and spatial dimension from the first group
-    of the first H5 file provided. If *filter_groups* is supplied, the first
-    group whose name matches an entry in *filter_groups* is used instead of the
-    very first group in the file. This makes the routine compatible with the
-    group-filtering logic used inside :func:`compute_statistics`."""
-
+    """
+    Extract channel names and spatial dimensionality from an HDF5 file.
+    
+    This function inspects the first available group in an HDF5 file to determine
+    the expanded channel names and spatial dimensionality. It handles multi-component
+    fields by expanding them into individual channels with appropriate naming.
+    
+    Parameters
+    ----------
+    first_h5_path : str
+        Path to the HDF5 file to inspect for metadata.
+    filter_groups : List[str], optional
+        If provided, only groups whose names appear in this list will be
+        considered. The first matching group will be used for metadata extraction.
+        
+    Returns
+    -------
+    Tuple[List[str], int]
+        A tuple containing:
+        - List[str]: Expanded channel names (e.g., ['velocity_0', 'velocity_1', 'pressure'])
+        - int: Spatial dimensionality (2 for 2D, 3 for 3D, etc.)
+        
+    Raises
+    ------
+    ValueError
+        If filter_groups is provided but none of the specified groups exist in the file.
+        
+    Notes
+    -----
+    Channel expansion rules:
+    - Single-component fields (shape[1] == 1): Use field name as-is
+    - Multi-component fields (shape[1] > 1): Expand to 'fieldname_0', 'fieldname_1', etc.
+    
+    The spatial dimensionality is inferred from the number of dimensions beyond
+    the first two (time and channel dimensions).
+    """
     with h5py.File(first_h5_path, "r") as f:
         # Determine which group to inspect for metadata
         if filter_groups is not None and len(filter_groups) > 0:
@@ -109,61 +255,108 @@ def compute_statistics(
     frame_stride: int = 1,
     on_fly_stats: bool = False,
 ) -> Tuple[Dict[str, Dict[str, float]], List[str], int]:
-    """Compute combined mean/std/min/max for each channel-expanded list across one
-    or many HDF5 files. Optionally, when *residual_config* is supplied, additional
-    statistics for the temporal residuals (frame-to-frame differences) of every
-    channel are computed. These residual statistics are stored under the key
-    f"{channel_name}_residual".
-
+    """
+    Compute comprehensive statistics for HDF5 datasets with optional residual analysis.
+    
+    This function processes one or more HDF5 files to compute statistical measures
+    (mean, std, min, max, median, IQR) for each channel. It supports temporal
+    residual analysis, flexible data filtering, and memory-efficient computation modes.
+    
     Parameters
     ----------
     h5_paths : List[str]
-        List of HDF5 file paths.
+        List of paths to HDF5 files to process. All files should have compatible
+        structure (same channel names and dimensions).
         
-    residual_config : Dict[str, bool] | None, optional
-        When *residual_config* is not ``None`` the function additionally
-        returns statistics for residual fields, where residuals are always
-        defined as frame-to-frame differences (x_t - x_{t-1}). These are
-        stored under keys "<channel>_residual".  The contents of
-        *residual_config* are used elsewhere in the codebase, but here they
-        serve only for validation; if both "add_predicted_value" and
-        "add_base_value" are set to True a ValueError is raised to
-        prevent ambiguous configuration.
-
-    filter_groups : List[str] | None, optional
-        If provided, statistics are computed only for the HDF5 groups whose
-        names are included in *filter_groups*. Any groups not listed here are
-        ignored.
-
-    filter_frames : List[int] | None, optional
-        If provided, *filter_frames* **must** contain exactly two integers
-        ``[start, end]`` which define an inclusive range of time-frame indices
-        to consider (i.e. all frames with indices ``start <= t <= end`` will be
-        used).  Negative indices follow normal NumPy semantics.  Use ``None``
-        for *start* or *end* to indicate the first / last frame respectively.
-        If *filter_frames* is ``None`` every frame is processed.
-
+    residual_config : Dict[str, bool], optional
+        Configuration for residual statistics computation. When provided, additional
+        statistics are computed for temporal residuals (frame-to-frame differences).
+        The dictionary should contain boolean flags for residual computation modes.
+        If both "add_predicted_value" and "add_base_value" are True, raises ValueError.
+        
+    filter_groups : List[str], optional
+        If provided, only HDF5 groups whose names appear in this list will be
+        processed. Groups not in the list are ignored.
+        
+    filter_frames : List[int], optional
+        If provided, must contain exactly two integers [start, end] defining an
+        inclusive range of time-frame indices to process. 
+        Use None for start/end to indicate first/last frame.
+        
     frame_stride : int, default=1
-        Step size when iterating over frames inside the selected range. A value
-        of ``1`` means every frame is used, ``2`` every second frame, and so
-        on.  Must be a positive integer.
-
+        Step size when iterating over frames. Value of 1 processes every frame,
+        2 processes every second frame, etc. Must be positive.
+        
     on_fly_stats : bool, default=False
-        If ``False`` (default) all selected frames for each channel are first
-        gathered in memory; statistics are then computed once per channel at
-        the very end.  When ``True`` statistics are accumulated *on the fly*
-        for every slice of data as it is encountered (previous behaviour). The
-        latter uses less memory but can be slightly slower.
-
+        Computation mode selector:
+        - False: Accumulate all data in memory then compute statistics (enables median and IQR)
+        - True: Compute statistics incrementally (memory efficient, no median and IQR)
+        
     Returns
     -------
-    channel_stats : Dict[str, Dict[str, float]]
-        Mapping: ``channel_name`` (and ``channel_name_residual`` when
-        *residual_config* is provided) -> ``{mean, std, min, max, median, iqr}``.
-    channel_names : List[str]
-        Expanded channel names discovered from the first (selected) group.
-    problem_dim : int
-        Number of spatial dimensions (2 for 2D, 3 for 3D, ...).
+    Tuple[Dict[str, Dict[str, float]], List[str], int]
+        A tuple containing:
+        - Dict[str, Dict[str, float]]: Channel statistics mapping. Each channel maps to
+          a dictionary with keys: 'mean', 'std', 'min', 'max', and optionally 'median', 'iqr'.
+          When residual_config is provided, additional entries with '_residual' suffix.
+        - List[str]: Expanded channel names discovered from the dataset.
+        - int: Spatial dimensionality of the data (2D, 3D, etc.).
+        
+    Raises
+    ------
+    ValueError
+        - If h5_paths is empty
+        - If residual_config has conflicting boolean flags
+        - If filter_frames is not a 2-element list
+        - If frame_stride is not positive
+        - If specified filter_groups don't exist in the files
+        
+    Examples
+    --------
+    >>> # Basic usage
+    >>> stats, channels, dim = compute_statistics(["data.h5"])
+    >>> print(f"Dataset has {len(channels)} channels in {dim}D")
+    >>> 
+    >>> # With residual analysis and filtering
+    >>> residual_cfg = {"add_predicted_value": False, "add_base_value": True}
+    >>> stats, channels, dim = compute_statistics(
+    ...     ["train.h5", "val.h5"],
+    ...     residual_config=residual_cfg,
+    ...     filter_groups=["simulation_1", "simulation_2"],
+    ...     filter_frames=[10, 100],
+    ...     frame_stride=2,
+    ...     on_fly_stats=False
+    ... )
+    >>> 
+    >>> # Access statistics
+    >>> velocity_stats = stats["velocity_0"]
+    >>> print(f"Velocity mean: {velocity_stats['mean']:.3f}")
+    >>> print(f"Velocity std: {velocity_stats['std']:.3f}")
+    >>> 
+    >>> # Access residual statistics (if computed)
+    >>> if "velocity_0_residual" in stats:
+    ...     residual_stats = stats["velocity_0_residual"]
+    ...     print(f"Residual mean: {residual_stats['mean']:.3f}")
+    
+    Notes
+    -----
+    Statistical Computation:
+    - All internal computations use float64 precision for numerical stability
+    - Standard deviations are combined using root-mean-square across chunks
+    - Median and IQR are only available when on_fly_stats=False
+    
+    Residual Analysis:
+    - Residuals are computed as frame-to-frame differences: x[t] - x[t-1]
+    - Residual statistics use the same measures as original channels
+    - Residual keys are suffixed with "_residual"
+    
+    Memory Usage:
+    - on_fly_stats=True: Memory usage scales with number of channels
+    - on_fly_stats=False: Memory usage scales with total data size
+    
+    Channel Expansion:
+    - Single-component fields: channel name = field name
+    - Multi-component fields: channel names = "fieldname_0", "fieldname_1", etc.
     """
 
     if len(h5_paths) == 0:
@@ -329,6 +522,74 @@ def compute_statistics(
 
     return channel_stats, channel_names, problem_dim
 
+
+# -----------------------------------------------------------------------------
+# Re-normalization helper used during plotting
+# -----------------------------------------------------------------------------
+
+def re_normalize_data(arr: np.ndarray, stats: Dict[str, float], norm_strategy: str) -> np.ndarray:
+    """Reverts normalization applied during loading for a single channel.
+    Mainly used for plotting the normalized data.
+    
+    Parameters
+    ----------
+    arr : np.ndarray
+        The normalized data to revert (any shape).
+    stats : Dict[str, float]
+        Dictionary containing either {"mean", "std"} or {"min", "max"} or {"median", "iqr"}. 
+    norm_strategy : str
+        Either "z_normalization" or "min_max_normalization" or "robust_normalization" or "no_normalization".
+    
+    Returns
+    -------
+    np.ndarray
+        Renormalized array (new copy).
+    """
+    if norm_strategy == "z_normalization":
+        return arr * stats["std"] + stats["mean"]
+    elif norm_strategy == "min_max_normalization":
+        return arr * (stats["max"] - stats["min"]) + stats["min"]
+    elif norm_strategy == "robust_normalization":
+        return arr * stats["iqr"] + stats["median"]
+    elif norm_strategy == "no_normalization":
+        return arr
+    else:
+        raise ValueError(f"Unknown normalization strategy: {norm_strategy}")
+
+# -----------------------------------------------------------------------------
+# Normalization helper used during data loading
+# -----------------------------------------------------------------------------
+
+def normalize_data(arr: np.ndarray, stats: Dict[str, float], strategy: str) -> np.ndarray:
+    """Apply per-channel normalization to a NumPy array.
+
+    Parameters
+    ----------
+    arr : np.ndarray
+        The data to normalize (any shape).
+    stats : Dict[str, float]
+        Dictionary containing either {"mean", "std"} or {"min", "max"} or {"median", "iqr"}.
+    strategy : str
+        Either "z_normalization" or "min_max_normalization" or "robust_normalization" or "no_normalization".
+
+    Returns
+    -------
+    np.ndarray
+        Normalized array (new copy).
+    """
+    eps = 1e-12  # small constant to prevent divide-by-zero
+
+    if strategy == "z_normalization":
+        return (arr - stats["mean"]) / (stats["std"]  + eps)
+    elif strategy == "min_max_normalization":
+        return (arr - stats["min"]) / ((stats["max"] - stats["min"]) + eps)
+    elif strategy == "robust_normalization":
+        return (arr - stats["median"]) / (stats["iqr"] + eps)
+    elif strategy == "no_normalization":
+        return arr
+    else:
+        raise ValueError(f"Unknown normalization strategy: {strategy}")
+
 # -----------------------------------------------------------------------------
 # Test script
 # -----------------------------------------------------------------------------
@@ -351,5 +612,3 @@ if __name__ == "__main__":
     for k, v in stats.items():
         print(f"  {k}: mean={v['mean']:.6e}, std={v['std']:.6e}, min={v['min']:.6e}, max={v['max']:.6e}")
 
-
-    

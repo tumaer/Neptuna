@@ -1,10 +1,122 @@
 from typing import Dict
-from models.model_utils import PretrainedConfig
 
 def fetch_model(model_config: Dict,
                 data_config: Dict):
     """
-    Instantiate the model based on the provided model details.
+    Factory function to instantiate neural network models based on configuration.
+    
+    This function serves as the primary entry point for model creation, supporting
+    multiple deep learning architectures. It handles model-specific configuration
+    parsing and instantiation with appropriate parameter validation.
+    
+    Parameters
+    ----------
+    model_config : Dict
+        Model configuration dictionary containing architecture-specific parameters.
+        Must include 'model_name' key specifying the model type. Additional
+        required keys depend on the selected model architecture.
+        
+        Common parameters across models:
+        - model_name : str
+            Name of the model architecture (case-insensitive)
+        - latent_channels : int
+            Number of latent/hidden channels in the model
+        - activation_fn_name : str
+            Name of activation function to use
+            
+    data_config : Dict
+        Data configuration dictionary containing dataset-specific parameters.
+        
+        Required keys:
+        - dimension : int
+            Spatial dimension of the data (1D, 2D, or 3D)
+        - filter_in_channels : List[str]
+            Input channel names (length determines input channel count)
+        - filter_out_channels : List[str]
+            Output channel names (length determines output channel count)
+        - sequence_info : List[int]
+            Sequence configuration [input_len, label_len, stride]
+            
+        Optional keys:
+        - grid_resolution : List[int]
+            Spatial resolution for each dimension (required for some models)
+    
+    Returns
+    -------
+    torch.nn.Module
+        Instantiated neural network model ready for training or inference.
+        The specific model type depends on the 'model_name' parameter.
+    
+    Raises
+    ------
+    ValueError
+        If the specified model_name is not implemented or if required
+        configuration parameters are missing.
+    KeyError
+        If required configuration keys are missing from model_config
+        or data_config dictionaries.
+    
+    Supported Models
+    ----------------
+    fno : Fourier Neural Operator
+        Requires: fno_modes, n_fno_layers, padding, padding_type,
+        decoder_layers, decoder_layer_size, decoder_activation_fn_name
+        
+    resnet : Residual Network
+        Requires: num_blocks, norm, n_groups
+        Uses BasicBlock architecture
+        
+    dilresnet : Dilated Residual Network
+        Requires: num_blocks, norm, n_groups
+        Uses DilatedBasicBlock architecture
+        
+    unet : U-Net Architecture
+        Requires: norm, n_groups, channel_multiplier, is_attn,
+        mid_attn, n_blocks, use1x1
+        
+    deeponet_ffn : DeepONet with Feed-Forward Branch Network
+        Requires: branch_depth, trunk_depth, width, act_on_output
+        
+    deeponet_cnn : DeepONet with CNN Branch Network
+        Requires: branch_depth, trunk_depth, kernel_size, padding, width
+        
+    deeponet_resnet : DeepONet with ResNet Branch Network
+        Requires: branch_depth, trunk_depth, padding, width,
+        ResNet_block, num_blocks
+        
+    cno : Convolutional Neural Operator
+        Requires: cno_depth, n_blocks, n_blocks_bottleneck,
+        channel_multiplier, norm
+        
+    scot : Swin Transformer for Operator Learning
+        Requires: patch_size, embed_dim, depths, num_heads,
+        skip_connections, window_size, mlp_ratio, qkv_bias,
+        hidden_dropout_prob, attention_dropout_prob, drop_path_rate,
+        hidden_act, use_absolute_embeddings, initializer_range,
+        layer_norm_eps, residual_model, use_conditioning,
+        output_hidden_states, output_attentions
+        Note: Currently only supports 2D data
+    
+    Notes
+    -----
+    Model Configuration:
+    - All models automatically include coordinate features (coord_features=True)
+    - Input/output channel counts are determined from data_config channel lists
+    - Sequence information is passed to models.
+    
+    Architecture Selection:
+    - Model names are case-insensitive for convenience
+    - Each model has specific required parameters in model_config
+    - Some models have dimensional restrictions (e.g., ScOT requires 2D data)
+    
+    Error Handling:
+    - Missing required parameters will raise KeyError with descriptive messages
+    - Unsupported model names will raise ValueError with available options
+    - Dimensional mismatches will raise ValueError with specific requirements
+    
+    The function automatically handles the import of model classes and their
+    corresponding configuration classes, ensuring proper encapsulation and
+    avoiding unnecessary imports for unused models.
     """
     model_name = model_config['model_name'].lower()
 
