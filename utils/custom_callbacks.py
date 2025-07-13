@@ -163,6 +163,25 @@ class CallbackHandler(CallbackHandler_):
         """
         return self.call_event("on_plot", args, state, control, **kwargs)
 
+
+class NaNCallback(TrainerCallback):
+    """
+    Callback to stop training if NaN is encountered in the loss. Training will stop at the nearest step where on_log is called.
+    """
+    # initusuper
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        loss = logs.get("loss") or logs.get("eval_l2_error") or logs.get("eval_l1_error")
+        if loss is not None and (loss != loss):  # NaN check
+            print("🛑 NaN encountered in loss. Stopping training.")
+            control.should_training_stop = True
+            control.should_evaluate = False
+            control.should_save = False
+            control.should_plot = False
+
+
 class WandbCallback(WandbCallback_):
     """
     Enhanced Weights & Biases callback with trial tracking and model configuration logging.

@@ -279,11 +279,20 @@ def run_hp_search_optuna(trainer, n_trials: int, direction: str, **kwargs) -> Be
         study = optuna.create_study(direction=direction, directions=directions, **kwargs)
         #NOTE: catch=(RuntimeError,) is added on top of the default function in transformers.integrations.integration_utils.py
         study.optimize(_objective, n_trials=n_trials, timeout=timeout, n_jobs=n_jobs, gc_after_trial=gc_after_trial, catch=(RuntimeError,ValueError, AssertionError))
+        #NOTE: try-except is added on top of the default to handle the case where no completed trial is available (when all trials fail).
         if not study._is_multi_objective():
-            best_trial = study.best_trial
+            try:
+                best_trial = study.best_trial
+            except ValueError:
+                # No completed trial available – return gracefully without raising.
+                return None, study
             return BestRun(str(best_trial.number), best_trial.value, best_trial.params), study
         else:
-            best_trials = study.best_trials
+            try:
+                best_trials = study.best_trials
+            except ValueError:
+                # No completed trial available – return gracefully without raising.
+                return None, study
             return [BestRun(str(best.number), best.values, best.params) for best in best_trials], study
     else:
         for i in range(n_trials):

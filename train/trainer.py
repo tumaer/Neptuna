@@ -1213,6 +1213,11 @@ class Trainer(Trainer_):
                                                          )
 
         self._memory_tracker.stop_and_update_metrics(output.metrics)
+        #NOTE: stop training if NaN is encountered in the loss and set the control flags to False.
+        if self.control.should_training_stop:
+            self.control.should_evaluate = False
+            self.control.should_save = False
+            self.control.should_plot = False
 
         return output.metrics
 

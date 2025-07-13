@@ -16,7 +16,7 @@ from utils.hp_optimization import (
     get_optuna_sampler,
 )
 from optuna.pruners import NopPruner
-from utils.custom_callbacks import PlotOnEvalAndSaveCallback
+from utils.custom_callbacks import PlotOnEvalAndSaveCallback, NaNCallback
 import csv
 
 __all__ = ["run"]
@@ -181,6 +181,7 @@ def run(cfg):
     callbacks = []
     # Always add PlotOnEvalAndSaveCallback
     callbacks.append(PlotOnEvalAndSaveCallback)
+    callbacks.append(NaNCallback)
 
     trainer = Trainer(
         model_config=cfg["model_config"],
