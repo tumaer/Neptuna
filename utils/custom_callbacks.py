@@ -700,6 +700,11 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
         else:
             print(log_dict)
 
+    def on_train_end(self, args, state, control, **kwargs):
+        self._plotted_thresholds = set()
+        self._should_plot = False
+
+
 # ------------------------------------------------------------------
 # Extend the 🤗 Transformers callback interface with an optional
 # `on_plot` event **without** modifying the original library files.
