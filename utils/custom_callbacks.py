@@ -661,7 +661,9 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
 
                 # If W&B logging is enabled, log the figures now.
                 if self.output_log_config["logging"].get("wandb", False) and wandb.run is not None:
+                    print("logging figures to wandb")
                     self.wandb_fig_log(fig_dict)
+                    print("logged figures to wandb")
         # Reset the flag
         control.should_plot = False
 

@@ -218,6 +218,8 @@ def plot_examples(
     if not log_to_wandb:
         os.makedirs(save_dir, exist_ok=True)
 
+    print("entering main plot progress")
+
     N, T_in, C, *spatial_shape = input_array.shape
     T_pred = prediction_array.shape[1]
 
@@ -231,6 +233,7 @@ def plot_examples(
     # Use ThreadPoolExecutor for parallelized file saving
     with ThreadPoolExecutor() as executor:
         for idx in example_indices:
+            print(f"entering idx-plot progress {idx}")
             inp = input_array[idx]          # [T_in, C, ...]
             pred = prediction_array[idx]    # [T_pred, C, ...]
             tgt = target_array[idx]         # [T_pred, C, ...]
@@ -473,7 +476,8 @@ def plot_examples(
                         caption=f"Best_eval_plot_ckpt_{checkpoint_step}_epoch_{epoch}_example_{idx}"
                     )
                     wandb.run.summary[f"best_eval_plot"] = best_img
+                print(f"exiting idx-plot progress {idx}")
             
             plt.close(fig)
-        
+    print("exiting main plot progress")
     return returned_figs
