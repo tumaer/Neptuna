@@ -235,6 +235,75 @@ def get_optuna_sampler(sampler_name: str, config=None, **kwargs):
         ) 
 
 
+# ---------------------------------------------------------------------------
+# Optuna trial name factory: Creates a short, unique name for each trial
+# ---------------------------------------------------------------------------
+
+def trial_name_factory(data_config=None):
+    """Return a short, unique name for an Optuna trial.
+
+    We include the trial number and a couple of key sampled parameters (if
+    present) to make the run list easier to read in W&B / MLflow etc.
+    """
+    # Derive dataset prefix from data_config if provided
+    dataset_prefix = None
+    if data_config is not None:
+        initials = "".join(
+            ch for ch in data_config.get("dataset_name", "") if ch.isupper()
+        )
+        dim = data_config.get("dimension")
+        if initials:
+            dataset_prefix = f"{initials}{dim}D" if dim is not None else initials
+
+    def trial_name(trial):
+        # Start with dataset prefix if available
+        pieces = [dataset_prefix] if dataset_prefix else []
+        pieces.append(f"trial{trial.number}")
+
+        def _abbr(key: str) -> str:
+            parts = key.split("_")
+            # If the key has zero or one underscore (≤ two segments), keep as is.
+            if len(parts) <= 2:
+                return key
+
+            # Abbreviate all but the last segment.
+            prefix_abbrev = "".join(p[0] for p in parts[:-1])
+            return f"{prefix_abbrev}_{parts[-1]}"
+
+        def _fmt(val):
+            """Format numeric values with two decimal digits; leave others unchanged."""
+            # Int or bool – return as simple string
+            if isinstance(val, (int, bool)):
+                return str(val)
+            # Floats – use fixed or scientific notation depending on magnitude
+            if isinstance(val, float):
+                if val == 0:
+                    return "0"
+                # Use scientific notation for very small/large values
+                if abs(val) < 1e-3 or abs(val) >= 1e3:
+                    return f"{val:.2e}".replace("e-0", "e-").replace("e+0", "e+")
+                # Otherwise, fixed-point with two decimals (trim trailing zeros)
+                return f"{val:.2f}".rstrip("0").rstrip(".")
+            # Default fallback
+            return str(val)
+
+        for full_key, value in sorted(trial.params.items()):
+            last = full_key.split(".")[-1]
+            pieces.append(f"{_abbr(last)}={_fmt(value)}")
+
+        # Join with underscores and replace any path‐unsafe characters.
+        name = "_".join(pieces)
+        for ch in ["/", "\\"]:
+            name = name.replace(ch, "-")
+        return name
+
+    return trial_name
+
+
+# ---------------------------------------------------------------------------
+# Optuna backend
+# ---------------------------------------------------------------------------
+
 def run_hp_search_optuna(trainer, n_trials: int, direction: str, **kwargs) -> BestRun:
     import optuna
     from accelerate.utils.memory import release_memory
