@@ -218,8 +218,6 @@ def plot_examples(
     if not log_to_wandb:
         os.makedirs(save_dir, exist_ok=True)
 
-    print("entering main plot progress")
-
     N, T_in, C, *spatial_shape = input_array.shape
     T_pred = prediction_array.shape[1]
 
@@ -233,7 +231,6 @@ def plot_examples(
     # Use ThreadPoolExecutor for parallelized file saving
     with ThreadPoolExecutor() as executor:
         for idx in example_indices:
-            print(f"entering idx-plot progress {idx}")
             inp = input_array[idx]          # [T_in, C, ...]
             pred = prediction_array[idx]    # [T_pred, C, ...]
             tgt = target_array[idx]         # [T_pred, C, ...]
@@ -305,11 +302,23 @@ def plot_examples(
             # Add main title
             # Adjust y-position to be relative to the new figure height calculation
             suptitle_y_pos = 1 - (0.10 / (nrows + header_ratio + footer_ratio)) if ndim == 2 else 0.965
-            fig.suptitle(f"{extra_info}, Checkpoint Step: {checkpoint_step}, Epoch: {epoch}, Example Index: {idx}", fontsize=32, y=suptitle_y_pos, weight='bold')
+            # Use a multi-line title so that all components are visible without being truncated.
+            fig.suptitle(
+                f"{extra_info}\nCheckpoint Step: {checkpoint_step}, Epoch: {epoch}\nExample Index: {idx}",
+                fontsize=32,
+                y=suptitle_y_pos,
+                weight='bold'
+            )
             
-            # Add dimensions info as subtitle
-            dims_text = f"Additional Info: Total number of validation examples={N}, Spatial_res={spatial_shape}, # Input_frames={T_in}, # Input_channels={C}, # Prediction_frames={T_pred}, # Prediction_channels={pred.shape[1]}"
-            text_y_pos = 1 - (0.22 / (nrows + header_ratio + footer_ratio)) if ndim == 2 else 0.945
+            # Add dimensions info as subtitle, positioned farther below the suptitle to avoid overlap.
+            dims_text = (
+                f"Additional Info: Total number of validation examples={N}, Spatial_res={spatial_shape}, "
+                f"# Input_frames={T_in}, # Input_channels={C}, # Prediction_frames={T_pred}, "
+                f"# Prediction_channels={pred.shape[1]}"
+            )
+
+            # Increase spacing below the suptitle by 50% to prevent overlap.
+            text_y_pos = suptitle_y_pos - (0.075 if ndim == 2 else 0.06)
             fig.text(0.5, text_y_pos, dims_text, ha='center', va='center', fontsize=22)
 
             # Create gridspec with variable column widths and specific height ratios
@@ -476,8 +485,6 @@ def plot_examples(
                         caption=f"Best_eval_plot_ckpt_{checkpoint_step}_epoch_{epoch}_example_{idx}"
                     )
                     wandb.run.summary[f"best_eval_plot"] = best_img
-                print(f"exiting idx-plot progress {idx}")
             
             plt.close(fig)
-    print("exiting main plot progress")
     return returned_figs

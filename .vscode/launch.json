@@ -45,6 +45,27 @@
           }
 
   },
+  {
+    "name": "UNet_HP_OPT_2D_Laser_Droplet_UNet",
+    "type": "debugpy",
+    "request": "launch",
+    "program": "main.py",
+    "console": "integratedTerminal",
+    "justMyCode": false,
+    "args": [
+        "hydra.run.dir=.",
+        "hydra.output_subdir=null",
+        "data_config=fluids/Laser_Droplet/2d_laser_droplet_data_default.yaml",
+        "model_config=UNet/default_unet",
+        "hyperparam_opt_config=unet_hp_opt_config.yaml",
+      ],
+    "env": {
+        "HYDRA_FULL_ERROR": "1",
+        "HYDRA_MAIN_DISABLE_RUN": "1",
+        "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "2.0"   // “-1” disables the warning entirely
+        }
+
+},
       
       {
           "name": "train 2D_Syntheic_constant_UNet",
