@@ -8,3 +8,13 @@ outputs/
 #*.txt
 *.npy
 outputs/
+checkpoints/
+wandb/
+*.png
+*.pdf
+*.jpg
+*.jpeg
+*.gif
+*.tiff
+*.mp4
+*.pt

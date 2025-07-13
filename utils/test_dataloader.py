@@ -9,7 +9,7 @@ import h5py
 import numpy as np
 
 class MultiGroupHDF5Dataset(Dataset):
-    def __init__(self, h5_path, groups=None, fields=None,
+    def __init__(self, h5_path, groups=None, channels=None,
                  input_steps=3, label_steps=5,
                  input_stride=1, label_stride=1,
                  t_min=None, t_max=None,
@@ -32,14 +32,14 @@ class MultiGroupHDF5Dataset(Dataset):
             all_groups = list(f.keys())
             self.groups = groups if groups is not None else all_groups
 
-            # Infer fields from first group
+            # Infer channels from first group
             first_group = f[self.groups[0]]
-            available_fields = list(first_group.keys())
-            self.fields = fields if fields is not None else available_fields
+            available_channels = list(first_group.keys())
+            self.channels = channels if channels is not None else available_channels
 
             for group_name in self.groups:
                 group = f[group_name]
-                num_samples = group[self.fields[0]].shape[0]
+                num_samples = group[self.channels[0]].shape[0]
 
                 # Apply t_min and t_max bounds
                 tmin = 0 if t_min is None else t_min
@@ -61,14 +61,14 @@ class MultiGroupHDF5Dataset(Dataset):
             input_chunks = []
             label_chunks = []
 
-            for field in self.fields:
+            for channel in self.channels:
                 # Time indices for inputs and labels
                 input_indices = [start_idx + i * self.input_stride for i in range(self.input_steps)]
                 label_start = input_indices[-1] + 1
                 label_indices = [label_start + i * self.label_stride for i in range(self.label_steps)]
 
-                input_seq = np.stack([group[field][i] for i in input_indices], axis=0)
-                label_seq = np.stack([group[field][i] for i in label_indices], axis=0)
+                input_seq = np.stack([group[channel][i] for i in input_indices], axis=0)
+                label_seq = np.stack([group[channel][i] for i in label_indices], axis=0)
 
                 input_chunks.append(input_seq)
                 label_chunks.append(label_seq)

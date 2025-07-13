@@ -1,0 +1,75 @@
+#NOTE: These are only half of the dependencies. Remaining dependencies are in requirements_only_pip.txt
+#To intall all the dependencies: 
+#1) conda env create -f environment_only_conda.yml
+#2) TMPDIR=/local/disk1/miniconda/temp/ pip --cache-dir /local/disk1/miniconda/temp/ install -r requirements_only_pip.txt
+name: neptuna
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - _libgcc_mutex=0.1
+  - _openmp_mutex=5.1
+  - asttokens=3.0.0
+  - bzip2=1.0.8
+  - ca-certificates=2025.1.31
+  - comm=0.2.2
+  - debugpy=1.8.11
+  - decorator=5.2.1
+  - exceptiongroup=1.2.2
+  - executing=2.1.0
+  - expat=2.6.4
+  - importlib-metadata=8.6.1
+  - ipykernel=6.29.5
+  - ipython=9.0.2
+  - ipython_pygments_lexers=1.1.1
+  - jedi=0.19.2
+  - jupyter_client=8.6.3
+  - jupyter_core=5.7.2
+  - ld_impl_linux-64=2.40
+  - libffi=3.4.4
+  - libgcc-ng=11.2.0
+  - libgomp=11.2.0
+  - libmpdec=4.0.0
+  - libsodium=1.0.18
+  - libstdcxx-ng=11.2.0
+  - libuuid=1.41.5
+  - libxcb=1.17.0
+  - matplotlib-inline=0.1.7
+  - ncurses=6.4
+  - nest-asyncio=1.6.0
+  - openssl=3.0.16
+  - packaging=24.2
+  - parso=0.8.4
+  - pexpect=4.9.0
+  - pickleshare=0.7.5
+  - pip=24.2
+  - platformdirs=4.3.7
+  - prompt-toolkit=3.0.50
+  - psutil=5.9.0
+  - pthread-stubs=0.4
+  - ptyprocess=0.7.0
+  - pure_eval=0.2.3
+  - pygments=2.19.1
+  - python=3.13.1
+  - python-dateutil=2.9.0.post0
+  - python_abi=3.13
+  - pyzmq=26.2.0
+  - readline=8.2
+  - setuptools=75.1.0
+  - six=1.17.0
+  - sqlite=3.45.3
+  - stack_data=0.6.3
+  - tk=8.6.14
+  - tornado=6.4.2
+  - traitlets=5.14.3
+  - tzdata=2024b
+  - wcwidth=0.2.13
+  - wheel=0.44.0
+  - xorg-libx11=1.8.12
+  - xorg-libxau=1.0.12
+  - xorg-libxdmcp=1.1.5
+  - xorg-xorgproto=2024.1
+  - xz=5.4.6
+  - zeromq=4.3.5
+  - zipp=3.21.0
+  - zlib=1.2.13

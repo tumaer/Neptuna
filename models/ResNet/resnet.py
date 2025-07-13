@@ -3,126 +3,37 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from utils import activation_func
-from typing import Optional, Union, Tuple, List, Callable
-from .resnet_utils import BasicBlockND,DilatedBasicBlockND
-from utils.feature_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
+from .resnet_utils import getblock, make_layer
+from utils.grid_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
+from transformers import PreTrainedModel
 
-def getblock(block):
-    """Get the ResNet block"""
-    if isinstance(block, str):
-        if block == "BasicBlock":
-                return BasicBlockND
-        elif block == "DilatedBasicBlock":
-                return DilatedBasicBlockND
-        else:
-            raise NotImplementedError(f"Unknown block: {block}")
-    else:
-        raise ValueError(f"Unknown block type: {block}")           
 
-def make_layer(
-    block: Callable,
-    in_planes: int,
-    out_planes: int,
-    num_blocks: int,
-    stride: int,
-    dimension: int,
-    activation_fn: nn.Module = nn.GELU(),
-    norm: bool = True,
-    num_groups: int = 1,
-) -> nn.Sequential:
-    strides = [stride] + [1] * (num_blocks - 1)
-    layers = []
-    for stride in strides:
-        layers.append(
-            block(
-                in_planes,
-                out_planes,
-                dimension,
-                stride,
-                activation_fn,
-                norm,
-                num_groups,
-            )
-        )
-        in_planes = out_planes * block.expansion
-    return nn.Sequential(*layers)
+class ResNet(PreTrainedModel):
+    """Class to support ResNet like feedforward architectures"""
 
-class ResNet(nn.Module):
-    """Class to support ResNet like feedforward architectures
+    main_input_name = "input_data"
+    conditioning_input_name = "conditioning_input_data"
 
-    Args:
-        in_channels : int
-            Number of input fields
-        out_channels : int
-            Number of output fields
-        block (str): 
-            BasicBlock, Dilblock only for now
-        num_blocks (List[int]): 
-            Number of blocks in each stage
-        sequence_info (List[List[int]]):
-            sequence_info[0][0]: input_seq_len, sequence_info[0][1]: label_seq_len,
-            sequence_info[0][2]: input_sequence_stride, sequence_info[0][3]: label_sequence_stride  
-        hidden_channels (int): 
-            Number of channels in the hidden layers
-        dimension : int
-            Model dimensionality (supports 1,2,3)
-        activation_fn : str
-            Activation function, by default "gelu"
-        coord_features : bool, optional
-            Use coordinate grid as additional feature map, by default True
-        norm (bool): 
-            Whether to use normalization
-        num_groups : int
-            Number of groups for GroupNorm, by default 1 (equivalent with LayerNorm)
-    """
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        block: str,
-        num_blocks: list,
-        dimension: int,
-        sequence_info: Optional[List[List[int]]] = [[1,1,1,1]],
-        hidden_channels: int = 64,
-        activation_fn: str = "gelu",
-        coord_features: bool = True,
-        norm: bool = True,
-        padding: int = 9,
-        num_groups: int = 1,
-    ) -> None:
-        super().__init__()
-        self.in_channels = in_channels * sequence_info[0][0] 
-        self.out_channels = out_channels * sequence_info[0][1]
-        self.hidden_channels = hidden_channels
-        self.normalization = norm
-        self.coord_features = coord_features
-        self.dimension = dimension
+    def __init__(self, config) -> None:
+        super().__init__(config)
+        self.config = config
                
-        self.activation: nn.Module = activation_func.get_activation(activation_fn)
-        if self.activation is None:
-            raise NotImplementedError(f"Activation {activation_fn} not implemented")
+        activation: nn.Module = activation_func.get_activation(config.activation_fn_name)
+        if activation is None:
+            raise NotImplementedError(f"Activation {config.activation_fn_name} not implemented")
         
         self.resnet = self.build_resnet()(
-            in_channels=self.in_channels,
-            out_channels=self.out_channels,
-            block=block,
-            num_blocks=num_blocks,     #is self.xx necessary??
-            hidden_channels=self.hidden_channels,
-            activation_fn=self.activation,
-            coord_features=self.coord_features,
-            norm=self.normalization,
-            padding=padding,
-            num_groups=num_groups,
+            config=config,
+            activation_fn=activation
         )
            
     def build_resnet(self):
         """Get the ResNet encoder based on the model dimensionality"""
-        if self.dimension == 1:
+        if self.config.dimension == 1:
             return ResNet1D
-        elif self.dimension == 2:
+        elif self.config.dimension == 2:
             return ResNet2D
-        elif self.dimension == 3:
+        elif self.config.dimension == 3:
             return ResNet3D
         else:
             raise NotImplementedError(
@@ -131,112 +42,70 @@ class ResNet(nn.Module):
     
     def forward(self, 
                 input_data: Tensor,
-                labels: Tensor) -> Tensor: #NOTE: Vimp: forward SHOULD always have the arguments EXACTLY named as "input_data" and "labels", 
-                                           #else the data collator will remove them. 
-        #reshape input into [batch, in_channel, grid_x, grid_y, ...]
-        #NOTE: input and output fields need not be necessarily the same.
-        batch, input_seq, input_fields, *spatial = input_data.shape
-        input_data=input_data.reshape(batch, input_seq * input_fields, *spatial)
+                **kwargs) -> Tensor: 
+
+        if "conditioning_input_data" in kwargs:
+            #NOTE: Conditioning data can be passed into a conv network before concatination with input_data.
+            conditioning_input_data = kwargs["conditioning_input_data"]
+            input_data = torch.cat([input_data, conditioning_input_data], dim=2)
+        else:
+            conditioning_input_data = None        
+
+
+        batch, input_seq, input_channels, *spatial = input_data.shape
+        input_data=input_data.reshape(batch, input_seq * input_channels, *spatial)
         
         y = self.resnet(input_data)
         
-        # Reshape the prediction to match the labels shape
-        batch, output_seq, output_fields, *spatial = labels.shape
-        y = y.reshape(batch, output_seq, output_fields, *spatial)
-
-        return y,labels
+        return y
                                                    
-class ResNet1D(nn.Module):
-    """    Args:
-        in_channels : int
-            Number of input fields
-        out_channels : int
-            Number of output fields
-        block : str
-            BasicBlock,Dilblock only for now
-        num_blocks (List[int]): 
-            Number of blocks in each stage
-        hidden_channels (int): 
-            Number of channels in the hidden layers
-        activation_fn : str
-            Activation function, by default "gelu"
-        coord_features : bool, optional
-            Use coordinate grid as additional feature map, by default True
-        padding : int
-            Padding for the input tensor
-        norm (bool): 
-            Whether to use normalization
-        num_groups : int
-            Number of groups for GroupNorm, by default 1 (equivalent with LayerNorm)
-    """
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        block: str ,
-        num_blocks: list,
-        hidden_channels: int = 64,
-        activation_fn: nn.Module = nn.GELU(),
-        coord_features: bool = True,
-        padding: int = 9,
-        norm: bool = True,
-        num_groups: int = 1,
-        ) -> None:
-        super().__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.hidden_channels = hidden_channels
-        self.activation = activation_fn                
-        self.coord_features = coord_features
-        self.padding = padding   
-        self.num_blocks = num_blocks
-        self.normalization = norm
-        
-        # Add relative coordinate feature
-        if self.coord_features:
-            self.in_channels = self.in_channels + 1
-            
+class ResNet1D(PreTrainedModel):
+    def __init__(self, config, activation_fn: nn.Module = nn.GELU()) -> None:
+        super().__init__(config)
+
+        self.activation = activation_fn
+
         self.conv_in1 = nn.Conv1d(
-            self.in_channels,
-            self.hidden_channels,
+            config.in_size,
+            config.latent_channels,
             kernel_size=1,
             bias=True,
         )
         self.conv_in2 = nn.Conv1d(
-            self.hidden_channels,
-            self.hidden_channels,
+            config.latent_channels,
+            config.latent_channels,
             kernel_size=1,
             bias=True,
         )
         
-        self.block = getblock(block)
+        self.block = getblock(config.block)
         
         self.layers = nn.ModuleList(
             [
                 make_layer(
                     self.block,
-                    self.hidden_channels,
-                    self.hidden_channels,
-                    num_blocks[i],
-                    stride = 1,
+                    config.latent_channels,
+                    config.latent_channels,
+                    config.num_blocks[i],
+                    stride = config.stride,
                     dimension = 1,
                     activation_fn = self.activation,
-                    norm = self.normalization,
-                    num_groups = num_groups,
+                    norm = config.norm,
+                    n_groups = config.n_groups,
                 )
-                for i in range(len(num_blocks))
+                for i in range(len(config.num_blocks))
             ]
         )
         
         self.conv_out1 = nn.Conv1d(
-            self.hidden_channels,
-            self.hidden_channels,
+            config.latent_channels,
+            config.latent_channels,
             kernel_size=1,
             bias=True,
         )
         self.conv_out2 = nn.Conv1d(
-            self.hidden_channels,
-            self.out_channels,
+            config.latent_channels,
+            config.out_size,
             kernel_size=1,
             bias=True,
         )           
@@ -248,120 +117,75 @@ class ResNet1D(nn.Module):
             )
         
         #add feature map
-        if self.coord_features: 
+        if self.config.coord_features: 
             coord_feat = oned_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
         
         #encoder    
         x = self.activation(self.conv_in1(x.float())) 
         x = self.activation(self.conv_in2(x.float())) 
-        if self.padding > 0:
-            x = F.pad(x, [0, self.padding])
+        if self.config.padding > 0:
+            x = F.pad(x, [0, self.config.padding])
             
         #main part
         for layer in self.layers:
             x = layer(x)
             
         #decoder    
-        if self.padding > 0:
-            x = x[..., : -self.padding]
+        if self.config.padding > 0:
+            x = x[..., : -self.config.padding]
 
         x = self.activation(self.conv_out1(x))
         x = self.conv_out2(x)
                         
         return x
 
-class ResNet2D(nn.Module):
-    """    Args:
-        in_channels : int
-            Number of input fields
-        out_channels : int
-            Number of output fields
-        block : str
-            BasicBlock,Dilblock only for now
-        num_blocks (List[int]): 
-            Number of blocks in each stage
-        hidden_channels (int): 
-            Number of channels in the hidden layers
-        activation_fn : str
-            Activation function, by default "gelu"
-        coord_features : bool, optional
-            Use coordinate grid as additional feature map, by default True
-        padding : int
-            Padding for the input tensor
-        norm (bool): 
-            Whether to use normalization
-        num_groups : int
-            Number of groups for GroupNorm, by default 1 (equivalent with LayerNorm)
-    """
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        block: str ,
-        num_blocks: list,
-        hidden_channels: int = 64,
-        activation_fn: nn.Module = nn.GELU(),
-        coord_features: bool = True,
-        padding: int = 9,
-        norm: bool = True,
-        num_groups: int = 1,
-        ) -> None:
-        super().__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.hidden_channels = hidden_channels
-        self.activation = activation_fn                
-        self.coord_features = coord_features
-        self.padding = padding   
-        self.num_blocks = num_blocks
-        self.normalization = norm
-        
-        # Add relative coordinate feature
-        if self.coord_features:
-            self.in_channels = self.in_channels + 2
-            
+class ResNet2D(PreTrainedModel):
+    def __init__(self, config, activation_fn: nn.Module = nn.GELU()) -> None:
+        super().__init__(config)
+        self.activation = activation_fn
+
         self.conv_in1 = nn.Conv2d(
-            self.in_channels,
-            self.hidden_channels,
+            config.in_size,
+            config.latent_channels,
             kernel_size=1,
             bias=True,
         )
         self.conv_in2 = nn.Conv2d(
-            self.hidden_channels,
-            self.hidden_channels,
+            config.latent_channels,
+            config.latent_channels,
             kernel_size=1,
             bias=True,
         )
         
-        self.block = getblock(block)
+        self.block = getblock(config.block)
         
         self.layers = nn.ModuleList(
             [
                 make_layer(
                     self.block,
-                    self.hidden_channels,
-                    self.hidden_channels,
-                    num_blocks[i],
-                    stride = 1,
+                    config.latent_channels,
+                    config.latent_channels,
+                    config.num_blocks[i],
+                    stride = config.stride,
                     dimension = 2,
                     activation_fn = self.activation,
-                    norm = self.normalization,
-                    num_groups = num_groups,
+                    norm = config.norm,
+                    n_groups = config.n_groups,
                 )
-                for i in range(len(num_blocks))
+                for i in range(len(config.num_blocks))
             ]
         )
         
         self.conv_out1 = nn.Conv2d(
-            self.hidden_channels,
-            self.hidden_channels,
+            config.latent_channels,
+            config.latent_channels,
             kernel_size=1,
             bias=True,
         )
         self.conv_out2 = nn.Conv2d(
-            self.hidden_channels,
-            self.out_channels,
+            config.latent_channels,
+            config.out_size,
             kernel_size=1,
             bias=True,
         )           
@@ -374,120 +198,76 @@ class ResNet2D(nn.Module):
             )
         
         #add feature map
-        if self.coord_features: 
+        if self.config.coord_features: 
             coord_feat = twod_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
         
         #encoder    
         x = self.activation(self.conv_in1(x.float())) 
         x = self.activation(self.conv_in2(x.float())) 
-        if self.padding > 0:
-            x = F.pad(x, [0, self.padding, 0, self.padding])
+        if self.config.padding > 0:
+            x = F.pad(x, [0, self.config.padding, 0, self.config.padding])
             
         #main part
         for layer in self.layers:
             x = layer(x)
             
         #decoder    
-        if self.padding > 0:
-            x = x[..., : -self.padding, : -self.padding]
+        if self.config.padding > 0:
+            x = x[..., : -self.config.padding, : -self.config.padding]
 
         x = self.activation(self.conv_out1(x))
         x = self.conv_out2(x)
                         
         return x
 
-class ResNet3D(nn.Module):
-    """    Args:
-        in_channels : int
-            Number of input fields
-        out_channels : int
-            Number of output fields
-        block : str
-            BasicBlock,Dilblock only for now
-        num_blocks (List[int]): 
-            Number of blocks in each stage
-        hidden_channels (int): 
-            Number of channels in the hidden layers
-        activation_fn : str
-            Activation function, by default "gelu"
-        coord_features : bool, optional
-            Use coordinate grid as additional feature map, by default True
-        padding : int
-            Padding for the input tensor
-        norm (bool): 
-            Whether to use normalization
-        num_groups : int
-            Number of groups for GroupNorm, by default 1 (equivalent with LayerNorm)
-    """
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        block: str ,
-        num_blocks: list,
-        hidden_channels: int = 64,
-        activation_fn: nn.Module = nn.GELU(),
-        coord_features: bool = True,
-        padding: int = 9,
-        norm: bool = True,
-        num_groups: int = 1,
-        ) -> None:
-        super().__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.hidden_channels = hidden_channels
-        self.activation = activation_fn                
-        self.coord_features = coord_features
-        self.padding = padding   
-        self.num_blocks = num_blocks
-        self.normalization = norm
-        
-        # Add relative coordinate feature
-        if self.coord_features:
-            self.in_channels = self.in_channels + 3
+class ResNet3D(PreTrainedModel):
+
+    def __init__(self, config, activation_fn: nn.Module = nn.GELU()) -> None:
+        super().__init__(config)
+        self.activation = activation_fn 
             
         self.conv_in1 = nn.Conv3d(
-            self.in_channels,
-            self.hidden_channels,
+            config.in_size,
+            config.latent_channels,
             kernel_size=1,
             bias=True,
         )
         self.conv_in2 = nn.Conv3d(
-            self.hidden_channels,
-            self.hidden_channels,
+            config.latent_channels,
+            config.latent_channels,
             kernel_size=1,
             bias=True,
         )
         
-        self.block = getblock(block)
+        self.block = getblock(config.block)
         
         self.layers = nn.ModuleList(
             [
                 make_layer(
                     self.block,
-                    self.hidden_channels,
-                    self.hidden_channels,
-                    num_blocks[i],
-                    stride = 1,
+                    config.latent_channels,
+                    config.latent_channels,
+                    config.num_blocks[i],
+                    stride = config.stride,
                     dimension = 3,
                     activation_fn = self.activation,
-                    norm = self.normalization,
-                    num_groups = num_groups,
+                    norm = config.norm,
+                    n_groups = config.n_groups,
                 )
-                for i in range(len(num_blocks))
+                for i in range(len(config.num_blocks))
             ]
         )
         
         self.conv_out1 = nn.Conv3d(
-            self.hidden_channels,
-            self.hidden_channels,
+            config.latent_channels,
+            config.latent_channels,
             kernel_size=1,
             bias=True,
         )
         self.conv_out2 = nn.Conv3d(
-            self.hidden_channels,
-            self.out_channels,
+            config.latent_channels,
+            config.out_size,
             kernel_size=1,
             bias=True,
         )                  
@@ -499,7 +279,7 @@ class ResNet3D(nn.Module):
             )
         
         #add feature map
-        if self.coord_features: 
+        if self.config.coord_features: 
             coord_feat = threed_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
         
@@ -507,16 +287,16 @@ class ResNet3D(nn.Module):
         x = self.activation(self.conv_in1(x.float())) 
         x = self.activation(self.conv_in2(x.float())) 
         # 3D padding: (pad_left, pad_right, pad_top, pad_bottom, pad_front, pad_back)
-        if self.padding > 0:
-            x = F.pad(x, (0, self.padding, 0, self.padding, 0, self.padding))
+        if self.config.padding > 0:
+            x = F.pad(x, (0, self.config.padding, 0, self.config.padding, 0, self.config.padding))
             
         #main part
         for layer in self.layers:
             x = layer(x)
             
         #decoder    
-        if self.padding > 0:
-            x = x[..., : -self.padding, : -self.padding, : -self.padding]
+        if self.config.padding > 0:
+            x = x[..., : -self.config.padding, : -self.config.padding, : -self.config.padding]
         x = self.activation(self.conv_out1(x))
         x = self.conv_out2(x)
                         

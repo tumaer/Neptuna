@@ -1,0 +1,20 @@
+dataset_name: SyntheticFlow
+dataset_directory_path: ./data/synthetic/SF/2D/constant
+dimension: 2
+grid_resolution: null #if not provided, will be inferred automatically from the dataset
+eval_groups: null
+is_steady_state_prediction: False 
+sequence_info: [4, 3, 2]
+filter_frames: null 
+filter_groups: null
+filter_in_channels: null # available: ['density','velocity',"schlieren"]
+filter_out_channels: null
+conditioning_in_channels: null
+#NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels
+include_conditioning_parameters: False
+residual_config: null
+  # add_base_value_with_raw_loss: True
+  # add_predicted_value_with_diff_loss: False
+  # add_predicted_value_with_raw_loss: False
+data_normalization_stats: null
+data_normalization_strategy: z_normalization #z_normalization, min_max_normalization, robust_normalization

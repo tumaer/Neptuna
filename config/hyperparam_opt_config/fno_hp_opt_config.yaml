@@ -1,0 +1,28 @@
+optimize: true
+n_trials: 4
+metric_for_tuning_hp: ['eval_l2_error']
+optuna_sampler: TPESampler
+search_domain:
+  train_config:
+    num_train_epochs:
+      method: categorical
+      choices: [0.05, 0.1]
+
+    pushforward_config:
+      max_allowed_unroll_steps:
+        method: categorical
+        choices: [[0,0,0]]
+
+  model_config:
+    latent_channels:
+      method: categorical
+      choices: [16, 32, 64]
+    n_fno_layers:
+      method: categorical
+      choices: [2, 3, 4]
+    decoder_layers:
+      method: categorical
+      choices: [1, 2, 3]
+    decoder_layer_size:
+      method: categorical
+      choices: [64, 128, 256]

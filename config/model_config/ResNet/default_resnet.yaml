@@ -1,5 +1,6 @@
 model_name: resnet
-num_blocks: [3, 1, 1, 1]
-block: BasicBlock
-hidden_channels: 256
+num_blocks: [1, 1, 1, 1]
+latent_channels: 256
 norm: True
+activation_fn_name: gelu
+n_groups: 1

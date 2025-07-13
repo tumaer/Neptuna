@@ -1,0 +1,8 @@
+model_name: DeepONet_CNN
+branch_depth: 4
+trunk_depth: 4
+kernel_size: 4
+padding: 10
+latent_channels: 32
+width: 128
+activation_fn_name: "ReLU"

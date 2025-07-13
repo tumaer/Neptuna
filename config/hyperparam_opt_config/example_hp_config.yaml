@@ -1,0 +1,29 @@
+optimize: false
+n_trials: 3
+metric_for_tuning_hp: ['eval_l2_error', 'eval_l1_error']
+
+# Available samplers: TPE_sampler, Random_sampler, Grid_sampler, CMA_ES_sampler, QMC_sampler, NSGA2_sampler, Partial_sampler
+optuna_sampler: null
+
+# Optional sampler parameters (uncomment and modify as needed)
+# sampler_params:
+#   n_startup_trials: 10        # for TPE_sampler: number of random trials before TPE starts
+#   n_ei_candidates: 24         # for TPE_sampler: number of candidates for Expected Improvement
+#   seed: 42                    # for Random_sampler: random seed for reproducibility
+#   consider_prior: true        # for TPE_sampler: whether to consider prior distributions
+
+search_domain:
+  learning_rate:
+    method: float
+    low: 1e-5
+    high: 5e-4
+    log: true
+
+  batch_size:
+    method: categorical
+    choices: [2, 3, 6]
+
+  num_train_epochs:
+    method: int
+    low: 2
+    high: 5
