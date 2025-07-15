@@ -7,7 +7,7 @@ is_steady_state_prediction: True #assuming the last frame is the steady state
 sequence_info: [1, 1, 1] #fixed for SS
 filter_frames: null #fixed for SS
 filter_groups: null 
-filter_in_channels: ["bounce_back_mask"]
+filter_in_channels: ["mask"]
 filter_out_channels: ["density","velocity"]
 conditioning_in_channels: null
 #NOTE: For steady state simulations all mappings are possible
