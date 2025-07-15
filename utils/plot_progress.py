@@ -40,6 +40,8 @@ matplotlib.use('Agg')  # Set non-interactive backend before importing pyplot
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import wandb
+import io  # For in-memory PNG buffers
+from PIL import Image  # To create a PIL image object for wandb
 
 def _plot_data(ax, data, ndim, ch_names=None):
     """
@@ -477,11 +479,17 @@ def plot_examples(
                 fig.savefig(img_path, dpi=150, bbox_inches='tight')
 
             else:
-                # Collect figure to return; caller handles logging or closing
-                returned_figs[f"plot_progress/example_{idx}"] = wandb.Image(fig)
+                # Use an in-memory buffer with bbox_inches='tight' so nothing is cut off
+                buf = io.BytesIO()
+                fig.savefig(buf, format="png", dpi=150, bbox_inches="tight", pad_inches=0.1)
+                buf.seek(0)
+                pil_img = Image.open(buf)
+
+                returned_figs[f"plot_progress/example_{idx}"] = wandb.Image(pil_img)
+
                 if is_best_metric:
                     best_img = wandb.Image(
-                        fig,
+                        pil_img,
                         caption=f"Best_eval_plot_ckpt_{checkpoint_step}_epoch_{epoch}_example_{idx}"
                     )
                     wandb.run.summary[f"best_eval_plot"] = best_img
