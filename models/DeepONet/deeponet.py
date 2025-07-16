@@ -129,7 +129,6 @@ class AutoDeepONet1D(PreTrainedModel):
                     num_blocks = config.num_blocks,
                     if_maxpool = False if config.ResNet_block == "BasicBlock" else True
                 )[0]
-                assert config.trunk_depth > 1, "Trunk depth must be greater than 1 for DeepONet with ResNet branch net"
                 self.trunk_dims = linspace_int_list(length_new, config.trunk_depth, 1, False)
                 #self.trunk_dims = [1] + [self.width] * self.trunk_depth + [length_new]
                 self.trunk_net = FFN(
