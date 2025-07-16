@@ -2,6 +2,8 @@ from typing import List, Optional, Tuple
 import torch.nn as nn
 from torch import Tensor
 import numpy as np
+import torch
+from utils.grid_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 
 from utils.model_utils import PretrainedConfig
 
@@ -83,9 +85,10 @@ class FFN(nn.Module):
         self, 
         dims: List, 
         activation_fn: nn.Module = nn.GELU(),
-        act_on_output: bool = False
+        act_on_output: bool = False,
     ):
         super().__init__()
+
         layers = []
         for i in range(len(dims) - 2):
             layers.append(nn.Linear(dims[i], dims[i + 1]))
@@ -94,6 +97,7 @@ class FFN(nn.Module):
         if act_on_output:
             layers.append(activation_fn)
         self.layers = nn.Sequential(*layers)
+
 
     def forward(self, x: Tensor) -> Tensor:
         x = self.layers(x)
@@ -111,6 +115,7 @@ class CnnBranch(nn.Module):
         depth: int = 4,
         activation_fn: nn.Module = nn.ReLU(),
         stride : int = 1,
+        coord_features: bool = True,
     ):
         super().__init__()
         
@@ -120,6 +125,11 @@ class CnnBranch(nn.Module):
         self.depth = depth
         self.stride = stride
         self.grid_resolution = grid_resolution
+        self.dimension = dimension
+        self.coord_features = coord_features
+        # Add relative coordinate feature
+        if coord_features:
+            self.in_channels = self.in_channels + dimension
         
         if dimension == 1:
             Conv = nn.Conv1d
@@ -133,7 +143,7 @@ class CnnBranch(nn.Module):
         else:
             raise ValueError(f"Unsupported dimension: {dimension}. Must be 1, 2, or 3.")
         self.in_conv = Conv(
-            in_channels, latent_channels , kernel_size=3, padding=1)
+            self.in_channels, latent_channels , kernel_size=3, padding=1)
         self.out_conv = Conv(
             latent_channels, latent_channels, kernel_size=3, padding=1)
 
@@ -147,6 +157,15 @@ class CnnBranch(nn.Module):
         self.blocks = nn.Sequential(*blocks)
 
     def forward(self, x: Tensor) -> Tensor:
+        if self.coord_features: 
+            if self.dimension == 1:
+                coord_feat = oned_meshgrid(list(x.shape), x.device)
+            elif self.dimension == 2:
+                coord_feat = twod_meshgrid(list(x.shape), x.device)
+            elif self.dimension == 3:
+                coord_feat = threed_meshgrid(list(x.shape), x.device)
+            x = torch.cat((x, coord_feat), dim=1)
+
         x = self.in_conv(x)  # (b, 16, h, w)
         x = self.blocks(x)  # (b, 32, h/16=4, w/16=4)
         x = self.out_conv(x)  # (b, 32, 4, 4)
