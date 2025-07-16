@@ -317,6 +317,26 @@ def fetch_model(model_config: Dict,
                     )
         model = ScOT(config)
     
+    elif model_name == "amrtransformer":
+        from models.AMRTransformer.amrtransformer_utils import AMRTransformerConfig
+        from models.AMRTransformer.amrtransformer import AMRTransformer
+        config = AMRTransformerConfig(
+                    in_channels=len(data_config['filter_in_channels']),
+                    out_channels=len(data_config['filter_out_channels']), 
+                    grid_resolution=data_config['grid_resolution'], 
+                    sequence_info=data_config['sequence_info'],
+                    dimension=data_config['dimension'],
+                    latent_channels=model_config['latent_channels'],
+                    coord_features=True,
+                    patch_size=model_config['patch_size'],
+                    n_case_params=model_config['n_case_params'],
+                    d_model=model_config['d_model'],
+                    num_heads=model_config['num_heads'],
+                    dim_feedforward=model_config['dim_feedforward'],
+                    num_layers=model_config['num_layers'],
+                    )
+        model = AMRTransformer(config=config)
+
     else:
         raise ValueError(f"Model {model_name} is not implemented yet.") 
     

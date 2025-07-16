@@ -11,7 +11,7 @@ from torch import nn, Tensor
 from typing import Optional, Union, Tuple, List
 import collections
 from utils.grid_utils import twod_meshgrid
-from .scot_utils import ScOTOutput, ScOTEmbeddings, ScOTPatchRecovery, ScOTPatchMerging, ScOTPatchUnmerging, ScOTLayer, LayerNorm, ConvNeXtBlock, ResNetBlock, ConditionalLayerNorm
+from .scot_utils import ScOTEmbeddings, ScOTPatchRecovery, ScOTPatchMerging, ScOTPatchUnmerging, ScOTLayer, LayerNorm, ConvNeXtBlock, ResNetBlock, ConditionalLayerNorm
 
 class ScOTEncodeStage(nn.Module):
     def __init__(
@@ -75,8 +75,8 @@ class ScOTEncodeStage(nn.Module):
         output_attentions: Optional[bool] = False,
         always_partition: Optional[bool] = False,
     ) -> Tuple[torch.Tensor]:
+        
         height, width = input_dimensions
-
         inputs = hidden_states
 
         for i, layer_module in enumerate(self.blocks):
@@ -488,7 +488,7 @@ class ScOT(PreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
 
-        self.dimension = 2
+        self.dimension = config.dimension
 
         self.scot = self.build_ScOT()(config)
 
@@ -579,7 +579,7 @@ class ScOT2D(PreTrainedModel):
         time: Optional[torch.FloatTensor] = None,
         bool_masked_pos: Optional[torch.BoolTensor] = None,
         head_mask: Optional[torch.FloatTensor] = None,
-    ) -> Union[Tuple, ScOTOutput]:
+    ) -> Tensor:
 
         output_attentions = self.config.output_attentions # False
         output_hidden_states = self.config.output_hidden_states # False

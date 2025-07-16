@@ -1,0 +1,8 @@
+model_name: AMRTransformer
+patch_size: 2 # Patch size of the local 2D neighborhood
+n_case_params: 0 # Number of additional case-specific parameters concatenated to each input patch
+d_model: 64
+num_heads: 4 # Number of attention heads
+dim_feedforward: 256 # Dimension of the feedforward network
+latent_channels: 5
+num_layers: 6
