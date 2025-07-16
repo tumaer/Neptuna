@@ -304,6 +304,7 @@ def calc_resnet_out_shape(
     return tuple(out)
 
 def linspace_int_list(int1: int, int2: int, int3: int, reverse: bool) -> list:
+    assert int2 > 1, "branch and trunk depth must be greater than 1"
     arr = [int(round(x)) for x in np.linspace(int3, int1, int2)]
     arr[0] = int3
     arr[-1] = int1
