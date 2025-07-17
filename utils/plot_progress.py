@@ -319,8 +319,11 @@ def plot_examples(
                 f"# Prediction_channels={pred.shape[1]}"
             )
 
-            # Increase spacing below the suptitle by 50% to prevent overlap.
-            text_y_pos = suptitle_y_pos - (0.075 if ndim == 2 else 0.06)
+            # Increase spacing below the suptitle further so that the dims text never
+            # collides with the (multi-line) suptitle.  Empirically a 0.10 offset for
+            # 2-D plots and 0.08 for 1-D plots provides sufficient clearance across a
+            # wide range of figure heights.
+            text_y_pos = suptitle_y_pos - (0.2 if ndim == 2 else 0.08)
             fig.text(0.5, text_y_pos, dims_text, ha='center', va='center', fontsize=22)
 
             # Create gridspec with variable column widths and specific height ratios
