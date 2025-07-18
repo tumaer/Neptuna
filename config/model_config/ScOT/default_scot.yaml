@@ -1,6 +1,6 @@
 model_name: ScOT
 patch_size: 8  # patch embedding resolution: resolution/patch_size -> padding if not divisible
-embed_dim: 4 #48
+latent_channels: 48
 depths: [4, 4, 4, 4]
 num_heads: [3, 6, 12, 24]
 skip_connections: [2, 2, 2, 0]

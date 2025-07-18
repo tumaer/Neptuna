@@ -294,7 +294,7 @@ def fetch_model(model_config: Dict,
                     grid_resolution=data_config['grid_resolution'],
                     dimension=data_config['dimension'],
                     sequence_info=data_config['sequence_info'],
-                    embed_dim=model_config['embed_dim'], # base dimensionality of patch embeddings (size of feature vector used to represent each patch)
+                    latent_channels=model_config['latent_channels'], # base dimensionality of patch embeddings (size of feature vector used to represent each patch)
                     depths=model_config['depths'], #number of transformer blocks in encoder / decoder stages e.g. 4 stages each with 4 transformer blocks
                     num_heads=model_config['num_heads'], # used in Swinv2SelfAttention (HF) (see ScOTEncoder: each stage has own num_heads
                     # number of separate attention machanisms run in parallel; attend to different local spatial features inside each window
