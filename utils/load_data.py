@@ -473,6 +473,7 @@ def create_train_eval_transient_index_map(h5file_path: str,
         
         else:
             warnings.warn("eval_split_ratio not obeyed as the evaluation groups are user-specified; using provided eval_groups instead.")
+            assert set(eval_groups).issubset(set(filtered_groups)), "eval_groups are not a subset of the filtered_groups"
             eval_groups = eval_groups
         
         train_groups = [g for g in filtered_groups if g not in eval_groups]
