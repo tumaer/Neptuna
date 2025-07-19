@@ -1,31 +1,44 @@
 optimize: true
-n_trials: 4
-metric_for_tuning_hp: ['eval_l2_error', 'eval_l1_error']
+n_trials: 5
+metric_for_tuning_hp: ['eval_l2_error']
 optuna_sampler: TPESampler
+sampler_params:
+  n_startup_trials: 2
+  seed: 42
 search_domain:
-  train_config:
-    num_train_epochs:
+  per_device_train_batch_size:
       method: categorical
-      choices: [0.05, 0.1]
+      choices: [4, 8, 16, 32]
+    # method: categorical
+    # choices: [8]
 
-    pushforward_config:
-      max_allowed_unroll_steps:
-        method: categorical
-        choices: [[1,1,1], [0,1,3]]
+  learning_rate:
+    method: float
+    low: 1e-8
+    high: 1e-1
+    log: true
+    # method: categorical
+    # choices: [0.0416]
 
-  data_config:
-    filter_frames:
-      method: categorical
-      choices: [[null, null], [10, 49]]
+  weight_decay:
+    method: float
+    low: 1e-7
+    high: 1e-3
+    log: true
+    # method: categorical
+    # choices: [5.449e-6]
+  
+  lr_scheduler_type:
+    method: categorical
+    choices: ['linear', 'cosine',  'polynomial', 'constant']
+    # method: categorical
+    # choices: ['constant']
 
-    data_normalization_strategy:
-      method: categorical
-      choices: ["z_normalization", "min_max_normalization"]
-
-  model_config:
-    latent_channels:
-      method: categorical
-      choices: [16, 32, 64]
-    n_blocks:
-      method: categorical
-      choices: [1, 2, 3]
+  warmup_ratio:
+    method: float
+    low: 0.0
+    high: 0.1
+    log: false
+    step: 0.01
+    # method: categorical
+    # choices: [0.02]

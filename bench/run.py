@@ -208,7 +208,7 @@ def run(cfg):
             print("Pushing model to Hugging Face Hub...")
             trainer.push_to_hub()
     else:
-        # get the sampler from the config, it could be GridSampler, RandomSampler, TPESampler
+        # get the sampler from the config, it could be GridSampler, RandomSampler, TPESampler etc.
         sampler = get_optuna_sampler(
             cfg["hyperparam_opt_config"]["optuna_sampler"], config=cfg
         )
