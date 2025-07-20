@@ -303,8 +303,8 @@ def create_train_eval_steady_state_index_map(h5file_path: str,
         assert len(train_index_map) > 0, "train_index_map is empty"
         assert len(eval_index_map) > 0, "eval_index_map is empty"
         
-        print(f"Length of train index map: {len(train_index_map)}")
-        print(f"Length of eval index map: {len(eval_index_map)}")
+        #print(f"Length of train index map: {len(train_index_map)}")
+        #print(f"Length of eval index map: {len(eval_index_map)}")
         
         return train_index_map, eval_index_map, filtered_groups
 
@@ -498,8 +498,8 @@ def create_train_eval_transient_index_map(h5file_path: str,
         assert len(train_index_map) > 0, "train_index_map is empty"
         assert len(eval_index_map) > 0, "eval_index_map is empty"
         
-        print(f"Length of train index map: {len(train_index_map)}")
-        print(f"Length of eval index map: {len(eval_index_map)}")
+        #print(f"Length of train index map: {len(train_index_map)}")
+        #print(f"Length of eval index map: {len(eval_index_map)}")
         
         return train_index_map, eval_index_map, filtered_groups
 
@@ -640,9 +640,12 @@ def fetch_dataset(dataset_name: str,
 
     if not is_steady_state:
         if mode == "train":
-            #for pushforward training trick, we need to create a train index map with the extra sequence length
-            if kwargs.get("pushforward_config") is not None:
-                n_max_pf_train_rollouts = kwargs["pushforward_config"]["max_allowed_unroll_steps"][-1] 
+            # For pushforward training we enlarge the training window only when the
+            # feature is actually enabled. The extended windows are created with the max_allowed_unroll_stepsbefore training. The toggle lives inside
+            # pushforward_config["enabled"].
+            pf_cfg = kwargs.get("pushforward_config")
+            if pf_cfg is not None and bool(pf_cfg.get("enabled", True)):
+                n_max_pf_train_rollouts = pf_cfg["max_allowed_unroll_steps"][-1]
             else:
                 n_max_pf_train_rollouts = 0
             n_eval_rollouts = kwargs.get("n_eval_rollouts") or 0

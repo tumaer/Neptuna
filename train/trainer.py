@@ -43,6 +43,8 @@ from utils.custom_callbacks import WandbCallback #custom callbacks
 from utils.custom_callbacks import CallbackHandler 
 from transformers.integrations.integration_utils import WandbCallback as WandbCallback_
 from utils.trainer_utils import EvalPrediction
+from collections.abc import Mapping  # locally import to avoid top-of-file change
+import json
 
 class Trainer(Trainer_):
     """    
@@ -89,7 +91,14 @@ class Trainer(Trainer_):
         self.get_prediction_loss_for_eval_windows = False #TODO: Find a way to not hardcode this.
 
         self.residual_config = data_config["residual_config"]
+        # Push-forward configuration
         self.pushforward_config = train_config["pushforward_config"]
+        # Enabled flag now lives inside the pushforward_config dict (key: "enabled").
+        # If the key is absent we assume push-forward should run when a config is supplied.
+        if self.pushforward_config is None:
+            self.pushforward_enabled = False
+        else:
+            self.pushforward_enabled = bool(self.pushforward_config.get("enabled", True))
 
         # Rebuild the callback handler with our custom implementation so that on_evaluate accepts **kwargs
         # Preserve the list of callbacks that may have been created by the HuggingFace Trainer during super().__init__.
@@ -312,7 +321,7 @@ class Trainer(Trainer_):
         if not self.data_config.is_steady_state_prediction:
             #TODO: Add more training strategies here in continuation of the if statement.
             pushforward_unroll_steps = 0
-            if self.pushforward_config is not None:
+            if self.pushforward_enabled and self.pushforward_config is not None:
                 #########################################################
                 #Pushforward trick (for training)
                 #########################################################
@@ -1420,6 +1429,49 @@ class Trainer(Trainer_):
             setattr(self.args, "trial_number", trial.number)
         if self.hp_search_backend == HPSearchBackend.OPTUNA:
             logger.info(f"Trial: {trial.params}")
+            # -------------------------------
+            # Also log constant parameters
+            # -------------------------------
+            def _flatten_dict(d, parent_key=""):
+                """Recursively flattens a nested dict using dot notation keys."""
+                flat = {}
+                for k, v in d.items():
+                    new_key = f"{parent_key}.{k}" if parent_key else k
+                    if isinstance(v, dict):
+                        flat.update(_flatten_dict(v, new_key))
+                    else:
+                        flat[new_key] = v
+                return flat
+
+            # Gather all major config sections that influence a run
+            flat_cfg = {}
+            for section_name in ["model_config", "data_config", "train_config"]:
+                cfg_section = getattr(self, section_name, None)
+                if isinstance(cfg_section, Mapping):
+                    flat_cfg.update(_flatten_dict(cfg_section, section_name))
+
+            # Complete parameter list (including both constant and trial-sampled values)
+            def _sanitize(value):
+                """Prepare values for JSON serialization while preserving numeric precision."""
+                # Handle mappings and sequences recursively
+                if isinstance(value, Mapping):
+                    return {k: _sanitize(v) for k, v in value.items()}
+                if isinstance(value, (list, tuple)):
+                    return [_sanitize(v) for v in value]
+
+                # Convert numpy scalars to native Python types if numpy is available
+                try:
+                    import numpy as np  # local import to avoid hard dep if not installed
+                    if isinstance(value, (np.integer, np.floating)):
+                        value = value.item()
+                except ModuleNotFoundError:
+                    pass
+
+                return value
+
+            complete_params = _sanitize(flat_cfg)  # include everything; no filtering
+            formatted = json.dumps(complete_params, indent=2, sort_keys=True, default=str)
+            logger.info("All Config Params (%d):\n%s", len(complete_params), formatted)
         if self.hp_search_backend == HPSearchBackend.SIGOPT:
             logger.info(f"SigOpt Assignments: {trial.assignments}")
         if self.hp_search_backend == HPSearchBackend.WANDB:
