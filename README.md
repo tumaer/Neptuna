@@ -7,6 +7,7 @@ A repository to benchmark CFD datasets on different ML algorithms
  
  </picture>
 </div >
+
 ## Installation
 Make sure to comment out lines starting with nvidia* inside environment.yml if there is no nvidia-GPU.
 
