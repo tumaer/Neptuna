@@ -12,9 +12,24 @@ search_domain:
       choices: [0.05, 0.1]
 
     pushforward_config:
+      enabled:
+        method: categorical
+        choices: [true, false]
+      deciding_epochs:
+        method: categorical
+        choices:
+          - [-1, 2, 50]
+          - [-1, 5, 80]
       max_allowed_unroll_steps:
         method: categorical
-        choices: [[0,0,0]]
+        choices:
+          - [0, 1, 2]
+          - [0, 1, 3]
+      relative_probabilities:
+        method: categorical
+        choices:
+          - [7, 2, 1]
+          - [6, 3, 1]
 
   model_config:
     latent_channels:
