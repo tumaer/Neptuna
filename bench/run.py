@@ -108,7 +108,7 @@ def run(cfg):
         auto_find_batch_size=False,
         full_determinism=False,  # turn on for reproducible distributed training
         torch_compile=False,
-        use_cpu=False,  # use_cpu even if other devices are present
+        use_cpu=cfg["train_config"]["use_cpu"],  # use_cpu even if other devices are present
         label_names=["label_including_rollouts"],
         disable_tqdm=True if cfg["output_log_config"]["logging"]["wandb"] else False,
         # ------------------------------------------------------------------
