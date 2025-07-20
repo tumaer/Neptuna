@@ -3,10 +3,10 @@ A repository to benchmark CFD datasets on different ML algorithms
 <div align="center">
 
 <picture>
-	<img src="misc/neptuna_logo.png" alt="Neptuna logo" width="300"/>
+	<img src="misc/neptuna_logo.svg" alt="Neptuna logo" width="300"/>
  
  </picture>
-
+<div >
 ## Installation
 Make sure to comment out lines starting with nvidia* inside environment.yml if there is no nvidia-GPU.
 
