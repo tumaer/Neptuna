@@ -12,9 +12,10 @@ def main(cfg: DictConfig):
     
     cfg = prepare_config(cfg)
     
-    print("#" * 79, "\nStarting a benchmarking run with the following config:")
-    print(OmegaConf.to_yaml(cfg))
-    print("#" * 79)
+    if cfg["hyperparam_opt_config"]["optimize"] is False:
+        print("#" * 79, "\nStarting a benchmarking run with the following config:")
+        print(OmegaConf.to_yaml(cfg))
+        print("#" * 79)
 
     run(cfg)
 

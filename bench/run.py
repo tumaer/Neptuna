@@ -195,7 +195,7 @@ def run(cfg):
     )
 
     # ------------------------------------------------------------------
-    # Train vs HP-search -----------------------------------------------
+    # Train vs HP-search
     # ------------------------------------------------------------------
     if cfg["hyperparam_opt_config"]["optimize"] is False:
         start = time.time()
@@ -227,7 +227,7 @@ def run(cfg):
         )
 
         # --------------------------------------------------------------
-        # Save HPO results to CSV -------------------------------------
+        # Save HPO results to CSV
         # --------------------------------------------------------------
         results_dir = cfg["output_log_config"]["logging"]["output_dir"]
         os.makedirs(results_dir, exist_ok=True)

@@ -1428,7 +1428,14 @@ class Trainer(Trainer_):
         if hasattr(trial, "number"):
             setattr(self.args, "trial_number", trial.number)
         if self.hp_search_backend == HPSearchBackend.OPTUNA:
+            #set 2 blank lines
+            logger.info("-----------------------------------------------------------------------")
+            logger.info("-----------------------------------------------------------------------")
+            logger.info("")
             logger.info(f"Trial: {trial.params}")
+            logger.info("")
+            logger.info("-----------------------------------------------------------------------")
+            logger.info("-----------------------------------------------------------------------")
             # -------------------------------
             # Also log constant parameters
             # -------------------------------
