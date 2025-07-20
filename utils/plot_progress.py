@@ -90,9 +90,10 @@ def _plot_data(ax, data, ndim, ch_names=None):
         aspect = 'equal' if h == w else 'auto'
         
         if C == 1:
-            im = ax.imshow(data[0], cmap="coolwarm", aspect=aspect)
+            im = ax.imshow(data[0], cmap="coolwarm", aspect=aspect, origin='lower')
             ax.set_title(ch_names[0], fontsize=8)
-            cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.05, orientation='horizontal', location='bottom')
+            # Increase the padding so the horizontal colorbar does not overlap the image grid.
+            cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.12, orientation='horizontal', location='bottom')
             cbar.ax.tick_params(labelsize=12)
             cbar.formatter.set_scientific(True)
             cbar.formatter.set_powerlimits((0, 0))
@@ -108,9 +109,10 @@ def _plot_data(ax, data, ndim, ch_names=None):
             sub_axes = []
             for c in range(C):
                 sub_ax = fig.add_subplot(gs[0, c])
-                im = sub_ax.imshow(data[c], cmap="coolwarm", aspect=aspect)
+                im = sub_ax.imshow(data[c], cmap="coolwarm", aspect=aspect, origin='lower')
                 sub_ax.set_title(ch_names[c], fontsize=8)
-                cbar = fig.colorbar(im, ax=sub_ax, fraction=0.046, pad=0.05, orientation='horizontal', location='bottom')
+                # Increase the padding so the horizontal colorbar does not overlap the image grid.
+                cbar = fig.colorbar(im, ax=sub_ax, fraction=0.046, pad=0.12, orientation='horizontal', location='bottom')
                 cbar.ax.tick_params(labelsize=12)
                 cbar.formatter.set_scientific(True)
                 cbar.formatter.set_powerlimits((0, 0))
@@ -276,8 +278,12 @@ def plot_examples(
             header_ratio = 0.15  # Height allocated for column titles
             footer_ratio = 2.4   # Further increase footer height for more space under time labels
 
-            # Padding between individual plot and its xlabel (time indicator)
-            x_label_pad = 50
+            # Padding between individual plot and its xlabel (time indicator). 
+            # If this padding is too large, the xlabel from one subplot can overlap the
+            # axes of the subplot in the row below.  Use a smaller value for 2-D plots
+            # (which typically have less vertical space per row) and a moderate value
+            # for 1-D plots.
+            x_label_pad = 25 if ndim == 2 else 30
 
             # Use a uniform but larger wspace to create clearer separation between logical columns.
             main_wspace = 1.2  # Empirically chosen for good visual separation
@@ -323,7 +329,8 @@ def plot_examples(
             # collides with the (multi-line) suptitle.  Empirically a 0.10 offset for
             # 2-D plots and 0.08 for 1-D plots provides sufficient clearance across a
             # wide range of figure heights.
-            text_y_pos = suptitle_y_pos - (0.2 if ndim == 2 else 0.08)
+            # Reduce the vertical offset so the dims_text sits closer to the suptitle.
+            text_y_pos = suptitle_y_pos - (0.06 if ndim == 2 else 0.06)
             fig.text(0.5, text_y_pos, dims_text, ha='center', va='center', fontsize=22)
 
             # Create gridspec with variable column widths and specific height ratios
