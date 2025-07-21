@@ -7,7 +7,7 @@ from omegaconf import DictConfig
 import os
 
 from utils.grid_utils import get_grid_resolution
-from utils.compute_stats import compute_statistics
+from utils.compute_stats import compute_statistics, compute_parameter_statistics
 
 __all__ = ["prepare_config"]
 
@@ -95,8 +95,8 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
             residual_config=cfg["data_config"]["residual_config"],
             # the following arguments should be adjusted depending on the h5_paths
             # (if multiple h5-files are provided)
-            filter_groups=cfg["data_config"]["filter_groups"],
-            filter_frames=cfg["data_config"]["filter_frames"],
+            filter_groups=cfg["data_config"]["filter_features"]["filter_groups"],
+            filter_frames=cfg["data_config"]["filter_features"]["filter_frames"],
             frame_stride=cfg["data_config"]["sequence_info"][2],
             on_fly_stats=False,
         )
@@ -168,17 +168,30 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
                 )
 
     # ------------------------------------------------------------------
+    # 3b) Normalisation stats for conditioning parameters (if requested)
+    # ------------------------------------------------------------------
+    if cfg["data_config"].get("include_conditioning_parameters", False):
+        # Always compute parameter normalisation ranges from the training file
+        train_h5_path = f"{cfg['data_config']['dataset_directory_path']}/train.h5"
+
+        # compute min / max per parameter dimension
+        param_ranges = compute_parameter_statistics([train_h5_path])
+
+        # overwrite any pre-existing entry to ensure consistency with the data split
+        cfg["data_config"]["parameter_min_max_stats"] = param_ranges
+
+    # ------------------------------------------------------------------
     # 4) Channel selection
     # ------------------------------------------------------------------
     # NOTE: filter_in_channels has also the conditioning_in_channels (if any)
-    filter_in_keywords = cfg["data_config"]["filter_in_channels"]
+    filter_in_keywords = cfg["data_config"]["filter_features"]["filter_in_channels"]
     filtered_in_channels = (
         [n for n in channel_names if any(n.startswith(k) for k in filter_in_keywords)]
         if filter_in_keywords
         else channel_names
     )
 
-    filter_cond_in_keywords = cfg["data_config"]["conditioning_in_channels"]
+    filter_cond_in_keywords = cfg["data_config"]["conditioning_features"]["conditioning_in_channels"]
     filtered_cond_in_channels = (
         [
             n
@@ -189,15 +202,15 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
         else None
     )
 
-    filter_out_keywords = cfg["data_config"]["filter_out_channels"]
+    filter_out_keywords = cfg["data_config"]["filter_features"]["filter_out_channels"]
     filtered_out_channels = (
         [n for n in channel_names if any(n.startswith(k) for k in filter_out_keywords)]
         if filter_out_keywords
         else channel_names
     )
 
-    cfg["data_config"]["filter_in_channels"] = filtered_in_channels
-    cfg["data_config"]["filter_out_channels"] = filtered_out_channels
-    cfg["data_config"]["conditioning_in_channels"] = filtered_cond_in_channels
+    cfg["data_config"]["filter_features"]["filter_in_channels"] = filtered_in_channels
+    cfg["data_config"]["filter_features"]["filter_out_channels"] = filtered_out_channels
+    cfg["data_config"]["conditioning_features"]["conditioning_in_channels"] = filtered_cond_in_channels
 
     return cfg
