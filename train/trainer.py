@@ -45,6 +45,8 @@ from transformers.integrations.integration_utils import WandbCallback as WandbCa
 from utils.trainer_utils import EvalPrediction
 from collections.abc import Mapping  # locally import to avoid top-of-file change
 import json
+import os
+import h5py
 
 class Trainer(Trainer_):
     """    
@@ -175,12 +177,12 @@ class Trainer(Trainer_):
             sequence_info=self.data_config["sequence_info"],
             pushforward_config=self.train_config["pushforward_config"],
             n_eval_rollouts=self.train_config["n_eval_rollouts"],
-            filter_frames=self.data_config["filter_frames"],
-            filter_groups=self.data_config["filter_groups"],
-            filter_in_channels=self.data_config["filter_in_channels"],
-            conditioning_in_channels=self.data_config["conditioning_in_channels"],
-            include_conditioning_parameters=self.data_config["include_conditioning_parameters"],
-            filter_out_channels=self.data_config["filter_out_channels"],
+            filter_frames=self.data_config["filter_features"]["filter_frames"],
+            filter_groups=self.data_config["filter_features"]["filter_groups"],
+            filter_in_channels=self.data_config["filter_features"]["filter_in_channels"],
+            conditioning_in_channels=self.data_config["conditioning_features"]["conditioning_in_channels"],
+            include_conditioning_parameters=self.data_config["conditioning_features"]["include_conditioning_parameters"],
+            filter_out_channels=self.data_config["filter_features"]["filter_out_channels"],
             data_normalization_stats=self.data_config["data_normalization_stats"],
             data_normalization_strategy=self.data_config["data_normalization_strategy"],
             eval_split_ratio=self.train_config["eval_split_ratio"],
@@ -330,12 +332,12 @@ class Trainer(Trainer_):
                 with torch.no_grad(): #comment this out for multi-step autoregressive training
                     for unroll_step in range(pushforward_unroll_steps):
                         #print(f"Pushforward unroll step {unroll_step+1} of {pushforward_unroll_steps}")
-                        if self.data_config.conditioning_in_channels is not None:
+                        if self.data_config.conditioning_features.conditioning_in_channels is not None:
                             prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
                         else:
                             prediction = model(input_data=inputs["input_data"])
                         
-                        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
+                        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_features"]["filter_out_channels"]), *spatial_dims)
                         
                         if self.residual_config is not None:
                             #NOTE: In all the three cases, we need the raw values to do rollout
@@ -372,12 +374,12 @@ class Trainer(Trainer_):
             pushforward_unroll_steps = 0
             
         # NOTE:compute chain restored, the input_data is corrupted by the pushforward rollout steps (if any).
-        if self.data_config.conditioning_in_channels is not None:
+        if self.data_config.conditioning_features.conditioning_in_channels is not None:
             prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
         else:
             prediction = model(input_data=inputs["input_data"]) 
         
-        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
+        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_features"]["filter_out_channels"]), *spatial_dims)
         
         if self.residual_config is not None and (self.residual_config["add_predicted_value_with_raw_loss"] or self.residual_config["add_base_value_with_raw_loss"]):
             #NOTE: For the cases: add_predicted_value_with_raw_loss or add_base_value_with_raw_loss, we need the raw values before loss is computed inside compute_loss().
@@ -439,12 +441,12 @@ class Trainer(Trainer_):
         """
         batch_size, _, _, *spatial_dims = inputs["input_data"].shape
         
-        if self.data_config.conditioning_in_channels is not None:
+        if self.data_config.conditioning_features.conditioning_in_channels is not None:
             prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
         else:
             prediction = model(input_data=inputs["input_data"]) 
         
-        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
+        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_features"]["filter_out_channels"]), *spatial_dims)
         return prediction
     
     #NOTE: There are two functions for eval_loss: 
@@ -1436,6 +1438,68 @@ class Trainer(Trainer_):
             logger.info("")
             logger.info("-----------------------------------------------------------------------")
             logger.info("-----------------------------------------------------------------------")
+            
+            # ------------------------------------------------------------------
+            # Retrieve all channel names present in the underlying HDF5 dataset.
+            # We open the ``train.h5`` file, inspect the first group and collect
+            # all dataset keys (each key corresponds to a channel).  This gives us
+            # a robust, order-preserving list of *all* channels that exist in the
+            # raw data, independent of any prior filtering decisions.
+            # ------------------------------------------------------------------
+
+            h5file_path = os.path.abspath(os.path.join(self.data_config["dataset_directory_path"], "train.h5"))
+
+            # Lazily load the keys to keep the file access lightweight; we only
+            # need the name list, not the actual data.
+            with h5py.File(h5file_path, "r") as _h5f:
+                first_group = next(iter(_h5f.keys()))  # assume at least one group exists
+
+                grp = _h5f[first_group]
+
+                channel_names = []  # expanded list
+
+                for dset_name in grp:
+                    dset = grp[dset_name]
+                    channel_dim = dset.shape[1]
+
+                    # Single-component field → keep original name
+                    if channel_dim == 1:
+                        channel_names.append(dset_name)
+                    # Multi-component field → expand to ``name_0``, ``name_1``, ...
+                    else:
+                        for ch in range(channel_dim):
+                            channel_names.append(f"{dset_name}_{ch}")
+
+            filter_in_keywords = self.data_config["filter_features"]["filter_in_channels"]
+            filtered_in_channels = (
+                [n for n in channel_names if any(n.startswith(k) for k in filter_in_keywords)]
+                if filter_in_keywords
+                else channel_names
+            )
+
+            filter_cond_in_keywords = self.data_config["conditioning_features"]["conditioning_in_channels"]
+            filtered_cond_in_channels = (
+                [
+                    n
+                    for n in channel_names
+                    if any(n.startswith(k) for k in filter_cond_in_keywords)
+                ]
+                if filter_cond_in_keywords
+                else None
+            )
+
+            filter_out_keywords = self.data_config["filter_features"]["filter_out_channels"]
+            filtered_out_channels = (
+                [n for n in channel_names if any(n.startswith(k) for k in filter_out_keywords)]
+                if filter_out_keywords
+                else channel_names
+            )
+
+            self.data_config["filter_features"]["filter_in_channels"] = filtered_in_channels
+            self.data_config["filter_features"]["filter_out_channels"] = filtered_out_channels
+            self.data_config["conditioning_features"]["conditioning_in_channels"] = filtered_cond_in_channels            
+            
+            
             # -------------------------------
             # Also log constant parameters
             # -------------------------------

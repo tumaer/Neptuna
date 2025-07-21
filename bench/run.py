@@ -99,7 +99,7 @@ def run(cfg):
         ]
         + (
             ["conditioning_inputs"]
-            if cfg["data_config"].get("conditioning_in_channels") is not None
+            if cfg["data_config"]["conditioning_features"]["conditioning_in_channels"] is not None
             else []
         ),  # keep inputs and optionally conditioning_inputs for plotting
         greater_is_better=False,  # lower loss/error is better
