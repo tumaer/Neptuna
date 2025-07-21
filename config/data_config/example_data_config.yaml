@@ -33,34 +33,41 @@ sequence_info:
 # Selects the number of historic input frames, the required number of bundled target frames 
 # and the stride (timestep difference) between them
 
-filter_frames: [null, null]
-# Type: List[int, int] 
-# Filters the frames for train/test from the dataset file
-# [min_frame, max_frame]
-# indexing of frames starts from 0.
+filter_features:
+  filter_frames: [null, null]
+  # Type: List[int, int] 
+  # Filters the frames for train/test from the dataset file
+  # [min_frame, max_frame]
+  # indexing of frames starts from 0.
 
-filter_groups: null 
-# Type: List[str, str, ...]
-# filters the groups for train/test from the dataset file
+  filter_groups: null 
+  # Type: List[str, str, ...]
+  # filters the groups for train/test from the dataset file
 
-filter_in_channels: null
-# Type: List[str, str, ...]
-# filters the input channels to be used for train/test 
+  filter_in_channels: null
+  # Type: List[str, str, ...]
+  # filters the input channels to be used for train/test 
 
-filter_out_channels: null
-# Type: List[str, str, ...]
-# filters the output channels to be used for train/test 
+  filter_out_channels: null
+  # Type: List[str, str, ...]
+  # filters the output channels to be used for train/test 
 
-conditioning_in_channels: null
-# Type: List[str, str, ...]
-# Choose the channels for conditioning from the input channels.
-# For transient simulations: filter_out_channels + conditioning_in_channels = filter_in_channels 
-# For steady-state simulations, the above relationship doesnt need to hold.
+conditioning_features:
+  conditioning_in_channels: null
+  # Type: List[str, str, ...]
+  # Choose the channels for conditioning from the input channels.
+  # For transient simulations: filter_out_channels + conditioning_in_channels = filter_in_channels 
+  # For steady-state simulations, the above relationship doesnt need to hold.
 
-include_conditioning_parameters: False
-# Type: bool 
-# infers the conditioning parameters from the group names
-# Example: If the group name is: "Re_100_Ma_0.1" --> extracted parameters are: [100, 0.1]
+  include_conditioning_parameters: False
+  # Type: bool 
+  # infers the conditioning parameters from the group names
+  # Example: If the group name is: "Re_100_Ma_0.1" --> extracted parameters are: [100, 0.1]
+
+  parameter_min_max_stats: null
+  # Type: Dict
+  # min and max values of each parameter.
+  # if not provided, will be computed automatically from the dataset
 
 residual_config: null
   add_base_value_with_raw_loss:

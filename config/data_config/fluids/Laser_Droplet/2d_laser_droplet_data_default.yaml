@@ -1,3 +1,4 @@
+# For details on the parameters, refer to data_config-->example_data_config.yaml
 dataset_name: LaserDroplet
 dataset_directory_path: ./data/fluids/Laser_Droplet/2D
 dimension: 2
@@ -5,14 +6,17 @@ grid_resolution: null
 eval_groups: null
 is_steady_state_prediction: False 
 sequence_info: [1, 1, 1]
-filter_frames: null 
-filter_groups: null
 # Available channels for LaserDroplet: ["Pressure", "Energy", "Density", "Velocity_X", "Velocity_Y"]
-filter_in_channels: null
-filter_out_channels: null
-conditioning_in_channels: null
+filter_features:
+  filter_frame: null
+  filter_groups: null
+  filter_in_channels: null
+  filter_out_channels: null
 #NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels
-include_conditioning_parameters: True
+conditioning_features:
+  conditioning_in_channels: null
+  include_conditioning_parameters: True
+  parameter_min_max_stats: null
 residual_config: null
 #   add_base_value_with_raw_loss: False
 #   add_predicted_value_with_diff_loss: True
