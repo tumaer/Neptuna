@@ -1331,12 +1331,12 @@ class Trainer(Trainer_):
         # ------------------------------------------------------------------
         # Ensure final evaluation is run at the end of training
         # ------------------------------------------------------------------
-        if (
-            self.control.should_training_stop  # training loop is signaled to stop
-            and self.state.epoch >= self.train_config["num_train_epochs"]  # we have reached (or slightly passed) the last epoch
-        ):
-            # Trigger a last evaluation regardless of the usual evaluation schedule.
-            self.control.should_evaluate = True
+        # if (
+        #     self.control.should_training_stop  # training loop is signaled to stop
+        #     and self.state.epoch >= self.train_config["num_train_epochs"]  # we have reached (or slightly passed) the last epoch
+        # ):
+        #     # Trigger a last evaluation regardless of the usual evaluation schedule.
+        #     self.control.should_evaluate = True
 
         metrics = None
         if self.control.should_evaluate:
