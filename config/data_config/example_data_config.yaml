@@ -1,0 +1,117 @@
+dataset_name:
+# Type: str
+# Name of the dataset in CamelCase
+
+dataset_directory_path:
+# Type: str 
+# Dataset 'folder' path
+
+dimension: 
+# Type: int
+# Dimension of the dataset> options- 1/2/3
+
+grid_resolution: null 
+# Type: List[int, int, ...]
+# Cartesian grid resolution
+# Example: [256, 64] for 2D. 
+# If not provided, will be inferred automatically from the dataset
+
+eval_groups: null 
+# Type: List[str, str, ...]
+# To be provided, if user wants to choose specific groups from train.h5 for validation.
+# eval_groups should be a subset of "filter_groups".
+# Example:["seed 000000", "seed 000049"]. 
+# if eval_groups is null, validation groups are randomly chosen from train.h5 in accordance to 'eval_split_ratio' provided in train_config.
+
+is_steady_state_prediction: False
+# Type: bool 
+# Set to True, if its a stedy-state dataset.
+
+sequence_info: 
+# Type: List[int, int, int]
+# [input_seq_len, label_seq_len, stride]  
+# Selects the number of historic input frames, the required number of bundled target frames 
+# and the stride (timestep difference) between them
+
+filter_features:
+  filter_frames: [null, null]
+  # Type: List[int, int] 
+  # Filters the frames for train/test from the dataset file
+  # [min_frame, max_frame]
+  # indexing of frames starts from 0.
+
+  filter_groups: null 
+  # Type: List[str, str, ...]
+  # filters the groups for train/test from the dataset file
+
+  filter_in_channels: null
+  # Type: List[str, str, ...]
+  # filters the input channels to be used for train/test 
+
+  filter_out_channels: null
+  # Type: List[str, str, ...]
+  # filters the output channels to be used for train/test 
+
+conditioning_features:
+  conditioning_in_channels: null
+  # Type: List[str, str, ...]
+  # Choose the channels for conditioning from the input channels.
+  # For transient simulations: filter_out_channels + conditioning_in_channels = filter_in_channels 
+  # For steady-state simulations, the above relationship doesnt need to hold.
+
+  include_conditioning_parameters: False
+  # Type: bool 
+  # infers the conditioning parameters from the group names
+  # Example: If the group name is: "Re_100_Ma_0.1" --> extracted parameters are: [100, 0.1]
+
+  parameter_min_max_stats: null
+  # Type: Dict
+  # min and max values of each parameter.
+  # if not provided, will be computed automatically from the dataset
+  # Example, if there are 2 parameters say Re(0) and Ma(1):
+  # 0:
+  #   min: 100.0
+  #   max: 1000.0
+  # 1:
+  #   min: 0.01
+  #   max: 0.10
+
+residual_config: null
+  add_base_value_with_raw_loss:
+  #Type: bool 
+  add_predicted_value_with_diff_loss: 
+  #Type: bool
+  add_predicted_value_with_raw_loss: 
+  #Type: bool
+# If using this option, only one of the aboe option should be True.
+# Default is null.
+
+data_normalization_strategy: 
+# Type: str
+# z_normalization, min_max_normalization, robust_normalization, no_normalization
+
+data_normalization_stats: null 
+# Type: Dict
+# if not provided, will be computed automatically from the dataset
+# Example:
+    # density:
+    #   mean: 0.9992666901623488
+    #   std: 0.0017173667020404337
+    #   min: 0.9860899448394775
+    #   max: 1.0059986114501953
+    #   median: 0.9998869299888611
+    #   iqr: 0.0011609792709350586
+    # velocity_0:
+    #   mean: 0.021363726950354156
+    #   std: 0.011059971516810064
+    #   min: -0.02212641015648842
+    #   max: 0.05820665508508682
+    #   median: 0.02194954827427864
+    #   iqr: 0.02132151066325605
+    # velocity_1:
+    #   mean: 2.4534008565977044e-06
+    #   std: 0.007489236515888121
+    #   min: -0.046874720603227615
+    #   max: 0.04686852544546127
+    #   median: 1.1994336546194972e-07
+    #   iqr: 0.002700483484659344

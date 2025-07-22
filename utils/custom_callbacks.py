@@ -74,6 +74,7 @@ from utils.compute_stats import re_normalize_data
 from transformers.trainer_callback import TrainerCallback
 import os
 from utils.plot_progress import plot_examples
+from PIL import Image
 
 class CallbackHandler(CallbackHandler_):
     """
@@ -365,15 +366,14 @@ class WandbCallback(WandbCallback_):
         
         if self._wandb is None:
             return
-        # Ensure that a W&B run is active. In some hyperparameter search workflows,
-        # `on_train_end` might have already called `wandb.finish()`, which resets
-        # the global run.  If that happened we need to (re-)initialize a fresh
-        # run before attempting to log evaluation metrics – using the current project and letting
-        # W&B autogenerate the run name – because full configuration tracking is
-        # already performed in `setup()` during training.
-        if self._wandb.run is None:
-            self._wandb.init(project=os.getenv("WANDB_PROJECT", "huggingface"), reinit=True)
-        if not self._initialized:
+        # Make sure a W&B run exists **and** has the proper name.
+        #
+        #   • First-time call → _initialized is False → setup() launches a new run.
+        #   • Later calls after wandb.finish() → _wandb.run is None → we clear
+        #     the flag and call setup() again, which re-creates a run using the
+        #     same naming logic (trial_name, run_name, etc.).
+        if not self._initialized or self._wandb.run is None:
+            self._initialized = False  # force full re-initialisation path
             self.setup(args, state, model)
         if state.is_world_process_zero:
             for k, v in logs.items():
@@ -414,6 +414,26 @@ class WandbCallback(WandbCallback_):
         and upload any remaining data. It includes safety checks to handle
         cases where no active run exists.
         """
+        
+        # --------------------------------------------------------------
+        # At the end of training upload the *best* plot (if any) residing
+        # in ``<output_dir>/plots`` to the W&B summary so it is easily
+        # accessible from the run overview page.
+        # --------------------------------------------------------------
+
+        if wandb.run is not None:
+            plots_dir = os.path.join(args.output_dir, "plots")
+            if os.path.isdir(plots_dir):
+                best_pngs = [f for f in os.listdir(plots_dir) if f.endswith("_best.png")]
+                if best_pngs:
+                    best_path = os.path.join(plots_dir, best_pngs[0])  # take the first one
+                    try:
+                        with Image.open(best_path) as img:
+                            wandb.run.summary["best_eval_plot"] = wandb.Image(img)
+                    except Exception as e:
+                        logger.warning(f"Could not upload best plot '{best_path}' to W&B: {e}")
+
+        # Finish the run last so the image gets logged.
         wandb.finish() if wandb.run is not None else None
 
 class PlotOnEvalAndSaveCallback(TrainerCallback):

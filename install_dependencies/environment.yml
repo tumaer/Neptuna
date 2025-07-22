@@ -1,5 +1,6 @@
 #To intall the dependencies from this file: 
-#conda env create -f environment_only_conda.yml
+#conda env create -f environment.yml
+## comment out the lines starting with nvidia* if there is no nvidia-GPU
 name: neptuna
 channels:
   - conda-forge
