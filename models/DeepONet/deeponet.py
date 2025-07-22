@@ -4,6 +4,7 @@ import torch.nn as nn
 from torch import Tensor
 from models.ResNet.resnet_utils import ResNetConfig
 from utils import activation_func
+from utils.grid_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 from .deeponet_utils import FFN, CnnBranch, grid_to_points, points_to_grid, calc_resnet_out_shape, linspace_int_list
 from models.ResNet.resnet import ResNet1D, ResNet2D, ResNet3D
 from transformers import PreTrainedModel
@@ -70,18 +71,18 @@ class AutoDeepONet1D(PreTrainedModel):
         
         if isinstance(config.branch_net_str, str):
             if config.branch_net_str == "FFN":
-                branch_dim = config.in_size * config.grid_resolution[0]
+                branch_dim = (config.in_size + config.dimension if config.coord_features else 0) * config.grid_resolution[0]
                 self.branch_dims = [branch_dim] + [config.width] * config.branch_depth
                 self.branch_net = FFN(
                     dims = self.branch_dims,
                     activation_fn = self.activation_fn,
-                    act_on_output = config.act_on_output,
+                    act_on_output = config.act_on_output
                 )
                 self.trunk_dims = linspace_int_list(config.width, config.trunk_depth, 1, False)
                 #self.trunk_dims = [1] + [self.width] * self.trunk_depth        
                 self.trunk_net = FFN(
                     dims = self.trunk_dims, 
-                    activation_fn = self.activation_fn,
+                    activation_fn = self.activation_fn
                 )
             elif config.branch_net_str == "CNN":
                 self.branch_net = CnnBranch(
@@ -100,14 +101,14 @@ class AutoDeepONet1D(PreTrainedModel):
                 #self.trunk_dims = [1] + [self.width] * self.trunk_depth + [length_new]
                 self.trunk_net = FFN(
                     dims = self.trunk_dims, 
-                    activation_fn = self.activation_fn,
+                    activation_fn = self.activation_fn
                 )
                 dims_outffn = linspace_int_list(length_new, config.out_ffn_depth, 1, True)  
                 self.out_Ffn = FFN(
                     dims = dims_outffn,
                     #dims = [length_new] * out_ffn_depth  + [1], 
                     activation_fn = self.activation_fn,
-                    act_on_output = False,  
+                    act_on_output = False
                 )
                 
             elif config.branch_net_str == "ResNet":
@@ -118,7 +119,8 @@ class AutoDeepONet1D(PreTrainedModel):
                     num_blocks = config.num_blocks,
                     latent_channels= config.latent_channels,
                     coord_features= config.coord_features,
-                    padding= 0,
+                    dimension = config.dimension,
+                    padding = 0,
                     include_input_seq_len = False
                     )
                 self.branch_net = ResNet1D(config=resNetConfig)
@@ -131,14 +133,14 @@ class AutoDeepONet1D(PreTrainedModel):
                 #self.trunk_dims = [1] + [self.width] * self.trunk_depth + [length_new]
                 self.trunk_net = FFN(
                     dims = self.trunk_dims, 
-                    activation_fn = self.activation_fn,
+                    activation_fn = self.activation_fn
                 )
                 dims_outffn = linspace_int_list(length_new, config.out_ffn_depth, 1, True)  
                 self.out_Ffn = FFN(
                     dims = dims_outffn,
                     #dims = [length_new] * out_ffn_depth  + [1], 
                     activation_fn = self.activation_fn,
-                    act_on_output = False,  
+                    act_on_output = False
                 )
             else:
                 raise NotImplementedError(f"Unknown block: {config.branch_net_str}")
@@ -164,7 +166,10 @@ class AutoDeepONet1D(PreTrainedModel):
         
         if isinstance(self.config.branch_net_str, str):
             if self.config.branch_net_str == "FFN":
-                flat_x= grid_to_points(x)  # (B, C * H )
+                if self.config.coord_features: 
+                    coord_feat = oned_meshgrid(list(x.shape), x.device)
+                    x = torch.cat((x, coord_feat), dim=1)
+                flat_x = grid_to_points(x)  # (B, C * H )
                 x_branch = self.branch_net(flat_x) # (B, p)
                 x_branch = x_branch.unsqueeze(1)  # (B, 1, p)
                 x_trunk = self.trunk_net(x_trunk)  # (H * C_out , p)
@@ -192,18 +197,18 @@ class AutoDeepONet2D(PreTrainedModel):
             
         if isinstance(config.branch_net_str, str):
             if config.branch_net_str == "FFN":
-                branch_dim = config.in_size * config.grid_resolution[0] * config.grid_resolution[1]
+                branch_dim = (config.in_size + config.dimension if config.coord_features else 0) * config.grid_resolution[0] * config.grid_resolution[1]
                 self.branch_dims = [branch_dim] + [config.width] * config.branch_depth
                 self.branch_net = FFN(
                     dims = self.branch_dims,
                     activation_fn = self.activation_fn,
-                    act_on_output = config.act_on_output,
+                    act_on_output = config.act_on_output
                 )
                 self.trunk_dims = linspace_int_list(self.config.width, self.config.trunk_depth, 2, False)
                 #self.trunk_dims = [2] + [self.width] * self.trunk_depth        
                 self.trunk_net = FFN(
                     dims = self.trunk_dims, 
-                    activation_fn = self.activation_fn,
+                    activation_fn = self.activation_fn
                 )
             elif config.branch_net_str == "CNN":
                 self.branch_net = CnnBranch(
@@ -239,7 +244,8 @@ class AutoDeepONet2D(PreTrainedModel):
                     block = config.ResNet_block,
                     num_blocks = config.num_blocks,
                     latent_channels= config.latent_channels,
-                    coord_features= False, #config.coord_features,
+                    coord_features= config.coord_features,
+                    dimension = config.dimension,
                     padding= 0,
                     include_input_seq_len = False
                 )
@@ -289,6 +295,9 @@ class AutoDeepONet2D(PreTrainedModel):
         
         if isinstance(self.config.branch_net_str, str):
             if self.config.branch_net_str == "FFN":
+                if self.config.coord_features: 
+                    coord_feat = twod_meshgrid(list(x.shape), x.device)
+                    x = torch.cat((x, coord_feat), dim=1)
                 flat_x= grid_to_points(x)  # (B, C * H * W)
                 x_branch = self.branch_net(flat_x) # (B, p)
                 x_branch = x_branch.unsqueeze(1)  # (B, 1, p)
@@ -318,7 +327,7 @@ class AutoDeepONet3D(PreTrainedModel):
             
         if isinstance(config.branch_net_str, str):
             if config.branch_net_str == "FFN":
-                branch_dim = config.in_size * config.grid_resolution[0] * config.grid_resolution[1] * config.grid_resolution[2]
+                branch_dim = (config.in_size + config.dimension if config.coord_features else 0) * config.grid_resolution[0] * config.grid_resolution[1] * config.grid_resolution[2]
                 self.branch_dims = [branch_dim] + [config.width] * config.branch_depth
                 self.branch_net = FFN(
                     dims = self.branch_dims,
@@ -348,14 +357,14 @@ class AutoDeepONet3D(PreTrainedModel):
                 #self.trunk_dims = [3] + [self.width] * self.trunk_depth + [length_new]
                 self.trunk_net = FFN(
                     dims = self.trunk_dims, 
-                    activation_fn = self.activation_fn,
+                    activation_fn = self.activation_fn
                 )
                 dims_outffn = linspace_int_list(length_new, config.out_ffn_depth, 1, True)  
                 self.out_Ffn = FFN(
                     dims = dims_outffn,
                     #dims = [length_new] * out_ffn_depth  + [1], 
                     activation_fn = self.activation_fn,
-                    act_on_output = False,  
+                    act_on_output = False
                 )
                 
             elif config.branch_net_str == "ResNet":
@@ -366,6 +375,7 @@ class AutoDeepONet3D(PreTrainedModel):
                     num_blocks = config.num_blocks,
                     latent_channels= config.latent_channels,#TODO:change this!!!!!
                     coord_features= config.coord_features,
+                    dimension = config.dimension,
                     padding= 0,
                     include_input_seq_len = False
                 )
@@ -384,14 +394,14 @@ class AutoDeepONet3D(PreTrainedModel):
                 #self.trunk_dims = [3] + [self.width] * self.trunk_depth + [length_new]
                 self.trunk_net = FFN(
                     dims = self.trunk_dims, 
-                    activation_fn = self.activation_fn,
+                    activation_fn = self.activation_fn
                 )
                 dims_outffn = linspace_int_list(length_new, config.out_ffn_depth, 1, True)  
                 self.out_Ffn = FFN(
                     dims = dims_outffn,
                     #dims = [length_new] * out_ffn_depth  + [1], 
                     activation_fn = self.activation_fn,
-                    act_on_output = False,  
+                    act_on_output = False
                 )
             else:
                 raise NotImplementedError(f"Unknown block: {config.branch_net_str}")
@@ -418,6 +428,9 @@ class AutoDeepONet3D(PreTrainedModel):
 
         if isinstance(self.config.branch_net_str, str):
             if self.config.branch_net_str == "FFN":
+                if self.config.coord_features: 
+                    coord_feat = threed_meshgrid(list(x.shape), x.device)
+                    x = torch.cat((x, coord_feat), dim=1)
                 flat_x = x.reshape(shape[0], -1)  # (B, C*D*H*W)
                 x_branch = self.branch_net(flat_x)  # (B, p)
                 x_branch = x_branch.unsqueeze(1)  # (B, 1, p)
