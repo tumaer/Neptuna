@@ -22,6 +22,7 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     1. Derive output directory path when not specified
     2. Populate grid resolution from dataset if missing
     3. Compute normalization statistics if not provided
+    3b. Compute parameter ranges for min-max normalization if not provided
     4. Validate normalization statistics against chosen strategy
     5. Filter and finalize channel lists based on configuration
 
@@ -90,11 +91,23 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     # 3) Normalisation stats
     # ------------------------------------------------------------------
     if cfg["data_config"]["data_normalization_stats"] is None:
+        # Collect all HDF5 files in the dataset directory so that the
+        # normalisation statistics reflect the *entire* data set and not
+        # just the training split.
+        h5_dir = cfg["data_config"]["dataset_directory_path"]
+        h5_paths = [
+            os.path.join(h5_dir, fname) for fname in os.listdir(h5_dir) if fname.endswith(".h5")
+        ]
+
+        if len(h5_paths) == 0:
+            raise FileNotFoundError(f"No .h5 files found in directory '{h5_dir}'.")
+
         stats, channel_names, _ = compute_statistics(
-            h5_paths=[f"{cfg['data_config']['dataset_directory_path']}/train.h5"],
+            h5_paths=h5_paths,
             residual_config=cfg["data_config"]["residual_config"],
             # the following arguments should be adjusted depending on the h5_paths
-            # (if multiple h5-files are provided)
+            # (if multiple h5-files are provided) 
+            # NOTE: if multiple h5-files (i.e. train and test) are provided, filter_groups should be None
             filter_groups=cfg["data_config"]["filter_features"]["filter_groups"],
             filter_frames=cfg["data_config"]["filter_features"]["filter_frames"],
             frame_stride=cfg["data_config"]["sequence_info"][2],
@@ -168,17 +181,39 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
                 )
 
     # ------------------------------------------------------------------
-    # 3b) Normalisation stats for conditioning parameters (if requested)
+    # Conditioning-parameter normalisation (min / max per dimension)
     # ------------------------------------------------------------------
-    if cfg["data_config"].get("include_conditioning_parameters", False):
-        # Always compute parameter normalisation ranges from the training file
-        train_h5_path = f"{cfg['data_config']['dataset_directory_path']}/train.h5"
+    if cfg["data_config"]["conditioning_features"].get("include_conditioning_parameters", False):
+        # Users can optionally provide ``parameter_min_max_stats`` directly in
+        # the config.  When present we *respect* those values.  Otherwise we
+        # compute the ranges from the *training* data file for consistency
+        # with the data split.
 
-        # compute min / max per parameter dimension
-        param_ranges = compute_parameter_statistics([train_h5_path])
+        if cfg["data_config"]["conditioning_features"].get("parameter_min_max_stats") is None:
+            h5_dir = cfg["data_config"]["dataset_directory_path"]
+            h5_paths_params = [
+                os.path.join(h5_dir, fname) for fname in os.listdir(h5_dir) if fname.endswith(".h5")
+            ]
 
-        # overwrite any pre-existing entry to ensure consistency with the data split
-        cfg["data_config"]["parameter_min_max_stats"] = param_ranges
+            if len(h5_paths_params) == 0:
+                raise FileNotFoundError(
+                    f"No .h5 files found in directory '{h5_dir}' when computing parameter ranges."
+                )
+
+            param_ranges = compute_parameter_statistics(h5_paths_params)
+            cfg["data_config"]["conditioning_features"]["parameter_min_max_stats"] = param_ranges
+        else:
+            # --- Basic schema validation of user-supplied stats ---------
+            user_stats = cfg["data_config"]["conditioning_features"]["parameter_min_max_stats"]
+            for idx, stat_dict in user_stats.items():
+                if not {
+                    "min",
+                    "max",
+                }.issubset(stat_dict):
+                    raise ValueError(
+                        "parameter_min_max_stats must supply 'min' and 'max' for every parameter dimension "
+                        f"(problematic index: {idx})."
+                    )
 
     # ------------------------------------------------------------------
     # 4) Channel selection
