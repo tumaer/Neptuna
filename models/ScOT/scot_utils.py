@@ -45,8 +45,6 @@ class ScOTConfig(PretrainedConfig):
         layer_norm_eps (float): Epsilon value for layer normalization. Default is 1e-5.
         residual_model (str): Type of residual model to use ("convnext" or "resnet"). Default is "convnext".
         use_conditioning (bool): Whether to use conditioning in the model. Default is False.
-        output_hidden_states (bool): Whether to output hidden states. Default is False.
-        output_attentions (bool): Whether to output attention weights. Default is False.
         **kwargs: Additional keyword arguments passed to the parent class."""
 
     model_type = "swinv2"
@@ -74,8 +72,6 @@ class ScOTConfig(PretrainedConfig):
         layer_norm_eps: float = 1e-5,
         residual_model: str = "convnext",  # "convnext" or "resnet"
         use_conditioning: bool = False,
-        output_hidden_states: bool = False,
-        output_attentions: bool = False,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -101,8 +97,6 @@ class ScOTConfig(PretrainedConfig):
         self.hidden_size = int(self.latent_channels * 2 ** (len(depths) - 1)) # actually not used but recomputed as num_features
         self.pretrained_window_sizes = (0, 0, 0, 0)
         self.residual_model = residual_model
-        self.output_hidden_states = output_hidden_states
-        self.output_attentions = output_attentions
 
 
 class LayerNorm(nn.LayerNorm):

@@ -317,25 +317,40 @@ def fetch_model(model_config: Dict,
                     )
         model = ScOT(config)
     
-    elif model_name == "amrtransformer":
-        from models.AMRTransformer.amrtransformer_utils import AMRTransformerConfig
-        from models.AMRTransformer.amrtransformer import AMRTransformer
-        config = AMRTransformerConfig(
+    elif model_name == "vit":
+        from models.ViT.vit_utils import ViTConfig
+        from models.ViT.vit import ViT
+
+        if data_config['grid_resolution'][0] != data_config['grid_resolution'][1]:
+            raise ValueError("Model is not yet implemented for non-square grid resolutions")
+        config = ViTConfig(
                     in_channels=len(data_config['filter_in_channels']),
                     out_channels=len(data_config['filter_out_channels']), 
                     grid_resolution=data_config['grid_resolution'], 
                     sequence_info=data_config['sequence_info'],
                     dimension=data_config['dimension'],
-                    latent_channels=model_config['latent_channels'],
+                    #latent_channels=model_config['latent_channels'],
                     coord_features=True,
+                    hidden_size=model_config['hidden_size'],
+                    num_hidden_layers=model_config['num_hidden_layers'],
+                    num_attention_heads=model_config['num_attention_heads'],
+                    intermediate_size=model_config['intermediate_size'],
+                    hidden_act=model_config['hidden_act'],
+                    hidden_dropout_prob=model_config['hidden_dropout_prob'],
+                    attention_probs_dropout_prob=model_config['attention_probs_dropout_prob'],
+                    initializer_range=model_config['initializer_range'],
+                    layer_norm_eps=model_config['layer_norm_eps'],
+                    image_size=data_config['grid_resolution'][0],
                     patch_size=model_config['patch_size'],
-                    n_case_params=model_config['n_case_params'],
-                    d_model=model_config['d_model'],
-                    num_heads=model_config['num_heads'],
-                    dim_feedforward=model_config['dim_feedforward'],
-                    num_layers=model_config['num_layers'],
+                    num_channels=len(data_config['filter_in_channels']),
+                    qkv_bias=model_config['qkv_bias'],
+                    encoder_stride=model_config['encoder_stride'],
+                    pooler_output_size=model_config['pooler_output_size'],
+                    pooler_act=model_config['pooler_act'],
+                    output_hidden_states=model_config['output_hidden_states'],
+                    output_attentions=model_config['output_attentions'],
                     )
-        model = AMRTransformer(config=config)
+        model = ViT(config=config)
 
     else:
         raise ValueError(f"Model {model_name} is not implemented yet.") 
