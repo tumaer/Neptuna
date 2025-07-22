@@ -68,6 +68,13 @@ conditioning_features:
   # Type: Dict
   # min and max values of each parameter.
   # if not provided, will be computed automatically from the dataset
+  # Example, if there are 2 parameters say Re(0) and Ma(1):
+  # 0:
+  #   min: 100.0
+  #   max: 1000.0
+  # 1:
+  #   min: 0.01
+  #   max: 0.10
 
 residual_config: null
   add_base_value_with_raw_loss:
