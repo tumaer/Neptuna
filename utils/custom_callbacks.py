@@ -74,6 +74,7 @@ from utils.compute_stats import re_normalize_data
 from transformers.trainer_callback import TrainerCallback
 import os
 from utils.plot_progress import plot_examples
+from PIL import Image
 
 class CallbackHandler(CallbackHandler_):
     """
@@ -413,6 +414,26 @@ class WandbCallback(WandbCallback_):
         and upload any remaining data. It includes safety checks to handle
         cases where no active run exists.
         """
+        
+        # --------------------------------------------------------------
+        # At the end of training upload the *best* plot (if any) residing
+        # in ``<output_dir>/plots`` to the W&B summary so it is easily
+        # accessible from the run overview page.
+        # --------------------------------------------------------------
+
+        if wandb.run is not None:
+            plots_dir = os.path.join(args.output_dir, "plots")
+            if os.path.isdir(plots_dir):
+                best_pngs = [f for f in os.listdir(plots_dir) if f.endswith("_best.png")]
+                if best_pngs:
+                    best_path = os.path.join(plots_dir, best_pngs[0])  # take the first one
+                    try:
+                        with Image.open(best_path) as img:
+                            wandb.run.summary["best_eval_plot"] = wandb.Image(img)
+                    except Exception as e:
+                        logger.warning(f"Could not upload best plot '{best_path}' to W&B: {e}")
+
+        # Finish the run last so the image gets logged.
         wandb.finish() if wandb.run is not None else None
 
 class PlotOnEvalAndSaveCallback(TrainerCallback):

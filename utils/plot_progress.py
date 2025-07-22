@@ -219,8 +219,7 @@ def plot_examples(
     - Best metric checkpoint handling with file renaming
     - Configurable figure sizing based on data dimensions and channel counts
     """
-    if not log_to_wandb:
-        os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(save_dir, exist_ok=True)
 
     N, T_in, C, *spatial_shape = input_array.shape
     T_pred = prediction_array.shape[1]
@@ -462,33 +461,56 @@ def plot_examples(
                         rel_err_ax.set_xlabel(time_val, fontsize=plot_time_fontsize, labelpad=x_label_pad)
                         rel_err_ax.tick_params(labelbottom=True)
 
-            # Save to disk only when we are NOT logging to W&B. When logging, the caller
-            # (Trainer) will decide what to do with the figure.
-            if not log_to_wandb:
-                #prepend the word "best" if is_best_metric is True to the filename
+            # --------------------------------------------------------------
+            # Saving behaviour
+            # --------------------------------------------------------------
+            # We *always* save the *best* figure to disk so it can later be
+            # uploaded to W&B after the training run has concluded.  If
+            # ``log_to_wandb`` is *False* we additionally save all other
+            # figures for offline inspection.
+
+            save_this_fig = (not log_to_wandb) or is_best_metric
+
+            if save_this_fig:
+                # prepend the word "best" if this is the best metric figure
                 if is_best_metric:
-                    # Before writing the new "best" file, search for an older best in the
-                    # same directory (filename ending with "_best.png") and rename it by
-                    # stripping the "_best" token so it is no longer considered best.
+                    # Before writing the new "best" file, rename a previous
+                    # best (if any) so it is no longer tagged as best.
                     for prev_file in os.listdir(save_dir):
                         if prev_file.endswith("_best.png"):
                             old_path = os.path.join(save_dir, prev_file)
-                            # Form the new path by removing the trailing "_best" before the extension
                             new_file = prev_file.replace("_best.png", ".png")
                             new_path = os.path.join(save_dir, new_file)
                             try:
                                 os.rename(old_path, new_path)
                             except OSError as e:
-                                # Non-fatal: print a warning and continue
-                                print(f"[plot_progress] Warning: could not rename previous best file '{prev_file}': {e}")
-                    #
+                                print(
+                                    f"[plot_progress] Warning: could not rename previous best file '{prev_file}': {e}"
+                                )
                     filename = f"ckpt_{checkpoint_step}_epoch_{epoch}_example_{idx}_best.png"
                 else:
-                    filename = f"ckpt_{checkpoint_step}_epoch_{epoch}_example_{idx}.png"       
-                img_path = os.path.join(save_dir, filename)
-                fig.savefig(img_path, dpi=150, bbox_inches='tight')
+                    filename = f"ckpt_{checkpoint_step}_epoch_{epoch}_example_{idx}.png"
 
-            else:
+                img_path = os.path.join(save_dir, filename)
+                fig.savefig(img_path, dpi=150, bbox_inches="tight")
+
+                # When W&B logging is active we want *only* the best figure in
+                # the directory.  Remove any other PNGs that do not correspond
+                # to the freshly written best file.
+                if log_to_wandb and is_best_metric:
+                    for other_file in os.listdir(save_dir):
+                        if other_file.endswith(".png") and other_file != filename:
+                            try:
+                                os.remove(os.path.join(save_dir, other_file))
+                            except OSError as e:
+                                print(f"[plot_progress] Warning: could not delete '{other_file}': {e}")
+
+            # --------------------------------------------------------------
+            # W&B logging (only create the image object here; actual logging
+            # timing can be handled by the caller).
+            # --------------------------------------------------------------
+
+            if log_to_wandb:
                 # Use an in-memory buffer with bbox_inches='tight' so nothing is cut off
                 buf = io.BytesIO()
                 fig.savefig(buf, format="png", dpi=150, bbox_inches="tight", pad_inches=0.1)
@@ -497,12 +519,27 @@ def plot_examples(
 
                 returned_figs[f"plot_progress/example_{idx}"] = wandb.Image(pil_img)
 
-                if is_best_metric:
-                    best_img = wandb.Image(
-                        pil_img,
-                        caption=f"Best_eval_plot_ckpt_{checkpoint_step}_epoch_{epoch}_example_{idx}"
-                    )
-                    wandb.run.summary[f"best_eval_plot"] = best_img
+                # We purposely **do not** store the best plot in
+                # ``returned_figs`` so that it lives **only on disk**.
+                # A separate post-run routine uploads the saved PNG on_train_end inside WandbCallback.
             
             plt.close(fig)
+    # ------------------------------------------------------------------
+    # Final cleanup: remove any duplicate plots that have both a `_best.png`
+    # and the same name *without* the suffix.  This ensures only best plots
+    # remain on disk when `wandb` logging is disabled. This is needed as inside _maybe_log_save_evaluate,
+    # we perform one last evalutaion run even when the training ends.
+    # ------------------------------------------------------------------
+
+    # # Always remove non-best duplicates when a _best plot exists.
+    # for fname in os.listdir(save_dir):
+    #     if fname.endswith("_best.png"):
+    #         base_name = fname.replace("_best.png", ".png")
+    #         dup_path = os.path.join(save_dir, base_name)
+    #         if os.path.isfile(dup_path):
+    #             try:
+    #                 os.remove(dup_path)
+    #             except OSError as e:
+    #                 print(f"[plot_progress] Warning: could not delete duplicate plot '{dup_path}': {e}")
+
     return returned_figs
