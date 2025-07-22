@@ -44,11 +44,12 @@ def make_datasets(cfg: DictConfig):
         filter_in_channels=data_cfg["filter_features"]["filter_in_channels"],
         conditioning_in_channels=data_cfg["conditioning_features"]["conditioning_in_channels"],
         include_conditioning_parameters=data_cfg["conditioning_features"]["include_conditioning_parameters"],
+        parameter_min_max_stats=data_cfg["conditioning_features"]["parameter_min_max_stats"],
         filter_out_channels=data_cfg["filter_features"]["filter_out_channels"],
         data_normalization_stats=data_cfg["data_normalization_stats"],
         data_normalization_strategy=data_cfg["data_normalization_strategy"],
         eval_split_ratio=train_cfg["eval_split_ratio"],
         eval_groups=data_cfg["eval_groups"],
         is_steady_state_prediction=data_cfg["is_steady_state_prediction"],
-        residual_config=data_cfg["residual_config"],
+        residual_config=data_cfg["residual_config"]
     )

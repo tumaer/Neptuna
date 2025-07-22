@@ -76,6 +76,7 @@ import numpy as np
 import torch
 import random
 import warnings
+import re  # For extracting numeric substrings from group tokens
 from utils.compute_stats import normalize_data
 
 #NOTE: This function is not used in the current implementation.
@@ -754,64 +755,42 @@ def fetch_dataset(dataset_name: str,
             return test_dataset
 
 def _parse_group_name_to_params(group_name: str) -> List[object]:
-    """
-    Extract numeric/string parameter values from an HDF5 *group name*.
+    """Extract numeric parameter values from an HDF5 *group name*.
 
-    This function parses group names that follow a key-value naming convention
-    to extract parameter values for conditioning or analysis. It handles
-    automatic type conversion for numeric parameters.
+    Group names are expected to follow a *key+value* convention where each
+    *token* is separated by an underscore (``_``).  The **previous** pattern
+    used an extra underscore between key and value (e.g. ``Re_100``).  We now
+    assume **no separator** between the key and value (e.g. ``Re100``).
 
-    Parameters
-    ----------
-    group_name : str
-        Group name following the pattern "key1_value1_key2_value2_..."
-        
-    Returns
-    -------
-    List[object]
-        List of parameter values with automatic type conversion:
-        - int if the value can be parsed as integer
-        - float if the value can be parsed as float
-        - str if neither numeric conversion succeeds
-        
-    Examples
-    --------
-    >>> _parse_group_name_to_params("Re_100_Ma_0.05")
-    [100, 0.05]
-    >>> 
-    
-    Notes
-    -----
-    The function assumes group names follow the pattern:
-    "key1_value1_key2_value2_..." where keys and values alternate.
-    
-    Type conversion priority:
-    1. int() - for integer values
-    2. float() - for floating-point values  
-    3. str - for non-numeric values (fallback)
-    
-    This is commonly used for extracting physical parameters like Reynolds
-    numbers, Mach numbers, geometric parameters, etc., from simulation
-    group names for conditioning or analysis purposes.
+    Example patterns accepted::
+
+        Re100_Ma0.6          -> [100, 0.6]
+        Re1e4_Ma0p8_Alpha30  -> [1e4, 0.8, 30]
+
+    The function extracts the *first* numeric substring from every token and
+    converts it to ``int`` when possible, otherwise to ``float``.  Tokens
+    without a numeric part are ignored.
     """
 
     tokens = group_name.split("_")
     values: List[object] = []
 
-    # Values are every second token starting from index 1
-    for i in range(1, len(tokens), 2):
-        value_str = tokens[i]
+    # Regex capturing signed ints/floats incl. scientific notation
+    num_re = re.compile(r"[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?")
 
-        # Attempt to cast to int, then float, otherwise keep as str
-        try:
-            value: object = int(value_str)
-        except ValueError:
-            try:
-                value = float(value_str)
-            except ValueError:
-                value = value_str
+    for tok in tokens:
+        m = num_re.search(tok)
+        if not m:
+            # No numeric substring – skip this token
+            continue
 
-        values.append(value)
+        num_str = m.group(0)
+
+        # Prefer integer conversion when no decimal point nor exponent present
+        if re.fullmatch(r"[-+]?\d+", num_str):
+            values.append(int(num_str))
+        else:
+            values.append(float(num_str))
 
     return values
 
@@ -946,7 +925,9 @@ class TransientDataset(Dataset):
         self.conditioning_in_channels = conditioning_in_channels
         self.output_channels = filter_out_channels
         self.include_conditioning_parameters = kwargs["include_conditioning_parameters"] or False
-
+        # Parameter normalisation ranges (optional)
+        self.parameter_min_max_stats = kwargs["parameter_min_max_stats"]
+        
         self.residual_config = kwargs["residual_config"]
         if self.residual_config is not None:
             assert not (self.residual_config["add_base_value_with_raw_loss"] and self.residual_config["add_predicted_value_with_diff_loss"] and self.residual_config["add_predicted_value_with_raw_loss"]), "Only one can be true at a time, currently more than one is true"
@@ -1162,7 +1143,18 @@ class TransientDataset(Dataset):
         }
 
         if self.include_conditioning_parameters:
-            sample["conditioning_parameters"] = _parse_group_name_to_params(group_name)
+            raw_params = _parse_group_name_to_params(group_name)
+            #normalize the conditioning parameters using min-max strategy
+            norm_params = []
+            for i, val in enumerate(raw_params):
+                stats_i = self.parameter_min_max_stats.get(i)
+                if stats_i is not None:
+                    denom = stats_i["max"] - stats_i["min"] + 1e-12
+                    norm_val = (val - stats_i["min"]) / denom
+                    norm_params.append(norm_val)
+                else:
+                    norm_params.append(val)
+            sample["conditioning_parameters"] = torch.tensor(norm_params, dtype=torch.float32)
 
         if conditioning_inputs is not None:
             sample["conditioning_input_data"] = torch.from_numpy(conditioning_inputs).float()
@@ -1298,6 +1290,7 @@ class SteadyStateDataset(Dataset):
         self.conditioning_in_channels = conditioning_in_channels
         self.output_channels = filter_out_channels
         self.include_conditioning_parameters = kwargs["include_conditioning_parameters"] or False
+        self.parameter_min_max_stats = kwargs["parameter_min_max_stats"]
 
         if len(self.input_channels) != len(self.output_channels):
             warnings.warn("Number of input and label channels are different")
@@ -1457,7 +1450,18 @@ class SteadyStateDataset(Dataset):
         }
 
         if self.include_conditioning_parameters:
-            sample["conditioning_parameters"] = _parse_group_name_to_params(group_name)
+            raw_params = _parse_group_name_to_params(group_name)
+            #normalize the conditioning parameters using min-max strategy
+            norm_params = []
+            for i, val in enumerate(raw_params):
+                stats_i = self.parameter_min_max_stats.get(i)
+                if stats_i is not None:
+                    denom = stats_i["max"] - stats_i["min"] + 1e-12
+                    norm_val = (val - stats_i["min"]) / denom
+                    norm_params.append(norm_val)
+                else:
+                    norm_params.append(val)
+            sample["conditioning_parameters"] = torch.tensor(norm_params, dtype=torch.float32)
 
         if conditioning_inputs is not None:
             sample["conditioning_input_data"] = torch.from_numpy(conditioning_inputs).float()
