@@ -125,8 +125,8 @@ def fetch_model(model_config: Dict,
         from models.FNO.fno_utils import FNOConfig
         config = FNOConfig(
                     dimension=data_config['dimension'],
-                    in_channels=len(data_config['filter_in_channels']),
-                    out_channels=len(data_config['filter_out_channels']), 
+                    in_channels=len(data_config['filter_features']['filter_in_channels']),
+                    out_channels=len(data_config['filter_features']['filter_out_channels']), 
                     sequence_info=data_config["sequence_info"],
                     latent_channels=model_config['latent_channels'],
                     num_fno_modes=model_config['fno_modes'],
@@ -145,8 +145,8 @@ def fetch_model(model_config: Dict,
         from models.ResNet.resnet import ResNet
         from models.ResNet.resnet_utils import ResNetConfig
         config = ResNetConfig(
-                    in_channels=len(data_config['filter_in_channels']),
-                    out_channels=len(data_config['filter_out_channels']), 
+                    in_channels=len(data_config['filter_features']['filter_in_channels']),
+                    out_channels=len(data_config['filter_features']['filter_out_channels']), 
                     sequence_info=data_config["sequence_info"],
                     dimension=data_config['dimension'],
                     num_blocks=model_config['num_blocks'],
@@ -163,8 +163,8 @@ def fetch_model(model_config: Dict,
         from models.ResNet.resnet import ResNet
         from models.ResNet.resnet_utils import ResNetConfig
         config = ResNetConfig(
-                    in_channels=len(data_config['filter_in_channels']),
-                    out_channels=len(data_config['filter_out_channels']), 
+                    in_channels=len(data_config['filter_features']['filter_in_channels']),
+                    out_channels=len(data_config['filter_features']['filter_out_channels']), 
                     sequence_info=data_config["sequence_info"],
                     dimension=data_config['dimension'],
                     num_blocks=model_config['num_blocks'],
@@ -182,8 +182,8 @@ def fetch_model(model_config: Dict,
         from models.UNet.unet_utils import UNetConfig
         config = UNetConfig(
                     dimension=data_config['dimension'],
-                    in_channels=len(data_config['filter_in_channels']),
-                    out_channels=len(data_config['filter_out_channels']), 
+                    in_channels=len(data_config['filter_features']['filter_in_channels']),
+                    out_channels=len(data_config['filter_features']['filter_out_channels']), 
                     sequence_info=data_config["sequence_info"], 
                     latent_channels=model_config['latent_channels'],
                     norm=model_config['norm'],
@@ -202,8 +202,8 @@ def fetch_model(model_config: Dict,
         from models.DeepONet.deeponet import AutoDeepONet
         from models.DeepONet.deeponet_utils import DeepONetConfig
         config = DeepONetConfig(
-                    in_channels=len(data_config['filter_in_channels']),
-                    out_channels=len(data_config['filter_out_channels']), 
+                    in_channels=len(data_config['filter_features']['filter_in_channels']),
+                    out_channels=len(data_config['filter_features']['filter_out_channels']), 
                     grid_resolution=data_config['grid_resolution'],
                     sequence_info=data_config["sequence_info"],
                     dimension=data_config['dimension'],
@@ -221,8 +221,8 @@ def fetch_model(model_config: Dict,
         from models.DeepONet.deeponet import AutoDeepONet
         from models.DeepONet.deeponet_utils import DeepONetConfig
         config = DeepONetConfig(                    
-                    in_channels=len(data_config['filter_in_channels']),
-                    out_channels=len(data_config['filter_out_channels']), 
+                    in_channels=len(data_config['filter_features']['filter_in_channels']),
+                    out_channels=len(data_config['filter_features']['filter_out_channels']), 
                     grid_resolution=data_config['grid_resolution'],
                     sequence_info=data_config["sequence_info"],
                     dimension=data_config['dimension'],
@@ -242,8 +242,8 @@ def fetch_model(model_config: Dict,
         from models.DeepONet.deeponet import AutoDeepONet
         from models.DeepONet.deeponet_utils import DeepONetConfig
         config= DeepONetConfig(
-                    in_channels=len(data_config['filter_in_channels']),
-                    out_channels=len(data_config['filter_out_channels']), 
+                    in_channels=len(data_config['filter_features']['filter_in_channels']),
+                    out_channels=len(data_config['filter_features']['filter_out_channels']), 
                     grid_resolution=data_config['grid_resolution'],
                     sequence_info=data_config["sequence_info"],
                     dimension=data_config['dimension'],
@@ -264,8 +264,8 @@ def fetch_model(model_config: Dict,
         from models.CNO.cno_utils import CNOConfig
         from models.CNO.cno import CNO
         config = CNOConfig(
-                    in_channels=len(data_config['filter_in_channels']),
-                    out_channels=len(data_config['filter_out_channels']), 
+                    in_channels=len(data_config['filter_features']['filter_in_channels']),
+                    out_channels=len(data_config['filter_features']['filter_out_channels']), 
                     grid_resolution=data_config['grid_resolution'], 
                     sequence_info=data_config['sequence_info'],
                     dimension=data_config['dimension'],
@@ -289,8 +289,8 @@ def fetch_model(model_config: Dict,
         
         config = ScOTConfig(
                     patch_size=model_config['patch_size'],
-                    in_channels=len(data_config['filter_in_channels']),
-                    out_channels=len(data_config['filter_out_channels']),
+                    in_channels=len(data_config['filter_features']['filter_in_channels']),
+                    out_channels=len(data_config['filter_features']['filter_out_channels']),
                     grid_resolution=data_config['grid_resolution'],
                     dimension=data_config['dimension'],
                     sequence_info=data_config['sequence_info'],
@@ -324,8 +324,8 @@ def fetch_model(model_config: Dict,
         if data_config['grid_resolution'][0] != data_config['grid_resolution'][1]:
             raise ValueError("Model is not yet implemented for non-square grid resolutions")
         config = ViTConfig(
-                    in_channels=len(data_config['filter_in_channels']),
-                    out_channels=len(data_config['filter_out_channels']), 
+                    in_channels=len(data_config['filter_features']['filter_in_channels']),
+                    out_channels=len(data_config['filter_features']['filter_out_channels']),
                     grid_resolution=data_config['grid_resolution'], 
                     sequence_info=data_config['sequence_info'],
                     dimension=data_config['dimension'],
@@ -342,7 +342,7 @@ def fetch_model(model_config: Dict,
                     layer_norm_eps=model_config['layer_norm_eps'],
                     image_size=data_config['grid_resolution'][0],
                     patch_size=model_config['patch_size'],
-                    num_channels=len(data_config['filter_in_channels']),
+                    num_channels=len(data_config['filter_features']['filter_in_channels']),
                     qkv_bias=model_config['qkv_bias'],
                     encoder_stride=model_config['encoder_stride'],
                     pooler_output_size=model_config['pooler_output_size'],

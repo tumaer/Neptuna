@@ -40,6 +40,8 @@ matplotlib.use('Agg')  # Set non-interactive backend before importing pyplot
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import wandb
+import io  # For in-memory PNG buffers
+from PIL import Image  # To create a PIL image object for wandb
 
 def _plot_data(ax, data, ndim, ch_names=None):
     """
@@ -88,9 +90,10 @@ def _plot_data(ax, data, ndim, ch_names=None):
         aspect = 'equal' if h == w else 'auto'
         
         if C == 1:
-            im = ax.imshow(data[0], cmap="coolwarm", aspect=aspect)
+            im = ax.imshow(data[0], cmap="coolwarm", aspect=aspect, origin='lower')
             ax.set_title(ch_names[0], fontsize=8)
-            cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.05, orientation='horizontal', location='bottom')
+            # Increase the padding so the horizontal colorbar does not overlap the image grid.
+            cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.12, orientation='horizontal', location='bottom')
             cbar.ax.tick_params(labelsize=12)
             cbar.formatter.set_scientific(True)
             cbar.formatter.set_powerlimits((0, 0))
@@ -106,9 +109,10 @@ def _plot_data(ax, data, ndim, ch_names=None):
             sub_axes = []
             for c in range(C):
                 sub_ax = fig.add_subplot(gs[0, c])
-                im = sub_ax.imshow(data[c], cmap="coolwarm", aspect=aspect)
+                im = sub_ax.imshow(data[c], cmap="coolwarm", aspect=aspect, origin='lower')
                 sub_ax.set_title(ch_names[c], fontsize=8)
-                cbar = fig.colorbar(im, ax=sub_ax, fraction=0.046, pad=0.05, orientation='horizontal', location='bottom')
+                # Increase the padding so the horizontal colorbar does not overlap the image grid.
+                cbar = fig.colorbar(im, ax=sub_ax, fraction=0.046, pad=0.12, orientation='horizontal', location='bottom')
                 cbar.ax.tick_params(labelsize=12)
                 cbar.formatter.set_scientific(True)
                 cbar.formatter.set_powerlimits((0, 0))
@@ -215,8 +219,7 @@ def plot_examples(
     - Best metric checkpoint handling with file renaming
     - Configurable figure sizing based on data dimensions and channel counts
     """
-    if not log_to_wandb:
-        os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(save_dir, exist_ok=True)
 
     N, T_in, C, *spatial_shape = input_array.shape
     T_pred = prediction_array.shape[1]
@@ -274,8 +277,12 @@ def plot_examples(
             header_ratio = 0.15  # Height allocated for column titles
             footer_ratio = 2.4   # Further increase footer height for more space under time labels
 
-            # Padding between individual plot and its xlabel (time indicator)
-            x_label_pad = 50
+            # Padding between individual plot and its xlabel (time indicator). 
+            # If this padding is too large, the xlabel from one subplot can overlap the
+            # axes of the subplot in the row below.  Use a smaller value for 2-D plots
+            # (which typically have less vertical space per row) and a moderate value
+            # for 1-D plots.
+            x_label_pad = 25 if ndim == 2 else 30
 
             # Use a uniform but larger wspace to create clearer separation between logical columns.
             main_wspace = 1.2  # Empirically chosen for good visual separation
@@ -317,8 +324,12 @@ def plot_examples(
                 f"# Prediction_channels={pred.shape[1]}"
             )
 
-            # Increase spacing below the suptitle by 50% to prevent overlap.
-            text_y_pos = suptitle_y_pos - (0.075 if ndim == 2 else 0.06)
+            # Increase spacing below the suptitle further so that the dims text never
+            # collides with the (multi-line) suptitle.  Empirically a 0.10 offset for
+            # 2-D plots and 0.08 for 1-D plots provides sufficient clearance across a
+            # wide range of figure heights.
+            # Reduce the vertical offset so the dims_text sits closer to the suptitle.
+            text_y_pos = suptitle_y_pos - (0.06 if ndim == 2 else 0.06)
             fig.text(0.5, text_y_pos, dims_text, ha='center', va='center', fontsize=22)
 
             # Create gridspec with variable column widths and specific height ratios
@@ -450,41 +461,85 @@ def plot_examples(
                         rel_err_ax.set_xlabel(time_val, fontsize=plot_time_fontsize, labelpad=x_label_pad)
                         rel_err_ax.tick_params(labelbottom=True)
 
-            # Save to disk only when we are NOT logging to W&B. When logging, the caller
-            # (Trainer) will decide what to do with the figure.
-            if not log_to_wandb:
-                #prepend the word "best" if is_best_metric is True to the filename
+            # --------------------------------------------------------------
+            # Saving behaviour
+            # --------------------------------------------------------------
+            # We *always* save the *best* figure to disk so it can later be
+            # uploaded to W&B after the training run has concluded.  If
+            # ``log_to_wandb`` is *False* we additionally save all other
+            # figures for offline inspection.
+
+            save_this_fig = (not log_to_wandb) or is_best_metric
+
+            if save_this_fig:
+                # prepend the word "best" if this is the best metric figure
                 if is_best_metric:
-                    # Before writing the new "best" file, search for an older best in the
-                    # same directory (filename ending with "_best.png") and rename it by
-                    # stripping the "_best" token so it is no longer considered best.
+                    # Before writing the new "best" file, rename a previous
+                    # best (if any) so it is no longer tagged as best.
                     for prev_file in os.listdir(save_dir):
                         if prev_file.endswith("_best.png"):
                             old_path = os.path.join(save_dir, prev_file)
-                            # Form the new path by removing the trailing "_best" before the extension
                             new_file = prev_file.replace("_best.png", ".png")
                             new_path = os.path.join(save_dir, new_file)
                             try:
                                 os.rename(old_path, new_path)
                             except OSError as e:
-                                # Non-fatal: print a warning and continue
-                                print(f"[plot_progress] Warning: could not rename previous best file '{prev_file}': {e}")
-                    #
+                                print(
+                                    f"[plot_progress] Warning: could not rename previous best file '{prev_file}': {e}"
+                                )
                     filename = f"ckpt_{checkpoint_step}_epoch_{epoch}_example_{idx}_best.png"
                 else:
-                    filename = f"ckpt_{checkpoint_step}_epoch_{epoch}_example_{idx}.png"       
-                img_path = os.path.join(save_dir, filename)
-                fig.savefig(img_path, dpi=150, bbox_inches='tight')
+                    filename = f"ckpt_{checkpoint_step}_epoch_{epoch}_example_{idx}.png"
 
-            else:
-                # Collect figure to return; caller handles logging or closing
-                returned_figs[f"plot_progress/example_{idx}"] = wandb.Image(fig)
-                if is_best_metric:
-                    best_img = wandb.Image(
-                        fig,
-                        caption=f"Best_eval_plot_ckpt_{checkpoint_step}_epoch_{epoch}_example_{idx}"
-                    )
-                    wandb.run.summary[f"best_eval_plot"] = best_img
+                img_path = os.path.join(save_dir, filename)
+                fig.savefig(img_path, dpi=150, bbox_inches="tight")
+
+                # When W&B logging is active we want *only* the best figure in
+                # the directory.  Remove any other PNGs that do not correspond
+                # to the freshly written best file.
+                if log_to_wandb and is_best_metric:
+                    for other_file in os.listdir(save_dir):
+                        if other_file.endswith(".png") and other_file != filename:
+                            try:
+                                os.remove(os.path.join(save_dir, other_file))
+                            except OSError as e:
+                                print(f"[plot_progress] Warning: could not delete '{other_file}': {e}")
+
+            # --------------------------------------------------------------
+            # W&B logging (only create the image object here; actual logging
+            # timing can be handled by the caller).
+            # --------------------------------------------------------------
+
+            if log_to_wandb:
+                # Use an in-memory buffer with bbox_inches='tight' so nothing is cut off
+                buf = io.BytesIO()
+                fig.savefig(buf, format="png", dpi=150, bbox_inches="tight", pad_inches=0.1)
+                buf.seek(0)
+                pil_img = Image.open(buf)
+
+                returned_figs[f"plot_progress/example_{idx}"] = wandb.Image(pil_img)
+
+                # We purposely **do not** store the best plot in
+                # ``returned_figs`` so that it lives **only on disk**.
+                # A separate post-run routine uploads the saved PNG on_train_end inside WandbCallback.
             
             plt.close(fig)
+    # ------------------------------------------------------------------
+    # Final cleanup: remove any duplicate plots that have both a `_best.png`
+    # and the same name *without* the suffix.  This ensures only best plots
+    # remain on disk when `wandb` logging is disabled. This is needed as inside _maybe_log_save_evaluate,
+    # we perform one last evalutaion run even when the training ends.
+    # ------------------------------------------------------------------
+
+    # # Always remove non-best duplicates when a _best plot exists.
+    # for fname in os.listdir(save_dir):
+    #     if fname.endswith("_best.png"):
+    #         base_name = fname.replace("_best.png", ".png")
+    #         dup_path = os.path.join(save_dir, base_name)
+    #         if os.path.isfile(dup_path):
+    #             try:
+    #                 os.remove(dup_path)
+    #             except OSError as e:
+    #                 print(f"[plot_progress] Warning: could not delete duplicate plot '{dup_path}': {e}")
+
     return returned_figs
