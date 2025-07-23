@@ -191,7 +191,7 @@ class PretrainedConfig(PretrainedConfig_):
             return OmegaConf.to_container(o, resolve=True)
         return json.dumps(config_dict, indent=2, sort_keys=True, default=default) + "\n"
     
-
+# Adapted from https://github.com/camlab-ethz/poseidon
 class ConditionalLayerNorm(nn.Module):
     def __init__(self, dim, eps=1e-5):
         super().__init__()
