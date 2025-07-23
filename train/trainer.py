@@ -43,6 +43,10 @@ from utils.custom_callbacks import WandbCallback #custom callbacks
 from utils.custom_callbacks import CallbackHandler 
 from transformers.integrations.integration_utils import WandbCallback as WandbCallback_
 from utils.trainer_utils import EvalPrediction
+from collections.abc import Mapping  # locally import to avoid top-of-file change
+import json
+import os
+import h5py
 
 class Trainer(Trainer_):
     """    
@@ -89,7 +93,14 @@ class Trainer(Trainer_):
         self.get_prediction_loss_for_eval_windows = False #TODO: Find a way to not hardcode this.
 
         self.residual_config = data_config["residual_config"]
+        # Push-forward configuration
         self.pushforward_config = train_config["pushforward_config"]
+        # Enabled flag now lives inside the pushforward_config dict (key: "enabled").
+        # If the key is absent we assume push-forward should run when a config is supplied.
+        if self.pushforward_config is None:
+            self.pushforward_enabled = False
+        else:
+            self.pushforward_enabled = bool(self.pushforward_config.get("enabled", True))
 
         # Rebuild the callback handler with our custom implementation so that on_evaluate accepts **kwargs
         # Preserve the list of callbacks that may have been created by the HuggingFace Trainer during super().__init__.
@@ -166,12 +177,13 @@ class Trainer(Trainer_):
             sequence_info=self.data_config["sequence_info"],
             pushforward_config=self.train_config["pushforward_config"],
             n_eval_rollouts=self.train_config["n_eval_rollouts"],
-            filter_frames=self.data_config["filter_frames"],
-            filter_groups=self.data_config["filter_groups"],
-            filter_in_channels=self.data_config["filter_in_channels"],
-            conditioning_in_channels=self.data_config["conditioning_in_channels"],
-            include_conditioning_parameters=self.data_config["include_conditioning_parameters"],
-            filter_out_channels=self.data_config["filter_out_channels"],
+            filter_frames=self.data_config["filter_features"]["filter_frames"],
+            filter_groups=self.data_config["filter_features"]["filter_groups"],
+            filter_in_channels=self.data_config["filter_features"]["filter_in_channels"],
+            conditioning_in_channels=self.data_config["conditioning_features"]["conditioning_in_channels"],
+            include_conditioning_parameters=self.data_config["conditioning_features"]["include_conditioning_parameters"],
+            parameter_min_max_stats=self.data_config["conditioning_features"]["parameter_min_max_stats"],
+            filter_out_channels=self.data_config["filter_features"]["filter_out_channels"],
             data_normalization_stats=self.data_config["data_normalization_stats"],
             data_normalization_strategy=self.data_config["data_normalization_strategy"],
             eval_split_ratio=self.train_config["eval_split_ratio"],
@@ -312,7 +324,7 @@ class Trainer(Trainer_):
         if not self.data_config.is_steady_state_prediction:
             #TODO: Add more training strategies here in continuation of the if statement.
             pushforward_unroll_steps = 0
-            if self.pushforward_config is not None:
+            if self.pushforward_enabled and self.pushforward_config is not None:
                 #########################################################
                 #Pushforward trick (for training)
                 #########################################################
@@ -321,12 +333,12 @@ class Trainer(Trainer_):
                 with torch.no_grad(): #comment this out for multi-step autoregressive training
                     for unroll_step in range(pushforward_unroll_steps):
                         #print(f"Pushforward unroll step {unroll_step+1} of {pushforward_unroll_steps}")
-                        if self.data_config.conditioning_in_channels is not None:
+                        if self.data_config.conditioning_features.conditioning_in_channels is not None:
                             prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
                         else:
                             prediction = model(input_data=inputs["input_data"])
                         
-                        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
+                        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_features"]["filter_out_channels"]), *spatial_dims)
                         
                         if self.residual_config is not None:
                             #NOTE: In all the three cases, we need the raw values to do rollout
@@ -363,12 +375,12 @@ class Trainer(Trainer_):
             pushforward_unroll_steps = 0
             
         # NOTE:compute chain restored, the input_data is corrupted by the pushforward rollout steps (if any).
-        if self.data_config.conditioning_in_channels is not None:
+        if self.data_config.conditioning_features.conditioning_in_channels is not None:
             prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
         else:
             prediction = model(input_data=inputs["input_data"]) 
         
-        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
+        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_features"]["filter_out_channels"]), *spatial_dims)
         
         if self.residual_config is not None and (self.residual_config["add_predicted_value_with_raw_loss"] or self.residual_config["add_base_value_with_raw_loss"]):
             #NOTE: For the cases: add_predicted_value_with_raw_loss or add_base_value_with_raw_loss, we need the raw values before loss is computed inside compute_loss().
@@ -430,12 +442,12 @@ class Trainer(Trainer_):
         """
         batch_size, _, _, *spatial_dims = inputs["input_data"].shape
         
-        if self.data_config.conditioning_in_channels is not None:
+        if self.data_config.conditioning_features.conditioning_in_channels is not None:
             prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
         else:
             prediction = model(input_data=inputs["input_data"]) 
         
-        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_out_channels"]), *spatial_dims)
+        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_features"]["filter_out_channels"]), *spatial_dims)
         return prediction
     
     #NOTE: There are two functions for eval_loss: 
@@ -1319,12 +1331,12 @@ class Trainer(Trainer_):
         # ------------------------------------------------------------------
         # Ensure final evaluation is run at the end of training
         # ------------------------------------------------------------------
-        if (
-            self.control.should_training_stop  # training loop is signaled to stop
-            and self.state.epoch >= self.train_config["num_train_epochs"]  # we have reached (or slightly passed) the last epoch
-        ):
-            # Trigger a last evaluation regardless of the usual evaluation schedule.
-            self.control.should_evaluate = True
+        # if (
+        #     self.control.should_training_stop  # training loop is signaled to stop
+        #     and self.state.epoch >= self.train_config["num_train_epochs"]  # we have reached (or slightly passed) the last epoch
+        # ):
+        #     # Trigger a last evaluation regardless of the usual evaluation schedule.
+        #     self.control.should_evaluate = True
 
         metrics = None
         if self.control.should_evaluate:
@@ -1419,7 +1431,119 @@ class Trainer(Trainer_):
         if hasattr(trial, "number"):
             setattr(self.args, "trial_number", trial.number)
         if self.hp_search_backend == HPSearchBackend.OPTUNA:
+            #set 2 blank lines
+            logger.info("-----------------------------------------------------------------------")
+            logger.info("-----------------------------------------------------------------------")
+            logger.info("")
             logger.info(f"Trial: {trial.params}")
+            logger.info("")
+            logger.info("-----------------------------------------------------------------------")
+            logger.info("-----------------------------------------------------------------------")
+            
+            # ------------------------------------------------------------------
+            # Retrieve all channel names present in the underlying HDF5 dataset.
+            # We open the ``train.h5`` file, inspect the first group and collect
+            # all dataset keys (each key corresponds to a channel).  This gives us
+            # a robust, order-preserving list of *all* channels that exist in the
+            # raw data, independent of any prior filtering decisions.
+            # ------------------------------------------------------------------
+
+            h5file_path = os.path.abspath(os.path.join(self.data_config["dataset_directory_path"], "train.h5"))
+
+            # Lazily load the keys to keep the file access lightweight; we only
+            # need the name list, not the actual data.
+            with h5py.File(h5file_path, "r") as _h5f:
+                first_group = next(iter(_h5f.keys()))  # assume at least one group exists
+
+                grp = _h5f[first_group]
+
+                channel_names = []  # expanded list
+
+                for dset_name in grp:
+                    dset = grp[dset_name]
+                    channel_dim = dset.shape[1]
+
+                    # Single-component field → keep original name
+                    if channel_dim == 1:
+                        channel_names.append(dset_name)
+                    # Multi-component field → expand to ``name_0``, ``name_1``, ...
+                    else:
+                        for ch in range(channel_dim):
+                            channel_names.append(f"{dset_name}_{ch}")
+
+            filter_in_keywords = self.data_config["filter_features"]["filter_in_channels"]
+            filtered_in_channels = (
+                [n for n in channel_names if any(n.startswith(k) for k in filter_in_keywords)]
+                if filter_in_keywords
+                else channel_names
+            )
+
+            filter_cond_in_keywords = self.data_config["conditioning_features"]["conditioning_in_channels"]
+            filtered_cond_in_channels = (
+                [
+                    n
+                    for n in channel_names
+                    if any(n.startswith(k) for k in filter_cond_in_keywords)
+                ]
+                if filter_cond_in_keywords
+                else None
+            )
+
+            filter_out_keywords = self.data_config["filter_features"]["filter_out_channels"]
+            filtered_out_channels = (
+                [n for n in channel_names if any(n.startswith(k) for k in filter_out_keywords)]
+                if filter_out_keywords
+                else channel_names
+            )
+
+            self.data_config["filter_features"]["filter_in_channels"] = filtered_in_channels
+            self.data_config["filter_features"]["filter_out_channels"] = filtered_out_channels
+            self.data_config["conditioning_features"]["conditioning_in_channels"] = filtered_cond_in_channels            
+            
+            
+            # -------------------------------
+            # Also log constant parameters
+            # -------------------------------
+            def _flatten_dict(d, parent_key=""):
+                """Recursively flattens a nested dict using dot notation keys."""
+                flat = {}
+                for k, v in d.items():
+                    new_key = f"{parent_key}.{k}" if parent_key else k
+                    if isinstance(v, dict):
+                        flat.update(_flatten_dict(v, new_key))
+                    else:
+                        flat[new_key] = v
+                return flat
+
+            # Gather all major config sections that influence a run
+            flat_cfg = {}
+            for section_name in ["model_config", "data_config", "train_config"]:
+                cfg_section = getattr(self, section_name, None)
+                if isinstance(cfg_section, Mapping):
+                    flat_cfg.update(_flatten_dict(cfg_section, section_name))
+
+            # Complete parameter list (including both constant and trial-sampled values)
+            def _sanitize(value):
+                """Prepare values for JSON serialization while preserving numeric precision."""
+                # Handle mappings and sequences recursively
+                if isinstance(value, Mapping):
+                    return {k: _sanitize(v) for k, v in value.items()}
+                if isinstance(value, (list, tuple)):
+                    return [_sanitize(v) for v in value]
+
+                # Convert numpy scalars to native Python types if numpy is available
+                try:
+                    import numpy as np  # local import to avoid hard dep if not installed
+                    if isinstance(value, (np.integer, np.floating)):
+                        value = value.item()
+                except ModuleNotFoundError:
+                    pass
+
+                return value
+
+            complete_params = _sanitize(flat_cfg)  # include everything; no filtering
+            formatted = json.dumps(complete_params, indent=2, sort_keys=True, default=str)
+            logger.info("All Config Params (%d):\n%s", len(complete_params), formatted)
         if self.hp_search_backend == HPSearchBackend.SIGOPT:
             logger.info(f"SigOpt Assignments: {trial.assignments}")
         if self.hp_search_backend == HPSearchBackend.WANDB:

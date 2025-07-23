@@ -20,7 +20,6 @@ __all__ = ["run"]
 
 def run(cfg):
     """Entry-point called by main.py after Hydra config is prepared."""
-
     # ------------------------------------------------------------------
     # Setup WANDB Project
     # ------------------------------------------------------------------
@@ -46,44 +45,41 @@ def run(cfg):
         # ------------------------------------------------------------------
         # Evaluation
         # ------------------------------------------------------------------
-        eval_strategy="steps",  # TODO: switch to "epoch" once ready
-        eval_steps=5,  # update-steps between evaluations, has no meaning if eval_strategy is "epoch"
-        eval_on_start=False,  # sanity-check eval before training starts
+        eval_strategy=cfg["train_config"]["eval_strategy"], 
+        eval_steps=cfg["train_config"]["eval_steps"],  # update-steps between evaluations, has no meaning if eval_strategy is "epoch"
         # ------------------------------------------------------------------
         # Batching
         # ------------------------------------------------------------------
         per_device_train_batch_size=cfg["train_config"]["per_device_train_batch_size"],
         per_device_eval_batch_size=cfg["train_config"]["per_device_eval_batch_size"],
-        eval_accumulation_steps=cfg["train_config"][
-            "eval_accumulation_steps"
-        ],  # accumulate predictions on GPU before moving to CPU
+        # accumulate predictions on GPU before moving to CPU
+        eval_accumulation_steps=cfg["train_config"]["eval_accumulation_steps"],  
         # ------------------------------------------------------------------
         # Optimiser / schedule
         # ------------------------------------------------------------------
-        max_grad_norm=1.0,  # gradient clipping
+        max_grad_norm=1.0,  # gradient clipping (default is 1.0)
         num_train_epochs=cfg["train_config"]["num_train_epochs"],
         learning_rate=cfg["scheduler_config"]["lr"],
         weight_decay=cfg["scheduler_config"]["weight_decay"],
-        optim=cfg["scheduler_config"]["optim"],  # options: adamw_hf, adamw_torch, ...
+        optim=cfg["scheduler_config"]["optim"], 
         lr_scheduler_type=cfg["scheduler_config"]["lr_scheduler"],
         warmup_ratio=cfg["scheduler_config"]["warmup_ratio"],  # linear warm-up fraction
         # ------------------------------------------------------------------
         # Logging
         # ------------------------------------------------------------------
-        log_level=cfg["train_config"].get(
-            "log_level", "info"
-        ),  # debug / info / warning / ...
-        logging_strategy="steps",  # switch to "epoch" later if needed
-        logging_steps=1,  # only used if logging_strategy is "steps"
+        # debug / info / warning / ...
+        log_level=cfg["train_config"].get("log_level", "info"),  
+        logging_strategy=cfg["train_config"]["logging_strategy"],  # switch to "epoch" later if needed
+        logging_steps=cfg["train_config"]["logging_steps"],  # only used if logging_strategy is "steps"
         logging_nan_inf_filter=False,  # include NaNs in logs for debugging
         # ------------------------------------------------------------------
         # Saving
         # ------------------------------------------------------------------
-        save_strategy="best",  # switch to "epoch" once validation present
-        save_steps=5,  # only used if save_strategy is "steps"
-        save_total_limit=2,  # keep only last N checkpoints
-        push_to_hub=False,  # push to Hugging Face Hub, requires login before (run `huggingface-cli login` in terminal)
-        hub_strategy="end",  # push last checkpoint to Hub (alternatives: "end", "every_save", "checkpoint", "all_checkpoints")
+        save_strategy=cfg["train_config"]["save_strategy"],  # switch to "epoch" once validation present
+        save_steps=cfg["train_config"]["save_steps"],  # only used if save_strategy is "steps"
+        save_total_limit=cfg["train_config"]["save_total_limit"],  # keep only last N checkpoints
+        push_to_hub=cfg["train_config"]["push_to_hub"],  # push to Hugging Face Hub, requires login before (run `huggingface-cli login` in terminal)
+        hub_strategy=cfg["train_config"]["hub_strategy"],  # push last checkpoint to Hub (alternatives: "end", "every_save", "checkpoint", "all_checkpoints")
         # ------------------------------------------------------------------
         # Reproducibility
         # ------------------------------------------------------------------
@@ -103,7 +99,7 @@ def run(cfg):
         ]
         + (
             ["conditioning_inputs"]
-            if cfg["data_config"].get("conditioning_in_channels") is not None
+            if cfg["data_config"]["conditioning_features"]["conditioning_in_channels"] is not None
             else []
         ),  # keep inputs and optionally conditioning_inputs for plotting
         greater_is_better=False,  # lower loss/error is better
@@ -112,7 +108,7 @@ def run(cfg):
         auto_find_batch_size=False,
         full_determinism=False,  # turn on for reproducible distributed training
         torch_compile=False,
-        use_cpu=True,  # use_cpu even if other devices are present
+        use_cpu=cfg["train_config"]["use_cpu"],  # use_cpu even if other devices are present
         label_names=["label_including_rollouts"],
         disable_tqdm=True if cfg["output_log_config"]["logging"]["wandb"] else False,
         # ------------------------------------------------------------------
@@ -199,7 +195,7 @@ def run(cfg):
     )
 
     # ------------------------------------------------------------------
-    # Train vs HP-search -----------------------------------------------
+    # Train vs HP-search
     # ------------------------------------------------------------------
     if cfg["hyperparam_opt_config"]["optimize"] is False:
         start = time.time()
@@ -212,7 +208,7 @@ def run(cfg):
             print("Pushing model to Hugging Face Hub...")
             trainer.push_to_hub()
     else:
-        # get the sampler from the config, it could be GridSampler, RandomSampler, TPESampler
+        # get the sampler from the config, it could be GridSampler, RandomSampler, TPESampler etc.
         sampler = get_optuna_sampler(
             cfg["hyperparam_opt_config"]["optuna_sampler"], config=cfg
         )
@@ -231,7 +227,7 @@ def run(cfg):
         )
 
         # --------------------------------------------------------------
-        # Save HPO results to CSV -------------------------------------
+        # Save HPO results to CSV
         # --------------------------------------------------------------
         results_dir = cfg["output_log_config"]["logging"]["output_dir"]
         os.makedirs(results_dir, exist_ok=True)

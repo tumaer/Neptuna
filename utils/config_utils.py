@@ -7,7 +7,7 @@ from omegaconf import DictConfig
 import os
 
 from utils.grid_utils import get_grid_resolution
-from utils.compute_stats import compute_statistics
+from utils.compute_stats import compute_statistics, compute_parameter_statistics
 
 __all__ = ["prepare_config"]
 
@@ -22,6 +22,7 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     1. Derive output directory path when not specified
     2. Populate grid resolution from dataset if missing
     3. Compute normalization statistics if not provided
+    3b. Compute parameter ranges for min-max normalization if not provided
     4. Validate normalization statistics against chosen strategy
     5. Filter and finalize channel lists based on configuration
 
@@ -90,13 +91,25 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     # 3) Normalisation stats
     # ------------------------------------------------------------------
     if cfg["data_config"]["data_normalization_stats"] is None:
+        # Collect all HDF5 files in the dataset directory so that the
+        # normalisation statistics reflect the *entire* data set and not
+        # just the training split.
+        h5_dir = cfg["data_config"]["dataset_directory_path"]
+        h5_paths = [
+            os.path.join(h5_dir, fname) for fname in os.listdir(h5_dir) if fname.endswith(".h5")
+        ]
+
+        if len(h5_paths) == 0:
+            raise FileNotFoundError(f"No .h5 files found in directory '{h5_dir}'.")
+
         stats, channel_names, _ = compute_statistics(
-            h5_paths=[f"{cfg['data_config']['dataset_directory_path']}/train.h5"],
+            h5_paths=h5_paths,
             residual_config=cfg["data_config"]["residual_config"],
             # the following arguments should be adjusted depending on the h5_paths
-            # (if multiple h5-files are provided)
-            filter_groups=cfg["data_config"]["filter_groups"],
-            filter_frames=cfg["data_config"]["filter_frames"],
+            # (if multiple h5-files are provided) 
+            # NOTE: if multiple h5-files (i.e. train and test) are provided, filter_groups should be None
+            filter_groups=cfg["data_config"]["filter_features"]["filter_groups"],
+            filter_frames=cfg["data_config"]["filter_features"]["filter_frames"],
             frame_stride=cfg["data_config"]["sequence_info"][2],
             on_fly_stats=False,
         )
@@ -168,17 +181,52 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
                 )
 
     # ------------------------------------------------------------------
+    # Conditioning-parameter normalisation (min / max per dimension)
+    # ------------------------------------------------------------------
+    if cfg["data_config"]["conditioning_features"].get("include_conditioning_parameters", False):
+        # Users can optionally provide ``parameter_min_max_stats`` directly in
+        # the config.  When present we *respect* those values.  Otherwise we
+        # compute the ranges from the *training* data file for consistency
+        # with the data split.
+
+        if cfg["data_config"]["conditioning_features"].get("parameter_min_max_stats") is None:
+            h5_dir = cfg["data_config"]["dataset_directory_path"]
+            h5_paths_params = [
+                os.path.join(h5_dir, fname) for fname in os.listdir(h5_dir) if fname.endswith(".h5")
+            ]
+
+            if len(h5_paths_params) == 0:
+                raise FileNotFoundError(
+                    f"No .h5 files found in directory '{h5_dir}' when computing parameter ranges."
+                )
+
+            param_ranges = compute_parameter_statistics(h5_paths_params)
+            cfg["data_config"]["conditioning_features"]["parameter_min_max_stats"] = param_ranges
+        else:
+            # --- Basic schema validation of user-supplied stats ---------
+            user_stats = cfg["data_config"]["conditioning_features"]["parameter_min_max_stats"]
+            for idx, stat_dict in user_stats.items():
+                if not {
+                    "min",
+                    "max",
+                }.issubset(stat_dict):
+                    raise ValueError(
+                        "parameter_min_max_stats must supply 'min' and 'max' for every parameter dimension "
+                        f"(problematic index: {idx})."
+                    )
+
+    # ------------------------------------------------------------------
     # 4) Channel selection
     # ------------------------------------------------------------------
     # NOTE: filter_in_channels has also the conditioning_in_channels (if any)
-    filter_in_keywords = cfg["data_config"]["filter_in_channels"]
+    filter_in_keywords = cfg["data_config"]["filter_features"]["filter_in_channels"]
     filtered_in_channels = (
         [n for n in channel_names if any(n.startswith(k) for k in filter_in_keywords)]
         if filter_in_keywords
         else channel_names
     )
 
-    filter_cond_in_keywords = cfg["data_config"]["conditioning_in_channels"]
+    filter_cond_in_keywords = cfg["data_config"]["conditioning_features"]["conditioning_in_channels"]
     filtered_cond_in_channels = (
         [
             n
@@ -189,15 +237,15 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
         else None
     )
 
-    filter_out_keywords = cfg["data_config"]["filter_out_channels"]
+    filter_out_keywords = cfg["data_config"]["filter_features"]["filter_out_channels"]
     filtered_out_channels = (
         [n for n in channel_names if any(n.startswith(k) for k in filter_out_keywords)]
         if filter_out_keywords
         else channel_names
     )
 
-    cfg["data_config"]["filter_in_channels"] = filtered_in_channels
-    cfg["data_config"]["filter_out_channels"] = filtered_out_channels
-    cfg["data_config"]["conditioning_in_channels"] = filtered_cond_in_channels
+    cfg["data_config"]["filter_features"]["filter_in_channels"] = filtered_in_channels
+    cfg["data_config"]["filter_features"]["filter_out_channels"] = filtered_out_channels
+    cfg["data_config"]["conditioning_features"]["conditioning_in_channels"] = filtered_cond_in_channels
 
     return cfg

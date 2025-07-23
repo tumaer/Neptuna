@@ -1,20 +1,25 @@
-dataset_name: KarmanVortexStreetTrimmed
-dataset_directory_path: ./data/fluids/KVS_trimmed/2D
+# For details on the parameters, refer to data_config-->example_data_config.yaml
+dataset_name: "KarmanVortexStreetTrimmed"
+dataset_directory_path: "./data/fluids/KVS_trimmed/2D"
 dimension: 2
-grid_resolution: null #if not provided, will be inferred automatically from the dataset
+grid_resolution: null
 eval_groups: null
-is_steady_state_prediction: False #assuming the last frame is the steady state
-sequence_info: [4, 3, 1]
-filter_frames: null #filter_frame: [49,99] #indexing starts from 0
-filter_groups: null #filter_groups: ["Re_100", "Re_300", "Re_400"]
-filter_in_channels: null #['density', 'velocity_0', 'velocity_1']
-filter_out_channels: null #['velocity_1']
-conditioning_in_channels: null
-#NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels
-include_conditioning_parameters: True
+is_steady_state_prediction: False
+sequence_info: [3, 1, 1]
+# available channels for KVS: ['density', 'velocity_0', 'velocity_1'] OR ['density', 'velocity'] 
+filter_features:
+  filter_frames: null
+  filter_groups: null
+  filter_in_channels: null
+  filter_out_channels: null
+#NOTE: For transient simulations, filter_in_channels = filter_out_channels + conditioning_in_channels
+conditioning_features:
+  conditioning_in_channels: null
+  include_conditioning_parameters: True
+  parameter_min_max_stats: null
 residual_config: null
   # add_base_value_with_raw_loss: False
   # add_predicted_value_with_diff_loss: True
   # add_predicted_value_with_raw_loss: False
-data_normalization_stats: null #if not provided, will be computed automatically from the dataset
-data_normalization_strategy: z_normalization #z_normalization, min_max_normalization, robust_normalization
+data_normalization_stats: null
+data_normalization_strategy: "z_normalization"
