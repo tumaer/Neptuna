@@ -4,7 +4,7 @@ from transformers import PreTrainedModel
 from transformers.models.vit.modeling_vit import ViTEmbeddings, ViTPatchEmbeddings, ViTEncoder, ViTPooler, ViTModel, BaseModelOutputWithPooling
 import torch
 from torch import nn, Tensor
-from models.ViT.vit_utils import ViTConfig
+from .vit_utils import ViTConfig
 from utils.grid_utils import twod_meshgrid
 
 
@@ -70,6 +70,7 @@ class ViT2D(ViTModel):
         input_data: Optional[torch.Tensor] = None
     ) -> Tensor:
 
+        # ToDo: add head_mask in case necessary
         bool_masked_pos = None
         head_mask = None
         
