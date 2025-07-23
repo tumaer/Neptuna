@@ -1,3 +1,4 @@
+import math
 from typing import Optional, Union
 from transformers import PreTrainedModel
 from transformers.models.vit.modeling_vit import ViTEmbeddings, ViTPatchEmbeddings, ViTEncoder, ViTPooler, ViTModel, BaseModelOutputWithPooling
@@ -44,16 +45,21 @@ class ViT(PreTrainedModel):
 
 
 class ViT2D(ViTModel):
-    def __init__(self, config: ViTConfig, add_pooling_layer: bool = True, use_mask_token: bool = False):
+    def __init__(self, config: ViTConfig) -> None:
 
         super().__init__(config)
         self.config = config
 
-        self.embeddings = ViTEmbeddings(config, use_mask_token=use_mask_token)
-        self.encoder = ViTEncoder(config)
+        self.vit = ViTModel(config, add_pooling_layer=False, use_mask_token=True)
 
-        self.layernorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-        self.pooler = ViTPooler(config) if add_pooling_layer else None
+        self.decoder = nn.Sequential(
+            nn.Conv2d(
+                in_channels=config.hidden_size,
+                out_channels=config.encoder_stride**2 * config.out_channels,
+                kernel_size=1,
+            ),
+            nn.PixelShuffle(config.encoder_stride),
+        )
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -61,49 +67,41 @@ class ViT2D(ViTModel):
 
     def forward(
         self,
-        pixel_values: Optional[torch.Tensor] = None
+        input_data: Optional[torch.Tensor] = None
     ) -> Tensor:
 
-        output_attentions = self.config.output_attentions
-        self.config.output_hidden_states
         bool_masked_pos = None
+        head_mask = None
         
-        if pixel_values is None:
-            raise ValueError("You have to specify pixel_values")
+        if input_data is None:
+            raise ValueError("You have to specify input_data")
 
-        # Prepare head mask if needed
-        # 1.0 in head_mask indicate we keep the head
-        # attention_probs has shape bsz x n_heads x N x N
-        # input head_mask has shape [num_heads] or [num_hidden_layers x num_heads]
-        # and head_mask is converted to shape [num_hidden_layers x batch x num_heads x seq_length x seq_length]
-        head_mask = self.get_head_mask(None, self.config.num_hidden_layers)
+        if bool_masked_pos is not None and (self.config.patch_size != self.config.encoder_stride):
+            raise ValueError(
+                "When `bool_masked_pos` is provided, `patch_size` must be equal to `encoder_stride` to ensure that "
+                "the reconstructed image has the same dimensions as the input. "
+                f"Got `patch_size` = {self.config.patch_size} and `encoder_stride` = {self.config.encoder_stride}."
+            )
 
-        # TODO: maybe have a cleaner way to cast the input (from `ImageProcessor` side?)
-        expected_dtype = self.embeddings.patch_embeddings.projection.weight.dtype
-        if pixel_values.dtype != expected_dtype:
-            pixel_values = pixel_values.to(expected_dtype)
-
-        embedding_output = self.embeddings(
-            pixel_values, bool_masked_pos=bool_masked_pos, interpolate_pos_encoding=self.config.interpolate_pos_encoding
-        )
-
-        encoder_outputs = self.encoder(
-            embedding_output,
+        outputs = self.vit(
+            input_data, #[6, 5, 160, 160]
+            bool_masked_pos=bool_masked_pos,
             head_mask=head_mask,
-            output_attentions=output_attentions,
+            output_attentions=self.config.output_attentions,
             output_hidden_states=self.config.output_hidden_states,
+            interpolate_pos_encoding=self.config.interpolate_pos_encoding,
+            return_dict=False,
         )
-        sequence_output = encoder_outputs[0]
-        sequence_output = self.layernorm(sequence_output)
-        pooled_output = self.pooler(sequence_output) if self.pooler is not None else None
-        # pooled_output shape: [6, 876] [batch, pooler_output_size] -> remove pooler
-        # ToDo: patch unembedding (has currently shape [6, 101, 768] [batch, x * y patches, hidden_size])
 
-        return sequence_output
-        """return BaseModelOutputWithPooling(
-            last_hidden_state=sequence_output,
-            pooler_output=pooled_output,
-            hidden_states=encoder_outputs.hidden_states,
-            attentions=encoder_outputs.attentions,
-        )"""
+        sequence_output = outputs[0] #[6, 101, 768]
 
+        # Reshape to (batch_size, num_channels, height, width)
+        sequence_output = sequence_output[:, 1:] #[6, 100, 768]
+        batch_size, sequence_length, num_channels = sequence_output.shape #6, 100, 768
+        height = width = math.floor(sequence_length**0.5) # 10, 10
+        sequence_output = sequence_output.permute(0, 2, 1).reshape(batch_size, num_channels, height, width) # [6, 768, 10, 10]
+
+        # Reconstruct pixel values
+        reconstructed_input_data = self.decoder(sequence_output) # [6, 1, 160, 160]
+
+        return reconstructed_input_data
