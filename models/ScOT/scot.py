@@ -12,7 +12,8 @@ from torch import nn, Tensor
 from typing import Optional, Union, Tuple, List
 import collections
 from utils.grid_utils import twod_meshgrid
-from .scot_utils import ScOTOutput, ScOTEmbeddings, ScOTPatchRecovery, ScOTPatchMerging, ScOTPatchUnmerging, ScOTLayer, LayerNorm, ConvNeXtBlock, ResNetBlock, ConditionalLayerNorm
+from .scot_utils import ScOTOutput, ScOTEmbeddings, ScOTPatchRecovery, ScOTPatchMerging, ScOTPatchUnmerging, ScOTLayer, LayerNorm, ConvNeXtBlock, ResNetBlock
+from utils.model_utils import ConditionalLayerNorm
 
 class ScOTEncodeStage(nn.Module):
     def __init__(

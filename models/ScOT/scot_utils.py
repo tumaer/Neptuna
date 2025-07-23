@@ -14,6 +14,7 @@ from torch import nn
 from typing import List, Optional, Tuple
 import math
 import collections
+from utils.model_utils import ConditionalLayerNorm
 
 @dataclass
 class ScOTOutput(ModelOutput):
@@ -111,30 +112,6 @@ class LayerNorm(nn.LayerNorm):
 
     def forward(self, x, time):
         return super().forward(x)
-
-
-class ConditionalLayerNorm(nn.Module):
-    def __init__(self, dim, eps=1e-5):
-        super().__init__()
-        self.eps = eps # small constant to avoid division by zero
-        # instead of using nn.Parameter like in LayerNorm, weight and bias are learned linear functions of time (-> they vary with time)
-        self.weight = nn.Linear(1, dim)
-        self.bias = nn.Linear(1, dim)
-
-    def forward(self, x, time):
-        # x: [16, 1024, 48]
-        # compute mean and variance of input over last dimension (like in LayerNorm)
-        mean = x.mean(dim=-1, keepdim=True) # [16, 1024, 1]
-        var = (x**2).mean(dim=-1, keepdim=True) - mean**2 # [16, 1024, 1]
-        # Normalize input x (zero mean, unit variance)
-        x = (x - mean) / (var + self.eps).sqrt()
-        time = time.reshape(-1, 1).type_as(x) # [16, 1]
-        weight = self.weight(time).unsqueeze(1) #[16, 1, 48]
-        bias = self.bias(time).unsqueeze(1) # [16, 1, 48]
-        if x.dim() == 4:
-            weight = weight.unsqueeze(1)
-            bias = bias.unsqueeze(1)
-        return weight * x + bias
 
 
 class ConvNeXtBlock(nn.Module):

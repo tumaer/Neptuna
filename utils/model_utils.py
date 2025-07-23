@@ -43,6 +43,7 @@ from transformers import PretrainedConfig as PretrainedConfig_
 import json
 from typing import List, Optional, Tuple, Union
 from omegaconf import OmegaConf
+from torch import nn
 
 
 class PretrainedConfig(PretrainedConfig_):
@@ -189,3 +190,33 @@ class PretrainedConfig(PretrainedConfig_):
         def default(o):
             return OmegaConf.to_container(o, resolve=True)
         return json.dumps(config_dict, indent=2, sort_keys=True, default=default) + "\n"
+    
+
+class ConditionalLayerNorm(nn.Module):
+    def __init__(self, dim, eps=1e-5):
+        super().__init__()
+        self.eps = eps # small constant to avoid division by zero
+        # instead of using nn.Parameter like in LayerNorm, weight and bias are learned linear functions of time (-> they vary with time)
+        self.weight = nn.Linear(1, dim)
+        self.bias = nn.Linear(1, dim)
+
+    def forward(self, x, cond_params = None):
+
+        # ToDo: Append cond_params
+
+        if cond_params is None:
+            raise ValueError("cond_params must be provided for ConditionalLayerNorm")
+        
+        # x: [16, 1024, 48]
+        # compute mean and variance of input over last dimension (like in LayerNorm)
+        mean = x.mean(dim=-1, keepdim=True) # [16, 1024, 1]
+        var = (x**2).mean(dim=-1, keepdim=True) - mean**2 # [16, 1024, 1]
+        # Normalize input x (zero mean, unit variance)
+        x = (x - mean) / (var + self.eps).sqrt()
+        cond_params = cond_params.reshape(-1, 1).type_as(x) # [16, 1]
+        weight = self.weight(cond_params).unsqueeze(1) #[16, 1, 48]
+        bias = self.bias(cond_params).unsqueeze(1) # [16, 1, 48]
+        if x.dim() == 4:
+            weight = weight.unsqueeze(1)
+            bias = bias.unsqueeze(1)
+        return weight * x + bias     
