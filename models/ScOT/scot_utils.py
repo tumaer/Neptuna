@@ -14,7 +14,7 @@ from torch import nn
 from typing import List, Optional, Tuple
 import math
 import collections
-from utils.model_utils import ConditionalLayerNorm
+from utils.model_utils import CustomNorm
 
 @dataclass
 class ScOTOutput(ModelOutput):
@@ -43,7 +43,7 @@ class ScOTConfig(PretrainedConfig):
         hidden_act (str): Activation function to use. Default is "gelu".
         use_absolute_embeddings (bool): Whether to use absolute positional embeddings. Default is False.
         initializer_range (float): Range of the initializer for weights. Default is 0.02.
-        layer_norm_eps (float): Epsilon value for layer normalization. Default is 1e-5.
+        norm_layer_eps (float): Epsilon value for layer normalization. Default is 1e-5.
         residual_model (str): Type of residual model to use ("convnext" or "resnet"). Default is "convnext".
         use_conditioning (bool): Whether to use conditioning in the model. Default is False.
         output_hidden_states (bool): Whether to output hidden states. Default is False.
@@ -72,7 +72,6 @@ class ScOTConfig(PretrainedConfig):
         hidden_act: str = "gelu",
         use_absolute_embeddings: bool = False,
         initializer_range: float = 0.02,
-        layer_norm_eps: float = 1e-5,
         residual_model: str = "convnext",  # "convnext" or "resnet"
         use_conditioning: bool = False,
         output_hidden_states: bool = False,
@@ -95,7 +94,6 @@ class ScOTConfig(PretrainedConfig):
         self.hidden_act = hidden_act
         self.use_absolute_embeddings = use_absolute_embeddings
         self.use_conditioning = use_conditioning
-        self.layer_norm_eps = layer_norm_eps
         self.initializer_range = initializer_range
         # we set the hidden_size attribute in order to make Swinv2 work with VisionEncoderDecoderModel
         # this indicates the channel dimension after the last stage of the model
@@ -104,14 +102,6 @@ class ScOTConfig(PretrainedConfig):
         self.residual_model = residual_model
         self.output_hidden_states = output_hidden_states
         self.output_attentions = output_attentions
-
-
-class LayerNorm(nn.LayerNorm):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def forward(self, x, time):
-        return super().forward(x)
 
 
 class ConvNeXtBlock(nn.Module):
@@ -132,11 +122,9 @@ class ConvNeXtBlock(nn.Module):
         self.dwconv = nn.Conv2d( # dim = 48
             dim, dim, kernel_size=7, padding=3, groups=dim
         )  # depthwise conv
-        if config.use_conditioning:
-            layer_norm = ConditionalLayerNorm
-        else:
-            layer_norm = LayerNorm
-        self.norm = layer_norm(dim, eps=config.layer_norm_eps)
+
+        self.norm = CustomNorm(config=config, dim=dim)
+
         self.pwconv1 = nn.Linear(
             dim, 4 * dim # 48 -> 192
         )  # pointwise/1x1 convs, implemented with linear layers
@@ -149,7 +137,7 @@ class ConvNeXtBlock(nn.Module):
         )  # was gamma before
         self.drop_path = Swinv2DropPath(drop_path) if drop_path > 0.0 else nn.Identity() # Identity
 
-    def forward(self, x, time):
+    def forward(self, x, **kwargs):
         batch_size, sequence_length, hidden_size = x.shape # 16, 1024, 48
         #! assumes square images
         input_dim = math.floor(sequence_length**0.5) #32
@@ -159,7 +147,7 @@ class ConvNeXtBlock(nn.Module):
         x = x.permute(0, 3, 1, 2) # [16, 48, 32, 32]
         x = self.dwconv(x) # depth-wise Conv2d -> [16, 48, 32, 32]
         x = x.permute(0, 2, 3, 1)  # (N, C, H, W) -> (N, H, W, C) # [16, 32, 32, 48]
-        x = self.norm(x, time) # (Conditional-)LayerNorm
+        x = self.norm(x, **kwargs) # (Conditional-)LayerNorm
         x = self.pwconv1(x) # Linear 48 -> 192 (1x1 conv) # [16, 32, 32, 192]
         x = self.act(x) # GeLU
         x = self.pwconv2(x) # Linear 192 -> 48 (1x1 conv) # [16, 32, 32, 48]
@@ -181,7 +169,7 @@ class ResNetBlock(nn.Module):
         self.bn1 = nn.BatchNorm2d(dim)
         self.bn2 = nn.BatchNorm2d(dim)
 
-    def forward(self, x, time):
+    def forward(self, x):
         batch_size, sequence_length, hidden_size = x.shape
         #! assumes square images
         input_dim = math.floor(sequence_length**0.5) # 32
@@ -286,21 +274,19 @@ class ScOTEmbeddings(nn.Module):
             )
         else:
             self.position_embeddings = None
-        if config.use_conditioning:
-            layer_norm = ConditionalLayerNorm
-        else:
-            layer_norm = LayerNorm
-        self.norm = layer_norm(config.latent_channels)
+
+
+        self.norm = CustomNorm(config=config, dim=config.latent_channels)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(
         self,
         input_data: Optional[torch.FloatTensor], # [16, 4, 128, 128]
         bool_masked_pos: Optional[torch.BoolTensor] = None, # None
-        time: Optional[torch.FloatTensor] = None, # [16]
+        **kwargs
     ) -> Tuple[torch.Tensor]:
         embeddings, output_dimensions = self.patch_embeddings(input_data) # patch embeddings: [16, 4, 128, 128] -> [16, 1024, 48]
-        embeddings = self.norm(embeddings, time) # [16, 1024, 48]
+        embeddings = self.norm(embeddings, **kwargs) # [16, 1024, 48]
         batch_size, seq_len, _ = embeddings.size()
 
         if bool_masked_pos is not None: # None # Boolean masked positions: Indicates which patches are masked (1) and which aren't (0)
@@ -345,15 +331,13 @@ class ScOTLayer(nn.Module):
                 else (pretrained_window_size, pretrained_window_size)
             ),
         )
-        if config.use_conditioning:
-            layer_norm = ConditionalLayerNorm
-        else:
-            layer_norm = LayerNorm
-        self.layernorm_before = layer_norm(dim, eps=config.layer_norm_eps)
+        
+
+        self.layernorm_before = CustomNorm(config=config, dim=dim)
         self.drop_path = Swinv2DropPath(drop_path) if drop_path > 0.0 else nn.Identity() # 0 -> Identity
         self.intermediate = Swinv2Intermediate(config, dim) # Linear, activation
         self.output = Swinv2Output(config, dim) # Linear, activation
-        self.layernorm_after = layer_norm(dim, eps=config.layer_norm_eps)
+        self.layernorm_after = CustomNorm(config=config, dim=dim)
         
         # Cache for attention masks
         self.attn_mask_cache = {}
@@ -461,10 +445,10 @@ class ScOTLayer(nn.Module):
         self,
         hidden_states: torch.Tensor, # [16, 1024, 48]
         input_dimensions: Tuple[int, int], # (32, 32)
-        time: torch.Tensor, # [16]
         head_mask: Optional[torch.FloatTensor] = None, # None
         output_attentions: Optional[bool] = False,# False
         always_partition: Optional[bool] = False, # False
+        **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         if not always_partition: # not False
             self.set_shift_and_window_size(input_dimensions) # set shift and window size parameters
@@ -527,11 +511,11 @@ class ScOTLayer(nn.Module):
             
         attention_windows = attention_windows.view(batch_size, height * width, channels)
         
-        hidden_states = shortcut + self.drop_path(self.layernorm_before(attention_windows, time))
+        hidden_states = shortcut + self.drop_path(self.layernorm_before(attention_windows, **kwargs))
         
         residual = hidden_states
         layer_output = self.output(self.intermediate(hidden_states))
-        layer_output = residual + self.drop_path(self.layernorm_after(layer_output, time))
+        layer_output = residual + self.drop_path(self.layernorm_after(layer_output, **kwargs))
         
         layer_outputs = (
             (layer_output, attention_outputs[1])
@@ -616,13 +600,13 @@ class ScOTPatchMerging(nn.Module):
     """
 
     def __init__(
-        self, input_resolution: Tuple[int], dim: int, norm_layer: nn.Module = LayerNorm
+        self, config, input_resolution: Tuple[int], dim: int, norm_layer: nn.Module = CustomNorm
     ) -> None:
         super().__init__()
         self.input_resolution = input_resolution
         self.dim = dim
         self.reduction = nn.Linear(4 * dim, 2 * dim, bias=False)
-        self.norm = norm_layer(2 * dim)
+        self.norm = norm_layer(config=config, dim=2 * dim)
 
     def maybe_pad(self, input_feature, height, width):
         should_pad = (height % 2 == 1) or (width % 2 == 1) # False
@@ -636,7 +620,7 @@ class ScOTPatchMerging(nn.Module):
         self,
         input_feature: torch.Tensor,
         input_dimensions: Tuple[int, int],
-        time: torch.Tensor,
+        **kwargs
     ) -> torch.Tensor:
         height, width = input_dimensions #32, 32
         # `dim` is height * width
@@ -663,7 +647,7 @@ class ScOTPatchMerging(nn.Module):
         )  # [batch_size, height/2 * width/2, 4*C]
 
         input_feature = self.reduction(input_feature) # 16, 256, 96 # 4 * dim -> 2 * dim
-        input_feature = self.norm(input_feature, time) # 16, 256, 96
+        input_feature = self.norm(input_feature, **kwargs) # 16, 256, 96
 
         return input_feature
 
@@ -671,16 +655,17 @@ class ScOTPatchMerging(nn.Module):
 class ScOTPatchUnmerging(nn.Module):
     def __init__(
         self,
+        config,
         input_resolution: Tuple[int],
         dim: int,
-        norm_layer: nn.Module = LayerNorm,
+        norm_layer: nn.Module = CustomNorm,
     ) -> None:
         super().__init__()
         self.input_resolution = input_resolution # (4, 4)
         self.dim = dim # 384
         self.upsample = nn.Linear(dim, 2 * dim, bias=False) # 384 -> 768
         self.mixup = nn.Linear(dim // 2, dim // 2, bias=False) # 192 -> 192
-        self.norm = norm_layer(dim // 2) # 192
+        self.norm = norm_layer(config=config, dim=dim // 2) # 192
 
     def maybe_crop(self, input_feature, height, width):
         height_in, width_in = input_feature.shape[1], input_feature.shape[2] # 8, 8
@@ -694,7 +679,7 @@ class ScOTPatchUnmerging(nn.Module):
         self,
         input_feature: torch.Tensor, # 16, 16, 384
         output_dimensions: Tuple[int, int], # (8, 8)
-        time: torch.Tensor, # 16
+        **kwargs
     ) -> torch.Tensor:
         output_height, output_width = output_dimensions # 8, 8
         batch_size, seq_len, hidden_size = input_feature.shape # 16, 16, 384
@@ -713,5 +698,5 @@ class ScOTPatchUnmerging(nn.Module):
         input_feature = self.maybe_crop(input_feature, output_height, output_width) # crop in case the feature does not have the specified dim
         input_feature = input_feature.reshape(batch_size, -1, hidden_size // 2) # [16, 64, 192]
 
-        input_feature = self.norm(input_feature, time) # LayerNorm
+        input_feature = self.norm(input_feature, **kwargs) # LayerNorm
         return self.mixup(input_feature) # Linear: [16, 64, 192] -> [16, 64, 192]

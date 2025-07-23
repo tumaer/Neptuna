@@ -18,3 +18,4 @@ wandb/
 *.tiff
 *.mp4
 *.pt
+*.idea

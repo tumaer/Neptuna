@@ -12,8 +12,8 @@ from torch import nn, Tensor
 from typing import Optional, Union, Tuple, List
 import collections
 from utils.grid_utils import twod_meshgrid
-from .scot_utils import ScOTOutput, ScOTEmbeddings, ScOTPatchRecovery, ScOTPatchMerging, ScOTPatchUnmerging, ScOTLayer, LayerNorm, ConvNeXtBlock, ResNetBlock
-from utils.model_utils import ConditionalLayerNorm
+from .scot_utils import ScOTOutput, ScOTEmbeddings, ScOTPatchRecovery, ScOTPatchMerging, ScOTPatchUnmerging, ScOTLayer, ConvNeXtBlock, ResNetBlock
+from utils.model_utils import CustomNorm
 
 class ScOTEncodeStage(nn.Module):
     def __init__(
@@ -56,12 +56,10 @@ class ScOTEncodeStage(nn.Module):
 
         # patch merging layer
         if downsample is not None: # ScOTPatchMerging in every stage except last one
-            if config.use_conditioning:
-                layer_norm = ConditionalLayerNorm
-            else:
-                layer_norm = LayerNorm
+
+
             self.downsample = downsample(
-                input_resolution, dim=dim, norm_layer=layer_norm
+                config, input_resolution, dim=dim, norm_layer=CustomNorm
             )
         else:
             self.downsample = None
@@ -72,10 +70,10 @@ class ScOTEncodeStage(nn.Module):
         self,
         hidden_states: torch.Tensor,
         input_dimensions: Tuple[int, int],
-        time: torch.Tensor,
         head_mask: Optional[torch.FloatTensor] = None,
         output_attentions: Optional[bool] = False,
         always_partition: Optional[bool] = False,
+        **kwargs
     ) -> Tuple[torch.Tensor]:
         height, width = input_dimensions
 
@@ -87,10 +85,10 @@ class ScOTEncodeStage(nn.Module):
             layer_outputs = layer_module(
                 hidden_states,
                 input_dimensions,
-                time,
                 layer_head_mask,
                 output_attentions,
                 always_partition,
+                **kwargs
             )
 
             hidden_states = layer_outputs[0] # 16, 1024, 48
@@ -100,7 +98,7 @@ class ScOTEncodeStage(nn.Module):
             height_downsampled, width_downsampled = (height + 1) // 2, (width + 1) // 2
             output_dimensions = (height, width, height_downsampled, width_downsampled)# 16, 16
             hidden_states = self.downsample(
-                hidden_states_before_downsampling + inputs, input_dimensions, time
+                hidden_states_before_downsampling + inputs, input_dimensions, **kwargs
             )
         else:
             output_dimensions = (height, width, height, width)
@@ -128,6 +126,7 @@ class ScOTDecodeStage(nn.Module):
         upsample, # PatchUnmerging
         upsampled_size, # (8, 8)
         pretrained_window_size=0,
+        **kwargs
     ):
         super().__init__()
         self.config = config
@@ -157,11 +156,8 @@ class ScOTDecodeStage(nn.Module):
         )
 
         if upsample is not None: # upsample in every layer except last one
-            if config.use_conditioning:
-                layer_norm = ConditionalLayerNorm
-            else:
-                layer_norm = LayerNorm
-            self.upsample = upsample(input_resolution, dim=dim, norm_layer=layer_norm) # PatchUnmerging
+
+            self.upsample = upsample(config, input_resolution, dim=dim, norm_layer=CustomNorm) # PatchUnmerging
             self.upsampled_size = upsampled_size
         else:
             self.upsample = None
@@ -172,10 +168,10 @@ class ScOTDecodeStage(nn.Module):
         self,
         hidden_states: torch.Tensor,
         input_dimensions: Tuple[int, int],
-        time: torch.Tensor,
         head_mask: Optional[torch.Tensor] = None,
         output_attentions: Optional[bool] = False,
         always_partition: Optional[bool] = False,
+        **kwargs
     ) -> Tuple[torch.Tensor]:
         height, width = input_dimensions
 
@@ -185,10 +181,10 @@ class ScOTDecodeStage(nn.Module):
             layer_outputs = layer_module(
                 hidden_states,
                 input_dimensions,
-                time,
                 layer_head_mask,
                 output_attentions,
                 always_partition,
+                **kwargs
             )
 
             hidden_states = layer_outputs[0]
@@ -200,7 +196,7 @@ class ScOTDecodeStage(nn.Module):
             hidden_states = self.upsample(
                 hidden_states_before_upsampling,
                 (height_upsampled, width_upsampled),
-                time,
+                **kwargs
             )
         else:
             output_dimensions = (height, width, height, width)
@@ -266,12 +262,12 @@ class ScOTEncoder(nn.Module):
         self,
         hidden_states: torch.Tensor, # [16, 1024, 48] input
         input_dimensions: Tuple[int, int], # [32, 32]
-        time: torch.Tensor, # [16]
         head_mask: Optional[torch.FloatTensor] = None, #[None, None, None, None]
         output_attentions: Optional[bool] = False, # False
         output_hidden_states: Optional[bool] = False, # True
         output_hidden_states_before_downsampling: Optional[bool] = False, # True
         always_partition: Optional[bool] = False, # False
+        **kwargs
     ) -> Union[Tuple, Swinv2EncoderOutput]:
         all_hidden_states = () if output_hidden_states else None # ()
         all_reshaped_hidden_states = () if output_hidden_states else None # ()
@@ -295,18 +291,18 @@ class ScOTEncoder(nn.Module):
                     layer_module.__call__,
                     hidden_states,
                     input_dimensions,
-                    time,
                     layer_head_mask,
                     output_attentions,
+                    **kwargs
                 )
             else: # call forward of ScOTEncodeStage
                 layer_outputs = layer_module(
                     hidden_states,
                     input_dimensions,
-                    time,
                     layer_head_mask,
                     output_attentions,
                     always_partition,
+                    **kwargs
                 )
 
             # hidden_states before: [16, 1024, 48]
@@ -396,12 +392,12 @@ class ScOTDecoder(nn.Module):
         hidden_states: torch.Tensor, #[16, 16, 384]
         input_dimensions: Tuple[int, int], #(4,4)
         skip_states: List[torch.FloatTensor], # list(3)
-        time: torch.Tensor,# [16]
         head_mask: Optional[torch.FloatTensor] = None, # [None, None, None, None]
         output_attentions: Optional[bool] = False, # False
         output_hidden_states: Optional[bool] = False, # False
         output_hidden_states_before_upsampling: Optional[bool] = False, # False
         always_partition: Optional[bool] = False, # False
+        **kwargs
     ) -> Union[Tuple, Swinv2EncoderOutput]:
         all_hidden_states = () if output_hidden_states else None # None
         all_reshaped_hidden_states = () if output_hidden_states else None # None
@@ -428,18 +424,18 @@ class ScOTDecoder(nn.Module):
                     layer_module.__call__,
                     hidden_states,
                     input_dimensions,
-                    time,
                     layer_head_mask,
                     output_attentions,
+                    **kwargs
                 )
             else:
                 layer_outputs = layer_module(
                     hidden_states,
                     input_dimensions,
-                    time,
                     layer_head_mask,
                     output_attentions,
                     always_partition,
+                    **kwargs
                 )
 
             hidden_states = layer_outputs[0] # [16, 64, 192]
@@ -486,6 +482,7 @@ class ScOT(PreTrainedModel):
 
     main_input_name = "input_data"
     conditioning_input_name = "conditioning_input_data"
+    conditioning_parameters_name = 'conditioning_parameters'
      
     def __init__(self, config):
         super().__init__(config)
@@ -504,15 +501,22 @@ class ScOT(PreTrainedModel):
 
     
 
-    def forward(self, input_data: Tensor) -> Tensor:
+    def forward(self, input_data: Tensor, **kwargs) -> Tensor:
 
         if input_data is None:
             raise ValueError("input_data cannot be None")
         
+        if "conditioning_input_data" in kwargs:
+            #NOTE: Conditioning data can be passed into a conv network before concatination with input_data.
+            conditioning_input_data = kwargs["conditioning_input_data"]
+            input_data = torch.cat([input_data, conditioning_input_data], dim=2)
+        else:
+            conditioning_input_data = None
+        
         batch, input_seq, channels, *spatial = input_data.shape
         input_data = input_data.reshape(batch, input_seq * channels, *spatial)
         
-        y = self.scot(input_data)
+        y = self.scot(input_data, **kwargs)
 
         return y
 
@@ -578,9 +582,9 @@ class ScOT2D(PreTrainedModel):
     def forward(
         self,
         input_data: Optional[torch.FloatTensor] = None,
-        time: Optional[torch.FloatTensor] = None,
         bool_masked_pos: Optional[torch.BoolTensor] = None,
         head_mask: Optional[torch.FloatTensor] = None,
+        **kwargs
     ) -> Union[Tuple, ScOTOutput]:
 
         output_attentions = self.config.output_attentions # False
@@ -607,17 +611,17 @@ class ScOT2D(PreTrainedModel):
             input_data = torch.cat((input_data, coord_feat), dim=1)
 
         embedding_output, input_dimensions = self.embeddings(
-            input_data, bool_masked_pos=bool_masked_pos, time=time
+            input_data, bool_masked_pos=bool_masked_pos, **kwargs
         )
 
         encoder_outputs = self.encoder(
             embedding_output,
             input_dimensions,
-            time,
             head_mask=head_mask_encoder,
             output_attentions=output_attentions,
             output_hidden_states=True,
-            output_hidden_states_before_downsampling=True,
+            output_hidden_states_before_downsampling=True, 
+            **kwargs
         )
 
         skip_states = list(encoder_outputs[1][1:])
@@ -627,7 +631,7 @@ class ScOT2D(PreTrainedModel):
                 if isinstance(block, nn.Identity):
                     skip_states[i] = block(skip_states[i])
                 else: # is not Identity
-                    skip_states[i] = block(skip_states[i], time)
+                    skip_states[i] = block(skip_states[i])
 
         input_dim_x = math.ceil(input_dimensions[0] / (2 ** (len(self.config.depths) - 1)))
         input_dim_y = math.ceil(input_dimensions[1] / (2 ** (len(self.config.depths) - 1)))
@@ -636,11 +640,11 @@ class ScOT2D(PreTrainedModel):
         decoder_output = self.decoder(
             skip_states[-1],
             (input_dim_x, input_dim_y),
-            time=time,
             skip_states=skip_states[:-1],
             head_mask=head_mask_decoder,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
+            **kwargs
         )
 
         sequence_output = decoder_output[0] # [16, 1024, 48]

@@ -334,7 +334,7 @@ class Trainer(Trainer_):
                     for unroll_step in range(pushforward_unroll_steps):
                         #print(f"Pushforward unroll step {unroll_step+1} of {pushforward_unroll_steps}")
                         if self.data_config.conditioning_features.conditioning_in_channels is not None:
-                            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
+                            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"], conditioning_parameters=inputs['conditioning_parameters'])
                         else:
                             prediction = model(input_data=inputs["input_data"])
                         
@@ -376,7 +376,9 @@ class Trainer(Trainer_):
             
         # NOTE:compute chain restored, the input_data is corrupted by the pushforward rollout steps (if any).
         if self.data_config.conditioning_features.conditioning_in_channels is not None:
-            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
+            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"], conditioning_parameters=inputs['conditioning_parameters'])
+        elif self.data_config.conditioning_features.include_conditioning_parameters:
+            prediction = model(input_data=inputs["input_data"], conditioning_parameters=inputs['conditioning_parameters'])
         else:
             prediction = model(input_data=inputs["input_data"]) 
         
@@ -443,7 +445,7 @@ class Trainer(Trainer_):
         batch_size, _, _, *spatial_dims = inputs["input_data"].shape
         
         if self.data_config.conditioning_features.conditioning_in_channels is not None:
-            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
+            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"], conditioning_parameters=inputs['conditioning_parameters'])
         else:
             prediction = model(input_data=inputs["input_data"]) 
         

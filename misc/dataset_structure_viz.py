@@ -53,5 +53,5 @@ def visualize_dataset_structure(data_path):
 
 # Main execution
 if __name__ == "__main__":
-    data_path = "./data/fluids/KVS_trimmed/2D/train.h5"
+    data_path = "./data/synthetic/SF/2D/blob/train.h5"
     visualize_dataset_structure(data_path)

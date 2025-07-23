@@ -93,7 +93,7 @@ def fetch_model(model_config: Dict,
         skip_connections, window_size, mlp_ratio, qkv_bias,
         hidden_dropout_prob, attention_dropout_prob, drop_path_rate,
         hidden_act, use_absolute_embeddings, initializer_range,
-        layer_norm_eps, residual_model, use_conditioning,
+        norm_layer_eps, residual_model, use_conditioning,
         output_hidden_states, output_attentions
         Note: Currently only supports 2D data
     
@@ -308,12 +308,15 @@ def fetch_model(model_config: Dict,
                     hidden_act=model_config['hidden_act'], # hidden activation function in Swinv2Intermediate (HF)
                     use_absolute_embeddings=model_config['use_absolute_embeddings'], # absolute position information into the patch embeddings (spatial structure of trajectory); different to time_conditioning
                     initializer_range=model_config['initializer_range'], # Swinv2PreTrainedModel (HF), std of normal distribution to initialize weights
-                    layer_norm_eps=model_config['layer_norm_eps'], # used in layer_norm both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
                     residual_model=model_config['residual_model'], # either convnext or resnet
-                    use_conditioning=model_config['use_conditioning'], # if True ConditionalLayerNorm is used otherwise LayerNorm
                     output_hidden_states=model_config['output_hidden_states'],
                     output_attentions=model_config['output_attentions'],
-                    coord_features=True
+                    coord_features=True,
+                    conditioning=data_config['conditioning_features']['include_conditioning_parameters'], # if True ConditionalLayerNorm is used otherwise LayerNorm
+                    num_condition_params = data_config['conditioning_features']['num_cond_params'],
+                    norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
+                    norm=model_config['norm'],
+                    num_groups=model_config['num_groups']
                     )
         model = ScOT(config)
     

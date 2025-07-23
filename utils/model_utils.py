@@ -39,6 +39,7 @@ Notes:
     dimension. This ensures consistent handling of spatial information
     across different model architectures.
 """
+import torch
 from transformers import PretrainedConfig as PretrainedConfig_
 import json
 from typing import List, Optional, Tuple, Union
@@ -137,6 +138,11 @@ class PretrainedConfig(PretrainedConfig_):
         coord_features: bool = True,
         latent_channels: int = 32,
         include_input_seq_len: bool = True,
+        conditioning: str = None,
+        norm: str = 'LayerNorm',
+        num_cond_params: int = 0,
+        norm_layer_eps: float = 1e-5,
+        num_groups: int = 16,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -152,6 +158,14 @@ class PretrainedConfig(PretrainedConfig_):
 
         self.grid_resolution = grid_resolution
         self.latent_channels = latent_channels
+
+        self.num_cond_params = num_cond_params
+        self.conditioning = conditioning
+        self.norm = norm
+        self.norm_layer_eps = norm_layer_eps
+        self.num_groups = num_groups
+        if norm not in ['layer', 'batch', 'group']:
+            raise ValueError(f'{norm} norm is not in the specified list of allowed norms')
 
         self.coord_features = coord_features
         # Add relative coordinate feature
@@ -192,27 +206,21 @@ class PretrainedConfig(PretrainedConfig_):
         return json.dumps(config_dict, indent=2, sort_keys=True, default=default) + "\n"
     
 # Adapted from https://github.com/camlab-ethz/poseidon
-class ConditionalLayerNorm(nn.Module):
-    def __init__(self, dim, eps=1e-5):
+class ConditionalLayer(nn.Module):
+    def __init__(self, dim, num_cond_params):
         super().__init__()
-        self.eps = eps # small constant to avoid division by zero
         # instead of using nn.Parameter like in LayerNorm, weight and bias are learned linear functions of time (-> they vary with time)
-        self.weight = nn.Linear(1, dim)
-        self.bias = nn.Linear(1, dim)
+        self.weight = nn.Linear(num_cond_params, dim)
+        self.bias = nn.Linear(num_cond_params, dim)
 
-    def forward(self, x, cond_params = None):
+    def forward(self, x, **kwargs):
 
-        # ToDo: Append cond_params
+        if "conditioning_parameters" in kwargs:
+            #NOTE: Conditioning data can be passed into a conv network before concatination with input_data.
+            cond_params = kwargs["conditioning_parameters"]
+        else:
+            raise ValueError("There is no conditioning_parameter in the dataset.")
 
-        if cond_params is None:
-            raise ValueError("cond_params must be provided for ConditionalLayerNorm")
-        
-        # x: [16, 1024, 48]
-        # compute mean and variance of input over last dimension (like in LayerNorm)
-        mean = x.mean(dim=-1, keepdim=True) # [16, 1024, 1]
-        var = (x**2).mean(dim=-1, keepdim=True) - mean**2 # [16, 1024, 1]
-        # Normalize input x (zero mean, unit variance)
-        x = (x - mean) / (var + self.eps).sqrt()
         cond_params = cond_params.reshape(-1, 1).type_as(x) # [16, 1]
         weight = self.weight(cond_params).unsqueeze(1) #[16, 1, 48]
         bias = self.bias(cond_params).unsqueeze(1) # [16, 1, 48]
@@ -220,3 +228,32 @@ class ConditionalLayerNorm(nn.Module):
             weight = weight.unsqueeze(1)
             bias = bias.unsqueeze(1)
         return weight * x + bias     
+
+class CustomNorm(nn.Module):
+    def __init__(self, config, dim, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.conditioning = config.conditioning
+        if config.conditioning:
+            self.cond_layer = ConditionalLayer(dim, num_cond_params=config.num_cond_params)
+
+        if config.norm == 'layer':
+            self.norm = nn.LayerNorm(dim, eps=config.norm_layer_eps)
+        elif config.norm == 'batch':
+            if config.dim == 1:
+                self.norm = nn.BatchNorm1d(dim, eps=config.norm_layer_eps)
+            elif config.dim == 2:
+                self.norm = nn.BatchNorm2d(dim, eps=config.norm_layer_eps)
+            elif config.dim == 3:
+                self.norm = nn.BatchNorm3d(dim, eps=config.norm_layer_eps)
+            else:
+                raise ValueError("Dimension is not 1, 2, or 3.")
+        elif config.norm == 'group':
+            self.norm = nn.GroupNorm(num_groups=config.num_groups, num_channels=config.num_channels, eps=config.norm_layer_eps)
+        else:
+            raise ValueError(f"{config.norm} is not a allowed norm")
+            
+    def forward(self, x, **kwargs) -> torch.Tensor:
+        if self.conditioning:
+            x = self.cond_layer(x, **kwargs)
+        return self.norm(x)

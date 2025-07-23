@@ -201,6 +201,7 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
                 )
 
             param_ranges = compute_parameter_statistics(h5_paths_params)
+            cfg['data_config']['conditioning_features']['num_cond_params'] = len(param_ranges)
             cfg["data_config"]["conditioning_features"]["parameter_min_max_stats"] = param_ranges
         else:
             # --- Basic schema validation of user-supplied stats ---------

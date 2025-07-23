@@ -107,6 +107,26 @@
             }
 
     },
+    {
+      "name": "train 2D_Syntheic_blob_ScOT",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "main.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+          "hydra.run.dir=.",
+          "hydra.output_subdir=null",
+          "data_config=synthetic/SF/2d_blob_synthetic_data.yaml",
+          "model_config=ScOT/default_scot",
+        ],
+      "env": {
+          "HYDRA_FULL_ERROR": "1",
+          "HYDRA_MAIN_DISABLE_RUN": "1",
+          "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "10.0"   // “-1” disables the warning entirely
+          }
+
+  },
         {
             "name": "train 2D_KS_ScOT",
             "type": "debugpy",
