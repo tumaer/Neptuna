@@ -333,11 +333,15 @@ class Trainer(Trainer_):
                 with torch.no_grad(): #comment this out for multi-step autoregressive training
                     for unroll_step in range(pushforward_unroll_steps):
                         #print(f"Pushforward unroll step {unroll_step+1} of {pushforward_unroll_steps}")
-                        if self.data_config.conditioning_features.conditioning_in_channels is not None:
+                        if (self.data_config.conditioning_features.conditioning_in_channels is not None) and (self.data_config.conditioning_features.include_conditioning_parameters is True):
                             prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"], conditioning_parameters=inputs['conditioning_parameters'])
+                        elif (self.data_config.conditioning_features.conditioning_in_channels is None) and (self.data_config.conditioning_features.include_conditioning_parameters is True):
+                            prediction = model(input_data=inputs["input_data"], conditioning_parameters=inputs['conditioning_parameters'])
+                        elif (self.data_config.conditioning_features.conditioning_in_channels is not None) and (self.data_config.conditioning_features.include_conditioning_parameters is False):
+                            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
                         else:
-                            prediction = model(input_data=inputs["input_data"])
-                        
+                            prediction = model(input_data=inputs["input_data"]) 
+                                        
                         prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_features"]["filter_out_channels"]), *spatial_dims)
                         
                         if self.residual_config is not None:
@@ -375,10 +379,12 @@ class Trainer(Trainer_):
             pushforward_unroll_steps = 0
             
         # NOTE:compute chain restored, the input_data is corrupted by the pushforward rollout steps (if any).
-        if self.data_config.conditioning_features.conditioning_in_channels is not None:
+        if (self.data_config.conditioning_features.conditioning_in_channels is not None) and (self.data_config.conditioning_features.include_conditioning_parameters is True):
             prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"], conditioning_parameters=inputs['conditioning_parameters'])
-        elif self.data_config.conditioning_features.include_conditioning_parameters:
+        elif (self.data_config.conditioning_features.conditioning_in_channels is None) and (self.data_config.conditioning_features.include_conditioning_parameters is True):
             prediction = model(input_data=inputs["input_data"], conditioning_parameters=inputs['conditioning_parameters'])
+        elif (self.data_config.conditioning_features.conditioning_in_channels is not None) and (self.data_config.conditioning_features.include_conditioning_parameters is False):
+            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
         else:
             prediction = model(input_data=inputs["input_data"]) 
         
@@ -444,8 +450,12 @@ class Trainer(Trainer_):
         """
         batch_size, _, _, *spatial_dims = inputs["input_data"].shape
         
-        if self.data_config.conditioning_features.conditioning_in_channels is not None:
+        if (self.data_config.conditioning_features.conditioning_in_channels is not None) and (self.data_config.conditioning_features.include_conditioning_parameters is True):
             prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"], conditioning_parameters=inputs['conditioning_parameters'])
+        elif (self.data_config.conditioning_features.conditioning_in_channels is None) and (self.data_config.conditioning_features.include_conditioning_parameters is True):
+            prediction = model(input_data=inputs["input_data"], conditioning_parameters=inputs['conditioning_parameters'])
+        elif (self.data_config.conditioning_features.conditioning_in_channels is not None) and (self.data_config.conditioning_features.include_conditioning_parameters is False):
+            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
         else:
             prediction = model(input_data=inputs["input_data"]) 
         
