@@ -205,11 +205,11 @@ class PretrainedConfig(PretrainedConfig_):
     
 # Adapted from https://github.com/camlab-ethz/poseidon
 class ConditionalLayer(nn.Module):
-    def __init__(self, dim, num_cond_params):
+    def __init__(self, input_dim, num_cond_params):
         super().__init__()
         # instead of using nn.Parameter like in LayerNorm, weight and bias are learned linear functions of time (-> they vary with time)
-        self.weight = nn.Linear(num_cond_params, dim)
-        self.bias = nn.Linear(num_cond_params, dim)
+        self.weight = nn.Linear(num_cond_params, input_dim)
+        self.bias = nn.Linear(num_cond_params, input_dim)
 
     def forward(self, x, **kwargs):
 
@@ -228,28 +228,27 @@ class ConditionalLayer(nn.Module):
         return weight * x + bias     
 
 class CustomNorm(nn.Module):
-    def __init__(self, config, dim, num_channels = -1, *args, **kwargs):
+    # input_dim should not contain batch_size -> directely start with channels
+    def __init__(self, config, input_dim: Tuple, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.conditioning = config.conditioning
         if config.conditioning:
-            self.cond_layer = ConditionalLayer(dim, num_cond_params=config.num_cond_params)
+            self.cond_layer = ConditionalLayer(input_dim[-1], num_cond_params=config.num_cond_params)
 
         if config.norm == 'layer':
-            self.norm = nn.LayerNorm(dim, eps=config.norm_layer_eps)
+            self.norm = nn.LayerNorm(input_dim[-1], eps=config.norm_layer_eps)
         elif config.norm == 'batch':
-            if config.dimension == 1:
-                self.norm = nn.BatchNorm1d(dim, eps=config.norm_layer_eps)
-            elif config.dimension == 2:
-                self.norm = nn.BatchNorm2d(dim, eps=config.norm_layer_eps)
-            elif config.dimension == 3:
-                self.norm = nn.BatchNorm3d(dim, eps=config.norm_layer_eps)
+            if len(input_dim) == 2:
+                self.norm = nn.BatchNorm1d(input_dim[-2], eps=config.norm_layer_eps)
+            elif len(input_dim) == 3:
+                self.norm = nn.BatchNorm2d(input_dim[-3], eps=config.norm_layer_eps)
+            elif len(input_dim) == 4:
+                self.norm = nn.BatchNorm3d(input_dim[-4], eps=config.norm_layer_eps)
             else:
-                raise ValueError("Dimension is not 1, 2, or 3.")
+                raise ValueError("Specified input_dim does not have dimension 1, 2, or 3.")
         elif config.norm == 'group':
-            if num_channels == -1:
-                raise ValueError("num_channels has to be set accordingly.")
-            self.norm = nn.GroupNorm(num_groups=num_channels // config.num_groups_div_rate, num_channels=num_channels, eps=config.norm_layer_eps)
+            self.norm = nn.GroupNorm(num_groups=input_dim[0] // config.num_groups_div_rate, num_channels=input_dim[0], eps=config.norm_layer_eps)
         else:
             raise ValueError(f"{config.norm} is not a allowed norm")
             

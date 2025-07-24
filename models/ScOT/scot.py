@@ -57,7 +57,6 @@ class ScOTEncodeStage(nn.Module):
         # patch merging layer
         if downsample is not None: # ScOTPatchMerging in every stage except last one
 
-
             self.downsample = downsample(
                 config, input_resolution, dim=dim, norm_layer=CustomNorm
             )
@@ -549,7 +548,7 @@ class ScOT2D(PreTrainedModel):
                 (
                     nn.ModuleList(
                         [
-                            res_model(config, config.latent_channels * 2**i)
+                            res_model(config, (self.embeddings.patch_grid[0] // 2 ** i, self.embeddings.patch_grid[1] // 2 ** i), config.latent_channels * 2**i)
                             for _ in range(depth)
                         ]
                     )
