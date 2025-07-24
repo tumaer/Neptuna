@@ -14,8 +14,7 @@ hidden_act: "gelu"
 use_absolute_embeddings: False
 initializer_range: 0.02
 norm_layer_eps: 1e-5
-norm: 'layer' # layer, batch, group
-num_groups: 16 # only used for GroupNorm
+norm: 'batch' # layer, batch, group
 residual_model: "convnext" # convnext or resnet
 output_hidden_states: False
 output_attentions: False

@@ -320,7 +320,6 @@ def fetch_model(model_config: Dict,
                     num_cond_params = data_config['conditioning_features']['num_cond_params'],
                     norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
                     norm=model_config['norm'],
-                    num_groups=model_config['num_groups']
                     )
         model = ScOT(config)
     

@@ -142,7 +142,6 @@ class PretrainedConfig(PretrainedConfig_):
         norm: str = 'layer',
         num_cond_params: int = 0,
         norm_layer_eps: float = 1e-5,
-        num_groups: int = 16,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -163,7 +162,6 @@ class PretrainedConfig(PretrainedConfig_):
         self.conditioning = conditioning
         self.norm = norm
         self.norm_layer_eps = norm_layer_eps
-        self.num_groups = num_groups
         if norm not in ['layer', 'batch', 'group']:
             raise ValueError(f'{norm} norm is not in the specified list of allowed norms')
 
@@ -230,7 +228,7 @@ class ConditionalLayer(nn.Module):
         return weight * x + bias     
 
 class CustomNorm(nn.Module):
-    def __init__(self, config, dim, *args, **kwargs):
+    def __init__(self, config, dim, num_channels = -1, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.conditioning = config.conditioning
@@ -249,7 +247,9 @@ class CustomNorm(nn.Module):
             else:
                 raise ValueError("Dimension is not 1, 2, or 3.")
         elif config.norm == 'group':
-            self.norm = nn.GroupNorm(num_groups=config.num_groups, num_channels=config.num_channels, eps=config.norm_layer_eps)
+            if num_channels == -1:
+                raise ValueError("num_channels has to be set accordingly.")
+            self.norm = nn.GroupNorm(num_groups=num_channels // config.num_groups_div_rate, num_channels=num_channels, eps=config.norm_layer_eps)
         else:
             raise ValueError(f"{config.norm} is not a allowed norm")
             
