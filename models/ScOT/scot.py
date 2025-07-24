@@ -631,7 +631,7 @@ class ScOT2D(PreTrainedModel):
                 if isinstance(block, nn.Identity):
                     skip_states[i] = block(skip_states[i])
                 else: # is not Identity
-                    skip_states[i] = block(skip_states[i])
+                    skip_states[i] = block(skip_states[i], **kwargs)
 
         input_dim_x = math.ceil(input_dimensions[0] / (2 ** (len(self.config.depths) - 1)))
         input_dim_y = math.ceil(input_dimensions[1] / (2 ** (len(self.config.depths) - 1)))

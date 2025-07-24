@@ -93,7 +93,6 @@ class ScOTConfig(PretrainedConfig):
         self.drop_path_rate = drop_path_rate
         self.hidden_act = hidden_act
         self.use_absolute_embeddings = use_absolute_embeddings
-        self.use_conditioning = use_conditioning
         self.initializer_range = initializer_range
         # we set the hidden_size attribute in order to make Swinv2 work with VisionEncoderDecoderModel
         # this indicates the channel dimension after the last stage of the model
