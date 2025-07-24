@@ -321,8 +321,6 @@ def fetch_model(model_config: Dict,
         from models.ViT.vit_utils import ViTConfig
         from models.ViT.vit import ViT
 
-        if data_config['grid_resolution'][0] != data_config['grid_resolution'][1]:
-            raise ValueError("Model is not yet implemented for non-square grid resolutions")
         config = ViTConfig(
                     in_channels=len(data_config['filter_features']['filter_in_channels']),
                     out_channels=len(data_config['filter_features']['filter_out_channels']),
@@ -340,7 +338,6 @@ def fetch_model(model_config: Dict,
                     attention_probs_dropout_prob=model_config['attention_probs_dropout_prob'],
                     initializer_range=model_config['initializer_range'],
                     layer_norm_eps=model_config['layer_norm_eps'],
-                    image_size=data_config['grid_resolution'][0],
                     patch_size=model_config['patch_size'],
                     num_channels=len(data_config['filter_features']['filter_in_channels']),
                     qkv_bias=model_config['qkv_bias'],
