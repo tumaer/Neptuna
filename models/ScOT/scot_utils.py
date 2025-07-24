@@ -315,6 +315,7 @@ class ScOTLayer(nn.Module):
         self.chunk_size_feed_forward = config.chunk_size_feed_forward # 0
         self.shift_size = shift_size # [0,0]
         self.window_size = config.window_size # 16
+        self.config = config
         self.input_resolution = input_resolution # 16 (changes!)
         self.set_shift_and_window_size(input_resolution) # sets and checks shift and window size based on input resolution
         self.attention = Swinv2Attention(
@@ -366,6 +367,11 @@ class ScOTLayer(nn.Module):
         self.window_size = (
             window_dim if window_dim <= target_window_size[0] else target_window_size[0]
         )
+
+        # check if depth works with new window size
+        if self.window_size // 2 ** (len(self.config.depths) - 1) < 1:
+            raise ValueError("Depth of network to large for dataset resolution in combination with specified patch_size. Change either depths or patch_size")
+
         self.shift_size = ( # 0
             0
             if input_resolution

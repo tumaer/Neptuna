@@ -209,6 +209,7 @@ class PretrainedConfig(PretrainedConfig_):
 class ConditionalLayer(nn.Module):
     def __init__(self, input_dim, num_cond_params):
         super().__init__()
+        self.num_cond_params = num_cond_params
         # instead of using nn.Parameter like in LayerNorm, weight and bias are learned linear functions of time (-> they vary with time)
         self.weight = nn.Linear(num_cond_params, input_dim)
         self.bias = nn.Linear(num_cond_params, input_dim)
@@ -220,8 +221,8 @@ class ConditionalLayer(nn.Module):
             cond_params = kwargs["conditioning_parameters"]
         else:
             raise ValueError("There is no conditioning_parameter in the dataset.")
-
-        cond_params = cond_params.reshape(-1, 1).type_as(x) # [16, 1]
+        
+        cond_params = cond_params.reshape(-1, self.num_cond_params).type_as(x) # [16, 1]
         weight = self.weight(cond_params).unsqueeze(1) #[16, 1, 48]
         bias = self.bias(cond_params).unsqueeze(1) # [16, 1, 48]
         if x.dim() == 4:
