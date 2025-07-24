@@ -93,7 +93,7 @@ def fetch_model(model_config: Dict,
         skip_connections, window_size, mlp_ratio, qkv_bias,
         hidden_dropout_prob, attention_dropout_prob, drop_path_rate,
         hidden_act, use_absolute_embeddings, initializer_range,
-        norm_layer_eps, residual_model, use_conditioning,
+        norm_layer_eps, residual_model, conditioning,
         output_hidden_states, output_attentions
         Note: Currently only supports 2D data
     
@@ -320,6 +320,7 @@ def fetch_model(model_config: Dict,
                     num_cond_params = data_config['conditioning_features']['num_cond_params'],
                     norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
                     norm=model_config['norm'],
+                    num_groups_div_rate=model_config['num_groups_div_rate']
                     )
         model = ScOT(config)
     

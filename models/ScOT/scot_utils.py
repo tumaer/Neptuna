@@ -73,7 +73,6 @@ class ScOTConfig(PretrainedConfig):
         use_absolute_embeddings: bool = False,
         initializer_range: float = 0.02,
         residual_model: str = "convnext",  # "convnext" or "resnet"
-        use_conditioning: bool = False,
         output_hidden_states: bool = False,
         output_attentions: bool = False,
         **kwargs,

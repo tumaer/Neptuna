@@ -142,6 +142,7 @@ class PretrainedConfig(PretrainedConfig_):
         norm: str = 'layer',
         num_cond_params: int = 0,
         norm_layer_eps: float = 1e-5,
+        num_groups_div_rate: int = 1,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -162,6 +163,7 @@ class PretrainedConfig(PretrainedConfig_):
         self.conditioning = conditioning
         self.norm = norm
         self.norm_layer_eps = norm_layer_eps
+        self.num_groups_div_rate = num_groups_div_rate
         if norm not in ['layer', 'batch', 'group']:
             raise ValueError(f'{norm} norm is not in the specified list of allowed norms')
 
