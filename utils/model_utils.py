@@ -139,7 +139,7 @@ class PretrainedConfig(PretrainedConfig_):
         latent_channels: int = 32,
         include_input_seq_len: bool = True,
         conditioning: str = None,
-        norm: str = 'LayerNorm',
+        norm: str = 'layer',
         num_cond_params: int = 0,
         norm_layer_eps: float = 1e-5,
         num_groups: int = 16,
@@ -240,11 +240,11 @@ class CustomNorm(nn.Module):
         if config.norm == 'layer':
             self.norm = nn.LayerNorm(dim, eps=config.norm_layer_eps)
         elif config.norm == 'batch':
-            if config.dim == 1:
+            if config.dimension == 1:
                 self.norm = nn.BatchNorm1d(dim, eps=config.norm_layer_eps)
-            elif config.dim == 2:
+            elif config.dimension == 2:
                 self.norm = nn.BatchNorm2d(dim, eps=config.norm_layer_eps)
-            elif config.dim == 3:
+            elif config.dimension == 3:
                 self.norm = nn.BatchNorm3d(dim, eps=config.norm_layer_eps)
             else:
                 raise ValueError("Dimension is not 1, 2, or 3.")

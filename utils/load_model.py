@@ -186,7 +186,6 @@ def fetch_model(model_config: Dict,
                     out_channels=len(data_config['filter_features']['filter_out_channels']), 
                     sequence_info=data_config["sequence_info"], 
                     latent_channels=model_config['latent_channels'],
-                    norm=model_config['norm'],
                     n_groups=model_config['n_groups'],
                     channel_multiplier=model_config['channel_multiplier'],
                     is_attn=model_config['is_attn'],
@@ -194,7 +193,12 @@ def fetch_model(model_config: Dict,
                     n_blocks=model_config['n_blocks'],
                     use1x1=model_config['use1x1'],
                     activation_fn_name=model_config['activation_fn_name'],
-                    coord_features=True
+                    coord_features=True,
+                    conditioning=data_config['conditioning_features']['include_conditioning_parameters'], # if True ConditionalLayerNorm is used otherwise LayerNorm
+                    num_cond_params = data_config['conditioning_features']['num_cond_params'],
+                    norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
+                    norm=model_config['norm'],
+                    num_groups=model_config['num_groups']
                     )
         model= UNet(config=config)
     
