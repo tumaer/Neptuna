@@ -370,7 +370,7 @@ class ScOTLayer(nn.Module):
 
         # check if depth works with new window size
         if self.window_size // 2 ** (len(self.config.depths) - 1) < 1:
-            raise ValueError("Depth of network to large for dataset resolution in combination with specified patch_size. Change either depths or patch_size")
+            raise ValueError(f"Depths ({self.config.depths}) of network too large for dataset resolution ({self.config.grid_resolution}) in combination with specified patch_size ({self.config.patch_size}). Increase / decrease either depths or patch_size.")
 
         self.shift_size = ( # 0
             0
