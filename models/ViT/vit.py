@@ -18,7 +18,7 @@ class ViTModel(ViTPreTrainedModel):
         self.embeddings = ViTEmbeddings(config, use_mask_token=use_mask_token)
         self.encoder = ViTEncoder(config)
 
-        self.layernorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.layernorm = nn.LayerNorm(config.latent_channels, eps=config.layer_norm_eps)
         self.pooler = ViTPooler(config) if add_pooling_layer else None
 
         # Initialize weights and apply final processing
@@ -136,7 +136,7 @@ class ViT2D(ViTModel):
 
         self.decoder = nn.Sequential(
             nn.Conv2d(
-                in_channels=config.hidden_size,
+                in_channels=config.latent_channels,
                 out_channels=config.encoder_stride**2 * config.out_channels,
                 kernel_size=1,
             ),
@@ -181,7 +181,9 @@ class ViT2D(ViTModel):
         # Reshape to (batch_size, num_channels, height, width)
         sequence_output = sequence_output[:, 1:] #[6, 100, 768]
         batch_size, sequence_length, num_channels = sequence_output.shape #6, 100, 768
-        height = width = math.floor(sequence_length**0.5) # 10, 10
+        height = self.config.grid_resolution[0] // self.config.patch_size
+        width = self.config.grid_resolution[1] // self.config.patch_size
+        assert height * width == sequence_length, "Something went wrong with the sequence length"
         sequence_output = sequence_output.permute(0, 2, 1).reshape(batch_size, num_channels, height, width) # [6, 768, 10, 10]
 
         # Reconstruct pixel values

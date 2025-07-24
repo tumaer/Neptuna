@@ -17,7 +17,6 @@ class ViTConfig(PretrainedConfig):
 
     def __init__(
         self,
-        hidden_size=768,
         num_hidden_layers=12,
         num_attention_heads=12,
         intermediate_size=3072,
@@ -27,7 +26,6 @@ class ViTConfig(PretrainedConfig):
         initializer_range=0.02,
         layer_norm_eps=1e-12,
         patch_size=16,
-        num_channels=3,
         qkv_bias=True,
         encoder_stride=16,
         pooler_output_size=None,
@@ -37,7 +35,6 @@ class ViTConfig(PretrainedConfig):
     ):
         super().__init__(**kwargs)
 
-        self.hidden_size = hidden_size
         self.num_hidden_layers = num_hidden_layers
         self.num_attention_heads = num_attention_heads
         self.intermediate_size = intermediate_size
@@ -47,15 +44,14 @@ class ViTConfig(PretrainedConfig):
         self.initializer_range = initializer_range
         self.layer_norm_eps = layer_norm_eps
         self.patch_size = patch_size
-        self.num_channels = num_channels
         self.qkv_bias = qkv_bias
         self.encoder_stride = encoder_stride
-        self.pooler_output_size = pooler_output_size if pooler_output_size else hidden_size
+        self.pooler_output_size = pooler_output_size if pooler_output_size else self.latent_channels
         self.pooler_act = pooler_act
 
         self.interpolate_pos_encoding = interpolate_pos_encoding
 
-        self.num_channels = self.in_size
+        self.hidden_size = self.latent_channels
 
 
 class ViTEmbeddings(nn.Module):
@@ -66,11 +62,11 @@ class ViTEmbeddings(nn.Module):
     def __init__(self, config: ViTConfig, use_mask_token: bool = False) -> None:
         super().__init__()
 
-        self.cls_token = nn.Parameter(torch.randn(1, 1, config.hidden_size))
-        self.mask_token = nn.Parameter(torch.zeros(1, 1, config.hidden_size)) if use_mask_token else None
+        self.cls_token = nn.Parameter(torch.randn(1, 1, config.latent_channels))
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, config.latent_channels)) if use_mask_token else None
         self.patch_embeddings = ViTPatchEmbeddings(config)
         num_patches = self.patch_embeddings.num_patches
-        self.position_embeddings = nn.Parameter(torch.randn(1, num_patches + 1, config.hidden_size))
+        self.position_embeddings = nn.Parameter(torch.randn(1, num_patches + 1, config.latent_channels))
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.patch_size = config.patch_size
         self.config = config
@@ -109,14 +105,14 @@ class ViTEmbeddings(nn.Module):
 class ViTPatchEmbeddings(nn.Module):
     """
     This class turns `pixel_values` of shape `(batch_size, num_channels, height, width)` into the initial
-    `hidden_states` (patch embeddings) of shape `(batch_size, seq_length, hidden_size)` to be consumed by a
+    `hidden_states` (patch embeddings) of shape `(batch_size, seq_length, latent_channels)` to be consumed by a
     Transformer.
     """
 
     def __init__(self, config):
         super().__init__()
         grid_resolution, patch_size = config.grid_resolution, config.patch_size
-        num_channels, hidden_size = config.num_channels, config.hidden_size
+        num_channels, latent_channels = config.in_size, config.latent_channels
 
         patch_size =  (patch_size, patch_size)
         num_patches = (grid_resolution[1] // patch_size[1]) * (grid_resolution[0] // patch_size[0])
@@ -125,7 +121,7 @@ class ViTPatchEmbeddings(nn.Module):
         self.num_channels = num_channels
         self.num_patches = num_patches
 
-        self.projection = nn.Conv2d(num_channels, hidden_size, kernel_size=patch_size, stride=patch_size)
+        self.projection = nn.Conv2d(num_channels, latent_channels, kernel_size=patch_size, stride=patch_size)
 
     def forward(self, pixel_values: torch.Tensor, interpolate_pos_encoding: bool = False) -> torch.Tensor:
         batch_size, num_channels, height, width = pixel_values.shape
