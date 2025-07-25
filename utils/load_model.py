@@ -340,8 +340,6 @@ def fetch_model(model_config: Dict,
                     patch_size=model_config['patch_size'],
                     qkv_bias=model_config['qkv_bias'],
                     encoder_stride=model_config['encoder_stride'],
-                    pooler_output_size=model_config['pooler_output_size'],
-                    pooler_act=model_config['pooler_act'],
                     output_hidden_states=model_config['output_hidden_states'],
                     output_attentions=model_config['output_attentions'],
                     )

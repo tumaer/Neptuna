@@ -28,8 +28,6 @@ class ViTConfig(PretrainedConfig):
         patch_size=16,
         qkv_bias=True,
         encoder_stride=16,
-        pooler_output_size=None,
-        pooler_act="tanh",
         interpolate_pos_encoding=False,
         **kwargs,
     ):
@@ -46,8 +44,6 @@ class ViTConfig(PretrainedConfig):
         self.patch_size = patch_size
         self.qkv_bias = qkv_bias
         self.encoder_stride = encoder_stride
-        self.pooler_output_size = pooler_output_size if pooler_output_size else self.latent_channels
-        self.pooler_act = pooler_act
 
         self.interpolate_pos_encoding = interpolate_pos_encoding
 

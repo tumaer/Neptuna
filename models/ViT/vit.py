@@ -2,7 +2,7 @@ import math
 from typing import Optional, Tuple, Union
 from transformers import PreTrainedModel
 from transformers.modeling_outputs import BaseModelOutputWithPooling
-from transformers.models.vit.modeling_vit import ViTEncoder, ViTPooler, ViTPreTrainedModel
+from transformers.models.vit.modeling_vit import ViTEncoder, ViTPreTrainedModel
 from .vit_utils import ViTEmbeddings
 import torch
 from torch import nn, Tensor
@@ -11,7 +11,7 @@ from utils.grid_utils import twod_meshgrid
 
 
 class ViTModel(ViTPreTrainedModel):
-    def __init__(self, config: ViTConfig, add_pooling_layer: bool = True, use_mask_token: bool = False):
+    def __init__(self, config: ViTConfig, use_mask_token: bool = False):
         super().__init__(config)
         self.config = config
 
@@ -19,7 +19,6 @@ class ViTModel(ViTPreTrainedModel):
         self.encoder = ViTEncoder(config)
 
         self.layernorm = nn.LayerNorm(config.latent_channels, eps=config.layer_norm_eps)
-        self.pooler = ViTPooler(config) if add_pooling_layer else None
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -73,15 +72,14 @@ class ViTModel(ViTPreTrainedModel):
         )
         sequence_output = encoder_outputs[0]
         sequence_output = self.layernorm(sequence_output)
-        pooled_output = self.pooler(sequence_output) if self.pooler is not None else None
 
         if not return_dict:
-            head_outputs = (sequence_output, pooled_output) if pooled_output is not None else (sequence_output,)
+            head_outputs = (sequence_output,)
             return head_outputs + encoder_outputs[1:]
 
         return BaseModelOutputWithPooling(
             last_hidden_state=sequence_output,
-            pooler_output=pooled_output,
+            pooler_output=None,
             hidden_states=encoder_outputs.hidden_states,
             attentions=encoder_outputs.attentions,
         )
@@ -132,7 +130,7 @@ class ViT2D(ViTModel):
         super().__init__(config)
         self.config = config
 
-        self.vit = ViTModel(config, add_pooling_layer=False, use_mask_token=True)
+        self.vit = ViTModel(config, use_mask_token=True)
 
         self.decoder = nn.Sequential(
             nn.Conv2d(
