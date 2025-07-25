@@ -74,8 +74,8 @@ class ScOTEncodeStage(nn.Module):
         always_partition: Optional[bool] = False,
         **kwargs
     ) -> Tuple[torch.Tensor]:
+        
         height, width = input_dimensions
-
         inputs = hidden_states
 
         for i, layer_module in enumerate(self.blocks):
@@ -486,7 +486,7 @@ class ScOT(PreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
 
-        self.dimension = 2
+        self.dimension = config.dimension
 
         self.scot = self.build_ScOT()(config)
 

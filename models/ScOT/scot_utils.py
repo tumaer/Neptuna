@@ -46,8 +46,6 @@ class ScOTConfig(PretrainedConfig):
         norm_layer_eps (float): Epsilon value for layer normalization. Default is 1e-5.
         residual_model (str): Type of residual model to use ("convnext" or "resnet"). Default is "convnext".
         use_conditioning (bool): Whether to use conditioning in the model. Default is False.
-        output_hidden_states (bool): Whether to output hidden states. Default is False.
-        output_attentions (bool): Whether to output attention weights. Default is False.
         **kwargs: Additional keyword arguments passed to the parent class."""
 
     model_type = "swinv2"

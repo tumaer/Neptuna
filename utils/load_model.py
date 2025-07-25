@@ -324,6 +324,34 @@ def fetch_model(model_config: Dict,
                     )
         model = ScOT(config)
     
+    elif model_name == "vit":
+        from models.ViT.vit_utils import ViTConfig
+        from models.ViT.vit import ViT
+
+        config = ViTConfig(
+                    in_channels=len(data_config['filter_features']['filter_in_channels']),
+                    out_channels=len(data_config['filter_features']['filter_out_channels']),
+                    grid_resolution=data_config['grid_resolution'], 
+                    sequence_info=data_config['sequence_info'],
+                    dimension=data_config['dimension'],
+                    coord_features=True,
+                    latent_channels=model_config['latent_channels'],
+                    num_hidden_layers=model_config['num_hidden_layers'],
+                    num_attention_heads=model_config['num_attention_heads'],
+                    intermediate_size=model_config['intermediate_size'],
+                    hidden_act=model_config['hidden_act'],
+                    hidden_dropout_prob=model_config['hidden_dropout_prob'],
+                    attention_probs_dropout_prob=model_config['attention_probs_dropout_prob'],
+                    initializer_range=model_config['initializer_range'],
+                    layer_norm_eps=model_config['layer_norm_eps'],
+                    patch_size=model_config['patch_size'],
+                    qkv_bias=model_config['qkv_bias'],
+                    encoder_stride=model_config['encoder_stride'],
+                    output_hidden_states=False,
+                    output_attentions=False,
+                    )
+        model = ViT(config=config)
+
     else:
         raise ValueError(f"Model {model_name} is not implemented yet.") 
     
