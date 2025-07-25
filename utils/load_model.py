@@ -340,8 +340,8 @@ def fetch_model(model_config: Dict,
                     patch_size=model_config['patch_size'],
                     qkv_bias=model_config['qkv_bias'],
                     encoder_stride=model_config['encoder_stride'],
-                    output_hidden_states=model_config['output_hidden_states'],
-                    output_attentions=model_config['output_attentions'],
+                    output_hidden_states=False,
+                    output_attentions=False,
                     )
         model = ViT(config=config)
 
