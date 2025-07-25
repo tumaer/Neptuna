@@ -313,8 +313,8 @@ def fetch_model(model_config: Dict,
                     use_absolute_embeddings=model_config['use_absolute_embeddings'], # absolute position information into the patch embeddings (spatial structure of trajectory); different to time_conditioning
                     initializer_range=model_config['initializer_range'], # Swinv2PreTrainedModel (HF), std of normal distribution to initialize weights
                     residual_model=model_config['residual_model'], # either convnext or resnet
-                    output_hidden_states=model_config['output_hidden_states'],
-                    output_attentions=model_config['output_attentions'],
+                    output_hidden_states=False,
+                    output_attentions=False,
                     coord_features=True,
                     conditioning=data_config['conditioning_features']['include_conditioning_parameters'] , # if True ConditionalLayerNorm is used otherwise LayerNorm
                     num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
@@ -343,12 +343,16 @@ def fetch_model(model_config: Dict,
                     hidden_dropout_prob=model_config['hidden_dropout_prob'],
                     attention_probs_dropout_prob=model_config['attention_probs_dropout_prob'],
                     initializer_range=model_config['initializer_range'],
-                    layer_norm_eps=model_config['layer_norm_eps'],
                     patch_size=model_config['patch_size'],
                     qkv_bias=model_config['qkv_bias'],
                     encoder_stride=model_config['encoder_stride'],
                     output_hidden_states=False,
                     output_attentions=False,
+                    conditioning=data_config['conditioning_features']['include_conditioning_parameters'] , # if True ConditionalLayerNorm is used otherwise LayerNorm
+                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
+                    norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
+                    norm=model_config['norm'],
+                    num_groups_div_rate=model_config['num_groups_div_rate']
                     )
         model = ViT(config=config)
 

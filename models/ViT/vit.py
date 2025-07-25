@@ -1,9 +1,10 @@
-import math
 from typing import Optional, Tuple, Union
 from transformers import PreTrainedModel
-from transformers.modeling_outputs import BaseModelOutputWithPooling
-from transformers.models.vit.modeling_vit import ViTEncoder, ViTPreTrainedModel
-from .vit_utils import ViTEmbeddings
+from transformers.modeling_outputs import BaseModelOutput
+from transformers.models.vit.modeling_vit import ViTPreTrainedModel
+
+from utils.model_utils import CustomNorm
+from .vit_utils import ViTEmbeddings, ViTEncoder
 import torch
 from torch import nn, Tensor
 from .vit_utils import ViTConfig
@@ -18,7 +19,8 @@ class ViTModel(ViTPreTrainedModel):
         self.embeddings = ViTEmbeddings(config, use_mask_token=use_mask_token)
         self.encoder = ViTEncoder(config)
 
-        self.layernorm = nn.LayerNorm(config.latent_channels, eps=config.layer_norm_eps)
+        res_dim = config.grid_resolution[0] // config.patch_size * config.grid_resolution[1] // config.patch_size + 1
+        self.layernorm = CustomNorm(config, (res_dim ,config.latent_channels))
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -33,7 +35,8 @@ class ViTModel(ViTPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         interpolate_pos_encoding: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-    ) -> Union[Tuple, BaseModelOutputWithPooling]:
+        **kwargs
+    ) -> Union[Tuple, BaseModelOutput]:
         r"""
         bool_masked_pos (`torch.BoolTensor` of shape `(batch_size, num_patches)`, *optional*):
             Boolean masked positions. Indicates which patches are masked (1) and which aren't (0).
@@ -69,17 +72,17 @@ class ViTModel(ViTPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            **kwargs
         )
         sequence_output = encoder_outputs[0]
-        sequence_output = self.layernorm(sequence_output)
+        sequence_output = self.layernorm(sequence_output, **kwargs)
 
         if not return_dict:
             head_outputs = (sequence_output,)
             return head_outputs + encoder_outputs[1:]
 
-        return BaseModelOutputWithPooling(
+        return BaseModelOutput(
             last_hidden_state=sequence_output,
-            pooler_output=None,
             hidden_states=encoder_outputs.hidden_states,
             attentions=encoder_outputs.attentions,
         )
@@ -107,7 +110,7 @@ class ViT(PreTrainedModel):
         
         
 
-    def forward(self, input_data: Tensor) -> Tensor:
+    def forward(self, input_data: Tensor, **kwargs) -> Tensor:
 
         if input_data is None:
             raise ValueError("input_data cannot be None")
@@ -119,7 +122,7 @@ class ViT(PreTrainedModel):
             coord_feat = twod_meshgrid(list(input_data.shape), input_data.device)
             input_data = torch.cat((input_data, coord_feat), dim=1)
 
-        y = self.vit(input_data)
+        y = self.vit(input_data, **kwargs)
 
         return y
 
@@ -147,7 +150,8 @@ class ViT2D(ViTModel):
 
     def forward(
         self,
-        input_data: Optional[torch.Tensor] = None
+        input_data: Optional[torch.Tensor] = None,
+        **kwargs
     ) -> Tensor:
 
         # ToDo: add head_mask in case necessary
@@ -172,6 +176,7 @@ class ViT2D(ViTModel):
             output_hidden_states=self.config.output_hidden_states,
             interpolate_pos_encoding=self.config.interpolate_pos_encoding,
             return_dict=False,
+            **kwargs
         )
 
         sequence_output = outputs[0] #[6, 101, 768]

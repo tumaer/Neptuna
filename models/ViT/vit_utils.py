@@ -1,9 +1,9 @@
 
-from utils.model_utils import PretrainedConfig
+from utils.model_utils import PretrainedConfig, CustomNorm
 import torch
 from torch import nn
-from typing import Optional
-from transformers.utils.generic import torch_int
+from typing import Optional, Tuple, Union
+from transformers.models.vit.modeling_vit import ViTAttention, ViTIntermediate, ViTOutput, BaseModelOutput
 
 class ViTConfig(PretrainedConfig):
     """
@@ -24,7 +24,6 @@ class ViTConfig(PretrainedConfig):
         hidden_dropout_prob=0.0,
         attention_probs_dropout_prob=0.0,
         initializer_range=0.02,
-        layer_norm_eps=1e-12,
         patch_size=16,
         qkv_bias=True,
         encoder_stride=16,
@@ -40,7 +39,6 @@ class ViTConfig(PretrainedConfig):
         self.hidden_dropout_prob = hidden_dropout_prob
         self.attention_probs_dropout_prob = attention_probs_dropout_prob
         self.initializer_range = initializer_range
-        self.layer_norm_eps = layer_norm_eps
         self.patch_size = patch_size
         self.qkv_bias = qkv_bias
         self.encoder_stride = encoder_stride
@@ -134,3 +132,101 @@ class ViTPatchEmbeddings(nn.Module):
                 )
         embeddings = self.projection(pixel_values).flatten(2).transpose(1, 2)
         return embeddings
+    
+
+class ViTLayer(nn.Module):
+    """This corresponds to the Block class in the timm implementation."""
+
+    def __init__(self, config: ViTConfig) -> None:
+        super().__init__()
+        self.chunk_size_feed_forward = config.chunk_size_feed_forward
+        self.seq_len_dim = 1
+        self.attention = ViTAttention(config)
+        self.intermediate = ViTIntermediate(config)
+        self.output = ViTOutput(config)
+
+        res_dim = config.grid_resolution[0] // config.patch_size * config.grid_resolution[1] // config.patch_size + 1
+        self.layernorm_before = CustomNorm(config, (res_dim, config.hidden_size))
+        self.layernorm_after = CustomNorm(config, (res_dim, config.hidden_size))
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        head_mask: Optional[torch.Tensor] = None,
+        output_attentions: bool = False,
+        **kwargs
+    ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor]]:
+        self_attention_outputs = self.attention(
+            self.layernorm_before(hidden_states, **kwargs),  # in ViT, layernorm is applied before self-attention
+            head_mask,
+            output_attentions=output_attentions,
+        )
+        attention_output = self_attention_outputs[0]
+        outputs = self_attention_outputs[1:]  # add self attentions if we output attention weights
+
+        # first residual connection
+        hidden_states = attention_output + hidden_states
+
+        # in ViT, layernorm is also applied after self-attention
+        layer_output = self.layernorm_after(hidden_states, **kwargs)
+        layer_output = self.intermediate(layer_output)
+
+        # second residual connection is done here
+        layer_output = self.output(layer_output, hidden_states)
+
+        outputs = (layer_output,) + outputs
+
+        return outputs
+    
+
+class ViTEncoder(nn.Module):
+    def __init__(self, config: ViTConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.layer = nn.ModuleList([ViTLayer(config) for _ in range(config.num_hidden_layers)])
+        self.gradient_checkpointing = False
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        head_mask: Optional[torch.Tensor] = None,
+        output_attentions: bool = False,
+        output_hidden_states: bool = False,
+        return_dict: bool = True,
+        **kwargs
+    ) -> Union[tuple, BaseModelOutput]:
+        all_hidden_states = () if output_hidden_states else None
+        all_self_attentions = () if output_attentions else None
+
+        for i, layer_module in enumerate(self.layer):
+            if output_hidden_states:
+                all_hidden_states = all_hidden_states + (hidden_states,)
+
+            layer_head_mask = head_mask[i] if head_mask is not None else None
+
+            if self.gradient_checkpointing and self.training:
+                layer_outputs = self._gradient_checkpointing_func(
+                    layer_module.__call__,
+                    hidden_states,
+                    layer_head_mask,
+                    output_attentions,
+                    **kwargs
+                )
+            else:
+                layer_outputs = layer_module(hidden_states, layer_head_mask, output_attentions, **kwargs)
+
+            hidden_states = layer_outputs[0]
+
+            if output_attentions:
+                all_self_attentions = all_self_attentions + (layer_outputs[1],)
+
+        if output_hidden_states:
+            all_hidden_states = all_hidden_states + (hidden_states,)
+
+        if not return_dict:
+            return tuple(v for v in [hidden_states, all_hidden_states, all_self_attentions] if v is not None)
+        return BaseModelOutput(
+            last_hidden_state=hidden_states,
+            hidden_states=all_hidden_states,
+            attentions=all_self_attentions,
+        )

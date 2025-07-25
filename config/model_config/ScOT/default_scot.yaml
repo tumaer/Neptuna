@@ -17,5 +17,3 @@ norm_layer_eps: 1e-5
 norm: 'layer' # layer, batch, group
 num_groups_div_rate: 2
 residual_model: "convnext" # convnext or resnet
-output_hidden_states: False
-output_attentions: False
