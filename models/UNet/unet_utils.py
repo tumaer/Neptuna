@@ -10,15 +10,14 @@ class UNetConfig(PretrainedConfig):
     """
     Args:
         activation_fn_name (str): Name of the activation function to use. Default is "gelu".
-        norm (bool): Whether to apply normalization. Default is False.
-        n_groups (int): Number of groups for group normalization. Default is 1.
         channel_multiplier (Union[Tuple[int, ...], List[int]]): Multipliers for the number of channels at each stage of the UNet. Default is (1, 2, 2, 4).
         is_attn (Union[Tuple[bool, ...], List[bool]]): Flags indicating whether attention is applied at each stage. Default is (False, False, False, False).
         mid_attn (bool): Whether to apply attention in the middle block. Default is False.
         n_blocks (int): Number of blocks in each stage of the UNet. Default is 2.
+        norm: "group" or "layer" or "batch" or "none" (default: "layer")
+        norm_layer_eps: Used to avoid zero-div error. float (default: 1e-5)
         use1x1 (bool): Whether to use 1x1 convolutions. Default is False.
         **kwargs: Additional keyword arguments passed to the parent class.
-        
     """
 
     model_type = "UNet"
@@ -26,24 +25,24 @@ class UNetConfig(PretrainedConfig):
     def __init__(
         self,
         activation_fn_name: str = "gelu",
-        #norm: bool = False,
-        #n_groups: int = 1,
         channel_multiplier: Union[Tuple[int, ...], List[int]] = (1, 2, 2, 4),
         is_attn: Union[Tuple[bool, ...], List[bool]] = (False, False, False, False),
         mid_attn: bool = False,
         n_blocks: int = 2,
         use1x1: bool = False,
+        norm: str = "layer",
+        norm_layer_eps: float = 1e-5,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.activation_fn_name = activation_fn_name
-        #self.norm = norm
-        #self.n_groups = n_groups
         self.channel_multiplier = channel_multiplier
         self.is_attn = is_attn
         self.mid_attn = mid_attn
         self.n_blocks = n_blocks
         self.use1x1 = use1x1
+        self.norm = norm
+        self.norm_layer_eps = norm_layer_eps
 
 class ResidualBlockND(nn.Module):
     """Residual Block for 1D, 2D, or 3D data.
@@ -53,8 +52,7 @@ class ResidualBlockND(nn.Module):
         out_channels (int): Number of output channels.
         dim (int): Dimensionality of the data. Should be 1, 2, or 3.
         activation_fn_name (str): Name of the activation function.
-        norm (bool): Whether to use GroupNorm.
-        n_groups (int): Number of groups in GroupNorm.
+        norm_layer: "group" or "layer" or "batch" (default: "layer")
     """
 
     def __init__(
@@ -64,9 +62,6 @@ class ResidualBlockND(nn.Module):
         out_channels: int,
         dim: int,
         activation_fn_name: str = "gelu",
-        norm_layer: nn.Module = CustomNorm
-        #norm: bool = False,
-        #n_groups: int = 1,
     ):
         super().__init__()
 
@@ -104,44 +99,10 @@ class ResidualBlockND(nn.Module):
         else:
             self.shortcut = nn.Identity()
 
-        # Normalization layers
-        # if norm:
-        #     self.norm1 = nn.GroupNorm(n_groups, in_channels)
-        #     self.norm2 = nn.GroupNorm(n_groups, out_channels)
-        # else:
-        #     self.norm1 = nn.Identity()
-        #     self.norm2 = nn.Identity()
-
-        # self.norm1 = CustomNorm(config=config, input_dim=(out_channels, in_channels))
-        # self.norm2 = CustomNorm(config=config, input_dim=(out_channels, out_channels))
-
-        # self.norm1 = CustomNorm(config=config, num_channels=in_channels, array_length=dim+2, channel_at_last_position=True)
-        # self.norm2 = CustomNorm(config=config, num_channels=out_channels, array_length=dim+2, channel_at_last_position=True)
-
         self.norm1 = CustomNorm(config=config, num_channels=in_channels, array_length=dim+2, channel_at_last_position=False)
         self.norm2 = CustomNorm(config=config, num_channels=out_channels, array_length=dim+2, channel_at_last_position=False)
 
     def forward(self, x: torch.Tensor, **kwargs):
-        # Move channel dimension to the *last* position regardless of spatial rank
-        # so that `CustomNorm` (LayerNorm etc.) can operate over it in a
-        # consistent, dimension-agnostic way.
-
-        # x_last = torch.movedim(x, 1, -1)  # (B, ..., C)
-        # # --- First normalization / activation ---
-        # h = self.norm1(x_last, **kwargs)
-        # h = self.activation(h)
-        # # Move back to channel-first format for convolution
-        # h = torch.movedim(h, -1, 1)
-        # h = self.conv1(h)
-
-        # # --- Second normalization / activation ---
-        # h_last = torch.movedim(h, 1, -1)
-        # h_last = self.norm2(h_last, **kwargs)
-        # h_last = self.activation(h_last)
-
-        # # Convolution in channel-first layout again
-        # h = torch.movedim(h_last, -1, 1)
-        # h = self.conv2(h)
 
         #without the movedim
         h = self.norm1(x, **kwargs)
@@ -154,6 +115,7 @@ class ResidualBlockND(nn.Module):
 
         return h + self.shortcut(x)
 
+#TODO: To be examined
 class AttentionBlockND(nn.Module):
     """Attention block This is similar to [transformer multi-head
     attention]
@@ -247,8 +209,7 @@ class DownBlockND(nn.Module):
         dim (int): Dimensionality (1, 2, or 3).
         has_attn (bool): Whether to include attention.
         activation (str): Name of activation function.
-        norm (bool): Whether to use GroupNorm.
-        n_groups (int): Number of groups in GroupNorm.
+        config (UNetConfig): Configuration for the UNet.
     """
 
     def __init__(
@@ -259,8 +220,6 @@ class DownBlockND(nn.Module):
         dim: int,
         has_attn: bool = False,
         activation: str = "gelu",
-        #norm: bool = False,
-        #n_groups: int = 1,
     ):
         super().__init__()
         self.res = ResidualBlockND(
@@ -269,8 +228,6 @@ class DownBlockND(nn.Module):
             out_channels=out_channels,
             dim=dim,
             activation_fn_name=activation,
-            #norm=norm,
-            #n_groups=n_groups,
         )
 
         if has_attn:
@@ -289,13 +246,12 @@ class UpBlockND(nn.Module):
     These are used in the second half of U-Net at each resolution.
 
     Args:
+        config (UNetConfig): Configuration for the UNet.
         in_channels (int): Number of input channels (from skip connection).
         out_channels (int): Number of output channels.
         dim (int): Dimensionality (1, 2, or 3).
         has_attn (bool): Whether to include attention.
         activation (str): Activation function.
-        norm (bool): Whether to use GroupNorm.
-        n_groups (int): Number of groups for normalization.
     """
 
     def __init__(
@@ -306,8 +262,6 @@ class UpBlockND(nn.Module):
         dim: int,
         has_attn: bool = False,
         activation: str = "gelu",
-        #norm: bool = False,
-        #n_groups: int = 1,
     ):
         super().__init__()
         self.res = ResidualBlockND(
@@ -316,8 +270,6 @@ class UpBlockND(nn.Module):
             out_channels=out_channels,
             dim=dim,
             activation_fn_name=activation,
-            #norm=norm,
-            #n_groups=n_groups,
         )
         self.attn = AttentionBlockND(out_channels) if has_attn else nn.Identity()
 
@@ -333,12 +285,11 @@ class MiddleBlockND(nn.Module):
     Used at the lowest resolution of the U-Net.
 
     Args:
+        config (UNetConfig): Configuration for the UNet.
         n_channels (int): Number of channels in the input and output.
         dim (int): Dimensionality (1, 2, or 3).
         has_attn (bool): Whether to use attention block. Defaults to False.
         activation (str): Activation function to use. Defaults to "gelu".
-        norm (bool): Whether to use normalization. Defaults to False.
-        n_groups (int): Number of groups for normalization. Defaults to 1.
     """
 
     def __init__(self, 
@@ -346,13 +297,12 @@ class MiddleBlockND(nn.Module):
                  n_channels: int, 
                  dim: int, 
                  has_attn: bool = False, 
-                 activation: str = "gelu", 
-                 norm: bool = False, 
-                 n_groups: int = 1):
+                 activation: str = "gelu"
+                 ):
         super().__init__()
-        self.res1 = ResidualBlockND(config=config, dim=dim, in_channels=n_channels, out_channels=n_channels, activation_fn_name=activation) #, norm=norm, n_groups=n_groups)
+        self.res1 = ResidualBlockND(config=config, dim=dim, in_channels=n_channels, out_channels=n_channels, activation_fn_name=activation) 
         self.attn = AttentionBlockND(n_channels) if has_attn else nn.Identity()
-        self.res2 = ResidualBlockND(config=config, dim=dim, in_channels=n_channels, out_channels=n_channels, activation_fn_name=activation) #, norm=norm, n_groups=n_groups)
+        self.res2 = ResidualBlockND(config=config, dim=dim, in_channels=n_channels, out_channels=n_channels, activation_fn_name=activation) 
 
     def forward(self, x: torch.Tensor, **kwargs):
         x = self.res1(x, **kwargs)

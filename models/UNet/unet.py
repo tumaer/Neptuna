@@ -25,11 +25,12 @@ class UNet(PreTrainedModel):
         activation_fn_name (str): Name of the activation function (default: "gelu")
         sequence_info (List[int]): Configuration for input/output sequences [input_seq_len, output_seq_len, stride]
         dimension (int): Spatial dimension of the data (1, 2, or 3)
-        norm (bool): Whether to use normalization layers (default: False)
         channel_multiplier (Union[Tuple[int, ...], List[int]]): Channel multipliers for each resolution level (default: (1, 2, 2, 4))
         is_attn (Union[Tuple[bool, ...], List[bool]]): Whether to use attention at each resolution (default: (False, False, False, False))
         mid_attn (bool): Whether to use attention in the middle block (default: False)
         n_blocks (int): Number of residual blocks per resolution (default: 2)
+        norm: "group" or "layer" or "batch" or "none" (default: "layer")
+        norm_layer_eps: Used to avoid zero-div error. float (default: 1e-5)
         use1x1 (bool): Whether to use 1x1 convolutions in initial/final layers (default: False)
 
     The architecture includes:
