@@ -115,8 +115,6 @@ class UNet1D(PreTrainedModel):
                         dim=1,
                         has_attn=config.is_attn[i],
                         activation=config.activation_fn_name,
-                        #norm=config.norm,
-                        #n_groups=config.n_groups,
                     )
                 )
                 in_channels_down = out_channels_down
@@ -132,8 +130,6 @@ class UNet1D(PreTrainedModel):
                                     dim=1, 
                                     has_attn=config.mid_attn, 
                                     activation=config.activation_fn_name, 
-                                    #norm=config.norm,
-                                    #n_groups=config.n_groups
                                     )
 
         # #### Second half of U-Net - increasing resolution
@@ -153,8 +149,6 @@ class UNet1D(PreTrainedModel):
                         dim=1,
                         has_attn=config.is_attn[i],
                         activation=config.activation_fn_name,
-                        #norm=config.norm,
-                        #n_groups=config.n_groups,
                     )
                 )
             # Final block to reduce the number of channels
@@ -165,8 +159,6 @@ class UNet1D(PreTrainedModel):
                                 dim=1, 
                                 has_attn=config.is_attn[i], 
                                 activation=config.activation_fn_name, 
-                                #norm=config.norm,
-                                #n_groups=config.n_groups
                                 ))
             
             in_channels_up = out_channels_up
@@ -177,12 +169,6 @@ class UNet1D(PreTrainedModel):
         # Combine the set of modules
         self.up = nn.ModuleList(up)
 
-        # if config.norm:
-        #     self.norm = nn.GroupNorm(8, config.latent_channels)
-        # else:
-        #     self.norm = nn.Identity()
-        #self.norm = CustomNorm(config=config, input_dim=(in_channels_up, config.latent_channels))
-        # self.norm = CustomNorm(config=config, num_channels=config.latent_channels, array_length=3, channel_at_last_position=True)
         self.norm = CustomNorm(config=config, num_channels=config.latent_channels, array_length=3, channel_at_last_position=False)
         if config.use1x1:
             self.final = nn.Conv1d(in_channels_up, config.out_size, kernel_size=1)
@@ -229,14 +215,6 @@ class UNet1D(PreTrainedModel):
                 x = torch.cat((x, s), dim=1)
                 x = m(x, **kwargs)
 
-        # Normalisation and activation with channel-last layout
-        # x_last = torch.movedim(x, 1, -1)  # (B, ..., C)
-        # x_last = self.norm(x_last, **kwargs)
-        # x_last = self.activation(x_last)
-        # x = torch.movedim(x_last, -1, 1)  # back to channel-first
-        # x = self.final(x)
-
-        #without the movedim
         x = self.norm(x, **kwargs)
         x = self.activation(x)
         x = self.final(x)
@@ -280,8 +258,6 @@ class UNet2D(PreTrainedModel):
                         dim=2,
                         has_attn=config.is_attn[i],
                         activation=config.activation_fn_name,
-                        #norm=config.norm,
-                        #n_groups=config.n_groups,
                     )
                 )
                 in_channels_down = out_channels_down
@@ -298,8 +274,6 @@ class UNet2D(PreTrainedModel):
                                     dim=2, 
                                     has_attn=config.mid_attn, 
                                     activation=config.activation_fn_name, 
-                                    #norm=config.norm,
-                                    #n_groups=config.n_groups
                                     )
 
         # #### Second half of U-Net - increasing resolution
@@ -319,8 +293,6 @@ class UNet2D(PreTrainedModel):
                         dim=2,
                         has_attn=config.is_attn[i],
                         activation=config.activation_fn_name,
-                        #norm=config.norm,
-                        #n_groups=config.n_groups,
                     )
                 )
             # Final block to reduce the number of channels
@@ -331,8 +303,6 @@ class UNet2D(PreTrainedModel):
                                 dim=2, 
                                 has_attn=config.is_attn[i], 
                                 activation=config.activation_fn_name, 
-                                #norm=config.norm,
-                                #n_groups=config.n_groups
                                 ))
             in_channels_up = out_channels_up
             # Up sample at all resolutions except last
@@ -342,12 +312,6 @@ class UNet2D(PreTrainedModel):
         # Combine the set of modules
         self.up = nn.ModuleList(up)
 
-        # if config.norm:
-        #     self.norm = nn.GroupNorm(8, config.latent_channels)
-        # else:
-        #     self.norm = nn.Identity()
-        #self.norm = CustomNorm(config=config, input_dim=(in_channels_up, config.latent_channels))
-        # self.norm = CustomNorm(config=config, num_channels=config.latent_channels, array_length=4, channel_at_last_position=True)
         self.norm = CustomNorm(config=config, num_channels=config.latent_channels, array_length=4, channel_at_last_position=False)
         if config.use1x1:
             self.final = nn.Conv2d(in_channels_up, config.out_size, kernel_size=1)
@@ -397,14 +361,6 @@ class UNet2D(PreTrainedModel):
                 x = torch.cat((x, s), dim=1)
                 x = m(x, **kwargs)
 
-        # Channel-last normalisation and activation
-        # x_last = torch.movedim(x, 1, -1)
-        # x_last = self.norm(x_last, **kwargs)
-        # x_last = self.activation(x_last)
-        # x = torch.movedim(x_last, -1, 1)
-        # x = self.final(x)
-
-        #without the movedim
         x = self.norm(x, **kwargs)
         x = self.activation(x)
         x = self.final(x)
@@ -448,8 +404,6 @@ class UNet3D(PreTrainedModel):
                         dim=3,
                         has_attn=config.is_attn[i],
                         activation=config.activation_fn_name,
-                        #norm=config.norm,
-                        #n_groups=config.n_groups,
                     )
                 )
                 in_channels_down = out_channels_down
@@ -466,8 +420,6 @@ class UNet3D(PreTrainedModel):
                                     dim=3, 
                                     has_attn=config.mid_attn, 
                                     activation=config.activation_fn_name, 
-                                    #norm=config.norm,
-                                    #n_groups=config.n_groups
                                     )
 
         # #### Second half of U-Net - increasing resolution
@@ -487,8 +439,6 @@ class UNet3D(PreTrainedModel):
                         dim=3,
                         has_attn=config.is_attn[i],
                         activation=config.activation_fn_name,
-                        #norm=config.norm,
-                        #n_groups=config.n_groups,
                     )
                 )
             # Final block to reduce the number of channels
@@ -499,8 +449,6 @@ class UNet3D(PreTrainedModel):
                                 dim=3, 
                                 has_attn=config.is_attn[i], 
                                 activation=config.activation_fn_name, 
-                                #norm=config.norm,
-                                #n_groups=config.n_groups
                                 ))
             
             in_channels_up = out_channels_up
@@ -511,12 +459,7 @@ class UNet3D(PreTrainedModel):
         # Combine the set of modules
         self.up = nn.ModuleList(up)
 
-        # if config.norm:
-        #     self.norm = nn.GroupNorm(8, config.latent_channels)
-        # else:
-        #     self.norm = nn.Identity()
-        #self.norm = CustomNorm(config=config, input_dim=(in_channels_up, config.latent_channels))
-        self.norm = CustomNorm(config=config, num_channels=config.latent_channels, array_length=5, channel_at_last_position=True)
+        self.norm = CustomNorm(config=config, num_channels=config.latent_channels, array_length=5, channel_at_last_position=False)
         if config.use1x1:
             self.final = nn.Conv3d(in_channels_up, config.out_size, kernel_size=1)
         else:
@@ -570,12 +513,9 @@ class UNet3D(PreTrainedModel):
                 x = torch.cat((x, s), dim=1)
                 x = m(x, **kwargs)
 
-        # x = self.final(self.activation(self.norm(x)))
-                # Channel-last normalisation and activation
-        x_last = torch.movedim(x, 1, -1)
-        x_last = self.norm(x_last, **kwargs)
-        x_last = self.activation(x_last)
-        x = torch.movedim(x_last, -1, 1)
+        #without the movedim, step by step
+        x = self.norm(x, **kwargs)
+        x = self.activation(x)
         x = self.final(x)
 
         # Crop back if padded
