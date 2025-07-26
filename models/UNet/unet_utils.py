@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from utils.model_utils import PretrainedConfig
 from utils import activation_func
+from utils.model_utils import CustomNorm
 
 class UNetConfig(PretrainedConfig):
     """
@@ -25,8 +26,8 @@ class UNetConfig(PretrainedConfig):
     def __init__(
         self,
         activation_fn_name: str = "gelu",
-        norm: bool = False,
-        n_groups: int = 1,
+        #norm: bool = False,
+        #n_groups: int = 1,
         channel_multiplier: Union[Tuple[int, ...], List[int]] = (1, 2, 2, 4),
         is_attn: Union[Tuple[bool, ...], List[bool]] = (False, False, False, False),
         mid_attn: bool = False,
@@ -36,8 +37,8 @@ class UNetConfig(PretrainedConfig):
     ):
         super().__init__(**kwargs)
         self.activation_fn_name = activation_fn_name
-        self.norm = norm
-        self.n_groups = n_groups
+        #self.norm = norm
+        #self.n_groups = n_groups
         self.channel_multiplier = channel_multiplier
         self.is_attn = is_attn
         self.mid_attn = mid_attn
@@ -58,12 +59,14 @@ class ResidualBlockND(nn.Module):
 
     def __init__(
         self,
+        config,
         in_channels: int,
         out_channels: int,
         dim: int,
         activation_fn_name: str = "gelu",
-        norm: bool = False,
-        n_groups: int = 1,
+        norm_layer: nn.Module = CustomNorm
+        #norm: bool = False,
+        #n_groups: int = 1,
     ):
         super().__init__()
 
@@ -102,16 +105,53 @@ class ResidualBlockND(nn.Module):
             self.shortcut = nn.Identity()
 
         # Normalization layers
-        if norm:
-            self.norm1 = nn.GroupNorm(n_groups, in_channels)
-            self.norm2 = nn.GroupNorm(n_groups, out_channels)
-        else:
-            self.norm1 = nn.Identity()
-            self.norm2 = nn.Identity()
+        # if norm:
+        #     self.norm1 = nn.GroupNorm(n_groups, in_channels)
+        #     self.norm2 = nn.GroupNorm(n_groups, out_channels)
+        # else:
+        #     self.norm1 = nn.Identity()
+        #     self.norm2 = nn.Identity()
 
-    def forward(self, x: torch.Tensor):
-        h = self.conv1(self.activation(self.norm1(x)))
-        h = self.conv2(self.activation(self.norm2(h)))
+        # self.norm1 = CustomNorm(config=config, input_dim=(out_channels, in_channels))
+        # self.norm2 = CustomNorm(config=config, input_dim=(out_channels, out_channels))
+
+        # self.norm1 = CustomNorm(config=config, num_channels=in_channels, array_length=dim+2, channel_at_last_position=True)
+        # self.norm2 = CustomNorm(config=config, num_channels=out_channels, array_length=dim+2, channel_at_last_position=True)
+
+        self.norm1 = CustomNorm(config=config, num_channels=in_channels, array_length=dim+2, channel_at_last_position=False)
+        self.norm2 = CustomNorm(config=config, num_channels=out_channels, array_length=dim+2, channel_at_last_position=False)
+
+    def forward(self, x: torch.Tensor, **kwargs):
+        # Move channel dimension to the *last* position regardless of spatial rank
+        # so that `CustomNorm` (LayerNorm etc.) can operate over it in a
+        # consistent, dimension-agnostic way.
+
+        # x_last = torch.movedim(x, 1, -1)  # (B, ..., C)
+        # # --- First normalization / activation ---
+        # h = self.norm1(x_last, **kwargs)
+        # h = self.activation(h)
+        # # Move back to channel-first format for convolution
+        # h = torch.movedim(h, -1, 1)
+        # h = self.conv1(h)
+
+        # # --- Second normalization / activation ---
+        # h_last = torch.movedim(h, 1, -1)
+        # h_last = self.norm2(h_last, **kwargs)
+        # h_last = self.activation(h_last)
+
+        # # Convolution in channel-first layout again
+        # h = torch.movedim(h_last, -1, 1)
+        # h = self.conv2(h)
+
+        #without the movedim
+        h = self.norm1(x, **kwargs)
+        h = self.activation(h)
+        h = self.conv1(h)
+
+        h = self.norm2(h, **kwargs)
+        h = self.activation(h)
+        h = self.conv2(h)
+
         return h + self.shortcut(x)
 
 class AttentionBlockND(nn.Module):
@@ -213,22 +253,24 @@ class DownBlockND(nn.Module):
 
     def __init__(
         self,
+        config,
         in_channels: int,
         out_channels: int,
         dim: int,
         has_attn: bool = False,
         activation: str = "gelu",
-        norm: bool = False,
-        n_groups: int = 1,
+        #norm: bool = False,
+        #n_groups: int = 1,
     ):
         super().__init__()
         self.res = ResidualBlockND(
+            config=config,
             in_channels=in_channels,
             out_channels=out_channels,
             dim=dim,
             activation_fn_name=activation,
-            norm=norm,
-            n_groups=n_groups,
+            #norm=norm,
+            #n_groups=n_groups,
         )
 
         if has_attn:
@@ -236,8 +278,8 @@ class DownBlockND(nn.Module):
         else:
             self.attn = nn.Identity()
 
-    def forward(self, x: torch.Tensor):
-        x = self.res(x)
+    def forward(self, x: torch.Tensor, **kwargs):
+        x = self.res(x, **kwargs)
         x = self.attn(x)
         return x
 
@@ -258,27 +300,29 @@ class UpBlockND(nn.Module):
 
     def __init__(
         self,
+        config,
         in_channels: int,
         out_channels: int,
         dim: int,
         has_attn: bool = False,
         activation: str = "gelu",
-        norm: bool = False,
-        n_groups: int = 1,
+        #norm: bool = False,
+        #n_groups: int = 1,
     ):
         super().__init__()
         self.res = ResidualBlockND(
+            config=config,
             in_channels=in_channels + out_channels,
             out_channels=out_channels,
             dim=dim,
             activation_fn_name=activation,
-            norm=norm,
-            n_groups=n_groups,
+            #norm=norm,
+            #n_groups=n_groups,
         )
         self.attn = AttentionBlockND(out_channels) if has_attn else nn.Identity()
 
-    def forward(self, x: torch.Tensor):
-        x = self.res(x)
+    def forward(self, x: torch.Tensor, **kwargs):
+        x = self.res(x, **kwargs)
         x = self.attn(x)
         return x
 
@@ -298,6 +342,7 @@ class MiddleBlockND(nn.Module):
     """
 
     def __init__(self, 
+                 config,
                  n_channels: int, 
                  dim: int, 
                  has_attn: bool = False, 
@@ -305,14 +350,14 @@ class MiddleBlockND(nn.Module):
                  norm: bool = False, 
                  n_groups: int = 1):
         super().__init__()
-        self.res1 = ResidualBlockND(dim=dim, in_channels=n_channels, out_channels=n_channels, activation_fn_name=activation, norm=norm, n_groups=n_groups)
+        self.res1 = ResidualBlockND(config=config, dim=dim, in_channels=n_channels, out_channels=n_channels, activation_fn_name=activation) #, norm=norm, n_groups=n_groups)
         self.attn = AttentionBlockND(n_channels) if has_attn else nn.Identity()
-        self.res2 = ResidualBlockND(dim=dim, in_channels=n_channels, out_channels=n_channels, activation_fn_name=activation, norm=norm, n_groups=n_groups)
+        self.res2 = ResidualBlockND(config=config, dim=dim, in_channels=n_channels, out_channels=n_channels, activation_fn_name=activation) #, norm=norm, n_groups=n_groups)
 
-    def forward(self, x: torch.Tensor):
-        x = self.res1(x)
+    def forward(self, x: torch.Tensor, **kwargs):
+        x = self.res1(x, **kwargs)
         x = self.attn(x)
-        x = self.res2(x)
+        x = self.res2(x, **kwargs)
         return x
 
 class UpsampleND(nn.Module):
@@ -400,5 +445,5 @@ class DownsampleND(nn.Module):
         else:
             raise ValueError(f"Unsupported dimension: {dim}. Must be 1, 2, or 3.")
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, **kwargs):
         return self.conv(x)

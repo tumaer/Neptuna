@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from transformers import PreTrainedModel
 from .unet_utils import DownBlockND, UpBlockND, MiddleBlockND, DownsampleND, UpsampleND
 from utils.grid_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
+from utils.model_utils import CustomNorm
 
 class UNet(PreTrainedModel): 
     """Modern U-Net architecture for fluid dynamics simulation
@@ -78,7 +79,7 @@ class UNet(PreTrainedModel):
 
         batch, input_seq, input_channels, *spatial = input_data.shape
         x = input_data.reshape(batch, input_seq * input_channels, *spatial)
-        return self.unet(x)
+        return self.unet(x, **kwargs)
 
 #Unet based on the dimension
 class UNet1D(PreTrainedModel):
@@ -108,13 +109,14 @@ class UNet1D(PreTrainedModel):
             for _ in range(config.n_blocks):
                 down.append(
                     DownBlockND(
+                        config=config,
                         in_channels=in_channels_down,
                         out_channels=out_channels_down,
                         dim=1,
                         has_attn=config.is_attn[i],
                         activation=config.activation_fn_name,
-                        norm=config.norm,
-                        n_groups=config.n_groups,
+                        #norm=config.norm,
+                        #n_groups=config.n_groups,
                     )
                 )
                 in_channels_down = out_channels_down
@@ -125,12 +127,14 @@ class UNet1D(PreTrainedModel):
         # Combine the set of modules
         self.down = nn.ModuleList(down)
         out_channels_mid=out_channels_down
-        self.middle = MiddleBlockND(n_channels=out_channels_mid, 
+        self.middle = MiddleBlockND(config=config,
+                                    n_channels=out_channels_mid, 
                                     dim=1, 
                                     has_attn=config.mid_attn, 
                                     activation=config.activation_fn_name, 
-                                    norm=config.norm,
-                                    n_groups=config.n_groups)
+                                    #norm=config.norm,
+                                    #n_groups=config.n_groups
+                                    )
 
         # #### Second half of U-Net - increasing resolution
         up = []
@@ -143,24 +147,27 @@ class UNet1D(PreTrainedModel):
             for _ in range(config.n_blocks):
                 up.append(
                     UpBlockND(
+                        config=config,
                         in_channels=in_channels_up,
                         out_channels=out_channels_up,
                         dim=1,
                         has_attn=config.is_attn[i],
                         activation=config.activation_fn_name,
-                        norm=config.norm,
-                        n_groups=config.n_groups,
+                        #norm=config.norm,
+                        #n_groups=config.n_groups,
                     )
                 )
             # Final block to reduce the number of channels
             out_channels_up = in_channels_up // config.channel_multiplier[i]
-            up.append(UpBlockND(in_channels=in_channels_up, 
+            up.append(UpBlockND(config=config,
+                                in_channels=in_channels_up, 
                                 out_channels=out_channels_up, 
                                 dim=1, 
                                 has_attn=config.is_attn[i], 
                                 activation=config.activation_fn_name, 
-                                norm=config.norm,
-                                n_groups=config.n_groups))
+                                #norm=config.norm,
+                                #n_groups=config.n_groups
+                                ))
             
             in_channels_up = out_channels_up
             # Up sample at all resolutions except last
@@ -170,11 +177,13 @@ class UNet1D(PreTrainedModel):
         # Combine the set of modules
         self.up = nn.ModuleList(up)
 
-        if config.norm:
-            self.norm = nn.GroupNorm(8, config.latent_channels)
-        else:
-            self.norm = nn.Identity()
-
+        # if config.norm:
+        #     self.norm = nn.GroupNorm(8, config.latent_channels)
+        # else:
+        #     self.norm = nn.Identity()
+        #self.norm = CustomNorm(config=config, input_dim=(in_channels_up, config.latent_channels))
+        # self.norm = CustomNorm(config=config, num_channels=config.latent_channels, array_length=3, channel_at_last_position=True)
+        self.norm = CustomNorm(config=config, num_channels=config.latent_channels, array_length=3, channel_at_last_position=False)
         if config.use1x1:
             self.final = nn.Conv1d(in_channels_up, config.out_size, kernel_size=1)
         else:
@@ -183,7 +192,7 @@ class UNet1D(PreTrainedModel):
         # Overall downsampling factor for padding logic
         self._ds_factor = 2 ** (unet_depth - 1)
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, **kwargs):
         if x.dim() != 3:
             raise ValueError(
                 "Only 3D tensors [batch, in_channels, grid_x] accepted for 1D UNet"
@@ -206,10 +215,10 @@ class UNet1D(PreTrainedModel):
 
         h = [x]
         for m in self.down:
-            x = m(x)
+            x = m(x, **kwargs)
             h.append(x)
 
-        x = self.middle(x)
+        x = self.middle(x, **kwargs)
 
         for m in self.up:
             if isinstance(m, UpsampleND):
@@ -218,9 +227,19 @@ class UNet1D(PreTrainedModel):
                 # Get the skip connection from first half of U-Net and concatenate
                 s = h.pop()
                 x = torch.cat((x, s), dim=1)
-                x = m(x)
+                x = m(x, **kwargs)
 
-        x = self.final(self.activation(self.norm(x)))
+        # Normalisation and activation with channel-last layout
+        # x_last = torch.movedim(x, 1, -1)  # (B, ..., C)
+        # x_last = self.norm(x_last, **kwargs)
+        # x_last = self.activation(x_last)
+        # x = torch.movedim(x_last, -1, 1)  # back to channel-first
+        # x = self.final(x)
+
+        #without the movedim
+        x = self.norm(x, **kwargs)
+        x = self.activation(x)
+        x = self.final(x)
 
         # Crop back to original length if padded
         if pad_L:
@@ -255,13 +274,14 @@ class UNet2D(PreTrainedModel):
             for _ in range(config.n_blocks):
                 down.append(
                     DownBlockND(
+                        config=config,
                         in_channels=in_channels_down,
                         out_channels=out_channels_down,
                         dim=2,
                         has_attn=config.is_attn[i],
                         activation=config.activation_fn_name,
-                        norm=config.norm,
-                        n_groups=config.n_groups,
+                        #norm=config.norm,
+                        #n_groups=config.n_groups,
                     )
                 )
                 in_channels_down = out_channels_down
@@ -273,12 +293,14 @@ class UNet2D(PreTrainedModel):
         self.down = nn.ModuleList(down)
         
         out_channels_mid = out_channels_down
-        self.middle = MiddleBlockND(n_channels=out_channels_mid, 
+        self.middle = MiddleBlockND(config=config,
+                                    n_channels=out_channels_mid, 
                                     dim=2, 
                                     has_attn=config.mid_attn, 
                                     activation=config.activation_fn_name, 
-                                    norm=config.norm,
-                                    n_groups=config.n_groups)
+                                    #norm=config.norm,
+                                    #n_groups=config.n_groups
+                                    )
 
         # #### Second half of U-Net - increasing resolution
         up = []
@@ -291,24 +313,27 @@ class UNet2D(PreTrainedModel):
             for _ in range(config.n_blocks):
                 up.append(
                     UpBlockND(
+                        config=config,
                         in_channels=in_channels_up,
                         out_channels=out_channels_up,
                         dim=2,
                         has_attn=config.is_attn[i],
                         activation=config.activation_fn_name,
-                        norm=config.norm,
-                        n_groups=config.n_groups,
+                        #norm=config.norm,
+                        #n_groups=config.n_groups,
                     )
                 )
             # Final block to reduce the number of channels
             out_channels_up = in_channels_up // config.channel_multiplier[i]
-            up.append(UpBlockND(in_channels=in_channels_up, 
+            up.append(UpBlockND(config=config,
+                                in_channels=in_channels_up, 
                                 out_channels=out_channels_up, 
                                 dim=2, 
                                 has_attn=config.is_attn[i], 
                                 activation=config.activation_fn_name, 
-                                norm=config.norm,
-                                n_groups=config.n_groups))
+                                #norm=config.norm,
+                                #n_groups=config.n_groups
+                                ))
             in_channels_up = out_channels_up
             # Up sample at all resolutions except last
             if i > 0:
@@ -317,11 +342,13 @@ class UNet2D(PreTrainedModel):
         # Combine the set of modules
         self.up = nn.ModuleList(up)
 
-        if config.norm:
-            self.norm = nn.GroupNorm(8, config.latent_channels)
-        else:
-            self.norm = nn.Identity()
-
+        # if config.norm:
+        #     self.norm = nn.GroupNorm(8, config.latent_channels)
+        # else:
+        #     self.norm = nn.Identity()
+        #self.norm = CustomNorm(config=config, input_dim=(in_channels_up, config.latent_channels))
+        # self.norm = CustomNorm(config=config, num_channels=config.latent_channels, array_length=4, channel_at_last_position=True)
+        self.norm = CustomNorm(config=config, num_channels=config.latent_channels, array_length=4, channel_at_last_position=False)
         if config.use1x1:
             self.final = nn.Conv2d(in_channels_up, config.out_size, kernel_size=1)
         else:
@@ -330,7 +357,7 @@ class UNet2D(PreTrainedModel):
         # Overall downsampling factor for padding logic
         self._ds_factor = 2 ** (unet_depth - 1)
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, **kwargs):
         if x.dim() != 4:
             raise ValueError(
                 "Only 4D tensors [batch, in_channels, grid_x, grid_y] accepted for 2D UNet"
@@ -355,11 +382,11 @@ class UNet2D(PreTrainedModel):
         x = self.image_proj(x)
 
         h = [x]
-        for m in self.down:
-            x = m(x)
+        for i,m in enumerate(self.down):
+            x = m(x, **kwargs)
             h.append(x)
 
-        x = self.middle(x)
+        x = self.middle(x, **kwargs)
 
         for i, m in enumerate(self.up):
             if isinstance(m, UpsampleND):
@@ -368,9 +395,19 @@ class UNet2D(PreTrainedModel):
                 # Get the skip connection from first half of U-Net and concatenate
                 s = h.pop()
                 x = torch.cat((x, s), dim=1)
-                x = m(x)
+                x = m(x, **kwargs)
 
-        x = self.final(self.activation(self.norm(x)))
+        # Channel-last normalisation and activation
+        # x_last = torch.movedim(x, 1, -1)
+        # x_last = self.norm(x_last, **kwargs)
+        # x_last = self.activation(x_last)
+        # x = torch.movedim(x_last, -1, 1)
+        # x = self.final(x)
+
+        #without the movedim
+        x = self.norm(x, **kwargs)
+        x = self.activation(x)
+        x = self.final(x)
 
         # Crop back to original size if padded
         if pad_H or pad_W:
@@ -405,13 +442,14 @@ class UNet3D(PreTrainedModel):
             for _ in range(config.n_blocks):
                 down.append(
                     DownBlockND(
+                        config=config,
                         in_channels=in_channels_down,
                         out_channels=out_channels_down,
                         dim=3,
                         has_attn=config.is_attn[i],
                         activation=config.activation_fn_name,
-                        norm=config.norm,
-                        n_groups=config.n_groups,
+                        #norm=config.norm,
+                        #n_groups=config.n_groups,
                     )
                 )
                 in_channels_down = out_channels_down
@@ -423,12 +461,14 @@ class UNet3D(PreTrainedModel):
         self.down = nn.ModuleList(down)
         
         out_channels_mid = out_channels_down
-        self.middle = MiddleBlockND(n_channels=out_channels_mid, 
+        self.middle = MiddleBlockND(config=config,
+                                    n_channels=out_channels_mid, 
                                     dim=3, 
                                     has_attn=config.mid_attn, 
                                     activation=config.activation_fn_name, 
-                                    norm=config.norm,
-                                    n_groups=config.n_groups)
+                                    #norm=config.norm,
+                                    #n_groups=config.n_groups
+                                    )
 
         # #### Second half of U-Net - increasing resolution
         up = []
@@ -441,24 +481,27 @@ class UNet3D(PreTrainedModel):
             for _ in range(config.n_blocks):
                 up.append(
                     UpBlockND(
+                        config=config,
                         in_channels=in_channels_up,
                         out_channels=out_channels_up,
                         dim=3,
                         has_attn=config.is_attn[i],
                         activation=config.activation_fn_name,
-                        norm=config.norm,
-                        n_groups=config.n_groups,
+                        #norm=config.norm,
+                        #n_groups=config.n_groups,
                     )
                 )
             # Final block to reduce the number of channels
             out_channels_up = in_channels_up // config.channel_multiplier[i]
-            up.append(UpBlockND(in_channels=in_channels_up, 
+            up.append(UpBlockND(config=config,
+                                in_channels=in_channels_up, 
                                 out_channels=out_channels_up, 
                                 dim=3, 
                                 has_attn=config.is_attn[i], 
                                 activation=config.activation_fn_name, 
-                                norm=config.norm,
-                                n_groups=config.n_groups))
+                                #norm=config.norm,
+                                #n_groups=config.n_groups
+                                ))
             
             in_channels_up = out_channels_up
             # Up sample at all resolutions except last
@@ -468,11 +511,12 @@ class UNet3D(PreTrainedModel):
         # Combine the set of modules
         self.up = nn.ModuleList(up)
 
-        if config.norm:
-            self.norm = nn.GroupNorm(8, config.latent_channels)
-        else:
-            self.norm = nn.Identity()
-
+        # if config.norm:
+        #     self.norm = nn.GroupNorm(8, config.latent_channels)
+        # else:
+        #     self.norm = nn.Identity()
+        #self.norm = CustomNorm(config=config, input_dim=(in_channels_up, config.latent_channels))
+        self.norm = CustomNorm(config=config, num_channels=config.latent_channels, array_length=5, channel_at_last_position=True)
         if config.use1x1:
             self.final = nn.Conv3d(in_channels_up, config.out_size, kernel_size=1)
         else:
@@ -481,7 +525,7 @@ class UNet3D(PreTrainedModel):
         # Overall downsampling factor for padding logic
         self._ds_factor = 2 ** (unet_depth - 1)
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, **kwargs):
         if x.dim() != 5:
             raise ValueError(
                 "Only 5D tensors [batch, in_channels, grid_x, grid_y, grid_z] accepted for 3D ResNet"
@@ -512,10 +556,10 @@ class UNet3D(PreTrainedModel):
 
         h = [x]
         for m in self.down:
-            x = m(x)
+            x = m(x, **kwargs)
             h.append(x)
 
-        x = self.middle(x)
+        x = self.middle(x, **kwargs)
 
         for m in self.up:
             if isinstance(m, UpsampleND):
@@ -524,9 +568,15 @@ class UNet3D(PreTrainedModel):
                 # Get the skip connection from first half of U-Net and concatenate
                 s = h.pop()
                 x = torch.cat((x, s), dim=1)
-                x = m(x)
+                x = m(x, **kwargs)
 
-        x = self.final(self.activation(self.norm(x)))
+        # x = self.final(self.activation(self.norm(x)))
+                # Channel-last normalisation and activation
+        x_last = torch.movedim(x, 1, -1)
+        x_last = self.norm(x_last, **kwargs)
+        x_last = self.activation(x_last)
+        x = torch.movedim(x_last, -1, 1)
+        x = self.final(x)
 
         # Crop back if padded
         if pad_D or pad_H or pad_W:
