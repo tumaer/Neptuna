@@ -221,17 +221,8 @@ class ConditionalLayer(nn.Module):
             #NOTE: Conditioning data can be passed into a conv network before concatination with input_data.
             cond_params = kwargs["conditioning_parameters"]
         else:
-            raise ValueError("There is no conditioning_parameter in the dataset.")
-        
-        # cond_params = cond_params.reshape(-1, self.num_cond_params).type_as(x) # [16, 1]
-        # weight = self.weight(cond_params).unsqueeze(1) #[16, 1, 48]
-        # bias = self.bias(cond_params).unsqueeze(1) # [16, 1, 48]
-        # if x.dim() == 4:
-        #     weight = weight.unsqueeze(1)
-        #     bias = bias.unsqueeze(1)
-        # return weight * x + bias     
+            raise ValueError("There is no conditioning_parameter in the dataset.")  
 
-        assert x.shape[0] == cond_params.shape[0], "Batch size mismatch"
         if self.channel_at_last_position:
             B, *spatial_dims, C = x.shape
             gamma = self.weight(cond_params).view(B, *[1] * len(spatial_dims), C)
@@ -244,37 +235,6 @@ class ConditionalLayer(nn.Module):
         out = gamma * x + beta #Affine Transformation
         return out
 
-
-# class CustomNorm(nn.Module):
-#     # input_dim should not contain batch_size -> directely start with channels
-#     def __init__(self, config, input_dim: Tuple, *args, **kwargs):
-#         super().__init__(*args, **kwargs)
-#         self.input_dim = input_dim
-#         self.conditioning = config.conditioning
-#         if config.conditioning:
-#             self.cond_layer = ConditionalLayer(input_dim[-1], num_cond_params=config.num_cond_params)
-
-#         if config.norm == 'layer':
-#             self.norm = nn.LayerNorm(input_dim[-1], eps=config.norm_layer_eps)
-#         elif config.norm == 'batch':
-#             if len(input_dim) == 2:
-#                 self.norm = nn.BatchNorm1d(input_dim[-2], eps=config.norm_layer_eps)
-#             elif len(input_dim) == 3:
-#                 self.norm = nn.BatchNorm2d(input_dim[-3], eps=config.norm_layer_eps)
-#             elif len(input_dim) == 4:
-#                 self.norm = nn.BatchNorm3d(input_dim[-4], eps=config.norm_layer_eps)
-#             else:
-#                 raise ValueError("Specified input_dim does not have dimension 1, 2, or 3.")
-#         elif config.norm == 'group':
-#             self.norm = nn.GroupNorm(num_groups=input_dim[0] // config.num_groups_div_rate, num_channels=input_dim[0], eps=config.norm_layer_eps)
-#         else:
-#             raise ValueError(f"{config.norm} is not a allowed norm")
-            
-#     def forward(self, x, **kwargs) -> torch.Tensor:
-#         if self.conditioning:
-#             x = self.cond_layer(x, **kwargs)
-#         return self.norm(x)
-
 def get_num_groups(num_channels: int, max_groups: int = 32) -> int:
     """
     Return the largest number of groups ≤ max_groups that divides num_channels.
@@ -286,6 +246,33 @@ def get_num_groups(num_channels: int, max_groups: int = 32) -> int:
     return 1 
 
 class BatchNormChannelLast(nn.Module):
+    """Batch Normalization for tensors in **channel-last** format.
+
+    This helper wraps the standard ``torch.nn.BatchNorm1d/2d/3d`` modules so
+    they can be used with data where the channel dimension is at the *end* of
+    the tensor, e.g. ``(N, L, C)``, ``(N, H, W, C)`` or ``(N, D, H, W, C)``.
+    Internally the tensor is temporarily permuted to channel-first layout 
+    i.e (N, C, L) or (N, C, H, W) or (N, C, D, H, W),
+    normalized, and permuted back so the user interface remains unchanged.
+
+    Parameters
+    ----------
+    dim : int
+        Total rank of the input tensor (including the batch dimension).
+        Accepted values:
+
+        * 3 → 1-D data ``(N, L, C)``
+        * 4 → 2-D data ``(N, H, W, C)``
+        * 5 → 3-D data ``(N, D, H, W, C)``
+
+    num_channels : int
+        The size of the channel dimension *C*.
+
+    **kwargs : dict
+        Additional arguments passed straight to the underlying
+        ``torch.nn.BatchNorm1d/2d/3d`` instance (e.g. ``eps``, ``momentum``).
+    """
+
     def __init__(self, dim: int, num_channels: int, **kwargs):
         super().__init__()
         if dim == 3:
