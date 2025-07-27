@@ -5,6 +5,7 @@ from torch import Tensor
 from models.DeepONet.deeponet_utils import BasicBlockND4DeepONet
 from utils.model_utils import PretrainedConfig
 from utils.model_utils import CustomNorm
+from utils.model_utils import SequentialWithKwargs
 
 class ResNetConfig(PretrainedConfig):
     """
@@ -47,39 +48,6 @@ class ResNetConfig(PretrainedConfig):
         self.padding = padding
         self.stride = stride
         
-# -----------------------------------------------------------------------------
-# Helper to propagate **kwargs through nn.Sequential
-# -----------------------------------------------------------------------------
-class SequentialWithKwargs(nn.Sequential):
-    """nn.Sequential variant that forwards any additional keyword arguments
-    to every sub-module. This makes it compatible with blocks whose forward
-    signature is ``forward(x, **kwargs)`` (e.g. blocks containing
-    `CustomNorm` layers that need conditioning parameters).
-    """
-
-    def forward(self, x, **kwargs): 
-        """Forward that is tolerant of modules which do **not** accept the
-        extra keyword arguments.  For each sub-module we first attempt to call
-        it with ``**kwargs``; if this results in a *TypeError* complaining
-        about unexpected keyword arguments we retry without them.  This allows
-        mixing plain layers (e.g. ``nn.Conv``) with custom layers (e.g.
-        ``CustomNorm``) that require the extra data.
-        """
-
-        for module in self:
-            if kwargs:
-                try:
-                    x = module(x, **kwargs)
-                    continue  # success
-                except TypeError as e:
-                    # Only swallow the error if it is about unexpected kwarg
-                    # to keep other bugs visible.
-                    if "unexpected keyword argument" not in str(e):
-                        raise
-            # Fallback: call without kwargs
-            x = module(x)
-        return x
-
 # -----------------------------------------------------------------------------
 # Main ResNet building blocks
 # -----------------------------------------------------------------------------

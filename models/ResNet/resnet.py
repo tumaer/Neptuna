@@ -167,8 +167,6 @@ class ResNet2D(PreTrainedModel):
                     stride = config.stride,
                     dimension = 2,
                     activation_fn = self.activation,
-                #     norm = config.norm,
-                #  norm_layer_eps = config.norm_layer_eps,
                 )
                 for i in range(len(config.num_blocks))
             ]
@@ -200,8 +198,8 @@ class ResNet2D(PreTrainedModel):
             x = torch.cat((x, coord_feat), dim=1)
         
         #encoder    
-        x = self.activation(self.conv_in1(x.float())) 
-        x = self.activation(self.conv_in2(x.float())) 
+        x = self.activation(self.conv_in1(x)) 
+        x = self.activation(self.conv_in2(x)) 
         if self.config.padding > 0:
             x = F.pad(x, [0, self.config.padding, 0, self.config.padding])
             
@@ -250,8 +248,6 @@ class ResNet3D(PreTrainedModel):
                     stride = config.stride,
                     dimension = 3,
                     activation_fn = self.activation,
-                    # norm = config.norm,
-                    # norm_layer_eps = config.norm_layer_eps,
                 )
                 for i in range(len(config.num_blocks))
             ]
@@ -282,8 +278,8 @@ class ResNet3D(PreTrainedModel):
             x = torch.cat((x, coord_feat), dim=1)
         
         #encoder    
-        x = self.activation(self.conv_in1(x.float())) 
-        x = self.activation(self.conv_in2(x.float())) 
+        x = self.activation(self.conv_in1(x)) 
+        x = self.activation(self.conv_in2(x)) 
         # 3D padding: (pad_left, pad_right, pad_top, pad_bottom, pad_front, pad_back)
         if self.config.padding > 0:
             x = F.pad(x, (0, self.config.padding, 0, self.config.padding, 0, self.config.padding))
