@@ -103,8 +103,6 @@ class ResidualBlockND(nn.Module):
         self.norm2 = CustomNorm(config=config, num_channels=out_channels, array_length=dim+2, channel_at_last_position=False)
 
     def forward(self, x: torch.Tensor, **kwargs):
-
-        #without the movedim
         h = self.norm1(x, **kwargs)
         h = self.activation(h)
         h = self.conv1(h)

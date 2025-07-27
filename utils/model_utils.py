@@ -139,7 +139,7 @@ class PretrainedConfig(PretrainedConfig_):
         latent_channels: int = 32,
         include_input_seq_len: bool = True,
         conditioning: str = None,
-        norm: str = 'layer',
+        norm: str = 'identity',
         num_cond_params: int = 0,
         norm_layer_eps: float = 1e-5,
         **kwargs
@@ -162,7 +162,7 @@ class PretrainedConfig(PretrainedConfig_):
         self.conditioning = conditioning
         self.norm = norm
         self.norm_layer_eps = norm_layer_eps
-        if norm not in ['layer', 'batch', 'group']:
+        if norm not in ['layer', 'batch', 'group', 'identity']:
             raise ValueError(f'{norm} norm is not in the specified list of allowed norms')
 
         self.coord_features = coord_features
@@ -485,6 +485,10 @@ class CustomNorm(nn.Module):
                 )
             else:
                 return nn.GroupNorm(num_groups=num_groups, num_channels=self.num_channels, eps=eps)
+
+        # -------------------- IDENTITY (No Normalization) --------------------
+        if norm_type == "identity":
+            return nn.Identity()
 
         # ----------------------------------------------------
         raise ValueError(f"{config.norm} is not a supported normalization type")

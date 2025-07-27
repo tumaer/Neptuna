@@ -15,7 +15,7 @@ filter_features:
 #NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels 
 conditioning_features:
   conditioning_in_channels: null
-  include_conditioning_parameters: True
+  include_conditioning_parameters: False
   num_cond_params: null
   parameter_min_max_stats: null
 residual_config: null

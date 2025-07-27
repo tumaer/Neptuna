@@ -7,4 +7,4 @@ mid_attn: False
 n_blocks: 2 #Number of DownBlock/UpBlock in each level
 use1x1: False
 norm_layer_eps: 1e-5
-norm: 'layer' # layer, batch, group (see model_utils.py for max_groups)
+norm: 'layer' # layer, batch, group (see model_utils.py for max_groups), identity

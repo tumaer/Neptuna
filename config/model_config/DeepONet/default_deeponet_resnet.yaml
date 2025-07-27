@@ -8,4 +8,4 @@ ResNet_block: "BasicBlockND4DeepONet"
 activation_fn_name: "ReLU"
 num_blocks: [1,1,1,1] #blocks are as a list as different resnet blocks can be potentially combined.
 norm_layer_eps: 1e-5
-norm: "layer" # layer, batch, group
+norm: "layer" # layer, batch, group, identity

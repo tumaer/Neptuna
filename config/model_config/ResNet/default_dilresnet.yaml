@@ -4,4 +4,4 @@ latent_channels: 256
 activation_fn_name: gelu
 #dilation rate is fixed to [1, 2, 4, 8, 4, 2, 1]
 norm_layer_eps: 1e-5
-norm: 'layer' # layer, batch, group
+norm: 'layer' # layer, batch, group, identity
