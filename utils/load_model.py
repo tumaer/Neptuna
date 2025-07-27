@@ -220,7 +220,12 @@ def fetch_model(model_config: Dict,
                     branch_net = "FFN",
                     act_on_output=model_config['act_on_output'], #only for FFN
                     activation_fn_name=model_config['activation_fn_name'],
-                    coord_features=True
+                    coord_features=True,
+                    conditioning=data_config['conditioning_features']['include_conditioning_parameters'], # if True ConditionalLayerNorm is used otherwise LayerNorm
+                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
+                    norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
+                    norm=model_config['norm']
+
         )
         model = AutoDeepONet(config=config)
     
@@ -241,7 +246,11 @@ def fetch_model(model_config: Dict,
                     branch_net = "CNN",
                     width=model_config['width'],
                     activation_fn_name=model_config['activation_fn_name'],
-                    coord_features=True
+                    coord_features=True,
+                    conditioning=data_config['conditioning_features']['include_conditioning_parameters'], # if True ConditionalLayerNorm is used otherwise LayerNorm
+                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
+                    norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
+                    norm=model_config['norm']
                     )
         model = AutoDeepONet(config=config)
     
@@ -263,7 +272,11 @@ def fetch_model(model_config: Dict,
                     activation_fn_name=model_config['activation_fn_name'],
                     ResNet_block= model_config['ResNet_block'],
                     num_blocks= model_config['num_blocks'],
-                    coord_features=True
+                    coord_features=True,
+                    conditioning=data_config['conditioning_features']['include_conditioning_parameters'], # if True ConditionalLayerNorm is used otherwise LayerNorm
+                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
+                    norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
+                    norm=model_config['norm']
         )
         model = AutoDeepONet(config=config)
     
