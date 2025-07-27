@@ -382,7 +382,6 @@ class CustomNorm(nn.Module):
     def __init__(
         self,
         config,
-        *,  # force keyword usage for clarity
         num_channels: int,
         array_length: int,
         channel_at_last_position: bool = False,

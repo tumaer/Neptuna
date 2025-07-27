@@ -51,13 +51,10 @@ class ResNet(PreTrainedModel):
         else:
             conditioning_input_data = None        
 
-
         batch, input_seq, input_channels, *spatial = input_data.shape
-        input_data=input_data.reshape(batch, input_seq * input_channels, *spatial)
+        x=input_data.reshape(batch, input_seq * input_channels, *spatial)
         
-        y = self.resnet(input_data)
-        
-        return y
+        return self.resnet(x, **kwargs)
                                                    
 class ResNet1D(PreTrainedModel):
     def __init__(self, config, activation_fn: nn.Module = nn.GELU()) -> None:
@@ -84,14 +81,13 @@ class ResNet1D(PreTrainedModel):
             [
                 make_layer(
                     self.block,
+                    config,
                     config.latent_channels,
                     config.latent_channels,
                     config.num_blocks[i],
                     stride = config.stride,
                     dimension = 1,
                     activation_fn = self.activation,
-                    norm = config.norm,
-                    n_groups = config.n_groups,
                 )
                 for i in range(len(config.num_blocks))
             ]
@@ -110,26 +106,26 @@ class ResNet1D(PreTrainedModel):
             bias=True,
         )           
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, **kwargs) -> Tensor:
         if x.dim() != 3:
             raise ValueError(
                 "Only 3D tensors [batch, in_channels, grid_x] accepted for 1D ResNet"
             )
         
-        #add feature map
+        #add coordinate-feature map
         if self.config.coord_features: 
             coord_feat = oned_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
         
         #encoder    
-        x = self.activation(self.conv_in1(x.float())) 
-        x = self.activation(self.conv_in2(x.float())) 
+        x = self.activation(self.conv_in1(x)) 
+        x = self.activation(self.conv_in2(x)) 
         if self.config.padding > 0:
             x = F.pad(x, [0, self.config.padding])
             
         #main part
         for layer in self.layers:
-            x = layer(x)
+            x = layer(x, **kwargs)
             
         #decoder    
         if self.config.padding > 0:
@@ -164,14 +160,15 @@ class ResNet2D(PreTrainedModel):
             [
                 make_layer(
                     self.block,
+                    config,
                     config.latent_channels,
                     config.latent_channels,
                     config.num_blocks[i],
                     stride = config.stride,
                     dimension = 2,
                     activation_fn = self.activation,
-                    norm = config.norm,
-                    n_groups = config.n_groups,
+                #     norm = config.norm,
+                #  norm_layer_eps = config.norm_layer_eps,
                 )
                 for i in range(len(config.num_blocks))
             ]
@@ -191,7 +188,7 @@ class ResNet2D(PreTrainedModel):
         )           
            
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, **kwargs) -> Tensor:
         if x.dim() != 4:
             raise ValueError(
                 "Only 4D tensors [batch, in_channels, grid_x, grid_y] accepted for 2D ResNet"
@@ -210,7 +207,7 @@ class ResNet2D(PreTrainedModel):
             
         #main part
         for layer in self.layers:
-            x = layer(x)
+            x = layer(x, **kwargs)
             
         #decoder    
         if self.config.padding > 0:
@@ -246,14 +243,15 @@ class ResNet3D(PreTrainedModel):
             [
                 make_layer(
                     self.block,
+                    config,
                     config.latent_channels,
                     config.latent_channels,
                     config.num_blocks[i],
                     stride = config.stride,
                     dimension = 3,
                     activation_fn = self.activation,
-                    norm = config.norm,
-                    n_groups = config.n_groups,
+                    # norm = config.norm,
+                    # norm_layer_eps = config.norm_layer_eps,
                 )
                 for i in range(len(config.num_blocks))
             ]
@@ -272,7 +270,7 @@ class ResNet3D(PreTrainedModel):
             bias=True,
         )                  
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, **kwargs) -> Tensor:
         if x.dim() != 5:
             raise ValueError(
                 "Only 5D tensors [batch, in_channels, grid_x, grid_y, grid_z] accepted for 3D ResNet"
@@ -292,7 +290,7 @@ class ResNet3D(PreTrainedModel):
             
         #main part
         for layer in self.layers:
-            x = layer(x)
+            x = layer(x, **kwargs)
             
         #decoder    
         if self.config.padding > 0:
