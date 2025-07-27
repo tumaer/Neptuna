@@ -3,5 +3,6 @@ cno_depth: 4 #number of down/up sampling blocks in the network
 n_blocks: 4 #number of residual blocks per level (except the neck)
 n_blocks_bottleneck: 4 #number of residual blocks in the bottleneck
 channel_multiplier: 16 #base channel multiplier for network width
-norm: True #whether to use batch normalization
 latent_channels: 64 #number of channels in latent space of the lifting/projection block
+norm_layer_eps: 1e-5
+norm: 'layer' # layer, batch, group

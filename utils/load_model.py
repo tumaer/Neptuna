@@ -280,9 +280,12 @@ def fetch_model(model_config: Dict,
                     n_blocks=model_config['n_blocks'],
                     n_blocks_bottleneck=model_config['n_blocks_bottleneck'],
                     channel_multiplier=model_config['channel_multiplier'],
-                    norm=model_config['norm'],
                     latent_channels=model_config['latent_channels'],
-                    coord_features=True
+                    coord_features=True,
+                    conditioning=data_config['conditioning_features']['include_conditioning_parameters'] , # if True ConditionalLayerNorm is used otherwise LayerNorm
+                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
+                    norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
+                    norm=model_config['norm']
                     # Special activation function for CNO (defined in cno_utils.py))
                     )
         model = CNO(config=config)
