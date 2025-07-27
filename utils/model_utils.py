@@ -142,7 +142,6 @@ class PretrainedConfig(PretrainedConfig_):
         norm: str = 'layer',
         num_cond_params: int = 0,
         norm_layer_eps: float = 1e-5,
-        num_groups_div_rate: int = 1,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -163,7 +162,6 @@ class PretrainedConfig(PretrainedConfig_):
         self.conditioning = conditioning
         self.norm = norm
         self.norm_layer_eps = norm_layer_eps
-        self.num_groups_div_rate = num_groups_div_rate
         if norm not in ['layer', 'batch', 'group']:
             raise ValueError(f'{norm} norm is not in the specified list of allowed norms')
 
@@ -204,7 +202,40 @@ class PretrainedConfig(PretrainedConfig_):
         def default(o):
             return OmegaConf.to_container(o, resolve=True)
         return json.dumps(config_dict, indent=2, sort_keys=True, default=default) + "\n"
-    
+
+# -----------------------------------------------------------------------------
+# Helper to propagate **kwargs through nn.Sequential
+# -----------------------------------------------------------------------------
+class SequentialWithKwargs(nn.Sequential):
+    """nn.Sequential variant that forwards any additional keyword arguments
+    to every sub-module. This makes it compatible with blocks whose forward
+    signature is ``forward(x, **kwargs)`` (e.g. blocks containing
+    `CustomNorm` layers that need conditioning parameters).
+    """
+
+    def forward(self, x, **kwargs): 
+        """Forward that is tolerant of modules which do **not** accept the
+        extra keyword arguments.  For each sub-module we first attempt to call
+        it with ``**kwargs``; if this results in a *TypeError* complaining
+        about unexpected keyword arguments we retry without them.  This allows
+        mixing plain layers (e.g. ``nn.Conv``) with custom layers (e.g.
+        ``CustomNorm``) that require the extra data.
+        """
+
+        for module in self:
+            if kwargs:
+                try:
+                    x = module(x, **kwargs)
+                    continue  # success
+                except TypeError as e:
+                    # Only swallow the error if it is about unexpected kwarg
+                    # to keep other bugs visible.
+                    if "unexpected keyword argument" not in str(e):
+                        raise
+            # Fallback: call without kwargs
+            x = module(x)
+        return x
+
 # Adapted from https://github.com/camlab-ethz/poseidon
 class ConditionalLayer(nn.Module):
     def __init__(self, input_dim, num_cond_params, channel_at_last_position):
