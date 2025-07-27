@@ -1,7 +1,7 @@
 model_name: dilresnet
 num_blocks: [1, 1, 1, 1] #number of blocks in each stage
 latent_channels: 256
-norm_layer_eps: 1e-5
-norm: 'layer' # layer, batch, group
 activation_fn_name: gelu
 #dilation rate is fixed to [1, 2, 4, 8, 4, 2, 1]
+norm_layer_eps: 1e-5
+norm: 'layer' # layer, batch, group

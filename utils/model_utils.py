@@ -266,7 +266,7 @@ class ConditionalLayer(nn.Module):
         out = gamma * x + beta #Affine Transformation
         return out
 
-def get_num_groups(num_channels: int, max_groups: int = 32) -> int:
+def get_num_groups(num_channels: int, max_groups: int = 16) -> int:
     """
     Return the largest number of groups ≤ max_groups that divides num_channels.
     Falls back to 1 (like InstanceNorm) if none divide cleanly.

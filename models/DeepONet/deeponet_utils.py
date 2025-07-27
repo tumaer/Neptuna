@@ -182,8 +182,8 @@ class CnnBranch(nn.Module):
         for i in range(depth):
             blocks += [
                 Conv(latent_channels, latent_channels, kernel_size, padding=padding, stride=stride),
-                CustomNorm(config=config, num_channels=latent_channels, array_length=dimension+2, channel_at_last_position=False),
                 Pool(2),
+                CustomNorm(config=config, num_channels=latent_channels, array_length=dimension+2, channel_at_last_position=False),
                 activation_fn,
             ]
         self.blocks = SequentialWithKwargs(*blocks)

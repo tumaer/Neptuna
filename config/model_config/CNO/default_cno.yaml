@@ -5,4 +5,4 @@ n_blocks_bottleneck: 4 #number of residual blocks in the bottleneck
 channel_multiplier: 16 #base channel multiplier for network width
 latent_channels: 64 #number of channels in latent space of the lifting/projection block
 norm_layer_eps: 1e-5
-norm: 'layer' # layer, batch, group
+norm: 'batch' # layer, batch, group

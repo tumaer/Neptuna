@@ -4,5 +4,5 @@ branch_depth: 4
 trunk_depth: 4
 activation_fn_name: "ReLU"
 act_on_output: True
-norm: "group" # layer, batch, group
+norm: "batch" # layer, batch, group
 norm_layer_eps: 1e-5
