@@ -16,6 +16,7 @@ filter_features:
 conditioning_features:
   conditioning_in_channels: null
   include_conditioning_parameters: False
+  num_cond_params: null
   parameter_min_max_stats: null
 residual_config: null
   # add_base_value_with_raw_loss: False

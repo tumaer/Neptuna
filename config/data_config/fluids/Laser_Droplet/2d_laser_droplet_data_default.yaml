@@ -8,14 +8,15 @@ is_steady_state_prediction: False
 sequence_info: [1, 1, 1]
 # Available channels for LaserDroplet: ["Pressure", "Energy", "Density", "Velocity_X", "Velocity_Y"]
 filter_features:
-  filter_frame: null
+  filter_frames: null
   filter_groups: null
   filter_in_channels: null
   filter_out_channels: null
 #NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels
 conditioning_features:
   conditioning_in_channels: null
-  include_conditioning_parameters: True
+  include_conditioning_parameters: False
+  num_cond_params: null
   parameter_min_max_stats: null
 residual_config: null
 #   add_base_value_with_raw_loss: False

@@ -500,11 +500,7 @@ class ScOT(PreTrainedModel):
 
     
 
-    def forward(self, input_data: Tensor, **kwargs) -> Tensor:
-
-        if input_data is None:
-            raise ValueError("input_data cannot be None")
-        
+    def forward(self, input_data: Tensor, **kwargs) -> Tensor:        
         if "conditioning_input_data" in kwargs:
             #NOTE: Conditioning data can be passed into a conv network before concatination with input_data.
             conditioning_input_data = kwargs["conditioning_input_data"]
@@ -513,11 +509,8 @@ class ScOT(PreTrainedModel):
             conditioning_input_data = None
         
         batch, input_seq, channels, *spatial = input_data.shape
-        input_data = input_data.reshape(batch, input_seq * channels, *spatial)
-        
-        y = self.scot(input_data, **kwargs)
-
-        return y
+        x= input_data.reshape(batch, input_seq * channels, *spatial)
+        return self.scot(x, **kwargs)
 
 class ScOT2D(PreTrainedModel):
     """Inspired by https://github.com/huggingface/transformers/blob/v4.35.2/src/transformers/models/swinv2/modeling_swinv2.py#L1129"""

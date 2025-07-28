@@ -8,6 +8,7 @@ from utils import activation_func
 from typing import Tuple, List
 from transformers import PreTrainedModel
 from utils.grid_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
+from utils.model_utils import CustomNorm
 
 class FNO(PreTrainedModel):
     """Fourier neural operator (FNO) model."""
@@ -54,7 +55,7 @@ class FNO(PreTrainedModel):
         input_data=input_data.reshape(batch, input_seq * input_channels, *spatial)
 
         # Fourier encoder
-        x_latent = self.fno(input_data)
+        x_latent = self.fno(input_data, **kwargs)
 
         # Reshape to pointwise inputs if not a conv FC model
         x_shape = x_latent.shape
@@ -93,6 +94,12 @@ class FNO1D(PreTrainedModel):
             activation_fn=self.activation_fn,
             dimension=1,
         )
+
+        self.norm = CustomNorm(config=config, 
+                               num_channels=config.latent_channels,
+                               array_length=3,
+                               channel_at_last_position=False)
+       
         # build main part
         self.spconv_layers,self.conv_layers = build_fno(
             fno_width=config.latent_channels,
@@ -110,7 +117,7 @@ class FNO1D(PreTrainedModel):
             activation_fn=self.config.decoder_activation_fn_name,
         )
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, **kwargs) -> Tensor:
         if self.config.coord_features:
             coord_feat = oned_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
@@ -122,9 +129,12 @@ class FNO1D(PreTrainedModel):
         for k, conv_w in enumerate(zip(self.conv_layers, self.spconv_layers)):
             conv, w = conv_w
             if k < len(self.conv_layers) - 1:
-                x = self.activation_fn(conv(x) + w(x))
+                x = conv(x) + w(x)
+                x = self.norm(x, **kwargs)
+                x = self.activation_fn(x)
             else:
                 x = conv(x) + w(x)
+                x = self.norm(x, **kwargs)
 
         x = x[..., : self.ipad[0]]
         return x
@@ -190,6 +200,12 @@ class FNO2D(PreTrainedModel):
             activation_fn=self.activation_fn,
             dimension=2,
         )
+
+        self.norm = CustomNorm(config=config, 
+                               num_channels=config.latent_channels,
+                               array_length=4, #len(x.shape for 2D datasets)
+                               channel_at_last_position=False)
+
         # build main part
         self.spconv_layers,self.conv_layers = build_fno(
             fno_width=config.latent_channels,
@@ -207,7 +223,7 @@ class FNO2D(PreTrainedModel):
             activation_fn=self.config.decoder_activation_fn_name,
         )
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, **kwargs) -> Tensor:
         if x.dim() != 4:
             raise ValueError(
                 "Only 4D tensors [batch, in_channels, grid_x, grid_y] accepted for 2D FNO"
@@ -223,11 +239,13 @@ class FNO2D(PreTrainedModel):
         # Spectral layers
         for k, conv_w in enumerate(zip(self.conv_layers, self.spconv_layers)):
             conv, w = conv_w
-            if k < len(self.conv_layers) - 1:
-                x = self.activation_fn(conv(x) + w(x))
+            if k < len(self.conv_layers) - 1:   
+                x = conv(x) + w(x)
+                x = self.norm(x, **kwargs)
+                x = self.activation_fn(x)
             else:
                 x = conv(x) + w(x)
-
+                x = self.norm(x, **kwargs)
         # remove padding
         x = x[..., : self.ipad[0], : self.ipad[1]]
 
@@ -294,6 +312,12 @@ class FNO3D(PreTrainedModel):
             activation_fn=self.activation_fn,
             dimension=3,
         )
+
+        self.norm = CustomNorm(config=config, 
+                               num_channels=config.latent_channels,
+                               array_length=5, #len(x.shape for 3D datasets)
+                               channel_at_last_position=False)
+
         # build main part
         self.spconv_layers,self.conv_layers = build_fno(
             fno_width=config.latent_channels,
@@ -311,7 +335,7 @@ class FNO3D(PreTrainedModel):
             activation_fn=self.config.decoder_activation_fn_name,
         )
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, **kwargs) -> Tensor:
         if self.config.coord_features:
             coord_feat = threed_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
@@ -327,9 +351,12 @@ class FNO3D(PreTrainedModel):
         for k, conv_w in enumerate(zip(self.conv_layers, self.spconv_layers)):
             conv, w = conv_w
             if k < len(self.conv_layers) - 1:
-                x = self.activation_fn(conv(x) + w(x))
+                x = conv(x) + w(x)
+                x = self.norm(x, **kwargs)
+                x = self.activation_fn(x)
             else:
                 x = conv(x) + w(x)
+                x = self.norm(x, **kwargs)
 
         x = x[..., : self.ipad[0], : self.ipad[1], : self.ipad[2]]
         return x

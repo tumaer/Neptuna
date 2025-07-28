@@ -10,6 +10,7 @@ including their shapes and data types.
 import h5py
 import numpy as np
 import os
+import argparse
 
 def visualize_dataset_structure(data_path):
     """
@@ -51,7 +52,25 @@ def visualize_dataset_structure(data_path):
         
         f.visititems(print_structure)
 
+# -----------------------------------------------------------------------------
+# Usage (terminal):
+#     python misc/dataset_structure_viz.py /path/to/dataset.h5
+# If no path is supplied, the default path defined below will be used.
+# -----------------------------------------------------------------------------
+
 # Main execution
 if __name__ == "__main__":
-    data_path = "./data/synthetic/SF/2D/blob/train.h5"
-    visualize_dataset_structure(data_path)
+    parser = argparse.ArgumentParser(
+        description="Visualize the hierarchical structure of an HDF5 dataset file."
+    )
+    parser.add_argument(
+        "data_path",
+        type=str,
+        nargs="?",  # optional positional argument
+        default="./data/fluids/KS/3D/train.h5",
+        help="Path to the HDF5 file to analyze (default: %(default)s)",
+    )
+
+    args = parser.parse_args()
+
+    visualize_dataset_structure(args.data_path)

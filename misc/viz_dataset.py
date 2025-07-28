@@ -534,6 +534,27 @@ def plot_timestep(
                     im = ax.imshow(im_data, cmap="coolwarm", origin="lower")
                 else:
                     im = ax.imshow(im_data, cmap=cmap_scalar, origin="lower")
+
+                # ------------------------------------------------------------------
+                # Show resolution ticks (axes) – x/y in pixel coordinates
+                # ------------------------------------------------------------------
+                height, width = im_data.shape
+
+                # Choose up to three tick positions (start, middle, end)
+                def _ticks(n):
+                    if n <= 1:
+                        return [0]
+                    if n == 2:
+                        return [0, 1]
+                    return [0, n // 2, n - 1]
+
+                ax.set_xticks(_ticks(width))
+                ax.set_yticks(_ticks(height))
+                ax.set_xlim(0, width - 1)
+                ax.set_ylim(0, height - 1)
+                #ax.set_xlabel("X")
+                #ax.set_ylabel("Y")
+
                 fig.colorbar(im, ax=ax, shrink=0.7)
             elif im_data is not None and im_data.ndim == 1:
                 ax.plot(im_data)
@@ -549,9 +570,8 @@ def plot_timestep(
             else:
                 ax.set_title(f"{dset_name} t={t}")
 
-            # Hide axes for images; keep for line plots
-            if im_data is not None and im_data.ndim == 2:
-                ax.axis("off")
+            # Keep axes visible for 2-D images (ticks added above).  For other
+            # plots, we leave default axis behaviour.
 
     # Hide any remaining unused axes
     for ax in axes_iter:

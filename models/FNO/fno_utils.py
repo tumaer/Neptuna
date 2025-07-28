@@ -30,7 +30,6 @@ class FNOConfig(PretrainedConfig):
         Activation function, by default "gelu"´
     """
 
-    model_type = "FNO"
     
     def __init__(
         self,

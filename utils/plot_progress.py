@@ -282,7 +282,7 @@ def plot_examples(
             # axes of the subplot in the row below.  Use a smaller value for 2-D plots
             # (which typically have less vertical space per row) and a moderate value
             # for 1-D plots.
-            x_label_pad = 25 if ndim == 2 else 30
+            x_label_pad = 40 if ndim == 2 else 30
 
             # Use a uniform but larger wspace to create clearer separation between logical columns.
             main_wspace = 1.2  # Empirically chosen for good visual separation

@@ -120,7 +120,7 @@ class ConvNeXtBlock(nn.Module):
         )  # depthwise conv
 
         self.input_resolution = input_resolution
-        self.norm = CustomNorm(config=config, input_dim=(input_resolution[0], input_resolution[1] ,dim))
+        self.norm = CustomNorm(config=config, num_channels=dim, array_length=4, channel_at_last_position=True)
 
         self.pwconv1 = nn.Linear(
             dim, 4 * dim # 48 -> 192
@@ -271,7 +271,7 @@ class ScOTEmbeddings(nn.Module):
             self.position_embeddings = None
 
 
-        self.norm = CustomNorm(config=config, input_dim=(num_patches, config.latent_channels))
+        self.norm = CustomNorm(config=config, num_channels=config.latent_channels, array_length=3, channel_at_last_position=True)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(
@@ -329,11 +329,11 @@ class ScOTLayer(nn.Module):
         )
         
 
-        self.layernorm_before = CustomNorm(config=config, input_dim=(input_resolution[0] * input_resolution[1], dim))
+        self.layernorm_before = CustomNorm(config=config, num_channels=dim, array_length=3, channel_at_last_position=True)
         self.drop_path = Swinv2DropPath(drop_path) if drop_path > 0.0 else nn.Identity() # 0 -> Identity
         self.intermediate = Swinv2Intermediate(config, dim) # Linear, activation
         self.output = Swinv2Output(config, dim) # Linear, activation
-        self.layernorm_after = CustomNorm(config=config, input_dim=(input_resolution[0] * input_resolution[1], dim))
+        self.layernorm_after = CustomNorm(config=config, num_channels=dim, array_length=3, channel_at_last_position=True)
         
         # Cache for attention masks
         self.attn_mask_cache = {}
@@ -607,7 +607,7 @@ class ScOTPatchMerging(nn.Module):
         self.input_resolution = input_resolution
         self.dim = dim
         self.reduction = nn.Linear(4 * dim, 2 * dim, bias=False)
-        self.norm = norm_layer(config=config, input_dim=(input_resolution[0] // 2 * input_resolution[1] // 2, 2 * dim))
+        self.norm = norm_layer(config=config, num_channels=2 * dim, array_length=3, channel_at_last_position=True)
 
     def maybe_pad(self, input_feature, height, width):
         should_pad = (height % 2 == 1) or (width % 2 == 1) # False
@@ -666,7 +666,7 @@ class ScOTPatchUnmerging(nn.Module):
         self.dim = dim # 384
         self.upsample = nn.Linear(dim, 2 * dim, bias=False) # 384 -> 768
         self.mixup = nn.Linear(dim // 2, dim // 2, bias=False) # 192 -> 192
-        self.norm = norm_layer(config=config, input_dim=(input_resolution[0] * input_resolution[1] * 4, dim // 2)) # 192
+        self.norm = norm_layer(config=config, num_channels=dim // 2, array_length=3, channel_at_last_position=True) # 192
 
     def maybe_crop(self, input_feature, height, width):
         height_in, width_in = input_feature.shape[1], input_feature.shape[2] # 8, 8

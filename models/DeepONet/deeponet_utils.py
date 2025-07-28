@@ -4,8 +4,9 @@ from torch import Tensor
 import numpy as np
 import torch
 from utils.grid_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
-
 from utils.model_utils import PretrainedConfig
+from utils.model_utils import CustomNorm
+from utils.model_utils import SequentialWithKwargs
 
 class DeepONetConfig(PretrainedConfig):
     """
@@ -36,10 +37,11 @@ class DeepONetConfig(PretrainedConfig):
             Type of ResNet block, only used for ResNet branch network
         out_ffn_depth : Optional[int]
             Output depth for the FFN branch network
+        norm : str
+            Normalization type, by default "layer"
+        norm_layer_eps : float
+            Epsilon for the normalization layer, by default 1e-5
         """
-
-    model_type = "DeepONet"
-
     def __init__(
         self,
         branch_net: str = "FFN",
@@ -98,14 +100,43 @@ class FFN(nn.Module):
             layers.append(activation_fn)
         self.layers = nn.Sequential(*layers)
 
-
     def forward(self, x: Tensor) -> Tensor:
         x = self.layers(x)
+        return x
+
+class FFNBranch(nn.Module):
+    """
+    A general fully connected multi-layer neural network.
+    """
+
+    def __init__(
+        self, 
+        config: DeepONetConfig,
+        dims: List, 
+        activation_fn: nn.Module = nn.GELU(),
+        act_on_output: bool = False,
+    ):
+        super().__init__()
+
+        layers = []
+        for i in range(len(dims) - 2):
+            layers.append(nn.Linear(dims[i], dims[i + 1]))
+            layers.append(CustomNorm(config=config, num_channels=dims[i + 1], array_length=3, channel_at_last_position=False))
+            layers.append(activation_fn)
+        layers.append(nn.Linear(dims[-2], dims[-1]))
+        if act_on_output:
+            layers.append(activation_fn)
+        # Replace plain nn.Sequential with variant that forwards **kwargs to submodules
+        self.layers = SequentialWithKwargs(*layers)
+
+    def forward(self, x: Tensor, **kwargs) -> Tensor:
+        x = self.layers(x, **kwargs)
         return x
     
 class CnnBranch(nn.Module):
     def __init__(
         self, 
+        config: DeepONetConfig,
         in_channels: int, 
         kernel_size: int, 
         padding: int, 
@@ -152,11 +183,12 @@ class CnnBranch(nn.Module):
             blocks += [
                 Conv(latent_channels, latent_channels, kernel_size, padding=padding, stride=stride),
                 Pool(2),
+                CustomNorm(config=config, num_channels=latent_channels, array_length=dimension+2, channel_at_last_position=False),
                 activation_fn,
             ]
-        self.blocks = nn.Sequential(*blocks)
+        self.blocks = SequentialWithKwargs(*blocks)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, **kwargs) -> Tensor:
         if self.coord_features: 
             if self.dimension == 1:
                 coord_feat = oned_meshgrid(list(x.shape), x.device)
@@ -167,7 +199,7 @@ class CnnBranch(nn.Module):
             x = torch.cat((x, coord_feat), dim=1)
 
         x = self.in_conv(x)  # (b, 16, h, w)
-        x = self.blocks(x)  # (b, 32, h/16=4, w/16=4)
+        x = self.blocks(x, **kwargs)  # (b, 32, h/16=4, w/16=4)
         x = self.out_conv(x)  # (b, 32, 4, 4)
         return x
     
@@ -181,18 +213,15 @@ class CnnBranch(nn.Module):
         return tuple(out)
 
 class BasicBlockND4DeepONet(nn.Module):
-
     expansion: int = 1
-
     def __init__(
         self,
+        config,
         in_planes: int,
         planes: int,
         dimension: int, 
         stride: int = 1,
         activation_fn: nn.Module = nn.GELU(),
-        norm: bool = True,
-        n_groups: int = 1,
     ) -> None:
         super().__init__()
         
@@ -216,31 +245,31 @@ class BasicBlockND4DeepONet(nn.Module):
         
         #2X 3*3 convolutions Layers and corresponding GroupNorm
         self.conv1 = Conv(in_planes, planes, kernel_size=kernel_size, stride=stride, padding=padding, bias=True)
-        self.bn1 = nn.GroupNorm(n_groups, num_channels=planes) if norm else nn.Identity()
+        self.norm1 = CustomNorm(config=config, num_channels=planes, array_length=dimension+2, channel_at_last_position=False)
         self.maxpool = Pool(2)
         self.conv2 = Conv(planes, planes, kernel_size=kernel_size, stride=1, padding=padding, bias=True)
-        self.bn2 = nn.GroupNorm(n_groups, num_channels=planes)
+        self.norm2 = CustomNorm(config=config, num_channels=planes, array_length=dimension+2, channel_at_last_position=False)
         self.activation = activation_fn
 
         # Shortcut connection
-        self.shortcut = nn.Sequential()
+        self.shortcut = SequentialWithKwargs()
         if stride != 1 or in_planes != self.expansion * planes:
-            self.shortcut = nn.Sequential(
+            self.shortcut = SequentialWithKwargs(
                 Conv(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
-                nn.GroupNorm(n_groups, self.expansion * planes) if norm else nn.Identity(),
+                CustomNorm(config=config, num_channels=self.expansion * planes, array_length=dimension+2, channel_at_last_position=False),
             )
 
-    def forward(self, x: Tensor) -> Tensor:
-        #out = self.conv1(self.activation(self.bn1(x)))
-        out = self.activation(self.bn1(self.conv1(x)))
-        #out = self.conv2(self.activation(self.bn2(out)))
-        out = self.activation(self.bn2(self.conv2(out)))
-        out = out + self.shortcut(x)
+    def forward(self, x: Tensor, **kwargs) -> Tensor:
+        out = x
+        out = self.conv1(out)
+        out = self.norm1(out, **kwargs)
+        out = self.activation(out)
+        out = self.conv2(out)
+        out = self.norm2(out, **kwargs)
+        out = self.activation(out)
+        out = out + self.shortcut(x, **kwargs)
         out = self.maxpool(out)
         return out
-
-
-
 
 def grid_to_points(value: Tensor) -> Tuple[Tensor, List[int]]:
     """
