@@ -249,7 +249,6 @@ class ConditionalLayer(nn.Module):
     def forward(self, x, **kwargs):
 
         if "conditioning_parameters" in kwargs:
-            #NOTE: Conditioning data can be passed into a conv network before concatination with input_data.
             cond_params = kwargs["conditioning_parameters"]
         else:
             raise ValueError("There is no conditioning_parameter in the dataset.")  
