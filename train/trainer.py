@@ -102,6 +102,39 @@ class Trainer(Trainer_):
         else:
             self.pushforward_enabled = bool(self.pushforward_config.get("enabled", True))
 
+        # ------------------------------------------------------------------
+        # Precompute conditioning flags and a fast model-forward function to
+        # avoid repeated if/else branches during every forward call.
+        # ------------------------------------------------------------------
+        conditioning_features = self.data_config["conditioning_features"]
+        self._use_cond_input_data = conditioning_features["conditioning_in_channels"] is not None
+        self._use_cond_parameters = conditioning_features["include_conditioning_parameters"]
+
+        def _build_model_forward_fn(use_cond_input, use_cond_params):
+            if use_cond_input and use_cond_params:
+                return lambda m, i: m(
+                    input_data=i["input_data"],
+                    conditioning_input_data=i["conditioning_input_data"],
+                    conditioning_parameters=i["conditioning_parameters"],
+                )
+            elif use_cond_params:
+                return lambda m, i: m(
+                    input_data=i["input_data"],
+                    conditioning_parameters=i["conditioning_parameters"],
+                )
+            elif use_cond_input:
+                return lambda m, i: m(
+                    input_data=i["input_data"],
+                    conditioning_input_data=i["conditioning_input_data"],
+                )
+            else:
+                return lambda m, i: m(input_data=i["input_data"])
+
+        #pre-build a partial fuction that builds the model forward function based on the conditioning flags.
+        self._model_forward_fn = _build_model_forward_fn(
+            self._use_cond_input_data, self._use_cond_parameters
+        )
+
         # Rebuild the callback handler with our custom implementation so that on_evaluate accepts **kwargs
         # Preserve the list of callbacks that may have been created by the HuggingFace Trainer during super().__init__.
         # NOTE: `CallbackHandler` here refers to our subclass imported from train.trainer_callback.
@@ -333,15 +366,7 @@ class Trainer(Trainer_):
                 with torch.no_grad(): #comment this out for multi-step autoregressive training
                     for unroll_step in range(pushforward_unroll_steps):
                         #print(f"Pushforward unroll step {unroll_step+1} of {pushforward_unroll_steps}")
-                        if (self.data_config.conditioning_features.conditioning_in_channels is not None) and (self.data_config.conditioning_features.include_conditioning_parameters is True):
-                            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"], conditioning_parameters=inputs['conditioning_parameters'])
-                        elif (self.data_config.conditioning_features.conditioning_in_channels is None) and (self.data_config.conditioning_features.include_conditioning_parameters is True):
-                            prediction = model(input_data=inputs["input_data"], conditioning_parameters=inputs['conditioning_parameters'])
-                        elif (self.data_config.conditioning_features.conditioning_in_channels is not None) and (self.data_config.conditioning_features.include_conditioning_parameters is False):
-                            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
-                        else:
-                            prediction = model(input_data=inputs["input_data"]) 
-                                        
+                        prediction = self._model_forward_fn(model, inputs)
                         prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_features"]["filter_out_channels"]), *spatial_dims)
                         
                         if self.residual_config is not None:
@@ -379,14 +404,7 @@ class Trainer(Trainer_):
             pushforward_unroll_steps = 0
             
         # NOTE:compute chain restored, the input_data is corrupted by the pushforward rollout steps (if any).
-        if (self.data_config.conditioning_features.conditioning_in_channels is not None) and (self.data_config.conditioning_features.include_conditioning_parameters is True):
-            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"], conditioning_parameters=inputs['conditioning_parameters'])
-        elif (self.data_config.conditioning_features.conditioning_in_channels is None) and (self.data_config.conditioning_features.include_conditioning_parameters is True):
-            prediction = model(input_data=inputs["input_data"], conditioning_parameters=inputs['conditioning_parameters'])
-        elif (self.data_config.conditioning_features.conditioning_in_channels is not None) and (self.data_config.conditioning_features.include_conditioning_parameters is False):
-            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
-        else:
-            prediction = model(input_data=inputs["input_data"]) 
+        prediction = self._model_forward_fn(model, inputs)
         
         prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_features"]["filter_out_channels"]), *spatial_dims)
         
@@ -450,14 +468,7 @@ class Trainer(Trainer_):
         """
         batch_size, _, _, *spatial_dims = inputs["input_data"].shape
         
-        if (self.data_config.conditioning_features.conditioning_in_channels is not None) and (self.data_config.conditioning_features.include_conditioning_parameters is True):
-            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"], conditioning_parameters=inputs['conditioning_parameters'])
-        elif (self.data_config.conditioning_features.conditioning_in_channels is None) and (self.data_config.conditioning_features.include_conditioning_parameters is True):
-            prediction = model(input_data=inputs["input_data"], conditioning_parameters=inputs['conditioning_parameters'])
-        elif (self.data_config.conditioning_features.conditioning_in_channels is not None) and (self.data_config.conditioning_features.include_conditioning_parameters is False):
-            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
-        else:
-            prediction = model(input_data=inputs["input_data"]) 
+        prediction = self._model_forward_fn(model, inputs)
         
         prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_features"]["filter_out_channels"]), *spatial_dims)
         return prediction
