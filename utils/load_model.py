@@ -374,7 +374,6 @@ def fetch_model(model_config: Dict,
                     num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
                     norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
                     norm=model_config['norm'],
-                    num_groups_div_rate=model_config['num_groups_div_rate']
                     )
         model = ViT(config=config)
 

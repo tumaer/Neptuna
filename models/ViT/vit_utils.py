@@ -146,8 +146,8 @@ class ViTLayer(nn.Module):
         self.output = ViTOutput(config)
 
         res_dim = config.grid_resolution[0] // config.patch_size * config.grid_resolution[1] // config.patch_size + 1
-        self.layernorm_before = CustomNorm(config, (res_dim, config.hidden_size))
-        self.layernorm_after = CustomNorm(config, (res_dim, config.hidden_size))
+        self.layernorm_before = CustomNorm(config=config, num_channels=config.hidden_size, array_length=3, channel_at_last_position=True)
+        self.layernorm_after = CustomNorm(config=config, num_channels=config.hidden_size, array_length=3, channel_at_last_position=True)
 
     def forward(
         self,

@@ -20,7 +20,7 @@ class ViTModel(ViTPreTrainedModel):
         self.encoder = ViTEncoder(config)
 
         res_dim = config.grid_resolution[0] // config.patch_size * config.grid_resolution[1] // config.patch_size + 1
-        self.layernorm = CustomNorm(config, (res_dim ,config.latent_channels))
+        self.layernorm = CustomNorm(config=config, num_channels=config.latent_channels, array_length=3, channel_at_last_position=True)
 
         # Initialize weights and apply final processing
         self.post_init()
