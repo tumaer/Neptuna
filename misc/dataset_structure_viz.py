@@ -44,12 +44,21 @@ def visualize_dataset_structure(data_path):
     print("data_path:", data_path)
     
     with h5py.File(data_path, "r") as f:
+        # ------------------------------------------------------------------
+        # Count top-level groups (same criterion as scripts/count_h5_groups.py)
+        # ------------------------------------------------------------------
+        num_top_groups = sum(1 for _ in f.keys())
+        print(f"Number of top-level groups: {num_top_groups}\n")
+
+        # ------------------------------------------------------------------
+        # Recursively print the structure
+        # ------------------------------------------------------------------
         def print_structure(name, obj):
             if isinstance(obj, h5py.Group):
                 print(f"Group: {name}")
             elif isinstance(obj, h5py.Dataset):
                 print(f"  Field: {name} - Shape: {obj.shape}, Dtype: {obj.dtype}")
-        
+
         f.visititems(print_structure)
 
 # -----------------------------------------------------------------------------
