@@ -26,7 +26,6 @@ class ViTConfig(PretrainedConfig):
         initializer_range=0.02,
         patch_size=16,
         qkv_bias=True,
-        encoder_stride=16,
         interpolate_pos_encoding=False,
         **kwargs,
     ):
@@ -41,7 +40,6 @@ class ViTConfig(PretrainedConfig):
         self.initializer_range = initializer_range
         self.patch_size = patch_size
         self.qkv_bias = qkv_bias
-        self.encoder_stride = encoder_stride
 
         self.interpolate_pos_encoding = interpolate_pos_encoding
 
@@ -145,7 +143,6 @@ class ViTLayer(nn.Module):
         self.intermediate = ViTIntermediate(config)
         self.output = ViTOutput(config)
 
-        res_dim = config.grid_resolution[0] // config.patch_size * config.grid_resolution[1] // config.patch_size + 1
         self.layernorm_before = CustomNorm(config=config, num_channels=config.hidden_size, array_length=3, channel_at_last_position=True)
         self.layernorm_after = CustomNorm(config=config, num_channels=config.hidden_size, array_length=3, channel_at_last_position=True)
 

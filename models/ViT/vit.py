@@ -19,7 +19,6 @@ class ViTModel(ViTPreTrainedModel):
         self.embeddings = ViTEmbeddings(config, use_mask_token=use_mask_token)
         self.encoder = ViTEncoder(config)
 
-        res_dim = config.grid_resolution[0] // config.patch_size * config.grid_resolution[1] // config.patch_size + 1
         self.layernorm = CustomNorm(config=config, num_channels=config.latent_channels, array_length=3, channel_at_last_position=True)
 
         # Initialize weights and apply final processing
@@ -138,10 +137,10 @@ class ViT2D(ViTModel):
         self.decoder = nn.Sequential(
             nn.Conv2d(
                 in_channels=config.latent_channels,
-                out_channels=config.encoder_stride**2 * config.out_channels,
+                out_channels=config.patch_size**2 * config.out_channels,
                 kernel_size=1,
             ),
-            nn.PixelShuffle(config.encoder_stride),
+            nn.PixelShuffle(config.patch_size),
         )
 
         # Initialize weights and apply final processing
@@ -160,13 +159,6 @@ class ViT2D(ViTModel):
         
         if input_data is None:
             raise ValueError("You have to specify input_data")
-
-        if bool_masked_pos is not None and (self.config.patch_size != self.config.encoder_stride):
-            raise ValueError(
-                "When `bool_masked_pos` is provided, `patch_size` must be equal to `encoder_stride` to ensure that "
-                "the reconstructed image has the same dimensions as the input. "
-                f"Got `patch_size` = {self.config.patch_size} and `encoder_stride` = {self.config.encoder_stride}."
-            )
 
         outputs = self.vit(
             input_data, #[6, 5, 160, 160]

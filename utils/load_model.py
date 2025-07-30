@@ -367,9 +367,8 @@ def fetch_model(model_config: Dict,
                     initializer_range=model_config['initializer_range'],
                     patch_size=model_config['patch_size'],
                     qkv_bias=model_config['qkv_bias'],
-                    encoder_stride=model_config['encoder_stride'],
                     output_hidden_states=False,
-                    output_attentions=model_config['output_attentions'],
+                    output_attentions=False,
                     conditioning=data_config['conditioning_features']['include_conditioning_parameters'] , # if True ConditionalLayerNorm is used otherwise LayerNorm
                     num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
                     norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
