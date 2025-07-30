@@ -30,6 +30,7 @@ def run(cfg):
         )
         os.environ["WANDB_PROJECT"] = wandb_project
         print(f"Setting WANDB_PROJECT to: {wandb_project}")
+        os.environ['WANDB_API_KEY'] = cfg["output_log_config"]["logging"]["wandb_api_key"]
 
     # ------------------------------------------------------------------
     # Build TrainingArguments
