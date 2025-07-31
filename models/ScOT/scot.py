@@ -628,7 +628,6 @@ class ScOT2D(PreTrainedModel):
         input_dim_x = math.ceil(input_dimensions[0] / (2 ** (len(self.config.depths) - 1)))
         input_dim_y = math.ceil(input_dimensions[1] / (2 ** (len(self.config.depths) - 1)))
 
-        #input_dim = math.floor(skip_states[-1].shape[1] ** 0.5) # 4
         decoder_output = self.decoder(
             skip_states[-1],
             (input_dim_x, input_dim_y),

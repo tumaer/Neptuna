@@ -8,8 +8,8 @@ is_steady_state_prediction: False
 sequence_info: [1, 1, 1]
 # Available channels for LaserDroplet: ["Pressure", "Energy", "Density", "Velocity_X", "Velocity_Y"]
 filter_features:
-  filter_frames: null
-  filter_groups: null
+  filter_frames: [0, 10]
+  filter_groups: null #['hp7.9929e+09_lp9.3968e+05_gasrad1.3888e-06_dropradmin1.4721e-05_dropradmax1.2919e-05', 'hp7.3583e+09_lp6.7498e+05_gasrad1.2911e-06_dropradmin1.5407e-05_dropradmax1.4086e-05', 'hp7.2152e+09_lp3.1319e+05_gasrad2.5667e-07_dropradmin1.0000e-05_dropradmax1.0000e-05', 'hp8.4873e+09_lp8.6158e+05_gasrad7.0522e-07_dropradmin1.5894e-05_dropradmax1.0223e-05']
   filter_in_channels: null
   filter_out_channels: null
 #NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels
@@ -24,3 +24,4 @@ residual_config: null
 #   add_predicted_value_with_raw_loss: False
 data_normalization_stats: null
 data_normalization_strategy: z_normalization
+coord_features: False

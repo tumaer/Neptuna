@@ -137,7 +137,7 @@ def fetch_model(model_config: Dict,
                     decoder_layer_size=model_config['decoder_layer_size'],
                     decoder_activation_fn_name=model_config['decoder_activation_fn_name'],
                     activation_fn_name=model_config['activation_fn_name'],
-                    coord_features=True,
+                    coord_features=data_config['coord_features'],
                     conditioning=data_config['conditioning_features']['include_conditioning_parameters'], # if True ConditionalLayerNorm is used otherwise LayerNorm
                     num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
                     norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
@@ -158,7 +158,7 @@ def fetch_model(model_config: Dict,
                     block="BasicBlock",
                     latent_channels=model_config['latent_channels'],
                     activation_fn_name=model_config['activation_fn_name'],
-                    coord_features=True,
+                    coord_features=data_config['coord_features'],
                     conditioning=data_config['conditioning_features']['include_conditioning_parameters'], # if True ConditionalLayerNorm is used otherwise LayerNorm
                     num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
                     norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
@@ -178,7 +178,7 @@ def fetch_model(model_config: Dict,
                     block="DilatedBasicBlock",
                     latent_channels=model_config['latent_channels'],
                     activation_fn_name=model_config['activation_fn_name'],
-                    coord_features=True,
+                    coord_features=data_config['coord_features'],
                     conditioning=data_config['conditioning_features']['include_conditioning_parameters'], # if True ConditionalLayerNorm is used otherwise LayerNorm
                     num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
                     norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
@@ -201,7 +201,7 @@ def fetch_model(model_config: Dict,
                     n_blocks=model_config['n_blocks'],
                     use1x1=model_config['use1x1'],
                     activation_fn_name=model_config['activation_fn_name'],
-                    coord_features=True,
+                    coord_features=data_config['coord_features'],
                     conditioning=data_config['conditioning_features']['include_conditioning_parameters'], # if True ConditionalLayerNorm is used otherwise LayerNorm
                     num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
                     norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
@@ -224,7 +224,7 @@ def fetch_model(model_config: Dict,
                     branch_net = "FFN",
                     act_on_output=model_config['act_on_output'], #only for FFN
                     activation_fn_name=model_config['activation_fn_name'],
-                    coord_features=True,
+                    coord_features=data_config['coord_features'],
                     conditioning=data_config['conditioning_features']['include_conditioning_parameters'], # if True ConditionalLayerNorm is used otherwise LayerNorm
                     num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
                     norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
@@ -250,7 +250,7 @@ def fetch_model(model_config: Dict,
                     branch_net = "CNN",
                     width=model_config['width'],
                     activation_fn_name=model_config['activation_fn_name'],
-                    coord_features=True,
+                    coord_features=data_config['coord_features'],
                     conditioning=data_config['conditioning_features']['include_conditioning_parameters'], # if True ConditionalLayerNorm is used otherwise LayerNorm
                     num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
                     norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
@@ -276,7 +276,7 @@ def fetch_model(model_config: Dict,
                     activation_fn_name=model_config['activation_fn_name'],
                     ResNet_block= model_config['ResNet_block'],
                     num_blocks= model_config['num_blocks'],
-                    coord_features=True,
+                    coord_features=data_config['coord_features'],
                     conditioning=data_config['conditioning_features']['include_conditioning_parameters'], # if True ConditionalLayerNorm is used otherwise LayerNorm
                     num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
                     norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
@@ -298,7 +298,7 @@ def fetch_model(model_config: Dict,
                     n_blocks_bottleneck=model_config['n_blocks_bottleneck'],
                     channel_multiplier=model_config['channel_multiplier'],
                     latent_channels=model_config['latent_channels'],
-                    coord_features=True,
+                    coord_features=data_config['coord_features'],
                     conditioning=data_config['conditioning_features']['include_conditioning_parameters'] , # if True ConditionalLayerNorm is used otherwise LayerNorm
                     num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
                     norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
@@ -338,7 +338,7 @@ def fetch_model(model_config: Dict,
                     residual_model=model_config['residual_model'], # either convnext or resnet
                     output_hidden_states=False,
                     output_attentions=False,
-                    coord_features=True,
+                    coord_features=data_config['coord_features'],
                     conditioning=data_config['conditioning_features']['include_conditioning_parameters'] , # if True ConditionalLayerNorm is used otherwise LayerNorm
                     num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
                     norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
@@ -356,7 +356,7 @@ def fetch_model(model_config: Dict,
                     grid_resolution=data_config['grid_resolution'], 
                     sequence_info=data_config['sequence_info'],
                     dimension=data_config['dimension'],
-                    coord_features=True,
+                    coord_features=data_config['coord_features'],
                     latent_channels=model_config['latent_channels'],
                     num_hidden_layers=model_config['num_hidden_layers'],
                     num_attention_heads=model_config['num_attention_heads'],
