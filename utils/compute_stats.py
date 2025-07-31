@@ -472,8 +472,26 @@ def compute_statistics(
     if len(h5_paths) == 0:
         raise ValueError("h5_paths list is empty.")
 
-    # Metadata from first file – honour group filter to guarantee consistency
-    channel_names, problem_dim = _discover_metadata(h5_paths[0], filter_groups)
+    # --------------------------------------------------------------
+    # Discover metadata (channel names and spatial dimensionality)
+    # --------------------------------------------------------------
+    metadata_found = False
+    for _meta_path in h5_paths:
+        try:
+            channel_names, problem_dim = _discover_metadata(_meta_path, filter_groups)
+            metadata_found = True
+            break  # success – stop searching
+        except ValueError:
+            # _discover_metadata raises ValueError only when *filter_groups* is
+            # provided but none of the requested groups are present in the file.
+            # In that scenario we simply continue searching the remaining files.
+            continue
+
+    if not metadata_found:
+        raise ValueError(
+            "None of the provided HDF5 files contained any of the groups "
+            f"specified in filter_groups={filter_groups}."
+        )
 
     # Aggregators for raw channels (created now but populated later)
     aggregators: Dict[str, _StatsAggregator] = {name: _StatsAggregator() for name in channel_names}
