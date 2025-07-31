@@ -171,10 +171,8 @@ class ViT2D(ViTModel):
             **kwargs
         )
 
-        sequence_output = outputs[0] #[6, 101, 768]
+        sequence_output = outputs[0] #[6, 100, 768]
 
-        # Reshape to (batch_size, num_channels, height, width)
-        sequence_output = sequence_output[:, 1:] #[6, 100, 768]
         batch_size, sequence_length, num_channels = sequence_output.shape #6, 100, 768
         height = self.config.grid_resolution[0] // self.config.patch_size
         width = self.config.grid_resolution[1] // self.config.patch_size
