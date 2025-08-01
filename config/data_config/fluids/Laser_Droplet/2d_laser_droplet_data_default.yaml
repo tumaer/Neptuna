@@ -22,5 +22,35 @@ residual_config: null
 #   add_base_value_with_raw_loss: False
 #   add_predicted_value_with_diff_loss: True
 #   add_predicted_value_with_raw_loss: False
-data_normalization_stats: null
 data_normalization_strategy: z_normalization
+data_normalization_stats: 
+  Density:
+    mean: 69.76413338290625
+    std: 246.66559685624304
+    min: 0.04093359544062778
+    max: 1384.147587498247
+  Energy:
+    mean: 65963929.69712706
+    std: 259217496.4371242
+    min: 94081.6170445948
+    max: 21858738189.89047
+  Pressure:
+    mean: 5881923.3799775
+    std: 73024931.44891122
+    min: -575312371.8314054
+    max: 7213316794.813375
+  Velocity_X:
+    mean: 174.69987558668464
+    std: 342.06529171966054
+    min: -1332.7219171546162
+    max: 5676.529772723001
+  Velocity_Y:
+    mean: 342.07245638844256
+    std: 749.1736649208647
+    min: -1394.127878349322
+    max: 8519.925739267119
+  Volume_Fraction:
+    mean: 0.9326745447469691
+    std: 0.24699979011525638
+    min: 0.0
+    max: 1.0
