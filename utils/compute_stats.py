@@ -50,6 +50,7 @@ import re  # Added for parameter parsing
 __all__ = [
     "compute_statistics",
     "compute_parameter_statistics",
+    "compute_statistics_parallel",
 ]
 
 
@@ -152,6 +153,36 @@ class _StatsAggregator:
             "min": float(self.min),
             "max": float(self.max),
         }
+
+    # ------------------------------------------------------------------
+    # Parallel reduction helper
+    # ------------------------------------------------------------------
+    def add_from_aggregator(self, other: "_StatsAggregator") -> None:
+        """Merge another aggregator *other* into *self* (parallel Welford)."""
+        if other.n == 0:
+            return
+        if self.n == 0:
+            # copy other's state (avoid code duplication)
+            self.n = other.n
+            self.mean = other.mean
+            self.M2 = other.M2
+            self.min = other.min
+            self.max = other.max
+            return
+
+        delta = other.mean - self.mean
+        total_n = self.n + other.n
+
+        # update mean
+        self.mean += delta * other.n / total_n
+
+        # update M2 (Chan et al., 1979)
+        self.M2 += other.M2 + delta * delta * self.n * other.n / total_n
+
+        # update extrema & count
+        self.min = min(self.min, other.min)
+        self.max = max(self.max, other.max)
+        self.n = total_n
 
 
 def _combined_std(std_devs: List[float]) -> float:
@@ -644,6 +675,158 @@ def compute_statistics(
         # Attach median/IQR when available (i.e. offline aggregation)
         for k, extra in extra_residual_stats.items():
             channel_stats.setdefault(k, {}).update(extra)
+
+    return channel_stats, channel_names, problem_dim
+
+
+# =====================================================================
+# Parallel CPU version – high-level convenience wrapper
+# =====================================================================
+
+from concurrent.futures import ProcessPoolExecutor
+from functools import reduce
+
+
+def _process_single_file(
+    path: str,
+    residual_config: Dict[str, bool] | None,
+    filter_groups: List[str] | None,
+    filter_frames: List[int] | None,
+    frame_stride: int,
+    on_fly_stats: bool,
+) -> Dict[str, _StatsAggregator]:
+    """Compute per-channel aggregators for *one* HDF5 file (worker)."""
+
+    # Discover metadata for this file (may raise if filter_groups missing)
+    try:
+        channel_names, _ = _discover_metadata(path, filter_groups)
+    except ValueError:
+        # no matching groups → return empty dict
+        return {}
+
+    aggs: Dict[str, _StatsAggregator] = {n: _StatsAggregator() for n in channel_names}
+    residual_aggs: Dict[str, _StatsAggregator] | None = None
+    if residual_config is not None:
+        residual_aggs = {f"{n}_residual": _StatsAggregator() for n in channel_names}
+
+    with h5py.File(path, "r") as f:
+        for grp_name in f:
+            if filter_groups is not None and grp_name not in filter_groups:
+                continue
+            grp = f[grp_name]
+            for field_name in grp:
+                field = grp[field_name]
+                ch_dim = field.shape[1]
+
+                # Build slice for frames / stride
+                if filter_frames is not None:
+                    if len(filter_frames) != 2:
+                        raise ValueError("filter_frames must be length-2 [start, end]")
+                    if frame_stride <= 0:
+                        raise ValueError("frame_stride must be positive")
+                    start_idx, end_idx = filter_frames
+                    if start_idx is None:
+                        start_idx = 0
+                    if end_idx is None:
+                        end_idx = field.shape[0] - 1
+                    frame_slice = slice(start_idx, end_idx + 1, frame_stride)
+                else:
+                    frame_slice = slice(None, None, frame_stride if frame_stride != 1 else None)
+
+                data = field[frame_slice]
+                res_data = np.diff(data, axis=0) if residual_aggs is not None and data.shape[0] > 1 else None
+
+                for ch in range(ch_dim):
+                    key = field_name if ch_dim == 1 else f"{field_name}_{ch}"
+                    aggs[key].add(data[:, ch])
+                    if res_data is not None:
+                        residual_aggs[f"{key}_residual"].add(res_data[:, ch])
+
+    # merge residuals into main dict (if any)
+    if residual_aggs is not None:
+        aggs.update(residual_aggs)
+
+    return aggs
+
+
+def _merge_aggregator_dicts(a: Dict[str, _StatsAggregator], b: Dict[str, _StatsAggregator]) -> Dict[str, _StatsAggregator]:
+    """In-place merge of two aggregator dictionaries, returns *a* for chaining."""
+    for k, agg_b in b.items():
+        if k in a:
+            a[k].add_from_aggregator(agg_b)
+        else:
+            a[k] = agg_b
+    return a
+
+
+def compute_statistics_parallel(
+    h5_paths: List[str],
+    residual_config: Dict[str, bool] | None = None,
+    filter_groups: List[str] | None = None,
+    filter_frames: List[int] | None = None,
+    frame_stride: int = 1,
+    on_fly_stats: bool = False,
+    num_workers: int | None = None,
+) -> Tuple[Dict[str, Dict[str, float]], List[str], int]:
+    """Parallel CPU implementation of :func:`compute_statistics`.
+
+    Each HDF5 file is processed in its own **process** and the per-channel
+    aggregators are merged in the parent.  The numerical results are
+    identical to the serial version; only the run-time can change.
+    """
+
+    if len(h5_paths) == 0:
+        raise ValueError("h5_paths list is empty.")
+
+    # ------------------------------------------------------------------
+    # Discover metadata once (first file that fits the filters)
+    # ------------------------------------------------------------------
+    metadata_found = False
+    channel_names: List[str] = []
+    problem_dim: int = 0
+    for p in h5_paths:
+        try:
+            channel_names, problem_dim = _discover_metadata(p, filter_groups)
+            metadata_found = True
+            break
+        except ValueError:
+            continue
+
+    if not metadata_found:
+        raise ValueError(
+            "None of the provided HDF5 files contained any of the requested groups "
+            f"filter_groups={filter_groups}."
+        )
+
+    # ------------------------------------------------------------------
+    # Launch workers
+    # ------------------------------------------------------------------
+    import itertools as _it
+
+    with ProcessPoolExecutor(max_workers=num_workers) as pool:
+        agg_dicts = list(
+            pool.map(
+                _process_single_file,
+                h5_paths,
+                _it.repeat(residual_config),
+                _it.repeat(filter_groups),
+                _it.repeat(filter_frames),
+                _it.repeat(frame_stride),
+                _it.repeat(on_fly_stats),
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # Merge aggregator dictionaries
+    # ------------------------------------------------------------------
+    global_aggs: Dict[str, _StatsAggregator] = {}
+    for d in agg_dicts:
+        _merge_aggregator_dicts(global_aggs, d)
+
+    # ------------------------------------------------------------------
+    # Build final statistics dictionary
+    # ------------------------------------------------------------------
+    channel_stats = {k: agg.combined() for k, agg in global_aggs.items()}
 
     return channel_stats, channel_names, problem_dim
 
