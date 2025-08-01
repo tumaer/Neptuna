@@ -111,7 +111,7 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
             filter_groups=cfg["data_config"]["filter_features"]["filter_groups"],
             filter_frames=cfg["data_config"]["filter_features"]["filter_frames"],
             frame_stride=cfg["data_config"]["sequence_info"][2],
-            on_fly_stats=False,
+            on_fly_stats=True,
         )
         cfg["data_config"]["data_normalization_stats"] = stats
     else:

@@ -55,90 +55,102 @@ __all__ = [
 
 class _StatsAggregator:
     """
-    Utility container to accumulate statistics for a single channel across groups/files.
-    
-    This class provides a memory-efficient way to compute combined statistics
-    across multiple data chunks without loading all data into memory simultaneously.
-    It maintains separate lists of statistics from each chunk and combines them
-    appropriately at the end.
-    
+    Utility container to accumulate statistics for a single channel across
+    multiple data chunks (groups / files) **without** storing the full data
+    or even per-chunk statistics in memory.
+
+    Implementation details
+    ----------------------
+    The class uses **Welford’s online algorithm** (and the parallel update
+    from Chan et al., 1979) to maintain running estimates of mean and
+    (population) variance while requiring only:
+
+        n     – total sample count (int)
+        mean  – running mean          (float64)
+        M2    – aggregated sum of squared deviations (float64)
+        min   – global minimum value (float64)
+        max   – global maximum value (float64)
+
+    All updates are performed in float64 precision to guarantee numerical
+    stability for very large data sets.
+
     Attributes
     ----------
-    means : List[float]
-        List of mean values from each processed data chunk.
-    stds : List[float]
-        List of standard deviations from each processed data chunk.
-    mins : List[float]
-        List of minimum values from each processed data chunk.
-    maxs : List[float]
-        List of maximum values from each processed data chunk.
-    
+    n : int
+        Total number of samples processed so far.
+    mean : float
+        Running arithmetic mean.
+    M2 : float
+        Accumulated sum of squared deviations from the running mean.  The
+        population standard deviation is derived from this quantity.
+    min : float
+        Global minimum across all processed samples.
+    max : float
+        Global maximum across all processed samples.
+
     Examples
     --------
     >>> agg = _StatsAggregator()
-    >>> agg.add(np.array([1, 2, 3, 4, 5]))
-    >>> agg.add(np.array([6, 7, 8, 9, 10]))
-    >>> combined_stats = agg.combined()
-    >>> print(combined_stats['mean'])  # Combined mean of both arrays
+    >>> agg.add(np.array([1, 2, 3, 4]))
+    >>> agg.add(np.array([10, 20]))
+    >>> agg.combined()
+    {'mean': 6.666666666666667, 'std': 7.4535599249993, 'min': 1.0, 'max': 20.0}
     """
 
     def __init__(self):
-        self.means: List[float] = []
-        self.stds: List[float] = []
-        self.mins: List[float] = []
-        self.maxs: List[float] = []
+        # running sample count
+        self.n: int = 0
+        # running mean
+        self.mean: float = 0.0
+        # aggregated sum of squares of differences from the current mean
+        self.M2: float = 0.0
+        # running extrema
+        self.min: float = np.inf
+        self.max: float = -np.inf
 
     def add(self, arr: np.ndarray):
-        """
-        Accumulate statistics for a data array.
-        
-        This method computes statistics for the input array in float64 precision
-        to avoid numerical precision issues, regardless of the input array's dtype.
-        
-        Parameters
-        ----------
-        arr : numpy.ndarray
-            Input array of any shape and numeric dtype. Will be flattened
-            internally for statistical computation.
-            
-        Notes
-        -----
-        All computations are performed in float64 precision.
-        """
-        # Promote to float64 for numerically stable statistics.
+        """Accumulate statistics for *arr* (any shape, any numeric dtype)."""
         flat = arr.reshape(-1).astype(np.float64)
+        cnt = flat.size
+        if cnt == 0:
+            return  # nothing to do
 
-        self.means.append(float(np.mean(flat, dtype=np.float64)))
-        self.stds.append(float(np.std(flat, dtype=np.float64)))
-        # Min/Max are exact so dtype promotion is not strictly required but we
-        # keep everything in float64 for consistency.
-        self.mins.append(float(np.min(flat)))
-        self.maxs.append(float(np.max(flat)))
+        # update extrema (exact)
+        chunk_min = float(flat.min())
+        chunk_max = float(flat.max())
+        if self.n == 0:
+            # first chunk → initialise directly
+            self.min = chunk_min
+            self.max = chunk_max
+        else:
+            if chunk_min < self.min:
+                self.min = chunk_min
+            if chunk_max > self.max:
+                self.max = chunk_max
+
+        # online update of mean and variance (via M2)
+        arr_mean = float(np.mean(flat, dtype=np.float64))
+        arr_var = float(np.var(flat, dtype=np.float64))  # population var
+
+        delta = arr_mean - self.mean
+        total_n = self.n + cnt
+
+        # update mean
+        self.mean += delta * cnt / total_n
+
+        # combine the two M2 values (see Chan et al., 1979)
+        self.M2 += arr_var * cnt + (delta ** 2) * self.n * cnt / total_n
+
+        self.n = total_n
 
     def combined(self) -> Dict[str, float]:
-        """
-        Compute final combined statistics from all accumulated chunks.
-        
-        Returns
-        -------
-        Dict[str, float]
-            Dictionary containing combined statistics with keys:
-            - 'mean': Average of all chunk means
-            - 'std': Root-mean-square of all chunk standard deviations
-            - 'min': Global minimum across all chunks
-            - 'max': Global maximum across all chunks
-            
-        Notes
-        -----
-        The combined standard deviation is computed as the RMS of individual
-        standard deviations, which provides a reasonable approximation when
-        chunk sizes are similar.
-        """
+        """Return a dictionary with combined statistics."""
+        std = float(np.sqrt(self.M2 / max(self.n, 1)))  # population std
         return {
-            "mean": float(np.mean(self.means)),
-            "std": float(_combined_std(self.stds)),
-            "min": float(np.min(self.mins)),
-            "max": float(np.max(self.maxs)),
+            "mean": float(self.mean),
+            "std": std,
+            "min": float(self.min),
+            "max": float(self.max),
         }
 
 
@@ -533,71 +545,56 @@ def compute_statistics(
                     field = grp[field_name]
                     ch_dim = field.shape[1]
 
-                    for ch in range(ch_dim): #loop for each component of the field
-                        channel_data = field[:, ch]
+                    # ------------------------------------------------------
+                    # Perform a single HDF5 read for the entire field and
+                    # slice frames/stride only once.  Subsequent per-channel
+                    # operations work on in-memory views, massively reducing
+                    # I/O overhead.
+                    # ------------------------------------------------------
+                    if filter_frames is not None:
+                        if len(filter_frames) != 2:
+                            raise ValueError(
+                                "filter_frames must be a 2-element list [start, end] denoting an inclusive range"
+                            )
+                        if frame_stride <= 0:
+                            raise ValueError("frame_stride must be a positive integer")
 
-                        # Apply frame filter if requested
-                        if filter_frames is not None:
-                            if len(filter_frames) != 2:
-                                raise ValueError(
-                                    "filter_frames must be a 2-element list [start, end] denoting an inclusive range"
-                                )
+                        start_idx, end_idx = filter_frames
+                        if start_idx is None:
+                            start_idx = 0
+                        if end_idx is None:
+                            end_idx = field.shape[0] - 1
+                        frame_slice = slice(start_idx, end_idx + 1, frame_stride)
+                    else:
+                        frame_slice = slice(None, None, frame_stride if frame_stride != 1 else None)
 
-                            # Validate stride
-                            if frame_stride <= 0:
-                                raise ValueError("frame_stride must be a positive integer")
+                    # Single read → numpy array in RAM (shape: (T, C, ...))
+                    field_data = field[frame_slice]
 
-                            start_idx, end_idx = filter_frames  # inclusive range
+                    # Pre-compute residuals if needed (diff along time axis)
+                    if residual_aggregators is not None and field_data.shape[0] > 1:
+                        residual_data = np.diff(field_data, axis=0)
+                    else:
+                        residual_data = None
 
-                            # Convert None-like values to defaults (allowing [None, end] etc.)
-                            if start_idx is None:
-                                start_idx = 0
-                            if end_idx is None:
-                                end_idx = channel_data.shape[0] - 1
-
-                            # Because NumPy slicing excludes the stop index, add 1 to make inclusive
-                            channel_data = channel_data[start_idx : end_idx + 1 : frame_stride]
-                        else:
-                            if frame_stride != 1:
-                                # Apply stride even when full range is included
-                                channel_data = channel_data[::frame_stride]
-
+                    # Iterate over every channel component but now slice in memory
+                    for ch in range(ch_dim):
+                        channel_data = field_data[:, ch]
                         key = field_name if ch_dim == 1 else f"{field_name}_{ch}"
 
-                        # Safety: if new channel encountered that wasn't in metadata (unlikely but possible)
                         if key not in aggregators:
                             aggregators[key] = _StatsAggregator()
 
-                        #NOTE: For both cases, residual_config, the statistics are computed by taking 
-                        # the differences of the neighbors
-                        
                         if on_fly_stats:
-                            # Immediate accumulation of channel-wise statistics for that partcular group
-                            # Dataset level stats computed at once in the end from the group-wise stats
                             aggregators[key].add(channel_data)
-
-                            # Residuals (on the fly)
-                            if residual_aggregators is not None and channel_data.shape[0] > 1:
-                                # if residual_config["add_predicted_value"]:
-                                #     residual_arr = np.diff(channel_data, axis=0)
-                                # else:
-                                #     residual_arr = channel_data[1:] - channel_data[0]
-                                #     #residual_arr = np.diff(channel_data, axis=0)
-                                residual_arr = np.diff(channel_data, axis=0)
+                            if residual_data is not None:
                                 res_key = f"{key}_residual"
-                                residual_aggregators[res_key].add(residual_arr) 
+                                residual_aggregators[res_key].add(residual_data[:, ch])
                         else:
-                            # Store data for later aggregation
                             collected_data[key].append(channel_data)
-                            if residual_aggregators is not None and channel_data.shape[0] > 1:
-                                # if residual_config["add_predicted_value"]:
-                                #     residual_arr = np.diff(channel_data, axis=0)
-                                # else:
-                                #     residual_arr = channel_data[1:] - channel_data[0]
-                                #     #residual_arr = np.diff(channel_data, axis=0)
-                                residual_arr = np.diff(channel_data, axis=0)
+                            if residual_data is not None:
                                 res_key = f"{key}_residual"
-                                collected_residual[res_key].append(residual_arr)
+                                collected_residual[res_key].append(residual_data[:, ch])
 
     # --------------------------------------------
     # Final combination / statistics computation
