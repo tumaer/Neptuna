@@ -200,7 +200,7 @@ def build_eval_groups(filtered_groups, eval_split_ratio):
 
     # Guard against corner cases where the ratio rounds to 0.
     if n_eval_groups <= 0:
-        raise ValueError(f"Number of evaluation groups is 0. Please increase the eval_split_ratio: {eval_split_ratio}")
+        raise ValueError(f"Number of evaluation groups is 0. Please increase the eval_split_ratio: {eval_split_ratio} or the number of groups in the filtered_groups: {filtered_groups}")
 
     return random.sample(filtered_groups, n_eval_groups)
 

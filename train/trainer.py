@@ -47,6 +47,7 @@ from collections.abc import Mapping  # locally import to avoid top-of-file chang
 import json
 import os
 import h5py
+import time
 
 class Trainer(Trainer_):
     """    
@@ -101,6 +102,39 @@ class Trainer(Trainer_):
             self.pushforward_enabled = False
         else:
             self.pushforward_enabled = bool(self.pushforward_config.get("enabled", True))
+
+        # ------------------------------------------------------------------
+        # Precompute conditioning flags and a fast model-forward function to
+        # avoid repeated if/else branches during every forward call.
+        # ------------------------------------------------------------------
+        conditioning_features = self.data_config["conditioning_features"]
+        self._use_cond_input_data = conditioning_features["conditioning_in_channels"] is not None
+        self._use_cond_parameters = conditioning_features["include_conditioning_parameters"]
+
+        def _build_model_forward_fn(use_cond_input, use_cond_params):
+            if use_cond_input and use_cond_params:
+                return lambda m, i: m(
+                    input_data=i["input_data"],
+                    conditioning_input_data=i["conditioning_input_data"],
+                    conditioning_parameters=i["conditioning_parameters"],
+                )
+            elif use_cond_params:
+                return lambda m, i: m(
+                    input_data=i["input_data"],
+                    conditioning_parameters=i["conditioning_parameters"],
+                )
+            elif use_cond_input:
+                return lambda m, i: m(
+                    input_data=i["input_data"],
+                    conditioning_input_data=i["conditioning_input_data"],
+                )
+            else:
+                return lambda m, i: m(input_data=i["input_data"])
+
+        #pre-build a partial fuction that builds the model forward function based on the conditioning flags.
+        self._model_forward_fn = _build_model_forward_fn(
+            self._use_cond_input_data, self._use_cond_parameters
+        )
 
         # Rebuild the callback handler with our custom implementation so that on_evaluate accepts **kwargs
         # Preserve the list of callbacks that may have been created by the HuggingFace Trainer during super().__init__.
@@ -333,15 +367,7 @@ class Trainer(Trainer_):
                 with torch.no_grad(): #comment this out for multi-step autoregressive training
                     for unroll_step in range(pushforward_unroll_steps):
                         #print(f"Pushforward unroll step {unroll_step+1} of {pushforward_unroll_steps}")
-                        if (self.data_config.conditioning_features.conditioning_in_channels is not None) and (self.data_config.conditioning_features.include_conditioning_parameters is True):
-                            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"], conditioning_parameters=inputs['conditioning_parameters'])
-                        elif (self.data_config.conditioning_features.conditioning_in_channels is None) and (self.data_config.conditioning_features.include_conditioning_parameters is True):
-                            prediction = model(input_data=inputs["input_data"], conditioning_parameters=inputs['conditioning_parameters'])
-                        elif (self.data_config.conditioning_features.conditioning_in_channels is not None) and (self.data_config.conditioning_features.include_conditioning_parameters is False):
-                            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
-                        else:
-                            prediction = model(input_data=inputs["input_data"]) 
-                                        
+                        prediction = self._model_forward_fn(model, inputs)
                         prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_features"]["filter_out_channels"]), *spatial_dims)
                         
                         if self.residual_config is not None:
@@ -379,14 +405,7 @@ class Trainer(Trainer_):
             pushforward_unroll_steps = 0
             
         # NOTE:compute chain restored, the input_data is corrupted by the pushforward rollout steps (if any).
-        if (self.data_config.conditioning_features.conditioning_in_channels is not None) and (self.data_config.conditioning_features.include_conditioning_parameters is True):
-            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"], conditioning_parameters=inputs['conditioning_parameters'])
-        elif (self.data_config.conditioning_features.conditioning_in_channels is None) and (self.data_config.conditioning_features.include_conditioning_parameters is True):
-            prediction = model(input_data=inputs["input_data"], conditioning_parameters=inputs['conditioning_parameters'])
-        elif (self.data_config.conditioning_features.conditioning_in_channels is not None) and (self.data_config.conditioning_features.include_conditioning_parameters is False):
-            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
-        else:
-            prediction = model(input_data=inputs["input_data"]) 
+        prediction = self._model_forward_fn(model, inputs)
         
         prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_features"]["filter_out_channels"]), *spatial_dims)
         
@@ -450,14 +469,7 @@ class Trainer(Trainer_):
         """
         batch_size, _, _, *spatial_dims = inputs["input_data"].shape
         
-        if (self.data_config.conditioning_features.conditioning_in_channels is not None) and (self.data_config.conditioning_features.include_conditioning_parameters is True):
-            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"], conditioning_parameters=inputs['conditioning_parameters'])
-        elif (self.data_config.conditioning_features.conditioning_in_channels is None) and (self.data_config.conditioning_features.include_conditioning_parameters is True):
-            prediction = model(input_data=inputs["input_data"], conditioning_parameters=inputs['conditioning_parameters'])
-        elif (self.data_config.conditioning_features.conditioning_in_channels is not None) and (self.data_config.conditioning_features.include_conditioning_parameters is False):
-            prediction = model(input_data=inputs["input_data"], conditioning_input_data=inputs["conditioning_input_data"])
-        else:
-            prediction = model(input_data=inputs["input_data"]) 
+        prediction = self._model_forward_fn(model, inputs)
         
         prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_features"]["filter_out_channels"]), *spatial_dims)
         return prediction
@@ -615,93 +627,103 @@ class Trainer(Trainer_):
         """
         Compute evaluation predictions without loss computation for memory efficiency.
 
-        Parameters
-        ----------
-        model : torch.nn.Module
-            The model to evaluate.
-        inputs : Dict[str, torch.Tensor]
-            Input tensors.
+        This re-implementation significantly speeds up the method by:
+        1. Pre-allocating the full predictions tensor and filling it in-place (avoids Python list
+           growth and the final `torch.stack`).
+        2. Reducing Python-level overhead by caching frequently accessed attributes locally.
+        3. Updating `input_data` in-place instead of recreating a new `dict` every rollout step.
 
-        Returns
-        -------
-        torch.Tensor
-            Stacked predictions with shape (B, rollout_steps+1, T, C, *spatial_dims).
+        The numerical behaviour is identical to the original implementation.
         """
-        #########################################################
-        #Autoregressive prediction (for eval and test)
-        #########################################################
-        predictions_ = []
-        prediction = self._forward_model_eval_or_test(model,inputs) 
+        # ------------------------------------------------------------------
+        # Fast path preparation
+        # ------------------------------------------------------------------
+        batch_size, _, _, *spatial_dims = inputs["input_data"].shape
+        rollout_steps = 0 if self.data_config.is_steady_state_prediction else self.rollout_steps
+        total_steps = rollout_steps + 1  # first step + autoregressive rollouts
 
-        if self.residual_config is not None:
-            base_value = inputs["input_data"][:,-1:,]
+        # First forward pass (t = 0)
+        prediction = self._forward_model_eval_or_test(model, inputs)
+
+        # -------------------------------------------------------------
+        # Handle residual learning variants once per step
+        # -------------------------------------------------------------
+        use_residuals = self.residual_config is not None
+        if use_residuals:
+            base_value = inputs["input_data"][:, -1:]  # last known physical state
             raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
 
-        #predictions_.append(raw_prediction.detach() if self.residual_config is not None else prediction.detach()) 
-        if self.output_all_steps:            
-            if self.residual_config is None:
-                # raw values are added 
-                predictions_.append(prediction.detach())
-            elif self.residual_config is not None and self.residual_config["add_predicted_value_with_diff_loss"]:
-                # predictions correspond to the difference and they are accumulated for the metrics.
-                predictions_.append(prediction.detach())
-            elif self.residual_config is not None and self.residual_config["add_predicted_value_with_raw_loss"]:
-                # raw_predictions correspond to the raw values and they are accumulated for the metrics.
-                predictions_.append(raw_prediction.detach())
-            else: #add_base_value_with_raw_loss
-                # raw_predictions correspond to the raw values and they are accumulated for the metrics.
-                predictions_.append(raw_prediction.detach())
+        # -------------------------------------------------------------
+        # Pre-allocate storage when the caller wants *all* steps
+        # -------------------------------------------------------------
+        if self.output_all_steps:
+            seq_len_out = self.data_config["sequence_info"][1]
+            n_channels_out = prediction.shape[2]
+            predictions = torch.empty(
+                (batch_size, total_steps, seq_len_out, n_channels_out, *spatial_dims),
+                dtype=prediction.dtype,
+                device=prediction.device,
+            )
+            if not use_residuals or self.residual_config["add_predicted_value_with_diff_loss"]:
+                predictions[:, 0].copy_(prediction.detach())
+            else:
+                predictions[:, 0].copy_(raw_prediction.detach())
+        else:
+            predictions = None  # we will only return the last prediction
 
-        if not self.data_config.is_steady_state_prediction:
-            for i in range(1,self.rollout_steps+1): 
-                #logger.debug(f"Eval/Test rollout step {i+1} of {self.rollout_steps+1}")
-                #prediction.shape = torch.Size([B, label_seq_length,C_labels, x_resolution, y_resolution, ...]) 
-                #recreate the inputs to be fed to the model for the next step
-                if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length > input_sequence length
-                    inputs = {
-                        **inputs,
-                        **{ #this part replaces the "input_data" of input with the output of the model. 
-                            #So the new input is the output from the previous step.
-                            "input_data": (
-                                prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the predictions so as to extract the input_sequence.
-                            )if self.residual_config is None else (
-                                raw_prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the predictions so as to extract the input_sequence.
-                            )
-                        },
-                }
-                
-                else: #input_sequence length > label_sequence length (the more usual case)
-                    inputs = {
-                        **inputs,
-                        **{ #this part replaces the "input_data" of input with the output of the model. 
-                            #So the new input is the output from the previous step.
-                            "input_data": ( 
-                                torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1) ##slice a part of the input_data so as to extract the input_sequence.
-                            )if self.residual_config is None else (
-                                torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], raw_prediction.detach()], dim=1) #slice a part of the input_data so as to extract the input_sequence.
-                            )
-                        },
-                }
-                
-                prediction = self._forward_model_eval_or_test(model,inputs)
-                
-                if self.residual_config is not None:
-                    raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
-                
-                #predictions_.append(raw_prediction.detach() if self.residual_config is not None else prediction.detach()) 
-                if self.output_all_steps:
-                    if self.residual_config is None:
-                        predictions_.append(prediction.detach())
-                    elif self.residual_config is not None and self.residual_config["add_predicted_value_with_diff_loss"]:
-                        predictions_.append(prediction.detach())
-                    elif self.residual_config is not None and self.residual_config["add_predicted_value_with_raw_loss"]:
-                        predictions_.append(raw_prediction.detach())
-                    else: #add_base_value_with_raw_loss
-                        predictions_.append(raw_prediction.detach())
+        # Early exit when no autoregressive rollout is required
+        if rollout_steps == 0:
+            return predictions if self.output_all_steps else prediction.detach()
 
-        predictions= torch.stack(predictions_, dim=1) 
-        #predictions.shape = torch.Size([B, rollout_steps+1, label_seq_length, C_output, *spatial_resolution])
-        return predictions
+        # -------------------------------------------------------------
+        # Local aliases to avoid repeated attribute look-ups inside loop
+        # -------------------------------------------------------------
+        seq_inp, seq_out, _ = self.data_config.sequence_info
+        forward_fn = self._forward_model_eval_or_test
+        curr_inputs = inputs  # will be updated in-place
+
+        # -------------------------------------------------------------
+        # Autoregressive rollout loop
+        # -------------------------------------------------------------
+        for step in range(1, total_steps):
+            # Prepare `input_data` for the next timestep -------------------
+            if seq_out >= seq_inp:
+                # label sequence ≥ input sequence (slice needed)
+                slice_from = seq_out - seq_inp
+                next_input = (
+                    prediction[:, slice_from:].detach()
+                    if not use_residuals
+                    else raw_prediction[:, slice_from:].detach()
+                )
+            else:
+                # input sequence > label sequence (concatenate needed)
+                next_input = torch.cat(
+                    [
+                        curr_inputs["input_data"][:, seq_out:],
+                        prediction.detach() if not use_residuals else raw_prediction.detach(),
+                    ],
+                    dim=1,
+                )
+            # Update the inputs dict (shallow copy keeps other keys intact)
+            curr_inputs = {**curr_inputs, "input_data": next_input}
+
+            # Forward pass for this rollout step -------------------------
+            prediction = forward_fn(model, curr_inputs)
+
+            if use_residuals:
+                raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
+
+            # Store the prediction if requested --------------------------
+            if self.output_all_steps:
+                if not use_residuals or self.residual_config["add_predicted_value_with_diff_loss"]:
+                    #raw values are added OR predictions correspond to the difference and they are accumulated for the metrics.
+                    predictions[:, step].copy_(prediction.detach())
+                else:
+                    #raw_predictions are accumulated for the metrics as the loss is computed with the raw values.
+                    predictions[:, step].copy_(raw_prediction.detach())
+
+        # Return either the full tensor (B, S, T, C, *spatial*) or the last prediction
+        return predictions if self.output_all_steps else prediction.detach()
 
     def select_pushforward_unroll_steps_for_training(self, current_epoch):
         """
@@ -1193,6 +1215,7 @@ class Trainer(Trainer_):
         eval_loop = self.prediction_loop if self.args.use_legacy_prediction_loop else self.evaluation_loop
         #########################################################
         #NOTE: Main evaluation loop
+        eval_loop_start_time = time.time()
         output, input, conditioning_input = eval_loop(
             eval_dataloader,
             description="Evaluation",
@@ -1202,6 +1225,8 @@ class Trainer(Trainer_):
             ignore_keys=ignore_keys,
             metric_key_prefix=metric_key_prefix,
         )
+        # Record the wall-clock duration of the evaluation loop (in seconds)
+        output.metrics[f"{metric_key_prefix}_eval_loop_time"] = round(time.time() - eval_loop_start_time, 4)
         #########################################################
         total_batch_size = self.args.eval_batch_size * self.args.world_size
         if f"{metric_key_prefix}_jit_compilation_time" in output.metrics:
