@@ -47,6 +47,7 @@ from collections.abc import Mapping  # locally import to avoid top-of-file chang
 import json
 import os
 import h5py
+import time
 
 class Trainer(Trainer_):
     """    
@@ -1214,6 +1215,7 @@ class Trainer(Trainer_):
         eval_loop = self.prediction_loop if self.args.use_legacy_prediction_loop else self.evaluation_loop
         #########################################################
         #NOTE: Main evaluation loop
+        eval_loop_start_time = time.time()
         output, input, conditioning_input = eval_loop(
             eval_dataloader,
             description="Evaluation",
@@ -1223,6 +1225,8 @@ class Trainer(Trainer_):
             ignore_keys=ignore_keys,
             metric_key_prefix=metric_key_prefix,
         )
+        # Record the wall-clock duration of the evaluation loop (in seconds)
+        output.metrics[f"{metric_key_prefix}_eval_loop_time"] = round(time.time() - eval_loop_start_time, 4)
         #########################################################
         total_batch_size = self.args.eval_batch_size * self.args.world_size
         if f"{metric_key_prefix}_jit_compilation_time" in output.metrics:
