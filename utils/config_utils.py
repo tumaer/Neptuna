@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 from omegaconf import DictConfig
 import os
+import time
 
 from utils.grid_utils import get_grid_resolution
-from utils.compute_stats import compute_statistics, compute_parameter_statistics
+from utils.compute_stats import compute_statistics_parallel, compute_parameter_statistics
 
 __all__ = ["prepare_config"]
 
@@ -102,7 +103,8 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
         if len(h5_paths) == 0:
             raise FileNotFoundError(f"No .h5 files found in directory '{h5_dir}'.")
 
-        stats, channel_names, _ = compute_statistics(
+        _t_start = time.perf_counter()
+        stats, channel_names, _ = compute_statistics_parallel(
             h5_paths=h5_paths,
             residual_config=cfg["data_config"]["residual_config"],
             # the following arguments should be adjusted depending on the h5_paths
@@ -111,8 +113,10 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
             filter_groups=cfg["data_config"]["filter_features"]["filter_groups"],
             filter_frames=cfg["data_config"]["filter_features"]["filter_frames"],
             frame_stride=cfg["data_config"]["sequence_info"][2],
-            on_fly_stats=True, # compute statistics chunk by chunk
+            on_fly_stats=True,
+            num_workers=4
         )
+        print(f"compute_statistics took {time.perf_counter() - _t_start:.2f} seconds")
         cfg["data_config"]["data_normalization_stats"] = stats
     else:
         channel_names = list(cfg["data_config"]["data_normalization_stats"].keys())

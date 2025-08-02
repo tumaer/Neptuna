@@ -22,6 +22,7 @@ eval_groups: null
 # To be provided, if user wants to choose specific groups from train.h5 for validation.
 # eval_groups should be a subset of "filter_groups".
 # Example:["seed 000000", "seed 000049"]. 
+# The group names can be discovered by running the script: misc/dataset_structure_viz.py
 # if eval_groups is null, validation groups are randomly chosen from train.h5 in accordance to 'eval_split_ratio' provided in train_config.
 
 is_steady_state_prediction: False
@@ -44,6 +45,8 @@ filter_features:
   filter_groups: null 
   # Type: List[str, str, ...]
   # filters the groups for train/test from the dataset file
+  # Example: ["seed 000000", "seed 000049"]
+  # The group names can be discovered by running the script: misc/dataset_structure_viz.py
 
   filter_in_channels: null
   # Type: List[str, str, ...]

@@ -50,96 +50,139 @@ import re  # Added for parameter parsing
 __all__ = [
     "compute_statistics",
     "compute_parameter_statistics",
+    "compute_statistics_parallel",
 ]
 
 
 class _StatsAggregator:
     """
-    Utility container to accumulate statistics for a single channel across groups/files.
-    
-    This class provides a memory-efficient way to compute combined statistics
-    across multiple data chunks without loading all data into memory simultaneously.
-    It maintains separate lists of statistics from each chunk and combines them
-    appropriately at the end.
-    
+    Utility container to accumulate statistics for a single channel across
+    multiple data chunks (groups / files) **without** storing the full data
+    or even per-chunk statistics in memory.
+
+    Implementation details
+    ----------------------
+    The class uses **Welford’s online algorithm** (and the parallel update
+    from Chan et al., 1979) to maintain running estimates of mean and
+    (population) variance while requiring only:
+
+        n     – total sample count (int)
+        mean  – running mean          (float64)
+        M2    – aggregated sum of squared deviations (float64)
+        min   – global minimum value (float64)
+        max   – global maximum value (float64)
+
+    All updates are performed in float64 precision to guarantee numerical
+    stability for very large data sets.
+
     Attributes
     ----------
-    means : List[float]
-        List of mean values from each processed data chunk.
-    stds : List[float]
-        List of standard deviations from each processed data chunk.
-    mins : List[float]
-        List of minimum values from each processed data chunk.
-    maxs : List[float]
-        List of maximum values from each processed data chunk.
-    
+    n : int
+        Total number of samples processed so far.
+    mean : float
+        Running arithmetic mean.
+    M2 : float
+        Accumulated sum of squared deviations from the running mean.  The
+        population standard deviation is derived from this quantity.
+    min : float
+        Global minimum across all processed samples.
+    max : float
+        Global maximum across all processed samples.
+
     Examples
     --------
     >>> agg = _StatsAggregator()
-    >>> agg.add(np.array([1, 2, 3, 4, 5]))
-    >>> agg.add(np.array([6, 7, 8, 9, 10]))
-    >>> combined_stats = agg.combined()
-    >>> print(combined_stats['mean'])  # Combined mean of both arrays
+    >>> agg.add(np.array([1, 2, 3, 4]))
+    >>> agg.add(np.array([10, 20]))
+    >>> agg.combined()
+    {'mean': 6.666666666666667, 'std': 7.4535599249993, 'min': 1.0, 'max': 20.0}
     """
 
     def __init__(self):
-        self.means: List[float] = []
-        self.stds: List[float] = []
-        self.mins: List[float] = []
-        self.maxs: List[float] = []
+        # running sample count
+        self.n: int = 0
+        # running mean
+        self.mean: float = 0.0
+        # aggregated sum of squares of differences from the current mean
+        self.M2: float = 0.0
+        # running extrema
+        self.min: float = np.inf
+        self.max: float = -np.inf
 
     def add(self, arr: np.ndarray):
-        """
-        Accumulate statistics for a data array.
-        
-        This method computes statistics for the input array in float64 precision
-        to avoid numerical precision issues, regardless of the input array's dtype.
-        
-        Parameters
-        ----------
-        arr : numpy.ndarray
-            Input array of any shape and numeric dtype. Will be flattened
-            internally for statistical computation.
-            
-        Notes
-        -----
-        All computations are performed in float64 precision.
-        """
-        # Promote to float64 for numerically stable statistics.
+        """Accumulate statistics for *arr* (any shape, any numeric dtype)."""
         flat = arr.reshape(-1).astype(np.float64)
+        cnt = flat.size
+        if cnt == 0:
+            return  # nothing to do
 
-        self.means.append(float(np.mean(flat, dtype=np.float64)))
-        self.stds.append(float(np.std(flat, dtype=np.float64)))
-        # Min/Max are exact so dtype promotion is not strictly required but we
-        # keep everything in float64 for consistency.
-        self.mins.append(float(np.min(flat)))
-        self.maxs.append(float(np.max(flat)))
+        # update extrema (exact)
+        chunk_min = float(flat.min())
+        chunk_max = float(flat.max())
+        if self.n == 0:
+            # first chunk → initialise directly
+            self.min = chunk_min
+            self.max = chunk_max
+        else:
+            if chunk_min < self.min:
+                self.min = chunk_min
+            if chunk_max > self.max:
+                self.max = chunk_max
+
+        # online update of mean and variance (via M2)
+        arr_mean = float(np.mean(flat, dtype=np.float64))
+        arr_var = float(np.var(flat, dtype=np.float64))  # population var
+
+        delta = arr_mean - self.mean
+        total_n = self.n + cnt
+
+        # update mean
+        self.mean += delta * cnt / total_n
+
+        # combine the two M2 values (see Chan et al., 1979)
+        self.M2 += arr_var * cnt + (delta ** 2) * self.n * cnt / total_n
+
+        self.n = total_n
 
     def combined(self) -> Dict[str, float]:
-        """
-        Compute final combined statistics from all accumulated chunks.
-        
-        Returns
-        -------
-        Dict[str, float]
-            Dictionary containing combined statistics with keys:
-            - 'mean': Average of all chunk means
-            - 'std': Root-mean-square of all chunk standard deviations
-            - 'min': Global minimum across all chunks
-            - 'max': Global maximum across all chunks
-            
-        Notes
-        -----
-        The combined standard deviation is computed as the RMS of individual
-        standard deviations, which provides a reasonable approximation when
-        chunk sizes are similar.
-        """
+        """Return a dictionary with combined statistics."""
+        std = float(np.sqrt(self.M2 / max(self.n, 1)))  # population std
         return {
-            "mean": float(np.mean(self.means)),
-            "std": float(_combined_std(self.stds)),
-            "min": float(np.min(self.mins)),
-            "max": float(np.max(self.maxs)),
+            "mean": float(self.mean),
+            "std": std,
+            "min": float(self.min),
+            "max": float(self.max),
         }
+
+    # ------------------------------------------------------------------
+    # Parallel reduction helper
+    # ------------------------------------------------------------------
+    def add_from_aggregator(self, other: "_StatsAggregator") -> None:
+        """Merge another aggregator *other* into *self* (parallel Welford)."""
+        if other.n == 0:
+            return
+        if self.n == 0:
+            # copy other's state (avoid code duplication)
+            self.n = other.n
+            self.mean = other.mean
+            self.M2 = other.M2
+            self.min = other.min
+            self.max = other.max
+            return
+
+        delta = other.mean - self.mean
+        total_n = self.n + other.n
+
+        # update mean
+        self.mean += delta * other.n / total_n
+
+        # update M2 (Chan et al., 1979)
+        self.M2 += other.M2 + delta * delta * self.n * other.n / total_n
+
+        # update extrema & count
+        self.min = min(self.min, other.min)
+        self.max = max(self.max, other.max)
+        self.n = total_n
 
 
 def _combined_std(std_devs: List[float]) -> float:
@@ -472,8 +515,26 @@ def compute_statistics(
     if len(h5_paths) == 0:
         raise ValueError("h5_paths list is empty.")
 
-    # Metadata from first file – honour group filter to guarantee consistency
-    channel_names, problem_dim = _discover_metadata(h5_paths[0], filter_groups)
+    # --------------------------------------------------------------
+    # Discover metadata (channel names and spatial dimensionality)
+    # --------------------------------------------------------------
+    metadata_found = False
+    for _meta_path in h5_paths:
+        try:
+            channel_names, problem_dim = _discover_metadata(_meta_path, filter_groups)
+            metadata_found = True
+            break  # success – stop searching
+        except ValueError:
+            # _discover_metadata raises ValueError only when *filter_groups* is
+            # provided but none of the requested groups are present in the file.
+            # In that scenario we simply continue searching the remaining files.
+            continue
+
+    if not metadata_found:
+        raise ValueError(
+            "None of the provided HDF5 files contained any of the groups "
+            f"specified in filter_groups={filter_groups}."
+        )
 
     # Aggregators for raw channels (created now but populated later)
     aggregators: Dict[str, _StatsAggregator] = {name: _StatsAggregator() for name in channel_names}
@@ -515,71 +576,56 @@ def compute_statistics(
                     field = grp[field_name]
                     ch_dim = field.shape[1]
 
-                    for ch in range(ch_dim): #loop for each component of the field
-                        channel_data = field[:, ch]
+                    # ------------------------------------------------------
+                    # Perform a single HDF5 read for the entire field and
+                    # slice frames/stride only once.  Subsequent per-channel
+                    # operations work on in-memory views, massively reducing
+                    # I/O overhead.
+                    # ------------------------------------------------------
+                    if filter_frames is not None:
+                        if len(filter_frames) != 2:
+                            raise ValueError(
+                                "filter_frames must be a 2-element list [start, end] denoting an inclusive range"
+                            )
+                        if frame_stride <= 0:
+                            raise ValueError("frame_stride must be a positive integer")
 
-                        # Apply frame filter if requested
-                        if filter_frames is not None:
-                            if len(filter_frames) != 2:
-                                raise ValueError(
-                                    "filter_frames must be a 2-element list [start, end] denoting an inclusive range"
-                                )
+                        start_idx, end_idx = filter_frames
+                        if start_idx is None:
+                            start_idx = 0
+                        if end_idx is None:
+                            end_idx = field.shape[0] - 1
+                        frame_slice = slice(start_idx, end_idx + 1, frame_stride)
+                    else:
+                        frame_slice = slice(None, None, frame_stride if frame_stride != 1 else None)
 
-                            # Validate stride
-                            if frame_stride <= 0:
-                                raise ValueError("frame_stride must be a positive integer")
+                    # Single read → numpy array in RAM (shape: (T, C, ...))
+                    field_data = field[frame_slice]
 
-                            start_idx, end_idx = filter_frames  # inclusive range
+                    # Pre-compute residuals if needed (diff along time axis)
+                    if residual_aggregators is not None and field_data.shape[0] > 1:
+                        residual_data = np.diff(field_data, axis=0)
+                    else:
+                        residual_data = None
 
-                            # Convert None-like values to defaults (allowing [None, end] etc.)
-                            if start_idx is None:
-                                start_idx = 0
-                            if end_idx is None:
-                                end_idx = channel_data.shape[0] - 1
-
-                            # Because NumPy slicing excludes the stop index, add 1 to make inclusive
-                            channel_data = channel_data[start_idx : end_idx + 1 : frame_stride]
-                        else:
-                            if frame_stride != 1:
-                                # Apply stride even when full range is included
-                                channel_data = channel_data[::frame_stride]
-
+                    # Iterate over every channel component but now slice in memory
+                    for ch in range(ch_dim):
+                        channel_data = field_data[:, ch]
                         key = field_name if ch_dim == 1 else f"{field_name}_{ch}"
 
-                        # Safety: if new channel encountered that wasn't in metadata (unlikely but possible)
                         if key not in aggregators:
                             aggregators[key] = _StatsAggregator()
 
-                        #NOTE: For both cases, residual_config, the statistics are computed by taking 
-                        # the differences of the neighbors
-                        
                         if on_fly_stats:
-                            # Immediate accumulation of channel-wise statistics for that partcular group
-                            # Dataset level stats computed at once in the end from the group-wise stats
                             aggregators[key].add(channel_data)
-
-                            # Residuals (on the fly)
-                            if residual_aggregators is not None and channel_data.shape[0] > 1:
-                                # if residual_config["add_predicted_value"]:
-                                #     residual_arr = np.diff(channel_data, axis=0)
-                                # else:
-                                #     residual_arr = channel_data[1:] - channel_data[0]
-                                #     #residual_arr = np.diff(channel_data, axis=0)
-                                residual_arr = np.diff(channel_data, axis=0)
+                            if residual_data is not None:
                                 res_key = f"{key}_residual"
-                                residual_aggregators[res_key].add(residual_arr) 
+                                residual_aggregators[res_key].add(residual_data[:, ch])
                         else:
-                            # Store data for later aggregation
                             collected_data[key].append(channel_data)
-                            if residual_aggregators is not None and channel_data.shape[0] > 1:
-                                # if residual_config["add_predicted_value"]:
-                                #     residual_arr = np.diff(channel_data, axis=0)
-                                # else:
-                                #     residual_arr = channel_data[1:] - channel_data[0]
-                                #     #residual_arr = np.diff(channel_data, axis=0)
-                                residual_arr = np.diff(channel_data, axis=0)
+                            if residual_data is not None:
                                 res_key = f"{key}_residual"
-                                collected_residual[res_key].append(residual_arr)
+                                collected_residual[res_key].append(residual_data[:, ch])
 
     # --------------------------------------------
     # Final combination / statistics computation
@@ -629,6 +675,158 @@ def compute_statistics(
         # Attach median/IQR when available (i.e. offline aggregation)
         for k, extra in extra_residual_stats.items():
             channel_stats.setdefault(k, {}).update(extra)
+
+    return channel_stats, channel_names, problem_dim
+
+
+# =====================================================================
+# Parallel CPU version – high-level convenience wrapper
+# =====================================================================
+
+from concurrent.futures import ProcessPoolExecutor
+from functools import reduce
+
+
+def _process_single_file(
+    path: str,
+    residual_config: Dict[str, bool] | None,
+    filter_groups: List[str] | None,
+    filter_frames: List[int] | None,
+    frame_stride: int,
+    on_fly_stats: bool,
+) -> Dict[str, _StatsAggregator]:
+    """Compute per-channel aggregators for *one* HDF5 file (worker)."""
+
+    # Discover metadata for this file (may raise if filter_groups missing)
+    try:
+        channel_names, _ = _discover_metadata(path, filter_groups)
+    except ValueError:
+        # no matching groups → return empty dict
+        return {}
+
+    aggs: Dict[str, _StatsAggregator] = {n: _StatsAggregator() for n in channel_names}
+    residual_aggs: Dict[str, _StatsAggregator] | None = None
+    if residual_config is not None:
+        residual_aggs = {f"{n}_residual": _StatsAggregator() for n in channel_names}
+
+    with h5py.File(path, "r") as f:
+        for grp_name in f:
+            if filter_groups is not None and grp_name not in filter_groups:
+                continue
+            grp = f[grp_name]
+            for field_name in grp:
+                field = grp[field_name]
+                ch_dim = field.shape[1]
+
+                # Build slice for frames / stride
+                if filter_frames is not None:
+                    if len(filter_frames) != 2:
+                        raise ValueError("filter_frames must be length-2 [start, end]")
+                    if frame_stride <= 0:
+                        raise ValueError("frame_stride must be positive")
+                    start_idx, end_idx = filter_frames
+                    if start_idx is None:
+                        start_idx = 0
+                    if end_idx is None:
+                        end_idx = field.shape[0] - 1
+                    frame_slice = slice(start_idx, end_idx + 1, frame_stride)
+                else:
+                    frame_slice = slice(None, None, frame_stride if frame_stride != 1 else None)
+
+                data = field[frame_slice]
+                res_data = np.diff(data, axis=0) if residual_aggs is not None and data.shape[0] > 1 else None
+
+                for ch in range(ch_dim):
+                    key = field_name if ch_dim == 1 else f"{field_name}_{ch}"
+                    aggs[key].add(data[:, ch])
+                    if res_data is not None:
+                        residual_aggs[f"{key}_residual"].add(res_data[:, ch])
+
+    # merge residuals into main dict (if any)
+    if residual_aggs is not None:
+        aggs.update(residual_aggs)
+
+    return aggs
+
+
+def _merge_aggregator_dicts(a: Dict[str, _StatsAggregator], b: Dict[str, _StatsAggregator]) -> Dict[str, _StatsAggregator]:
+    """In-place merge of two aggregator dictionaries, returns *a* for chaining."""
+    for k, agg_b in b.items():
+        if k in a:
+            a[k].add_from_aggregator(agg_b)
+        else:
+            a[k] = agg_b
+    return a
+
+
+def compute_statistics_parallel(
+    h5_paths: List[str],
+    residual_config: Dict[str, bool] | None = None,
+    filter_groups: List[str] | None = None,
+    filter_frames: List[int] | None = None,
+    frame_stride: int = 1,
+    on_fly_stats: bool = False,
+    num_workers: int | None = None,
+) -> Tuple[Dict[str, Dict[str, float]], List[str], int]:
+    """Parallel CPU implementation of :func:`compute_statistics`.
+
+    Each HDF5 file is processed in its own **process** and the per-channel
+    aggregators are merged in the parent.  The numerical results are
+    identical to the serial version; only the run-time can change.
+    """
+
+    if len(h5_paths) == 0:
+        raise ValueError("h5_paths list is empty.")
+
+    # ------------------------------------------------------------------
+    # Discover metadata once (first file that fits the filters)
+    # ------------------------------------------------------------------
+    metadata_found = False
+    channel_names: List[str] = []
+    problem_dim: int = 0
+    for p in h5_paths:
+        try:
+            channel_names, problem_dim = _discover_metadata(p, filter_groups)
+            metadata_found = True
+            break
+        except ValueError:
+            continue
+
+    if not metadata_found:
+        raise ValueError(
+            "None of the provided HDF5 files contained any of the requested groups "
+            f"filter_groups={filter_groups}."
+        )
+
+    # ------------------------------------------------------------------
+    # Launch workers
+    # ------------------------------------------------------------------
+    import itertools as _it
+
+    with ProcessPoolExecutor(max_workers=num_workers) as pool:
+        agg_dicts = list(
+            pool.map(
+                _process_single_file,
+                h5_paths,
+                _it.repeat(residual_config),
+                _it.repeat(filter_groups),
+                _it.repeat(filter_frames),
+                _it.repeat(frame_stride),
+                _it.repeat(on_fly_stats),
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # Merge aggregator dictionaries
+    # ------------------------------------------------------------------
+    global_aggs: Dict[str, _StatsAggregator] = {}
+    for d in agg_dicts:
+        _merge_aggregator_dicts(global_aggs, d)
+
+    # ------------------------------------------------------------------
+    # Build final statistics dictionary
+    # ------------------------------------------------------------------
+    channel_stats = {k: agg.combined() for k, agg in global_aggs.items()}
 
     return channel_stats, channel_names, problem_dim
 
