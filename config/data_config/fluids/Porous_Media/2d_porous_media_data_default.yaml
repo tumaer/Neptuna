@@ -23,3 +23,4 @@ residual_config: null #fixed to null for SS datasets
   # add_predicted_value_with_raw_loss: False
 data_normalization_stats: null
 data_normalization_strategy: z_normalization
+coord_features: True

@@ -4,3 +4,4 @@ logging:
   wandb_project: 'wandb_trials'
   wandb_run_name: null
   disable_progress_bar: True
+  wandb_api_key: None

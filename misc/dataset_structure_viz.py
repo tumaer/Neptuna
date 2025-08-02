@@ -76,7 +76,7 @@ if __name__ == "__main__":
         "data_path",
         type=str,
         nargs="?",  # optional positional argument
-        default="./data/fluids/KS/3D/train.h5",
+        default="./data/fluids/Laser_Droplet/2D/test.h5",
         help="Path to the HDF5 file to analyze (default: %(default)s)",
     )
 
