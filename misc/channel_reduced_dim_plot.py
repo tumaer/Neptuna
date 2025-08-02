@@ -35,8 +35,8 @@ from sklearn.preprocessing import StandardScaler
 
 # ---- Config ----
 # Default paths (can be overridden by CLI)
-train_file = './data/fluids/KVS_trimmed/2D/train.h5'
-test_file = './data/fluids/KVS_trimmed/2D/test.h5'
+train_file = './data/fluids/KS/2D/train.h5'
+test_file = './data/fluids/KS/2D/test.h5'
 
 # ------------------------------------------------------------------
 # CLI arguments

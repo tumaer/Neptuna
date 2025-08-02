@@ -1,6 +1,6 @@
 logging: 
   output_dir: null
   wandb: True  
-  wandb_project: 'wandb_trials'
+  wandb_project: 'droplet_unet' #just this one
   wandb_run_name: null
   disable_progress_bar: True

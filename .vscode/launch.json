@@ -6,6 +6,29 @@
     "configurations": [
         
       {
+        "name": "droplet_unet",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "main.py",
+        "console": "integratedTerminal",
+        "justMyCode": false,
+        "args": [
+            "hydra.run.dir=.",
+            "hydra.output_subdir=null",
+            "data_config=fluids/Laser_Droplet/2d_droplet_data.yaml",
+            "model_config=UNet/default_unet",
+            "train_config=my_training.yaml",
+            "output_log_config=wandb_log.yaml"
+          ],
+        "env": {
+            "HYDRA_FULL_ERROR": "1",
+            "HYDRA_MAIN_DISABLE_RUN": "1",
+            "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "2.0"   // “-1” disables the warning entirely
+            }
+
+    },
+    
+      {
         "name": "train 2D_Porous_Media_UNet",
         "type": "debugpy",
         "request": "launch",

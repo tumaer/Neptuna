@@ -41,7 +41,7 @@ class UNet(PreTrainedModel):
     - Flexible input/output sequence handling
     """
     #TODO: Do this for all models
-    main_input_name = "input_data"
+    main_input_name = "input_data" #input_ids is written?
     conditioning_input_name = "conditioning_input_data"
     
     def __init__(self, config) -> None:
@@ -70,6 +70,8 @@ class UNet(PreTrainedModel):
     
     ### Main Forward function ###
     def forward(self, input_data: Tensor, **kwargs) -> Tensor:
+
+        # waht is the shape of input? [6, 256, 256] ?
         
         if "conditioning_input_data" in kwargs:
             #NOTE: Conditioning data can be passed into a conv network before concatination with input_data.
@@ -358,7 +360,7 @@ class UNet2D(PreTrainedModel):
                 x = m(x)
             else:
                 # Get the skip connection from first half of U-Net and concatenate
-                s = h.pop()
+                s = h.pop() #Me: modifies the list by removing the last element.
                 x = torch.cat((x, s), dim=1)
                 x = m(x, **kwargs)
 

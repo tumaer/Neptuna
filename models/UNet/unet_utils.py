@@ -363,6 +363,9 @@ class DownsampleND(nn.Module):
         dim (int): Dimensionality of the data. Should be 1, 2, or 3.
     """
 
+    #Me: Instead of MaxPool, we use Conv to downsample Difference is the latter has learnable parameters.
+    # original code uses MaxPool.
+
     def __init__(self, n_channels: int, dim: int):
         super().__init__()
 

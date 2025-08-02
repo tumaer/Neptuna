@@ -1,0 +1,75 @@
+########################################################
+# Training parameters
+########################################################
+#use_cpu
+use_cpu: False
+# Batch size for train and eval
+per_device_train_batch_size: 6
+per_device_eval_batch_size: 6
+# Number of training epochs
+num_train_epochs: 2
+# Parameters related to the push-forward trick during training (see example below)
+pushforward_config:
+  #By default, pf is deactivated, set enabled to True to activate pf with the conifg below
+  enabled: False
+  # Training epoch at which a new unroll stage is unlocked.
+  deciding_epochs: [-1, 2, 50]
+  # Maximum number of unroll steps between deciding epoch.
+  max_allowed_unroll_steps: [0, 1, 2]
+  # Probability of unroll steps between deciding epochs.
+  relative_probabilities: [7, 2, 1]
+#To use mix precison training, set fp16 to true
+fp16: false
+#number of workers for dataloader
+dataloader_num_workers: 0 #it will work with 0.
+########################################################
+# Evaluation parameters
+########################################################
+# % of train.h5 dataset used for evaluation
+#Validation, log and save strategies: 
+eval_strategy: "epoch" #options are steps, epoch or no. # epoch in preferred in "big" trainings.
+eval_steps: 5 #only used if eval_strategy is steps
+logging_strategy: "steps" #options are steps, epoch or no.
+logging_steps: 1 #only used if logging_strategy is steps
+save_strategy: "best" #options are best, steps, epoch or no.
+save_steps: 5 #only used if save_strategy is steps
+save_total_limit: 2 #Limits the total amount of checkpoints to the best two. Deletes the older checkpoints in the output_dir.
+# Number of steps to accumulate predictions on GPU before moving to CPU
+eval_accumulation_steps: 16
+# Ratio of train.h5 dataset used for evaluation
+eval_split_ratio: 0.2
+#metric for best model
+metric_for_best_model: "l2_error"
+# Number of rollouts to use for evaluation
+n_eval_rollouts: 4
+# Plot after epochs, 
+# If a single float is provided, plotting will be done continously after this epoch is reached.
+# If a list is provided, plotting will be done "once" after each epoch in the list.
+# If null, then plotting is done after every validation step.
+plot_after_epoch: null # null or [1, 51, 100, 200] - if strategy is epoch, then it will plot after every epoch already; you can keep iy null.
+# Number of examples to plot from the validation window and see how the training progresses over epochs for the same examples
+n_plot_examples: 1
+#############################################################
+# Hugging-Face Hub options
+#############################################################
+push_to_hub: False
+hub_strategy: "end"
+##########################################################
+# Pushforward example
+##########################################################
+# deciding_epochs: [-1, 50, 100]
+# max_allowed_unroll_steps: [0, 1, 2] 
+# relative_probabilities: [7, 2, 1]
+
+# case-i:  0 ≤ epoch ≤ 50
+# Number of unroll steps: 0 with probability 7/7 = 1.0
+
+# case-ii:  51 ≤ epoch ≤100
+# Number of unroll steps: 0 with probability 7/(7+2) = 0.78
+# Number of unroll steps: 1 with probability 2/(7+2) = 0.22
+
+# case-iii: epoch>100
+# Number of unroll steps: 0 with probability 7/(7+2+1) = 0.7
+# Number of unroll steps: 1 with probability 2/(7+2+1) = 0.2
+# Number of unroll steps: 2 with probability 1/(7+2+1) = 0.1
+

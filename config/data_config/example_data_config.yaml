@@ -7,6 +7,7 @@ dataset_directory_path:
 # Dataset 'folder' path
 
 dimension: 
+# [optional]
 # Type: int
 # Dimension of the dataset> options- 1/2/3
 

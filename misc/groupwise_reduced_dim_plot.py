@@ -42,8 +42,8 @@ def load_group_vectors(h5_file):
 # ------------------------------------------------------------------
 # CLI arguments
 # ------------------------------------------------------------------
-default_train = "./data/fluids/Droplet_Contact/2D/train.h5"
-default_test = "./data/fluids/Droplet_Contact/2D/test.h5"
+default_train = "./data/fluids/KS/2D/train.h5"
+default_test = "./data/fluids/KS/2D/test.h5"
 
 parser = argparse.ArgumentParser(
     description="Plot PCA and UMAP projections of group-averaged channel data from train/test HDF5 files."

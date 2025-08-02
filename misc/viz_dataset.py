@@ -21,6 +21,8 @@ Example Usage:
     # Visualize specific groups with custom settings
     python viz_dataset.py --h5-path data/train.h5 --groups "group_0" "group_1" \\
         --fps 15 --cmap plasma --keep-frames --title <Figure_title> --out <output_dir> 
+
+    python3 ./misc/viz_dataset.py --h5-path ./data/fluids/Laser_Droplet/2D/train.h5 --random --fps 20 --title "My Data" --out "./misc/ld"
     
     # Create video for all groups with frame range
     python viz_dataset.py --h5-path data/train.h5 --all --frame-range 50 100 \\
