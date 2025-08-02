@@ -6,7 +6,7 @@ grid_resolution: null
 eval_groups: null
 is_steady_state_prediction: False 
 sequence_info: [1, 1, 1]
-# Available channels for LaserDroplet: ["Pressure", "Energy", "Density", "Velocity_X", "Velocity_Y"]
+# Available channels for LaserDroplet: ["Pressure", "Energy", "Density", "Velocity_X", "Velocity_Y", "Volume_Fraction"]
 filter_features:
   filter_frames: null
   filter_groups: null 
