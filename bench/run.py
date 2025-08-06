@@ -15,6 +15,9 @@ from optuna.pruners import NopPruner
 from utils.custom_callbacks import PlotOnEvalAndSaveCallback, NaNCallback
 import csv
 from utils.hp_optimization import trial_name_factory
+from utils.plot_progress import plot_examples, preprocess_for_plotting
+
+
 __all__ = ["run"]
 
 
@@ -48,6 +51,10 @@ def run(cfg):
         # ------------------------------------------------------------------
         eval_strategy=cfg["train_config"]["eval_strategy"], 
         eval_steps=cfg["train_config"]["eval_steps"],  # update-steps between evaluations, has no meaning if eval_strategy is "epoch"
+        # ------------------------------------------------------------------
+        # Testing 
+        # ------------------------------------------------------------------
+        load_best_model_at_end=cfg["train_config"]["load_best_model_at_end"], # enable when save & eval strategy align
         # ------------------------------------------------------------------
         # Batching
         # ------------------------------------------------------------------
@@ -91,7 +98,6 @@ def run(cfg):
         # ------------------------------------------------------------------
         fp16=cfg["train_config"]["fp16"],  # set True for mixed-precision
         dataloader_num_workers=cfg["train_config"]["dataloader_num_workers"],
-        load_best_model_at_end=False,  # enable when save & eval strategy align
         metric_for_best_model=cfg["train_config"][
             "metric_for_best_model"
         ],  # checkpoint metric
@@ -130,12 +136,13 @@ def run(cfg):
             if (cfg["hyperparam_opt_config"]["optimize"] is False)
             else "none"
         ),
+        ddp_find_unused_parameters=False,
     )
 
     # ------------------------------------------------------------------
     # Datasets
     # ------------------------------------------------------------------
-    train_ds, eval_ds = make_datasets(cfg)
+    train_ds, eval_ds = make_datasets(cfg, mode="train")
 
     # ------------------------------------------------------------------
     # Model & Trainer 
@@ -180,6 +187,7 @@ def run(cfg):
         model_config=cfg["model_config"],
         data_config=cfg["data_config"],
         train_config=cfg["train_config"],
+        infer_config=cfg["infer_config"],
         output_log_config=cfg["output_log_config"],
         # everything below goes to kwargs which go directly to the base trainer class of HF
         model=model,
@@ -208,6 +216,136 @@ def run(cfg):
             # Push the trained model to the Hugging Face Hub
             print("Pushing model to Hugging Face Hub...")
             trainer.push_to_hub()
+        
+        # ------------------------------------------------------------------
+        # Inference
+        # ------------------------------------------------------------------
+        
+        if cfg["infer_config"]["do_infer"]:
+            print("Running inference...")
+
+            infer_ds = make_datasets(cfg, mode="infer")
+            
+            trainer.set_eval_or_test_rollout_steps(
+                rollout_steps=cfg["infer_config"]["n_infer_rollouts"], output_all_steps=True
+            )
+
+            predictions_obj, inputs, conditioning_inputs = trainer.predict(infer_ds, metric_key_prefix="")
+            ############################################################
+            # predictions_obj.predictions: the output of the model with shape (accumulated_outputs, num_rollouts, label_seq_length, channel_dim, *spatial) 
+            # accumulated_outputs and accumulated_gt have the length of number of windows in the test dataset
+            # predictions_obj.label_ids: the ground truth with shape (accumulated_gt, num_rollouts*label_seq_length, channel_dim, *spatial)
+            # predictions_obj.metrics: the metrics computed after accumulating the outputs and ground truth
+            ############################################################
+
+            # pretty print the keys which have the word error in them
+            print('Accumulated error for the whole test set:')
+            for key, value in predictions_obj.metrics.items():
+                if "error" in key:
+                    print(f"{key}: {value}")
+            
+            # ----------------------------------------------------------
+            # Prepare prediction, target and input arrays
+            # ----------------------------------------------------------
+            preds = predictions_obj.predictions  # (N, R, T, C, *spatial)
+
+            # Flatten rollout and label sequence dimensions if necessary
+            if preds.ndim >= 5:
+                n, n_rollouts, seq_len, c = preds.shape[:4]
+                extra_dims = preds.shape[4:]
+                preds = preds.reshape(n, n_rollouts * seq_len, c, *extra_dims)
+
+            targets = predictions_obj.label_ids  # Expected shape: (N, R*T, C, *spatial)
+
+            # Inputs already returned by `trainer.predict`
+            inp_arr = inputs  # Shape: (N, T_in, C_in, *spatial)
+
+            # Conditioning inputs may be None
+            cond_inp_arr = conditioning_inputs if conditioning_inputs is not None else None
+
+            # ----------------------------------------------------------
+            # Renormalise data and reconstruct residuals for plotting
+            # ----------------------------------------------------------
+            (inp_renorm,
+                tgt_renorm,
+                pred_renorm,
+                only_input_channel_names,
+                output_channel_names,
+                cond_inp_renorm,
+                cond_inp_channel_names) = preprocess_for_plotting(
+                inputs=inp_arr,
+                labels=targets,
+                predictions=preds,
+                data_config=cfg["data_config"],
+                dataset=infer_ds,
+                residual_config=cfg["data_config"].get("residual_config", None),
+                conditioning_inputs=cond_inp_arr,
+            )
+
+            # Infer spatial dimensionality (1D / 2D / 3D)
+            ndim = pred_renorm.ndim - 3  # subtract batch, time, channel dims
+
+            # Use stride from the config if available
+            stride_val = cfg["data_config"].get("sequence_info", [1, 1, 1])[2]
+
+            # Directory for saving inference plots
+            plot_save_dir = os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots")
+
+            # ----------------------------------------------------------
+            # Compose model information string (name and #parameters)
+            # ----------------------------------------------------------
+            model_obj = trainer.model
+            model_name = model_obj.__class__.__name__
+            n_params = sum(p.numel() for p in model_obj.parameters())
+
+            cfg_dict_raw = cfg["model_config"]
+            filtered_cfg = {
+                k: v
+                for k, v in cfg_dict_raw.items()
+                if k != 'model_name' and not isinstance(v, (dict, list, tuple)) and not k.startswith('_')
+            }
+            kv_pairs = [f"{k}={v}" for k, v in filtered_cfg.items()]
+            lines = [", ".join(kv_pairs[i:i+3]) for i in range(0, len(kv_pairs), 3)]
+            config_block = "\n".join(lines) if lines else "-"
+            model_info_str = f"{model_name} | Params: {n_params/1e6:.2f}M\nConfig: {config_block}"
+
+            # ----------------------------------------------------------
+            # Compose data configuration string similar grouping
+            # ----------------------------------------------------------
+            data_cfg_raw = cfg["data_config"]
+            filtered_data_cfg = {
+                k: v
+                for k, v in data_cfg_raw.items()
+                if not isinstance(v, (dict, list, tuple)) and not k.startswith('_')
+            }
+            data_kv = [f"{k}={v}" for k, v in filtered_data_cfg.items()]
+            data_lines = [", ".join(data_kv[i:i+2]) for i in range(0, len(data_kv), 2)]
+            data_info_str = "\n".join(data_lines) if data_lines else "-"
+
+            # Create plots (this runs in parallel internally)
+            plot_examples(
+                input_array=inp_renorm,
+                prediction_array=pred_renorm,
+                target_array=tgt_renorm,
+                only_input_channel_names=only_input_channel_names,
+                output_channel_names=output_channel_names,
+                conditioning_input_array=cond_inp_renorm,
+                conditioning_input_channel_names=cond_inp_channel_names,
+                checkpoint_step=None,
+                epoch=None,
+                extra_info=cfg["data_config"].get("dataset_name")+"_Inference",
+                ndim=ndim,
+                num_examples=5,
+                stride=stride_val,
+                save_dir=plot_save_dir,
+                log_to_wandb=cfg["output_log_config"]["logging"].get("wandb", False),
+                is_best_metric=False,
+                model_info=model_info_str,
+                data_info=data_info_str,
+            )
+
+            print("Inference done")
+            
     else:
         # get the sampler from the config, it could be GridSampler, RandomSampler, TPESampler etc.
         sampler = get_optuna_sampler(

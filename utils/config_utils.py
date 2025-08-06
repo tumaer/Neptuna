@@ -5,8 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 from omegaconf import DictConfig
 import os
+import json
 import time
 
+from omegaconf import OmegaConf
 from utils.grid_utils import get_grid_resolution
 from utils.compute_stats import compute_statistics_parallel, compute_parameter_statistics
 
@@ -104,14 +106,15 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
             raise FileNotFoundError(f"No .h5 files found in directory '{h5_dir}'.")
 
         _t_start = time.perf_counter()
+        #TODO: compute_statistics_parallel doesnt provide median and iqr (on_fly_stats=True by default in parallel mode)
         stats, channel_names, _ = compute_statistics_parallel(
             h5_paths=h5_paths,
             residual_config=cfg["data_config"]["residual_config"],
             # the following arguments should be adjusted depending on the h5_paths
             # (if multiple h5-files are provided) 
             # NOTE: if multiple h5-files (i.e. train and test) are provided, filter_groups should be None
-            filter_groups=cfg["data_config"]["filter_features"]["filter_groups"],
-            filter_frames=cfg["data_config"]["filter_features"]["filter_frames"],
+            filter_groups=cfg["data_config"]["filter_features"]["train_filter_groups"] ,
+            filter_frames=cfg["data_config"]["filter_features"]["train_filter_frames"],
             frame_stride=cfg["data_config"]["sequence_info"][2],
             on_fly_stats=True,
             num_workers=4
@@ -252,5 +255,26 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     cfg["data_config"]["filter_features"]["filter_in_channels"] = filtered_in_channels
     cfg["data_config"]["filter_features"]["filter_out_channels"] = filtered_out_channels
     cfg["data_config"]["conditioning_features"]["conditioning_in_channels"] = filtered_cond_in_channels
+
+    # ------------------------------------------------------------------
+    # 5) Persist data_config to JSON in the designated output directory,
+    # In case of hyper-parameter optimisation, the data_config is written 
+    # inside each trial directory. (Refer trainer.py > _hp_search_setup method)
+    # ------------------------------------------------------------------
+    if cfg["hyperparam_opt_config"]["optimize"] is False:
+        out_dir_path = cfg["output_log_config"]["logging"]["output_dir"]
+        # Ensure directory exists before writing
+        os.makedirs(out_dir_path, exist_ok=True)
+
+        json_path = os.path.join(out_dir_path, "data_config.json")
+
+        try:
+            # Convert OmegaConf section to a regular dict for JSON serialization
+            data_config_dict = OmegaConf.to_container(cfg["data_config"], resolve=True)
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(data_config_dict, f, indent=4)
+        except Exception as exc:
+            # We do not want to fail the entire run due to logging issues; print a warning instead.
+            print(f"[WARNING] Failed to write data_config to {json_path}: {exc}")
 
     return cfg

@@ -81,13 +81,14 @@ class Trainer(Trainer_):
     pushforward_config : Dict
         Configuration for pushforward training strategy.
     """
-    def __init__(self, model_config, data_config, train_config, output_log_config, **kwargs):
+    def __init__(self, model_config, data_config, train_config, infer_config, output_log_config, **kwargs):
         super().__init__(**kwargs)
         self.eval_or_test_rollout_steps = None
         self.output_all_steps = False
         self.data_config = data_config
         self.model_config = model_config
         self.train_config = train_config
+        self.infer_config = infer_config
         self.output_log_config = output_log_config
         self.original_label_seq_len = self.data_config.sequence_info[1] #number of predicted timesteps from the model (#no rollout timesteps considered)
         
@@ -209,10 +210,10 @@ class Trainer(Trainer_):
             dataset_name=self.data_config["dataset_name"],
             dataset_directory_path=self.data_config["dataset_directory_path"],
             sequence_info=self.data_config["sequence_info"],
-            pushforward_config=self.train_config["pushforward_config"],
-            n_eval_rollouts=self.train_config["n_eval_rollouts"],
-            filter_frames=self.data_config["filter_features"]["filter_frames"],
-            filter_groups=self.data_config["filter_features"]["filter_groups"],
+            train_filter_frames=self.data_config["filter_features"]["train_filter_frames"],
+            train_filter_groups=self.data_config["filter_features"]["train_filter_groups"],
+            infer_filter_frames=self.data_config["filter_features"]["infer_filter_frames"],
+            infer_filter_groups=self.data_config["filter_features"]["infer_filter_groups"],
             filter_in_channels=self.data_config["filter_features"]["filter_in_channels"],
             conditioning_in_channels=self.data_config["conditioning_features"]["conditioning_in_channels"],
             include_conditioning_parameters=self.data_config["conditioning_features"]["include_conditioning_parameters"],
@@ -224,6 +225,9 @@ class Trainer(Trainer_):
             eval_groups=self.data_config["eval_groups"],
             is_steady_state_prediction=self.data_config["is_steady_state_prediction"],
             residual_config=self.data_config["residual_config"],
+            pushforward_config=self.train_config["pushforward_config"],
+            n_eval_rollouts=self.train_config["n_eval_rollouts"],
+            n_infer_rollouts=self.infer_config["n_infer_rollouts"],
         )
         
     ##overrides the one in the  base class from transformers library
@@ -335,6 +339,41 @@ class Trainer(Trainer_):
 
         return self.accelerator.prepare(eval_dataloader)
     
+     ##overrides the one in the base class from transformers library
+    def get_test_dataloader(self, test_dataset: Dataset) -> DataLoader:
+        """
+        Returns the test [`~torch.utils.data.DataLoader`].
+
+        Subclass and override this method if you want to inject some custom behavior.
+
+        Args:
+            test_dataset (`torch.utils.data.Dataset`, *optional*):
+                The test dataset to use. If it is a [`~datasets.Dataset`], columns not accepted by the
+                `model.forward()` method are automatically removed. It must implement `__len__`.
+        """
+        data_collator = self.data_collator
+
+        ##commented out code from the base class
+        # if is_datasets_available() and isinstance(test_dataset, datasets.Dataset):
+        #     test_dataset = self._remove_unused_columns(test_dataset, description="test")
+        # else:
+        #     data_collator = self._get_collator_with_removed_columns(data_collator, description="test")
+
+        dataloader_params = {
+            "batch_size": self.args.eval_batch_size,
+            "collate_fn": data_collator,
+            "num_workers": self.args.dataloader_num_workers,
+            "pin_memory": self.args.dataloader_pin_memory,
+            "persistent_workers": self.args.dataloader_persistent_workers,
+        }
+
+        if not isinstance(test_dataset, torch.utils.data.IterableDataset):
+            dataloader_params["sampler"] = self._get_eval_sampler(test_dataset)
+            dataloader_params["drop_last"] = self.args.dataloader_drop_last
+            dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
+
+        # We use the same batch_size as for eval.
+        return self.accelerator.prepare(DataLoader(test_dataset, **dataloader_params))
     ##custom function, not inside transformers library
     def _forward_model_train(self, model, inputs):
         """
@@ -1248,18 +1287,22 @@ class Trainer(Trainer_):
             # tpu-comment: Logging debug metrics for PyTorch/XLA (compile, execute times, ops, etc.)
             xm.master_print(met.metrics_report())
 
-        self.control = self.callback_handler.on_evaluate(self.args, self.state, self.control, 
-                                                         output.metrics, 
-                                                         #NOTE:  kwargs added to be used in PlotOnEvalAndSaveCallback()
-                                                         predictions=output.predictions, 
-                                                         labels=output.label_ids, 
-                                                         inputs=input,
-                                                         conditioning_inputs=conditioning_input,
-                                                         eval_dataset=eval_dataset,
-                                                         data_config= self.data_config,
-                                                         train_config= self.train_config,
-                                                         output_log_config= self.output_log_config
-                                                         )
+        self.control = self.callback_handler.on_evaluate(
+            self.args,
+            self.state,
+            self.control,
+            output.metrics,
+            # NOTE: kwargs added to be used in PlotOnEvalAndSaveCallback()
+            predictions=output.predictions,
+            labels=output.label_ids,
+            inputs=input,
+            conditioning_inputs=conditioning_input,
+            eval_dataset=eval_dataset,
+            data_config=self.data_config,
+            train_config=self.train_config,
+            output_log_config=self.output_log_config,
+            model_config=self.model_config,
+        )
 
         self._memory_tracker.stop_and_update_metrics(output.metrics)
         #NOTE: stop training if NaN is encountered in the loss and set the control flags to False.
@@ -1309,6 +1352,69 @@ class Trainer(Trainer_):
                 ) from exc
         return metrics
 
+    def predict(
+        self, test_dataset: Dataset, ignore_keys: Optional[list[str]] = None, metric_key_prefix: str = "test"
+    ) -> PredictionOutput:
+        """
+        Run prediction and returns predictions and potential metrics.
+
+        Depending on the dataset and your use case, your test dataset may contain labels. In that case, this method
+        will also return metrics, like in `evaluate()`.
+
+        Args:
+            test_dataset (`Dataset`):
+                Dataset to run the predictions on. If it is an `datasets.Dataset`, columns not accepted by the
+                `model.forward()` method are automatically removed. Has to implement the method `__len__`
+            ignore_keys (`List[str]`, *optional*):
+                A list of keys in the output of your model (if it is a dictionary) that should be ignored when
+                gathering predictions.
+            metric_key_prefix (`str`, *optional*, defaults to `"test"`):
+                An optional prefix to be used as the metrics key prefix. For example the metrics "bleu" will be named
+                "test_bleu" if the prefix is "test" (default)
+
+        <Tip>
+
+        If your predictions or labels have different sequence length (for instance because you're doing dynamic padding
+        in a token classification task) the predictions will be padded (on the right) to allow for concatenation into
+        one array. The padding index is -100.
+
+        </Tip>
+
+        Returns: *NamedTuple* A namedtuple with the following keys:
+
+            - predictions (`np.ndarray`): The predictions on `test_dataset`.
+            - label_ids (`np.ndarray`, *optional*): The labels (if the dataset contained some).
+            - metrics (`Dict[str, float]`, *optional*): The potential dictionary of metrics (if the dataset contained
+              labels).
+        """
+        # memory metrics - must set up as early as possible
+        self._memory_tracker.start()
+
+        test_dataloader = self.get_test_dataloader(test_dataset)
+        start_time = time.time()
+
+        eval_loop = self.prediction_loop if self.args.use_legacy_prediction_loop else self.evaluation_loop
+        output, input, conditioning_input = eval_loop(
+            test_dataloader, description="Prediction", ignore_keys=ignore_keys, metric_key_prefix=metric_key_prefix
+        )
+        total_batch_size = self.args.eval_batch_size * self.args.world_size
+        if f"{metric_key_prefix}_jit_compilation_time" in output.metrics:
+            start_time += output.metrics[f"{metric_key_prefix}_jit_compilation_time"]
+        if f"{metric_key_prefix}_model_preparation_time" in output.metrics:
+            start_time += output.metrics[f"{metric_key_prefix}_model_preparation_time"]
+        output.metrics.update(
+            speed_metrics(
+                metric_key_prefix,
+                start_time,
+                num_samples=output.num_samples,
+                num_steps=math.ceil(output.num_samples / total_batch_size),
+            )
+        )
+
+        self.control = self.callback_handler.on_predict(self.args, self.state, self.control, output.metrics)
+        self._memory_tracker.stop_and_update_metrics(output.metrics)
+
+        return PredictionOutput(predictions=output.predictions, label_ids=output.label_ids, metrics=output.metrics) , input, conditioning_input
     ### overrides the one in the base class from transformers library
     def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time):
         """
@@ -1537,7 +1643,6 @@ class Trainer(Trainer_):
             self.data_config["filter_features"]["filter_out_channels"] = filtered_out_channels
             self.data_config["conditioning_features"]["conditioning_in_channels"] = filtered_cond_in_channels            
             
-            
             # -------------------------------
             # Also log constant parameters
             # -------------------------------
@@ -1556,6 +1661,7 @@ class Trainer(Trainer_):
             flat_cfg = {}
             for section_name in ["model_config", "data_config", "train_config"]:
                 cfg_section = getattr(self, section_name, None)
+                
                 if isinstance(cfg_section, Mapping):
                     flat_cfg.update(_flatten_dict(cfg_section, section_name))
 
@@ -1581,6 +1687,7 @@ class Trainer(Trainer_):
             complete_params = _sanitize(flat_cfg)  # include everything; no filtering
             formatted = json.dumps(complete_params, indent=2, sort_keys=True, default=str)
             logger.info("All Config Params (%d):\n%s", len(complete_params), formatted)
+
         if self.hp_search_backend == HPSearchBackend.SIGOPT:
             logger.info(f"SigOpt Assignments: {trial.assignments}")
         if self.hp_search_backend == HPSearchBackend.WANDB:
@@ -1608,6 +1715,80 @@ class Trainer(Trainer_):
 
         # Recreate datasets so they reflect the updated hyper-parameters
         self._rebuild_datasets()
+
+        try:
+            # --------------------------------------------------------------
+            # Determine the *trial-specific* output directory.  We build the
+            # directory name from one of the following (in order of priority):
+            #   1. The ``hp_name`` callable provided to ``hyperparameter_search``.
+            #   2. The Optuna trial number (``trial.number``).
+            #   3. Fallback: reuse ``self.args.output_dir`` directly.
+            # --------------------------------------------------------------
+            trial_name = None
+
+            # (1) User-supplied naming function via ``hp_name`` ----------------
+            hp_name_fn = getattr(self, "hp_name", None)
+            if callable(hp_name_fn):
+                try:
+                    trial_name = hp_name_fn(trial)  # may raise / return None
+                except Exception:
+                    trial_name = None
+
+            # (2) Optuna / backend default -------------------------------------
+            if trial_name is None:
+                if hasattr(trial, "number"):
+                    trial_name = f"trial{trial.number}"
+                elif isinstance(trial, dict) and "number" in trial:
+                    trial_name = f"trial{trial['number']}"
+
+            # Build final path --------------------------------------------------
+            trial_output_dir = (
+                os.path.join(self.args.output_dir, trial_name)
+                if trial_name is not None
+                else self.args.output_dir
+            )
+
+            os.makedirs(trial_output_dir, exist_ok=True)
+
+            # --------------------------------------------------------------
+            # Convert (possibly OmegaConf) DictConfig → regular Python container
+            # before serialising to JSON.  We resolve all interpolations so
+            # the stored config is fully explicit.
+            # --------------------------------------------------------------
+            cfg_serialisable = None
+            try:
+                from omegaconf import DictConfig as _DC, OmegaConf as _OC  # type: ignore
+
+                if isinstance(self.data_config, _DC):
+                    cfg_serialisable = _OC.to_container(self.data_config, resolve=True)
+            except ModuleNotFoundError:
+                # ΩConf not installed – fall back to naive conversion
+                cfg_serialisable = None
+
+            if cfg_serialisable is None:
+                # Generic, best-effort deep conversion for Mapping / sequences
+                def _convert(obj):
+                    if isinstance(obj, Mapping):
+                        return {k: _convert(v) for k, v in obj.items()}
+                    if isinstance(obj, (list, tuple)):
+                        return [_convert(v) for v in obj]
+                    # NumPy scalars → Python scalars
+                    try:
+                        import numpy as _np  # local import
+                        if isinstance(obj, (_np.integer, _np.floating)):
+                            return obj.item()
+                    except ModuleNotFoundError:
+                        pass
+                    return obj
+
+                cfg_serialisable = _convert(self.data_config)
+
+            # Finally, write the JSON file (default=str handles residual objects)
+            with open(os.path.join(trial_output_dir, "data_config.json"), "w") as fp:
+                json.dump(cfg_serialisable, fp, indent=2, default=str)
+        except Exception as exc:
+            # Do not interrupt hyper-parameter search if logging fails; just warn.
+            logger.warning(f"Failed to save data_config.json: {exc}")
 
     def hyperparameter_search(
         self,

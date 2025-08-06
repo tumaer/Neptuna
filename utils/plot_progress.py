@@ -42,6 +42,151 @@ import matplotlib.gridspec as gridspec
 import wandb
 import io  # For in-memory PNG buffers
 from PIL import Image  # To create a PIL image object for wandb
+from utils.compute_stats import re_normalize_data
+
+
+def preprocess_for_plotting(
+    inputs: np.ndarray,
+    labels: np.ndarray,
+    predictions: np.ndarray,
+    data_config: dict,
+    dataset,
+    residual_config: dict | None,
+    conditioning_inputs: np.ndarray | None = None,
+):
+    """Pre-process inputs, labels and predictions for plotting.
+
+    This helper mirrors the renormalisation logic originally implemented in
+    ``PlotOnEvalAndSaveCallback.on_plot`` so that it can be reused from other
+    modules without code duplication.
+
+    The function performs three main tasks:
+
+    1. Renormalises *inputs*, *labels* and *predictions* back to their original
+       physical scale using the statistics stored in *data_config*.
+    2. Applies the same procedure to *conditioning_inputs* (if provided).
+    3. Reconstructs raw values from residual predictions when residual learning
+       is enabled via *residual_config*.
+
+    Parameters
+    ----------
+    inputs, labels, predictions : np.ndarray
+        Arrays with shapes ``(N, T, C, *spatial_dims)`` where the leading axes
+        correspond to batch, time and channel respectively.
+    data_config : dict
+        Must contain the keys ``data_normalization_stats`` and
+        ``data_normalization_strategy`` produced during dataset creation.
+    dataset : Dataset
+        Dataset instance that provides ``input_channels``, ``output_channels``
+        and optionally ``conditioning_in_channels`` attributes.
+    residual_config : dict | None
+        Configuration dictionary controlling residual learning behaviour.  If
+        *None*, no residual reconstruction is performed.
+    conditioning_inputs : np.ndarray | None, optional
+        Optional conditioning input array with the same leading dimensions as
+        *inputs*.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray, np.ndarray, List[str], List[str],
+          Optional[np.ndarray], Optional[List[str]]]
+        ``(inputs_renormed, labels_renormed, predictions_renormed,
+        only_input_channel_names, output_channel_names,
+        conditioning_inputs_renormed, conditioning_input_channel_names)``
+    """
+
+    # ------------------------------------------------------------------
+    # Extract normalisation parameters and channel metadata
+    # ------------------------------------------------------------------
+    norm_stats = data_config["data_normalization_stats"]
+    norm_strategy = data_config["data_normalization_strategy"]
+
+    input_channel_names = getattr(dataset, "input_channels", None)
+    output_channel_names = getattr(dataset, "output_channels", None)
+    conditioning_input_channel_names = None
+
+    # Make *independent* copies so that callers keep their originals intact.
+    inputs_renormed = np.copy(inputs)
+    labels_renormed = np.copy(labels)
+    predictions_renormed = np.copy(predictions)
+    conditioning_inputs_renormed = None
+
+    # ------------------------------------------------------------------
+    # Handle conditioning inputs (if present)
+    # ------------------------------------------------------------------
+    if conditioning_inputs is not None:
+        conditioning_input_channel_names = [
+            ch_name
+            for ch_name in input_channel_names
+            if ch_name in getattr(dataset, "conditioning_in_channels", [])
+        ]
+        conditioning_inputs_renormed = np.copy(conditioning_inputs)
+        # Remove conditioning channels from *only* input channels
+        only_input_channel_names = [
+            ch_name for ch_name in input_channel_names if ch_name not in conditioning_input_channel_names
+        ]
+    else:
+        only_input_channel_names = input_channel_names
+
+    # ------------------------------------------------------------------
+    # Renormalise input channels (inputs & optionally conditioning_inputs)
+    # ------------------------------------------------------------------
+    for c_idx, ch_name in enumerate(only_input_channel_names):
+        if ch_name not in norm_stats:
+            raise ValueError(f"Stats for input channel {ch_name} are unavailable.")
+        stats = norm_stats[ch_name]
+        if "mask" not in ch_name.lower():
+            inputs_renormed[:, :, c_idx] = re_normalize_data(inputs[:, :, c_idx], stats, norm_strategy)
+
+    if conditioning_inputs is not None:
+        for c_idx, ch_name in enumerate(conditioning_input_channel_names):
+            if ch_name not in norm_stats:
+                raise ValueError(
+                    f"Stats for conditioning_input channel {ch_name} are unavailable."
+                )
+            stats = norm_stats[ch_name]
+            if "mask" not in ch_name.lower():
+                conditioning_inputs_renormed[:, :, c_idx] = re_normalize_data(
+                    conditioning_inputs[:, :, c_idx], stats, norm_strategy
+                )
+
+    # ------------------------------------------------------------------
+    # Renormalise output channels (labels & predictions)
+    # ------------------------------------------------------------------
+    for c_idx, ch_name in enumerate(output_channel_names):
+        if ch_name not in norm_stats:
+            raise ValueError(f"Stats for output channel {ch_name} are unavailable.")
+        norm_key = (
+            ch_name
+            if (
+                (residual_config is None)
+                or residual_config.get("add_base_value_with_raw_loss", False)
+                or residual_config.get("add_predicted_value_with_raw_loss", False)
+            )
+            else f"{ch_name}_residual"
+        )
+        stats = norm_stats[norm_key]
+        labels_renormed[:, :, c_idx] = re_normalize_data(labels[:, :, c_idx], stats, norm_strategy)
+        predictions_renormed[:, :, c_idx] = re_normalize_data(predictions[:, :, c_idx], stats, norm_strategy)
+
+    # ------------------------------------------------------------------
+    # Reconstruct raw values for residual learning if requested
+    # ------------------------------------------------------------------
+    if residual_config is not None and residual_config.get("add_predicted_value_with_diff_loss", False):
+        base_value = inputs_renormed[:, -1:, ]
+        labels_renormed = labels_renormed.cumsum(axis=1) + base_value
+        predictions_renormed = predictions_renormed.cumsum(axis=1) + base_value
+
+    return (
+        inputs_renormed,
+        labels_renormed,
+        predictions_renormed,
+        only_input_channel_names,
+        output_channel_names,
+        conditioning_inputs_renormed,
+        conditioning_input_channel_names,
+    )
+
 
 def _plot_data(ax, data, ndim, ch_names=None):
     """
@@ -144,7 +289,9 @@ def plot_examples(
     stride=1,
     save_dir="plots",
     log_to_wandb: bool = False,
-    is_best_metric: bool = False
+    is_best_metric: bool = False,
+    model_info: str | None = None,
+    data_info: str | None = None,
 ):
     """
     Generate comprehensive visualization plots comparing model predictions with targets.
@@ -191,6 +338,10 @@ def plot_examples(
         Whether to log plots to Weights & Biases instead of saving to disk.
     is_best_metric : bool, default=False
         Whether this represents the best metric checkpoint for special handling.
+    model_info : Optional[str], default=None
+        Optional string to display below the dimensions info.
+    data_info : Optional[str], default=None
+        Optional string to display below the dimensions info.
 
     Returns
     -------
@@ -223,8 +374,6 @@ def plot_examples(
 
     N, T_in, C, *spatial_shape = input_array.shape
     T_pred = prediction_array.shape[1]
-
-    extra_info = extra_info.split('/')[-1]
 
     np.random.seed(42)
     example_indices = np.random.choice(N, size=num_examples, replace=False)
@@ -309,9 +458,30 @@ def plot_examples(
             # Add main title
             # Adjust y-position to be relative to the new figure height calculation
             suptitle_y_pos = 1 - (0.10 / (nrows + header_ratio + footer_ratio)) if ndim == 2 else 0.965
-            # Use a multi-line title so that all components are visible without being truncated.
+            # --------------------------------------------------------------
+            # Title logic: include Checkpoint/Epoch only for validation plots
+            # --------------------------------------------------------------
+            include_ckpt = False
+            try:
+                # Determine if the parent directory name (split by "_") contains
+                # the keyword "validation" in the second-to-last token.
+                # Example: "plots/run_42_validation_2025" → parts[-2] == "validation".
+                parts = os.path.normpath(save_dir).split('_')
+                if len(parts) >= 2 and 'validation' in parts[-2].lower():
+                    include_ckpt = True
+            except Exception:
+                include_ckpt = False
+
+            if include_ckpt:
+                title_str = (
+                    f"{extra_info}\nCheckpoint Step: {checkpoint_step}, Epoch: {epoch} "
+                    f"\nExample Index: {idx}"
+                )
+            else:
+                title_str = f"{extra_info}\nExample Index: {idx}"
+
             fig.suptitle(
-                f"{extra_info}\nCheckpoint Step: {checkpoint_step}, Epoch: {epoch}\nExample Index: {idx}",
+                title_str,
                 fontsize=32,
                 y=suptitle_y_pos,
                 weight='bold'
@@ -319,18 +489,39 @@ def plot_examples(
             
             # Add dimensions info as subtitle, positioned farther below the suptitle to avoid overlap.
             dims_text = (
-                f"Additional Info: Total number of validation examples={N}, Spatial_res={spatial_shape}, "
+                f"Additional Info: Total number of examples={N}, Spatial_res={spatial_shape}, "
                 f"# Input_frames={T_in}, # Input_channels={C}, # Prediction_frames={T_pred}, "
                 f"# Prediction_channels={pred.shape[1]}"
             )
 
-            # Increase spacing below the suptitle further so that the dims text never
-            # collides with the (multi-line) suptitle.  Empirically a 0.10 offset for
-            # 2-D plots and 0.08 for 1-D plots provides sufficient clearance across a
-            # wide range of figure heights.
-            # Reduce the vertical offset so the dims_text sits closer to the suptitle.
+            # Keep dims_text focused on dataset statistics; append a one-line model summary.
+            if model_info is not None:
+                summary_line = model_info.split("\n")[0]  # e.g. "FNO | Params: 12.3M"
+                dims_text += "\n" + summary_line
+
+            # Increase spacing below the suptitle so dims_text never collides with it.
             text_y_pos = suptitle_y_pos - (0.06 if ndim == 2 else 0.06)
             fig.text(0.5, text_y_pos, dims_text, ha='center', va='center', fontsize=22)
+
+            # --------------------------------------------------------------
+            # Footer: detailed model & data configuration (indented bullets)
+            # --------------------------------------------------------------
+            footer_lines: list[str] = []
+
+            # Add remaining model configuration lines beneath a header
+            if model_info is not None and "\n" in model_info:
+                detailed_cfg = "\n".join(model_info.split("\n")[1:])  # skip first line
+                indented_cfg = "\n".join(["    " + ln for ln in detailed_cfg.split("\n")])
+                footer_lines.append("Model Config:\n" + indented_cfg)
+
+            # Add data configuration lines similarly
+            if data_info is not None:
+                indented_data = "\n".join(["    " + ln for ln in data_info.split("\n")])
+                footer_lines.append("Data Config:\n" + indented_data)
+
+            if footer_lines:
+                footer_text = "\n\n".join(footer_lines)
+                fig.text(0.5, 0.015, footer_text, ha='center', va='bottom', fontsize=18)
 
             # Create gridspec with variable column widths and specific height ratios
             # The hspace and wspace from the old plt.subplots_adjust are used here.
