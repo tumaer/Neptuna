@@ -529,6 +529,7 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
         self.eval_dataset = kwargs['eval_dataset']
         self.data_config = kwargs['data_config']
         self.train_config = kwargs['train_config']
+        self.scheduler_config = kwargs['scheduler_config']
         self.output_log_config = kwargs['output_log_config']
         self.model_config = kwargs['model_config']
         self.global_step = state.global_step
@@ -651,17 +652,35 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
                 lines = [", ".join(kv_pairs[i:i+3]) for i in range(0, len(kv_pairs), 3)]
                 config_block = "\n".join(lines) if lines else "-"
                 model_info_str = f"{model_name} | Params: {n_params/1e6:.2f}M\nConfig: {config_block}"
-
+                
+                def _flatten_dict(d, parent=""):
+                    flat = {}
+                    for k, v in d.items():
+                        new_k = f"{parent}.{k}" if parent else k
+                        if isinstance(v, dict):
+                            flat.update(_flatten_dict(v, new_k))
+                        else:
+                            flat[new_k] = v
+                    return flat
                 # ---------------- Data configuration string ----------------
-                data_cfg_raw = self.data_config
-                filtered_data_cfg = {
-                    k: v
-                    for k, v in data_cfg_raw.items()
-                    if not isinstance(v, (dict, list, tuple)) and not k.startswith('_')
-                }
+                data_cfg_raw = _flatten_dict(self.data_config)
+                filtered_data_cfg = {k: v for k, v in data_cfg_raw.items() if not isinstance(v, (dict, list, tuple)) and not k.startswith('_')}
                 data_kv = [f"{k}={v}" for k, v in filtered_data_cfg.items()]
                 data_lines = [", ".join(data_kv[i:i+2]) for i in range(0, len(data_kv), 2)]
                 data_info_str = "\n".join(data_lines) if data_lines else "-"
+
+                # ---------------- Train configuration string (flatten) -------
+                flat_train_cfg = _flatten_dict(self.train_config)
+                filtered_train_cfg = {k: v for k, v in flat_train_cfg.items() if not isinstance(v, (dict, list, tuple)) and not k.startswith('_')}
+                train_kv = [f"{k}={v}" for k, v in filtered_train_cfg.items()]
+                train_lines = [", ".join(train_kv[i:i+3]) for i in range(0, len(train_kv), 3)]
+                train_info_str = "\n".join(train_lines) if train_lines else "-"
+
+                flat_sched_cfg = _flatten_dict(self.scheduler_config)
+                filtered_sched_cfg = {k: v for k, v in flat_sched_cfg.items() if not isinstance(v, (dict, list, tuple)) and not k.startswith('_')}
+                scheduler_kv = [f"{k}={v}" for k, v in filtered_sched_cfg.items()]
+                scheduler_lines = [", ".join(scheduler_kv[i:i+3]) for i in range(0, len(scheduler_kv), 3)]
+                scheduler_info_str = "\n".join(scheduler_lines) if scheduler_lines else "-"
 
                 fig_dict = plot_examples(
                             inputs_renormed,
@@ -681,7 +700,9 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
                             log_to_wandb=self.output_log_config["logging"]["wandb"],
                             is_best_metric=kwargs["is_new_best_metric"],
                             model_info=model_info_str,
-                            data_info=data_info_str
+                            data_info=data_info_str,
+                            train_info=train_info_str,
+                            scheduler_info=scheduler_info_str
                         )
 
                 # If W&B logging is enabled, log the figures now.

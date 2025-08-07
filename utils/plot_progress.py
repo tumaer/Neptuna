@@ -292,6 +292,8 @@ def plot_examples(
     is_best_metric: bool = False,
     model_info: str | None = None,
     data_info: str | None = None,
+    train_info: str | None = None,
+    scheduler_info: str | None = None,
 ):
     """
     Generate comprehensive visualization plots comparing model predictions with targets.
@@ -339,9 +341,13 @@ def plot_examples(
     is_best_metric : bool, default=False
         Whether this represents the best metric checkpoint for special handling.
     model_info : Optional[str], default=None
-        Optional string to display below the dimensions info.
+        Optional string to display the model info.
     data_info : Optional[str], default=None
-        Optional string to display below the dimensions info.
+        Optional string to display the data info.
+    train_info : Optional[str], default=None
+        Training configuration summary lines.
+    scheduler_info : Optional[str], default=None
+        Scheduler configuration summary lines.
 
     Returns
     -------
@@ -424,7 +430,8 @@ def plot_examples(
 
             # Layout tuning parameters
             header_ratio = 0.15  # Height allocated for column titles
-            footer_ratio = 2.4   # Further increase footer height for more space under time labels
+            time_label_ratio = 0.5  # Height for time label row
+            footer_ratio = 4.0   # Further increase footer height for more space under time labels
 
             # Padding between individual plot and its xlabel (time indicator). 
             # If this padding is too large, the xlabel from one subplot can overlap the
@@ -510,26 +517,30 @@ def plot_examples(
 
             # Add remaining model configuration lines beneath a header
             if model_info is not None and "\n" in model_info:
-                detailed_cfg = "\n".join(model_info.split("\n")[1:])  # skip first line
-                indented_cfg = "\n".join(["    " + ln for ln in detailed_cfg.split("\n")])
-                footer_lines.append("Model Config:\n" + indented_cfg)
+                #detailed_cfg = "\n".join(model_info.split("\n")[1:])  # skip first line
+                #indented_cfg = "\n".join(["    " + ln for ln in model_info.split("\n")])
+                footer_lines.append("MODEL CONFIG:\n" + model_info + "\n")
 
             # Add data configuration lines similarly
             if data_info is not None:
-                indented_data = "\n".join(["    " + ln for ln in data_info.split("\n")])
-                footer_lines.append("Data Config:\n" + indented_data)
+                #indented_data = "\n".join(["    " + ln for ln in data_info.split("\n")])
+                footer_lines.append("DATA CONFIG:\n" + data_info + "\n")
 
-            if footer_lines:
-                footer_text = "\n\n".join(footer_lines)
-                fig.text(0.5, 0.015, footer_text, ha='center', va='bottom', fontsize=18)
+            if train_info is not None:
+                #indented_train = "\n".join(["    " + ln for ln in train_info.split("\n")])
+                footer_lines.append("TRAIN CONFIG:\n" + train_info + "\n")
+
+            if scheduler_info is not None:
+                #indented_sched = "\n".join(["    " + ln for ln in scheduler_info.split("\n")])
+                footer_lines.append("SCHEDULER CONFIG:\n" + scheduler_info + "\n")
 
             # Create gridspec with variable column widths and specific height ratios
             # The hspace and wspace from the old plt.subplots_adjust are used here.
             # Anchor the top of the gridspec to be just below the dims_text for consistent spacing.
-            gs = gridspec.GridSpec(nrows + 2, total_grid_cols,
+            gs = gridspec.GridSpec(nrows + 3, total_grid_cols,
                                 figure=fig,
                                 top=text_y_pos - 0.02,
-                                height_ratios=[header_ratio] + [1] * nrows + [footer_ratio],
+                                height_ratios=[header_ratio] + [1] * nrows + [time_label_ratio, footer_ratio],
                                 hspace=0.4, wspace=main_wspace)
 
             # Add column titles at the top
@@ -540,7 +551,7 @@ def plot_examples(
 
             # Add time labels at the bottom  
             for col_idx, (start_col, end_col) in enumerate(col_positions):
-                time_ax = fig.add_subplot(gs[-1, start_col:end_col])
+                time_ax = fig.add_subplot(gs[-2, start_col:end_col])
                 time_ax.axis('off')
                 if col_idx == 0:  # Input column
                     time_label = f"t - {stride * (T_in - 1)} to t"
@@ -653,6 +664,24 @@ def plot_examples(
                         rel_err_ax.tick_params(labelbottom=True)
 
             # --------------------------------------------------------------
+            # Footer: detailed model & data configuration (indented bullets)
+            # --------------------------------------------------------------
+            if footer_lines:
+                footer_text = "\n".join(footer_lines)
+                footer_ax = fig.add_subplot(gs[-1, :])
+                footer_ax.axis('off')
+                
+                footer_ax.text(
+                    -0.10,
+                    -0.25,
+                    footer_text,
+                    ha="left",
+                    va="bottom",
+                    fontsize=20,
+                    wrap=True
+                )
+
+            # --------------------------------------------------------------
             # Saving behaviour
             # --------------------------------------------------------------
             # We *always* save the *best* figure to disk so it can later be
@@ -721,16 +750,4 @@ def plot_examples(
     # remain on disk when `wandb` logging is disabled. This is needed as inside _maybe_log_save_evaluate,
     # we perform one last evalutaion run even when the training ends.
     # ------------------------------------------------------------------
-
-    # # Always remove non-best duplicates when a _best plot exists.
-    # for fname in os.listdir(save_dir):
-    #     if fname.endswith("_best.png"):
-    #         base_name = fname.replace("_best.png", ".png")
-    #         dup_path = os.path.join(save_dir, base_name)
-    #         if os.path.isfile(dup_path):
-    #             try:
-    #                 os.remove(dup_path)
-    #             except OSError as e:
-    #                 print(f"[plot_progress] Warning: could not delete duplicate plot '{dup_path}': {e}")
-
     return returned_figs

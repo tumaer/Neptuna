@@ -61,6 +61,10 @@ class Trainer(Trainer_):
         Data configuration dictionary with dataset and preprocessing parameters.
     train_config : Dict
         Training configuration dictionary with optimization and strategy parameters.
+    scheduler_config : Dict
+        Scheduler configuration dictionary with learning rate scheduling parameters.
+    infer_config : Dict
+        Inference configuration dictionary with inference parameters.
     output_log_config : Dict
         Output and logging configuration dictionary.
     **kwargs
@@ -81,13 +85,14 @@ class Trainer(Trainer_):
     pushforward_config : Dict
         Configuration for pushforward training strategy.
     """
-    def __init__(self, model_config, data_config, train_config, infer_config, output_log_config, **kwargs):
+    def __init__(self, model_config, data_config, train_config, scheduler_config, infer_config, output_log_config, **kwargs):
         super().__init__(**kwargs)
         self.eval_or_test_rollout_steps = None
         self.output_all_steps = False
         self.data_config = data_config
         self.model_config = model_config
         self.train_config = train_config
+        self.scheduler_config = scheduler_config
         self.infer_config = infer_config
         self.output_log_config = output_log_config
         self.original_label_seq_len = self.data_config.sequence_info[1] #number of predicted timesteps from the model (#no rollout timesteps considered)
@@ -1302,6 +1307,7 @@ class Trainer(Trainer_):
             train_config=self.train_config,
             output_log_config=self.output_log_config,
             model_config=self.model_config,
+            scheduler_config=self.scheduler_config,
         )
 
         self._memory_tracker.stop_and_update_metrics(output.metrics)

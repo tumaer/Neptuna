@@ -187,6 +187,7 @@ def run(cfg):
         model_config=cfg["model_config"],
         data_config=cfg["data_config"],
         train_config=cfg["train_config"],
+        scheduler_config=cfg["scheduler_config"],
         infer_config=cfg["infer_config"],
         output_log_config=cfg["output_log_config"],
         # everything below goes to kwargs which go directly to the base trainer class of HF
@@ -312,17 +313,37 @@ def run(cfg):
             # ----------------------------------------------------------
             # Compose data configuration string similar grouping
             # ----------------------------------------------------------
-            data_cfg_raw = cfg["data_config"]
-            filtered_data_cfg = {
-                k: v
-                for k, v in data_cfg_raw.items()
-                if not isinstance(v, (dict, list, tuple)) and not k.startswith('_')
-            }
-            data_kv = [f"{k}={v}" for k, v in filtered_data_cfg.items()]
-            data_lines = [", ".join(data_kv[i:i+2]) for i in range(0, len(data_kv), 2)]
+            # ---------------- Data configuration string (flatten, one per line) ----------------
+            def _flatten(d, parent=""):
+                flat = {}
+                for k, v in d.items():
+                    new_k = f"{parent}.{k}" if parent else k
+                    if isinstance(v, dict):
+                        flat.update(_flatten(v, new_k))
+                    else:
+                        flat[new_k] = v
+                return flat
+
+            flat_data = _flatten(cfg["data_config"])
+            filtered_data = {k: v for k, v in flat_data.items() if not isinstance(v, (dict, list, tuple)) and not k.startswith('_')}
+            data_kv = [f"{k}={v}" for k, v in filtered_data.items()]
+            data_lines = [", ".join(data_kv[i:i+3]) for i in range(0, len(data_kv), 3)]
             data_info_str = "\n".join(data_lines) if data_lines else "-"
 
-            # Create plots (this runs in parallel internally)
+            # ---------------- Training and Scheduler config strings ----------------
+            train_cfg_raw = cfg["train_config"]
+            filtered_train_cfg = {k: v for k, v in train_cfg_raw.items() if not isinstance(v, (dict, list, tuple)) and not k.startswith('_')}
+            train_kv = [f"{k}={v}" for k, v in filtered_train_cfg.items()]
+            train_lines = [", ".join(train_kv[i:i+3]) for i in range(0, len(train_kv), 3)]
+            train_info_str = "\n".join(train_lines) if train_lines else "-"
+
+            sched_cfg_raw = cfg["scheduler_config"]
+            filtered_sched_cfg = {k: v for k, v in sched_cfg_raw.items() if not isinstance(v, (dict, list, tuple)) and not k.startswith('_')}
+            sched_kv = [f"{k}={v}" for k, v in filtered_sched_cfg.items()]
+            sched_lines = [", ".join(sched_kv[i:i+3]) for i in range(0, len(sched_kv), 3)]
+            sched_info_str = "\n".join(sched_lines) if sched_lines else "-"
+
+            # Create rollout sample plots 
             plot_examples(
                 input_array=inp_renorm,
                 prediction_array=pred_renorm,
@@ -333,18 +354,20 @@ def run(cfg):
                 conditioning_input_channel_names=cond_inp_channel_names,
                 checkpoint_step=None,
                 epoch=None,
-                extra_info=cfg["data_config"].get("dataset_name")+"_Inference",
+                extra_info=cfg["data_config"].get("dataset_name")+"_Inference_Plot",
                 ndim=ndim,
-                num_examples=5,
+                num_examples=cfg["infer_config"]["n_infer_plot_examples"],
                 stride=stride_val,
                 save_dir=plot_save_dir,
                 log_to_wandb=cfg["output_log_config"]["logging"].get("wandb", False),
                 is_best_metric=False,
                 model_info=model_info_str,
                 data_info=data_info_str,
+                train_info=train_info_str,
+                scheduler_info=sched_info_str,
             )
 
-            print("Inference done")
+            print("Inference completed")
             
     else:
         # get the sampler from the config, it could be GridSampler, RandomSampler, TPESampler etc.
