@@ -8,8 +8,10 @@ is_steady_state_prediction: False
 sequence_info: [1, 1, 1]
 # Available channels for LaserDroplet: ["Pressure", "Energy", "Density", "Velocity_X", "Velocity_Y", "Volume_Fraction"]
 filter_features:
-  filter_frames: null
-  filter_groups: null 
+  train_filter_frames: null
+  train_filter_groups: null
+  infer_filter_frames: null
+  infer_filter_groups: null
   filter_in_channels: null
   filter_out_channels: null
 #NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels

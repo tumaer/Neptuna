@@ -3,13 +3,15 @@ dataset_name: KuramotoSivashinsky
 dataset_directory_path: ./data/fluids/KS/1D
 dimension: 1
 grid_resolution: null
-eval_groups: null
+eval_groups: ["seed 000000"]
 is_steady_state_prediction: False
-sequence_info: [3, 1, 1]
+sequence_info: [4, 3, 1]
 # available channels for KS: ['velocity']
 filter_features:
-  filter_frames: null
-  filter_groups: null
+  train_filter_frames: null
+  train_filter_groups: null
+  infer_filter_frames: null
+  infer_filter_groups: null
   filter_in_channels: null
   filter_out_channels: null
 #NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels
@@ -22,6 +24,13 @@ residual_config: null
   # add_base_value_with_raw_loss: False
   # add_predicted_value_with_diff_loss: True
   # add_predicted_value_with_raw_loss: False
-data_normalization_stats: null
-data_normalization_strategy: z_normalization
 coord_features: True
+data_normalization_strategy: z_normalization
+data_normalization_stats:
+  velocity:
+    mean: 1.671807608559263e-07
+    std: 0.32345585555139206
+    min: -0.9679115414619446
+    max: 1.3724584579467773
+    median: -0.012994644232094288
+    iqr: 0.4472915269434452

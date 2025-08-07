@@ -8,8 +8,10 @@ is_steady_state_prediction: False
 sequence_info: [3, 1, 1]
 # available channels for KVS: ['density', 'velocity_0', 'velocity_1'] OR ['density', 'velocity'] 
 filter_features:
-  filter_frames: null
-  filter_groups: null
+  train_filter_frames: null
+  train_filter_groups: null
+  infer_filter_frames: null
+  infer_filter_groups: null
   filter_in_channels: null
   filter_out_channels: null
 #NOTE: For transient simulations, filter_in_channels = filter_out_channels + conditioning_in_channels

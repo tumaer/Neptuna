@@ -8,8 +8,10 @@ is_steady_state_prediction: True
 sequence_info: [1, 1, 1] #fixed for SS
 # available channels for porous media: ["mask", "density", "velocity"]
 filter_features:
-  filter_frames: null #fixed for SS
-  filter_groups: null
+  train_filter_frames: null #fixed for SS
+  train_filter_groups: null
+  infer_filter_frames: null #fixed for SS
+  infer_filter_groups: null
   filter_in_channels: ["mask"]
   filter_out_channels: ["density", "velocity"]
 #NOTE: For steady state simulations all mappings are possible
