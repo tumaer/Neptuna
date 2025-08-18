@@ -24,7 +24,9 @@ mix_precision_config:
   bf16: False
   tf32: False
 #number of workers for dataloader
-dataloader_num_workers: 0
+dataloader_num_workers: 2
+#gradient accumulation steps for increasing effective batch size
+gradient_accumulation_steps: 1
 ########################################################
 # Evaluation parameters
 ########################################################

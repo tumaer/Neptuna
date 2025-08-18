@@ -18,10 +18,21 @@ from utils.hp_optimization import trial_name_factory
 from utils.plot_progress import plot_examples, preprocess_for_plotting, plot_rollout_metrics
 from utils.plot_progress import build_info_strings
 from utils.seed_utils import set_global_seed
+import psutil
+
 __all__ = ["run"]
 
 def run(cfg):
     """Entry-point called by main.py after Hydra config is prepared."""
+    RANK = int(os.environ.get("LOCAL_RANK", -1))
+    print(f"RANK: {RANK}")
+    try:
+        affinity = psutil.Process().cpu_affinity()
+        CPU_CORES = len(affinity) if affinity else (psutil.cpu_count())
+    except Exception:
+        CPU_CORES = psutil.cpu_count()
+    print(f"Detected {CPU_CORES} CPU cores")
+    # ------------------------------------------------------------------
     # ------------------------------------------------------------------
     # Global seeding
     # ------------------------------------------------------------------
@@ -121,6 +132,7 @@ def run(cfg):
         ),  # keep inputs and optionally conditioning_inputs for plotting
         greater_is_better=False,  # lower loss/error is better
         dataloader_pin_memory=True,
+        gradient_accumulation_steps=cfg["train_config"]["gradient_accumulation_steps"],
         gradient_checkpointing=False,  # save memory, slower back-prop
         auto_find_batch_size=False,
         full_determinism=False,  # turn on for reproducible distributed training
@@ -219,12 +231,10 @@ def run(cfg):
     # ------------------------------------------------------------------
     if cfg["hyperparam_opt_config"]["optimize"] is False:
         start = time.time()
-        # {cfg['data_config']['dataset_name']}
         # trainer.train(resume_from_checkpoint=f"./checkpoints/KuramotoSivashinsky_2D_ScOT_09072025_074058/checkpoint-15")
         trainer.train(resume_from_checkpoint=False)
         print(f"Total train time: {time.time() - start:.2f} s")
         if training_args.push_to_hub:
-            # Push the trained model to the Hugging Face Hub
             print("Pushing model to Hugging Face Hub...")
             trainer.push_to_hub()
         
@@ -236,6 +246,7 @@ def run(cfg):
             print("Running inference...")
             infer_ds, infer_ds_from_ic = make_datasets(cfg, mode="infer")
             if cfg["infer_config"]["infer_from_random_timestep"]:
+                print(" \n Running inference from random timestep...")
                 trainer.set_eval_or_test_rollout_steps(
                     rollout_steps=cfg["infer_config"]["n_infer_rollouts"], output_all_steps=True
                 )
@@ -324,7 +335,7 @@ def run(cfg):
                     num_examples=cfg["infer_config"]["n_infer_plot_examples"],
                     stride=stride_val,
                     save_dir=plot_save_dir,
-                    log_to_wandb=cfg["output_log_config"]["logging"].get("wandb", False),
+                    log_to_wandb=False,
                     is_best_metric=False,
                     model_info=model_info_str,
                     data_info=data_info_str,
@@ -333,6 +344,7 @@ def run(cfg):
                 )
 
             if cfg["infer_config"]["infer_from_ic"]:
+                print(" \n Running inference from IC...")
                 trainer.set_eval_or_test_rollout_steps(
                     rollout_steps=cfg["infer_config"]["n_infer_rollouts"], output_all_steps=True
                 )
@@ -428,7 +440,7 @@ def run(cfg):
                     num_examples=cfg["infer_config"]["n_infer_plot_examples"],
                     stride=stride_val,
                     save_dir=plot_save_dir,
-                    log_to_wandb=cfg["output_log_config"]["logging"].get("wandb", False),
+                    log_to_wandb=False,
                     is_best_metric=False,
                     model_info=model_info_str,
                     data_info=data_info_str,
