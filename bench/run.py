@@ -99,9 +99,14 @@ def run(cfg):
         seed=seed,  # model-seed
         data_seed=seed,  # sampler-seed for SeedableRandomSampler
         # ------------------------------------------------------------------
-        # Misc runtime knobs 
+        # Mixed precision training
         # ------------------------------------------------------------------
-        fp16=cfg["train_config"]["fp16"],  # set True for mixed-precision
+        fp16=cfg["train_config"]["mix_precision_config"]["fp16"], 
+        bf16=cfg["train_config"]["mix_precision_config"]["bf16"],  
+        tf32=cfg["train_config"]["mix_precision_config"]["tf32"],
+        # ------------------------------------------------------------------
+        # Misc runtime knobs 
+        # ------------------------------------------------------------------    
         dataloader_num_workers=cfg["train_config"]["dataloader_num_workers"],
         metric_for_best_model=cfg["train_config"][
             "metric_for_best_model"
