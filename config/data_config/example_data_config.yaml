@@ -2,6 +2,10 @@ dataset_name:
 # Type: str
 # Name of the dataset in CamelCase
 
+seed:
+# Type: int
+# Global random seed for reproducibility across models and data loaders
+
 dataset_directory_path:
 # Type: str 
 # Dataset 'folder' path

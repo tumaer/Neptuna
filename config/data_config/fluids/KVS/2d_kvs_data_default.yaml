@@ -1,9 +1,10 @@
 # For details on the parameters, refer to data_config-->example_data_config.yaml
 dataset_name: "KarmanVortexStreetTrimmed"
+seed: 42
 dataset_directory_path: "./data/fluids/KVS_trimmed/2D"
 dimension: 2
 grid_resolution: null
-eval_groups: null
+eval_groups: ["Re500"]
 is_steady_state_prediction: False
 sequence_info: [3, 1, 1]
 # available channels for KVS: ['density', 'velocity_0', 'velocity_1'] OR ['density', 'velocity'] 
@@ -11,12 +12,12 @@ filter_features:
   train_filter_frames: null
   train_filter_groups: null
   infer_filter_frames: null
-  infer_filter_groups: null
-  filter_in_channels: null
-  filter_out_channels: null
+  infer_filter_groups: ["Re480", "Re230"]
+  filter_in_channels: ["density", "velocity_1", "velocity_0"]
+  filter_out_channels: ["velocity_1", "velocity_0"]
 #NOTE: For transient simulations, filter_in_channels = filter_out_channels + conditioning_in_channels
 conditioning_features:
-  conditioning_in_channels: null
+  conditioning_in_channels: ["density"]
   include_conditioning_parameters: True
   num_cond_params: null
   parameter_min_max_stats: null

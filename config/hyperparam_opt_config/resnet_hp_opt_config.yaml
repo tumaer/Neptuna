@@ -8,7 +8,7 @@ sampler_params:
 search_domain:
   data_config:
     filter_features:
-      filter_frames:
+      train_filter_frames:
         method: categorical
         choices:
           - [0, 75]
@@ -47,9 +47,6 @@ search_domain:
     num_blocks:
       method: categorical
       choices: [[1, 1], [1, 1, 1], [1, 1, 1, 1]]
-    n_groups:
-      method: categorical
-      choices: [1, 2, 4]
     activation_fn_name:
       method: categorical
       choices: ['gelu', 'relu']

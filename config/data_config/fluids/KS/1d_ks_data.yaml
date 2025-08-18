@@ -1,5 +1,6 @@
 # For details on the parameters, refer to data_config-->example_data_config.yaml
 dataset_name: KuramotoSivashinsky
+seed: 42
 dataset_directory_path: ./data/fluids/KS/1D
 dimension: 1
 grid_resolution: null
@@ -28,9 +29,9 @@ coord_features: True
 data_normalization_strategy: z_normalization
 data_normalization_stats:
   velocity:
-    mean: 1.671807608559263e-07
-    std: 0.32345585555139206
-    min: -0.9679115414619446
+    mean: 1.4921739360114074e-07
+    std: 0.33965544523545554
+    min: -0.9674431085586548
     max: 1.3724584579467773
-    median: -0.012994644232094288
-    iqr: 0.4472915269434452
+    median: -0.013500070665031672
+    iqr: 0.47064224630594254

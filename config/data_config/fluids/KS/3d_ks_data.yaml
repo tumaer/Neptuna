@@ -1,11 +1,12 @@
 # For details on the parameters, refer to data_config-->example_data_config.yaml
 dataset_name: KuramotoSivashinsky
+seed: 42
 dataset_directory_path: ./data/fluids/KS/3D
 dimension: 3
 grid_resolution: null
 eval_groups: null
 is_steady_state_prediction: False
-sequence_info: [3, 1, 1]  
+sequence_info: [1, 1, 1]  
 # available channels for KS: ['velocity']
 filter_features:
   train_filter_frames: null
@@ -24,6 +25,13 @@ residual_config: null
   # add_base_value_with_raw_loss: True
   # add_predicted_value_with_diff_loss: False
   # add_predicted_value_with_raw_loss: False
-data_normalization_stats: null
-data_normalization_strategy: z_normalization
 coord_features: True
+data_normalization_strategy: z_normalization
+data_normalization_stats:
+  velocity:
+    mean: 1.3076261705679668e-08
+    std: 0.45837243371647435
+    min: -1.7554898262023926
+    max: 1.8000881671905518
+    median: 0.02010010927915573
+    iqr: 0.6484931707382202

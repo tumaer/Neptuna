@@ -1,5 +1,6 @@
 # For details on the parameters, refer to data_config-->example_data_config.yaml
 dataset_name: SyntheticFlow
+seed: 42
 dataset_directory_path: ./data/synthetic/SF/2D/blob
 dimension: 2
 grid_resolution: null 

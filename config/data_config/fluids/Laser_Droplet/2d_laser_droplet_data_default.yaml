@@ -1,6 +1,7 @@
 # For details on the parameters, refer to data_config-->example_data_config.yaml
 dataset_name: LaserDroplet
 dataset_directory_path: ./data/fluids/Laser_Droplet/2D
+seed: 42
 dimension: 2
 grid_resolution: null
 eval_groups: null

@@ -1,5 +1,6 @@
 # For details on the parameters, refer to data_config-->example_data_config.yaml
 dataset_name: PorousMedia
+seed: 42
 dataset_directory_path: ./data/fluids/Porous_Media_trimmed/2D
 dimension: 2
 grid_resolution: null
