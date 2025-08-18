@@ -6,7 +6,7 @@ from utils import activation_func
 import torch.nn.functional as F
 
 from transformers import PreTrainedModel
-from .unet_utils import DownBlockND, UpBlockND, MiddleBlockND, DownsampleND, UpsampleND
+from .unet_utils import DownBlockND, UpBlockND, MiddleBlockND, DownsampleND, UpsampleND, UNetConfig
 from utils.grid_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 from utils.model_utils import CustomNorm
 
@@ -43,8 +43,9 @@ class UNet(PreTrainedModel):
     #TODO: Do this for all models
     main_input_name = "input_data"
     conditioning_input_name = "conditioning_input_data"
+    config_class = UNetConfig
     
-    def __init__(self, config) -> None:
+    def __init__(self, config):
         
         super().__init__(config)
 

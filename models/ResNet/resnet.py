@@ -6,13 +6,14 @@ from utils import activation_func
 from .resnet_utils import getblock, make_layer
 from utils.grid_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 from transformers import PreTrainedModel
-
+from .resnet_utils import ResNetConfig
 
 class ResNet(PreTrainedModel):
     """Class to support ResNet like feedforward architectures"""
 
     main_input_name = "input_data"
     conditioning_input_name = "conditioning_input_data"
+    config_class = ResNetConfig
 
     def __init__(self, config) -> None:
         super().__init__(config)

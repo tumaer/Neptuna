@@ -14,7 +14,7 @@ import collections
 from utils.grid_utils import twod_meshgrid
 from .scot_utils import ScOTOutput, ScOTEmbeddings, ScOTPatchRecovery, ScOTPatchMerging, ScOTPatchUnmerging, ScOTLayer, ConvNeXtBlock, ResNetBlock
 from utils.model_utils import CustomNorm
-
+from .scot_utils import ScOTConfig
 class ScOTEncodeStage(nn.Module):
     def __init__(
         self,
@@ -481,7 +481,7 @@ class ScOT(PreTrainedModel):
 
     main_input_name = "input_data"
     conditioning_input_name = "conditioning_input_data"
-    conditioning_parameters_name = 'conditioning_parameters'
+    config_class = ScOTConfig
      
     def __init__(self, config):
         super().__init__(config)

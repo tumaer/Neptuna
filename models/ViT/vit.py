@@ -11,6 +11,7 @@ from .vit_utils import ViTConfig
 from utils.grid_utils import twod_meshgrid
 
 
+
 class ViTModel(ViTPreTrainedModel):
     def __init__(self, config: ViTConfig, use_mask_token: bool = False):
         super().__init__(config)
@@ -91,6 +92,7 @@ class ViT(PreTrainedModel):
 
     main_input_name = "input_data"
     conditioning_input_name = "conditioning_input_data"
+    config_class = ViTConfig
 
     def __init__(self, config):
         super().__init__(config)
