@@ -13,6 +13,7 @@ import hydra
 from omegaconf import DictConfig
 import json
 from utils.seed_utils import set_global_seed
+import torch
 
 def load_pretrained_model(model_config):
     """
@@ -81,8 +82,34 @@ def get_trainer(
             trainer_state = json.load(f)
         return trainer_state["train_batch_size"]
 
+    # Helper to read mixed precision flags from training_args.bin
+    def get_mixed_precision_flags(checkpoint_path):
+        training_args_path = os.path.join(checkpoint_path, "training_args.bin")
+        default_flags = {"fp16": False, "bf16": False, "tf32": False}
+        if not os.path.exists(training_args_path):
+            return default_flags
+        try:
+            args_obj = torch.load(training_args_path, map_location="cpu", weights_only=False)
+            if isinstance(args_obj, dict):
+                return {
+                    "fp16": bool(args_obj.get("fp16", False)),
+                    "bf16": bool(args_obj.get("bf16", False)),
+                    "tf32": bool(args_obj.get("tf32", False)),
+                }
+            return {
+                "fp16": bool(getattr(args_obj, "fp16", False)),
+                "bf16": bool(getattr(args_obj, "bf16", False)),
+                "tf32": bool(getattr(args_obj, "tf32", False)),
+            }
+        except Exception as exc:
+            print(f"Warning: could not load mixed precision flags from {training_args_path}: {exc}")
+            return default_flags
+
     # Extract train_batch_size from trainer_state.json
     train_batch_size = get_train_batch_size(model_config["model_checkpoint_path"])
+
+    # Read mixed precision flags from checkpoint
+    mp_flags = get_mixed_precision_flags(model_config["model_checkpoint_path"])
 
     # Seed from data config (default 0)
     seed_value = int(data_config.get("seed", 0))
@@ -106,6 +133,9 @@ def get_trainer(
             if data_config["conditioning_features"]["conditioning_in_channels"] is not None
             else []
         ), 
+        fp16=mp_flags["fp16"],
+        bf16=mp_flags["bf16"],
+        tf32=mp_flags["tf32"],
     )
     
     def compute_metrics(eval_pred: EvalPrediction):
@@ -355,12 +385,12 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
 
             # Build formatted info strings  
             model_info_str, data_info_str, train_info_str, sched_info_str = build_info_strings(
-                                                                                        model_obj=trainer.model,
-                                                                                        data_config=data_config,
-                                                                                        model_config=model_config,
-                                                                                        train_config=train_config,
-                                                                                        scheduler_config=scheduler_config
-                                                                                    )
+                                                                                            model_obj=trainer.model,
+                                                                                            data_config=data_config,
+                                                                                            model_config=model_config,
+                                                                                            train_config=train_config,
+                                                                                            scheduler_config=scheduler_config
+                                                                                        )
 
             # Create rollout sample plots 
             plot_examples(
@@ -457,12 +487,12 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             )
 
             model_info_str, data_info_str, train_info_str, sched_info_str = build_info_strings(
-                                                                                        model_obj=trainer.model,
-                                                                                        data_config=data_config,
-                                                                                        model_config=model_config,
-                                                                                        train_config=train_config,
-                                                                                        scheduler_config=scheduler_config
-                                                                                    )
+                                                                                            model_obj=trainer.model,
+                                                                                            data_config=data_config,
+                                                                                            model_config=model_config,
+                                                                                            train_config=train_config,
+                                                                                            scheduler_config=scheduler_config
+                                                                                        )
 
             # Create rollout sample plots, these plots start from the initial condition in the test dataset
             plot_examples(
