@@ -747,12 +747,6 @@ def plot_examples(
                 # A separate post-run routine uploads the saved PNG on_train_end inside WandbCallback.
             
             plt.close(fig)
-    # ------------------------------------------------------------------
-    # Final cleanup: remove any duplicate plots that have both a `_best.png`
-    # and the same name *without* the suffix.  This ensures only best plots
-    # remain on disk when `wandb` logging is disabled. This is needed as inside _maybe_log_save_evaluate,
-    # we perform one last evalutaion run even when the training ends.
-    # ------------------------------------------------------------------
     return returned_figs
 
 
