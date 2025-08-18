@@ -71,7 +71,7 @@ from omegaconf import ListConfig
 import tempfile
 import numpy as np
 # Import high-level preprocessing helper
-from utils.plot_progress import plot_examples, preprocess_for_plotting
+from utils.plot_progress import plot_examples, preprocess_for_plotting, build_info_strings
 from transformers.trainer_callback import TrainerCallback
 import os
 from PIL import Image
@@ -633,54 +633,15 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
                 )
                 run_dir = os.path.join(part_1, part_2) if part_2 is not None else part_1
                 # ----------------------------------------------------------
-                # Compose model information string (name and #parameters)
-                # ----------------------------------------------------------
-                model_obj = kwargs.get("model", None)
-                if model_obj is None:
-                    raise ValueError("Model object not provided to on_plot; cannot extract model information.")
-
-                model_name = model_obj.__class__.__name__
-                n_params = sum(p.numel() for p in model_obj.parameters())
-
-                raw_cfg = getattr(self, 'model_config', kwargs.get('model_config', {}))
-                filtered_cfg = {
-                    k: v
-                    for k, v in raw_cfg.items()
-                    if k != 'model_name' and not isinstance(v, (dict, list, tuple)) and not k.startswith('_')
-                }
-                kv_pairs = [f"{k}={v}" for k, v in filtered_cfg.items()]
-                lines = [", ".join(kv_pairs[i:i+3]) for i in range(0, len(kv_pairs), 3)]
-                config_block = "\n".join(lines) if lines else "-"
-                model_info_str = f"{model_name} | Params: {n_params/1e6:.2f}M\nConfig: {config_block}"
-                
-                def _flatten_dict(d, parent=""):
-                    flat = {}
-                    for k, v in d.items():
-                        new_k = f"{parent}.{k}" if parent else k
-                        if isinstance(v, dict):
-                            flat.update(_flatten_dict(v, new_k))
-                        else:
-                            flat[new_k] = v
-                    return flat
-                # ---------------- Data configuration string ----------------
-                data_cfg_raw = _flatten_dict(self.data_config)
-                filtered_data_cfg = {k: v for k, v in data_cfg_raw.items() if not isinstance(v, (dict, list, tuple)) and not k.startswith('_')}
-                data_kv = [f"{k}={v}" for k, v in filtered_data_cfg.items()]
-                data_lines = [", ".join(data_kv[i:i+2]) for i in range(0, len(data_kv), 2)]
-                data_info_str = "\n".join(data_lines) if data_lines else "-"
-
-                # ---------------- Train configuration string (flatten) -------
-                flat_train_cfg = _flatten_dict(self.train_config)
-                filtered_train_cfg = {k: v for k, v in flat_train_cfg.items() if not isinstance(v, (dict, list, tuple)) and not k.startswith('_')}
-                train_kv = [f"{k}={v}" for k, v in filtered_train_cfg.items()]
-                train_lines = [", ".join(train_kv[i:i+3]) for i in range(0, len(train_kv), 3)]
-                train_info_str = "\n".join(train_lines) if train_lines else "-"
-
-                flat_sched_cfg = _flatten_dict(self.scheduler_config)
-                filtered_sched_cfg = {k: v for k, v in flat_sched_cfg.items() if not isinstance(v, (dict, list, tuple)) and not k.startswith('_')}
-                scheduler_kv = [f"{k}={v}" for k, v in filtered_sched_cfg.items()]
-                scheduler_lines = [", ".join(scheduler_kv[i:i+3]) for i in range(0, len(scheduler_kv), 3)]
-                scheduler_info_str = "\n".join(scheduler_lines) if scheduler_lines else "-"
+                # Get model and configuration information 
+                # ----------------------------------------------------------    
+                model_info_str, data_info_str, train_info_str, scheduler_info_str = build_info_strings(
+                    model_obj = kwargs.get("model", None),
+                    model_config=self.model_config,
+                    data_config=self.data_config,
+                    train_config=self.train_config,
+                    scheduler_config=self.scheduler_config
+                )
 
                 fig_dict = plot_examples(
                             inputs_renormed,
