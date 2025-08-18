@@ -1396,32 +1396,48 @@ class Trainer(Trainer_):
         # memory metrics - must set up as early as possible
         self._memory_tracker.start()
 
-        test_dataloader = self.get_test_dataloader(test_dataset)
-        start_time = time.time()
+        callbacks_backup = list(getattr(self.callback_handler, "callbacks", []))
+        # Remove both HF's WandB callback and the custom one if present
+        try:
+            self.callback_handler.remove_callback(WandbCallback_)
+        except Exception:
+            pass
+        try:
+            self.callback_handler.remove_callback(WandbCallback)
+        except Exception:
+            pass
 
-        eval_loop = self.prediction_loop if self.args.use_legacy_prediction_loop else self.evaluation_loop
-        output, input, conditioning_input = eval_loop(
-            test_dataloader, description="Prediction", ignore_keys=ignore_keys, metric_key_prefix=metric_key_prefix
-        )
-        total_batch_size = self.args.eval_batch_size * self.args.world_size
-        if f"{metric_key_prefix}_jit_compilation_time" in output.metrics:
-            start_time += output.metrics[f"{metric_key_prefix}_jit_compilation_time"]
-        if f"{metric_key_prefix}_model_preparation_time" in output.metrics:
-            start_time += output.metrics[f"{metric_key_prefix}_model_preparation_time"]
-        output.metrics.update(
-            speed_metrics(
-                metric_key_prefix,
-                start_time,
-                num_samples=output.num_samples,
-                num_steps=math.ceil(output.num_samples / total_batch_size),
+        try:
+            test_dataloader = self.get_test_dataloader(test_dataset)
+            start_time = time.time()
+
+            eval_loop = self.prediction_loop if self.args.use_legacy_prediction_loop else self.evaluation_loop
+            output, input, conditioning_input = eval_loop(
+                test_dataloader, description="Prediction", ignore_keys=ignore_keys, metric_key_prefix=metric_key_prefix
             )
-        )
+            total_batch_size = self.args.eval_batch_size * self.args.world_size
+            if f"{metric_key_prefix}_jit_compilation_time" in output.metrics:
+                start_time += output.metrics[f"{metric_key_prefix}_jit_compilation_time"]
+            if f"{metric_key_prefix}_model_preparation_time" in output.metrics:
+                start_time += output.metrics[f"{metric_key_prefix}_model_preparation_time"]
+            output.metrics.update(
+                speed_metrics(
+                    metric_key_prefix,
+                    start_time,
+                    num_samples=output.num_samples,
+                    num_steps=math.ceil(output.num_samples / total_batch_size),
+                )
+            )
 
-        self.control = self.callback_handler.on_predict(self.args, self.state, self.control, output.metrics)
-        self._memory_tracker.stop_and_update_metrics(output.metrics)
+            self.control = self.callback_handler.on_predict(self.args, self.state, self.control, output.metrics)
+            self._memory_tracker.stop_and_update_metrics(output.metrics)
 
-        return PredictionOutput(predictions=output.predictions, label_ids=output.label_ids, metrics=output.metrics) , input, conditioning_input    
-    
+            return PredictionOutput(predictions=output.predictions, label_ids=output.label_ids, metrics=output.metrics) , input, conditioning_input
+        finally:
+            # Restore callbacks if we temporarily removed WandB for predict
+            if callbacks_backup is not None:
+                self.callback_handler.callbacks = callbacks_backup
+
     ### overrides the one in the base class from transformers library
     def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time):
         """
