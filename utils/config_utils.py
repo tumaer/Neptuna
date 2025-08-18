@@ -97,26 +97,24 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
         # Collect all HDF5 files in the dataset directory so that the
         # normalisation statistics reflect the *entire* data set and not
         # just the training split.
-        h5_dir = cfg["data_config"]["dataset_directory_path"]
-        h5_paths = [
-            os.path.join(h5_dir, fname) for fname in os.listdir(h5_dir) if fname.endswith(".h5")
-        ]
+        # h5_dir = cfg["data_config"]["dataset_directory_path"]
+        # h5_paths = [
+        #     os.path.join(h5_dir, fname) for fname in os.listdir(h5_dir) if fname.endswith(".h5")
+        # ]
 
-        if len(h5_paths) == 0:
-            raise FileNotFoundError(f"No .h5 files found in directory '{h5_dir}'.")
+        # if len(h5_paths) == 0:
+        #     raise FileNotFoundError(f"No .h5 files found in directory '{h5_dir}'.")
 
         _t_start = time.perf_counter()
         #TODO: compute_statistics_parallel doesnt provide median and iqr (on_fly_stats=True by default in parallel mode)
+        #NOTE: compute only the stats for the train dataset(test data is assumed to be inside/close to the train distribution)
         stats, channel_names, _ = compute_statistics_parallel(
-            h5_paths=h5_paths,
+            h5_paths=[os.path.join(cfg["data_config"]["dataset_directory_path"], "train.h5")],
             residual_config=cfg["data_config"]["residual_config"],
-            # the following arguments should be adjusted depending on the h5_paths
-            # (if multiple h5-files are provided) 
-            # NOTE: if multiple h5-files (i.e. train and test) are provided, filter_groups should be None
             filter_groups=cfg["data_config"]["filter_features"]["train_filter_groups"] ,
             filter_frames=cfg["data_config"]["filter_features"]["train_filter_frames"],
             frame_stride=cfg["data_config"]["sequence_info"][2],
-            on_fly_stats=True,
+            on_fly_stats=False,
             num_workers=4
         )
         print(f"compute_statistics took {time.perf_counter() - _t_start:.2f} seconds")
