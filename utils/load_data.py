@@ -68,10 +68,11 @@ Notes:
     - add_base_value_with_raw_loss: Add base value to predicted difference (residuals) and compute loss on the raw data
     
 """
+import os
+os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"           
 import h5py
 from torch.utils.data import Dataset
 from typing import Optional, List, Tuple
-import os
 import numpy as np
 import torch
 import random
@@ -395,6 +396,9 @@ def build_transient_index_map(h5py_file, group_list, filter_frame, window_size):
         group = h5py_file[group_name]
         num_samples = group[channel_names_in_h5_file[0]].shape[0]
 
+        assert window_size <= num_samples, (
+            f"window_size ({window_size}) cannot be greater than the number of available samples ({num_samples}) in group '{group_name}'.")
+
         min_frame = (filter_frame[0] - 1 if filter_frame and filter_frame[0] is not None else 0)
         max_frame = (filter_frame[1] - 1 if filter_frame and filter_frame[1] is not None else num_samples - 1)
         max_frame = min(max_frame, num_samples - 1)
@@ -403,6 +407,33 @@ def build_transient_index_map(h5py_file, group_list, filter_frame, window_size):
         for start_idx in range(min_frame, max_start_idx + 1, 1):
             end_idx = start_idx + window_size - 1
             index_map.append((group_name, start_idx, end_idx))
+    return index_map
+
+def build_transient_index_map_from_ic(h5py_file, group_list, filter_frame, window_size):
+    index_map = []
+    channel_names_in_h5_file = list(h5py_file[group_list[0]].keys())
+    
+    for group_name in group_list:
+        group = h5py_file[group_name]
+        num_samples = group[channel_names_in_h5_file[0]].shape[0]
+
+        # Determine the starting frame (0-based). If a minimum frame is provided, shift accordingly.
+        min_frame = (filter_frame[0] - 1 if filter_frame and filter_frame[0] is not None else 0)
+        
+        assert window_size <= num_samples, (
+            f"window_size ({window_size}) cannot be greater than the number of available samples ({num_samples}).")
+
+        # For inference from an initial condition we only need a single temporal
+        # window of length `window_size`, starting at `min_frame`.
+        max_frame_required = min_frame + window_size - 1
+        max_allowed_frame = (filter_frame[1] - 1 if filter_frame and filter_frame[1] is not None else num_samples - 1)
+
+        assert max_frame_required <= max_allowed_frame, (
+            f"max_frame_required ({max_frame_required}) cannot be greater than the maximum allowed frame ({max_allowed_frame}). Consider increasing the filter_frame[1].")
+        assert min_frame >= 0, (
+            f"min_frame ({min_frame}) cannot be less than 0.")
+        index_map.append((group_name, min_frame, max_frame_required))
+    
     return index_map
 
 def create_train_eval_transient_index_map(h5file_path: str,
@@ -558,6 +589,28 @@ def create_infer_transient_index_map(h5file_path: str,
         print(f"Length of infer index map: {len(infer_index_map)}")
         return infer_index_map, groups
      
+def create_infer_transient_index_map_from_ic(h5file_path: str,
+                    filter_groups: Optional[list],
+                    input_seq_len: int,
+                    label_seq_len: int,
+                    stride: int, 
+                    filter_frames: Optional[list] = None,  # filter_frame[0]: min_frame, filter_frame[1]: max_frame
+                    n_infer_rollouts: Optional[int] = 1
+                    ) -> list:
+    print("infer_h5_file_path:", h5file_path)
+
+    with h5py.File(h5file_path, 'r') as f:
+        all_groups = sorted(list(f.keys()))
+        groups = filter_groups if filter_groups is not None else all_groups
+
+        # --- Test window size ---
+        infer_window_size = (input_seq_len + label_seq_len - 1 + n_infer_rollouts * label_seq_len) * stride + 1
+
+        infer_index_map = build_transient_index_map_from_ic(f, groups, filter_frames, infer_window_size)
+
+        print(f"Length of infer index map: {len(infer_index_map)}")
+        return infer_index_map, groups
+    
 def fetch_dataset(dataset_name: str, 
                   mode: str = "train",  # train, eval, or test
                   **kwargs):
@@ -631,7 +684,7 @@ def fetch_dataset(dataset_name: str,
         If required parameters are missing or invalid.
     """
     # Determine h5 file path based on mode
-    h5file_name = "test.h5" if mode == "test" else "train.h5" #use the same train.h5 for both train and eval data
+    h5file_name = "test.h5" if mode == "infer" else "train.h5" #use the same train.h5 for both train and eval data
     h5file_path = os.path.abspath(kwargs["dataset_directory_path"]+"/"+h5file_name)
     # Accept an optional ``sequence_info`` kwarg.  When the caller passes
     # ``None`` (or omits the key altogether) we fall back to a sensible
@@ -700,6 +753,16 @@ def fetch_dataset(dataset_name: str,
                     stride=sequence_info[2],
                     n_infer_rollouts=n_infer_rollouts
                 )
+            
+            infer_ic_index_map, all_groups = create_infer_transient_index_map_from_ic(
+                    h5file_path=h5file_path,
+                    filter_groups=kwargs["infer_filter_groups"],
+                    filter_frames=kwargs["infer_filter_frames"], #all rollouts will begin from filter_frames[0]
+                    input_seq_len=sequence_info[0],
+                    label_seq_len=sequence_info[1],
+                    stride=sequence_info[2],
+                    n_infer_rollouts=n_infer_rollouts
+                )
             #update the kwargs with the groups and channels
             kwargs["groups"] = all_groups
             
@@ -710,7 +773,15 @@ def fetch_dataset(dataset_name: str,
                 index_map=infer_index_map,
                 **kwargs
             )
-            return infer_dataset
+
+            infer_dataset_from_ic = TransientDataset(
+                dataset_name=dataset_name,
+                h5file_path=h5file_path,
+                mode="infer",
+                index_map=infer_ic_index_map,
+                **kwargs
+            )
+            return infer_dataset, infer_dataset_from_ic
     else:
         if mode == "train":
             train_index_map, eval_index_map, all_groups = create_train_eval_steady_state_index_map(
@@ -1013,6 +1084,7 @@ class TransientDataset(Dataset):
         PyTorch training pipelines.
         """
         #many2many train-test strategy:
+        #NOTE: both start_idx and end_idx are inclusive!
         group_name, start_idx, end_idx = self.index_map[idx]
         # Build input index sequences
         input_indices = [i for i in range(start_idx, start_idx + (self.input_seq_len * self.stride), self.stride)]

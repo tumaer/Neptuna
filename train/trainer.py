@@ -46,6 +46,7 @@ from utils.trainer_utils import EvalPrediction
 from collections.abc import Mapping  # locally import to avoid top-of-file change
 import json
 import os
+os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"           
 import h5py
 import time
 
@@ -85,29 +86,29 @@ class Trainer(Trainer_):
     pushforward_config : Dict
         Configuration for pushforward training strategy.
     """
-    def __init__(self, model_config, data_config, train_config, scheduler_config, infer_config, output_log_config, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, **kwargs):
+        
         self.eval_or_test_rollout_steps = None
         self.output_all_steps = False
-        self.data_config = data_config
-        self.model_config = model_config
-        self.train_config = train_config
-        self.scheduler_config = scheduler_config
-        self.infer_config = infer_config
-        self.output_log_config = output_log_config
-        self.original_label_seq_len = self.data_config.sequence_info[1] #number of predicted timesteps from the model (#no rollout timesteps considered)
+        self.data_config = kwargs.pop("data_config", None)
+        self.model_config = kwargs.pop("model_config", None)
+        self.train_config = kwargs.pop("train_config", None)
+        self.scheduler_config = kwargs.pop("scheduler_config", None)
+        self.infer_config = kwargs.pop("infer_config", None)
+        self.output_log_config = kwargs.pop("output_log_config", None)
+
+        super().__init__(**kwargs)
+
+        #self.original_label_seq_len = self.data_config.sequence_info[1] #number of predicted timesteps from the model (#no rollout timesteps considered)
         
         self.get_prediction_loss_for_eval_windows = False #TODO: Find a way to not hardcode this.
 
-        self.residual_config = data_config["residual_config"]
+        self.residual_config = self.data_config["residual_config"]
         # Push-forward configuration
-        self.pushforward_config = train_config["pushforward_config"]
+        self.pushforward_config = self.train_config["pushforward_config"] if self.train_config is not None else None
         # Enabled flag now lives inside the pushforward_config dict (key: "enabled").
         # If the key is absent we assume push-forward should run when a config is supplied.
-        if self.pushforward_config is None:
-            self.pushforward_enabled = False
-        else:
-            self.pushforward_enabled = bool(self.pushforward_config.get("enabled", True))
+        self.pushforward_enabled = self.pushforward_config is not None and bool(self.pushforward_config.get("enabled", True))
 
         # ------------------------------------------------------------------
         # Precompute conditioning flags and a fast model-forward function to
@@ -155,8 +156,7 @@ class Trainer(Trainer_):
             self.lr_scheduler,
         )
 
-        # Replace/adjust callbacks as before
-        if self.output_log_config["logging"]["wandb"]:
+        if self.output_log_config is not None and self.output_log_config["logging"]["wandb"]:
             self.callback_handler.remove_callback(WandbCallback_)
             self.add_callback(WandbCallback())
 
@@ -226,13 +226,13 @@ class Trainer(Trainer_):
             filter_out_channels=self.data_config["filter_features"]["filter_out_channels"],
             data_normalization_stats=self.data_config["data_normalization_stats"],
             data_normalization_strategy=self.data_config["data_normalization_strategy"],
-            eval_split_ratio=self.train_config["eval_split_ratio"],
+            eval_split_ratio=self.train_config["eval_split_ratio"] if self.train_config is not None else None,
             eval_groups=self.data_config["eval_groups"],
             is_steady_state_prediction=self.data_config["is_steady_state_prediction"],
             residual_config=self.data_config["residual_config"],
-            pushforward_config=self.train_config["pushforward_config"],
-            n_eval_rollouts=self.train_config["n_eval_rollouts"],
-            n_infer_rollouts=self.infer_config["n_infer_rollouts"],
+            pushforward_config=self.train_config["pushforward_config"] if self.train_config is not None else None,
+            n_eval_rollouts=self.train_config["n_eval_rollouts"] if self.train_config is not None else None,
+            n_infer_rollouts=self.infer_config["n_infer_rollouts"] if self.infer_config is not None else None,
         )
         
     ##overrides the one in the  base class from transformers library
@@ -1420,7 +1420,8 @@ class Trainer(Trainer_):
         self.control = self.callback_handler.on_predict(self.args, self.state, self.control, output.metrics)
         self._memory_tracker.stop_and_update_metrics(output.metrics)
 
-        return PredictionOutput(predictions=output.predictions, label_ids=output.label_ids, metrics=output.metrics) , input, conditioning_input
+        return PredictionOutput(predictions=output.predictions, label_ids=output.label_ids, metrics=output.metrics) , input, conditioning_input    
+    
     ### overrides the one in the base class from transformers library
     def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time):
         """
@@ -1504,7 +1505,6 @@ class Trainer(Trainer_):
         RANK = int(os.environ.get("LOCAL_RANK", -1))
         if self.control.should_plot and (RANK == 0 or RANK == -1):  
             self.control = self.callback_handler.on_plot(self.args, self.state, self.control, is_new_best_metric=is_new_best_metric)
-            
     ### overrides the one in the base class from transformers library
     def _hp_search_setup(self, trial: Union["optuna.Trial", dict[str, Any]]):
         """

@@ -60,4 +60,8 @@ def make_datasets(cfg: DictConfig, mode: str = "train"):
         pushforward_config=train_cfg["pushforward_config"],
         n_eval_rollouts=train_cfg["n_eval_rollouts"],
         n_infer_rollouts=infer_cfg["n_infer_rollouts"],
+        infer_from_random_timestep=infer_cfg["infer_from_random_timestep"],
+        infer_from_ic=infer_cfg["infer_from_ic"],
     )
+    
+
