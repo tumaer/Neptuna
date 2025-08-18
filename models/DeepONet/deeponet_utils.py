@@ -11,7 +11,7 @@ from utils.model_utils import SequentialWithKwargs
 class DeepONetConfig(PretrainedConfig):
     """
     Args:
-        branch_net : str
+        branch_net_str : str
             Type of branch network (FFN, CNN, ResNet)
         query_idxs : Optional[Tensor]
             Indices for the trunk network
@@ -41,18 +41,18 @@ class DeepONetConfig(PretrainedConfig):
             Normalization type, by default "layer"
         norm_layer_eps : float
             Epsilon for the normalization layer, by default 1e-5
-        """
+    """
     def __init__(
         self,
-        branch_net: str = "FFN",
+        branch_net_str: Optional[str] = None,
         query_idxs: Optional[Tensor] = None,
         branch_depth: int = 4,
         trunk_depth: int = 4,
         width: int = 100,
         activation_fn_name: str = "gelu",
-        act_on_output: bool = False,        
-        kernel_size: Optional[int] = 3, 
-        padding: Optional[int] = 1, 
+        act_on_output: bool = False,
+        kernel_size: Optional[int] = 3,
+        padding: Optional[int] = 1,
         stride: Optional[int] = 2,
         num_blocks: Optional[List[int]] = [1],
         ResNet_block: Optional[str] = "BasicBlock",
@@ -60,7 +60,8 @@ class DeepONetConfig(PretrainedConfig):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self.branch_net_str = branch_net
+        # Assign directly; validation happens at model init
+        self.branch_net_str = branch_net_str
         self.query_idxs = query_idxs
         self.branch_depth = branch_depth
         self.trunk_depth = trunk_depth
@@ -213,6 +214,9 @@ class CnnBranch(nn.Module):
         return tuple(out)
 
 class BasicBlockND4DeepONet(nn.Module):
+    """
+    A small ResNet-like block tailored for DeepONet branches.
+    """
     expansion: int = 1
     def __init__(
         self,
@@ -272,72 +276,72 @@ class BasicBlockND4DeepONet(nn.Module):
         return out
 
 def grid_to_points(value: Tensor) -> Tuple[Tensor, List[int]]:
-    """
-    Convert from grid-based (1D, 2D, 3D) representation to point-based representation.
+	"""
+	Convert from grid-based (1D, 2D, 3D) representation to point-based representation.
 
-    Parameters
-    ----------
-    value : Tensor
-        Input tensor of shape (B, C, X, Y, Z).
+	Parameters
+	----------
+	value : Tensor
+		Input tensor of shape (B, C, X, Y, Z).
 
-    Returns
-    -------
-    Tuple
-        - Tensor of shape (B, C*X*Y*Z).
-    """
-    output = value.reshape(value.size(0), -1)  # Reshape to (B, C*X*Y*Z)
-    return output
+	Returns
+	-------
+	Tuple
+		- Tensor of shape (B, C*X*Y*Z).
+	"""
+	output = value.reshape(value.size(0), -1)  # Reshape to (B, C*X*Y*Z)
+	return output
 
 def points_to_grid(value: Tensor, shape: List[int]) -> Tensor:
-    """
-    Convert from point-based representation back to grid-based (1D, 2D, 3D) representation.
+	"""
+	Convert from point-based representation back to grid-based (1D, 2D, 3D) representation.
 
-    Parameters
-    ----------
-    value : Tensor
-        Input tensor of shape (B, C*X*Y*Z).
-    shape : List[int]
-        Original shape as [B, C, X, Y, Z].
+	Parameters
+	----------
+	value : Tensor
+		Input tensor of shape (B, C*X*Y*Z).
+	shape : List[int]
+		Original shape as [B, C, X, Y, Z].
 
-    Returns
-    -------
-    Tensor
-        Restored tensor of shape (B, C, X, Y, Z).
-    """
-    output = value.reshape(shape)  # Reshape back to (B, C, X, Y, Z)
-    return output
+	Returns
+	-------
+	Tensor
+		Restored tensor of shape (B, C, X, Y, Z).
+	"""
+	output = value.reshape(shape)  # Reshape back to (B, C, X, Y, Z)
+	return output
 
 def calc_resnet_out_shape(
-    in_shape: tuple,
-    num_blocks: List[int],
-    if_maxpool: bool = False,
-    stride: int=1,
-    kernel_size: int=3,
-    padding: int=1,
+	in_shape: tuple,
+	num_blocks: List[int],
+	if_maxpool: bool = False,
+	stride: int=1,
+	kernel_size: int=3,
+	padding: int=1,
 ):
-    out = list(in_shape)
-    count = 0
-    for j in range(len(num_blocks)):
-        count += num_blocks[j]
-    for _ in range(count):
-        for i in range(len(out)):
-            if if_maxpool:
-                out[i] = (out[i] + 2*1 - 3) // stride + 1
-                out[i] = (out[i] + 2*1 - 3) // 1 + 1
-                out[i] = (out[i] - 2) // 2 + 1
-                assert out[i] > 0, f"Output shape is non-positive: {out[i]}, reduce the number of blocks "
-            else:
-                out[i] = (out[i] + 2 * padding - kernel_size) // stride + 1
-                out[i] = (out[i] + 2 * padding - kernel_size) // 1 + 1
-                assert out[i] > 0, f"Output shape is non-positive: {out[i]}, reduce the number of blocks "
-    return tuple(out)
+	out = list(in_shape)
+	count = 0
+	for j in range(len(num_blocks)):
+		count += num_blocks[j]
+	for _ in range(count):
+		for i in range(len(out)):
+			if if_maxpool:
+				out[i] = (out[i] + 2*1 - 3) // stride + 1
+				out[i] = (out[i] + 2*1 - 3) // 1 + 1
+				out[i] = (out[i] - 2) // 2 + 1
+				assert out[i] > 0, f"Output shape is non-positive: {out[i]}, reduce the number of blocks "
+			else:
+				out[i] = (out[i] + 2 * padding - kernel_size) // stride + 1
+				out[i] = (out[i] + 2 * padding - kernel_size) // 1 + 1
+				assert out[i] > 0, f"Output shape is non-positive: {out[i]}, reduce the number of blocks "
+	return tuple(out)
 
 def linspace_int_list(int1: int, int2: int, int3: int, reverse: bool) -> list:
-    assert int2 > 1, "branch and trunk depth must be greater than 1"
-    arr = [int(round(x)) for x in np.linspace(int3, int1, int2)]
-    arr[0] = int3
-    arr[-1] = int1
-    if reverse:
-        return arr[::-1]
-    else:
-        return arr
+	assert int2 > 1, "branch and trunk depth must be greater than 1"
+	arr = [int(round(x)) for x in np.linspace(int3, int1, int2)]
+	arr[0] = int3
+	arr[-1] = int1
+	if reverse:
+		return arr[::-1]
+	else:
+		return arr
