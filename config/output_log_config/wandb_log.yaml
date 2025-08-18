@@ -1,7 +1,10 @@
 logging: 
   output_dir: null
+  checkpoint_prefix: null # Optional prefix for checkpoints directory
   wandb: True  
   wandb_project: 'wandb_trials'
   wandb_run_name: null
   disable_progress_bar: True
   wandb_api_key: None
+  # if wandb is already setup and logged into the machine, then api key is obtained as follows:
+  # python -c "import wandb; print(wandb.Api().api_key)"  

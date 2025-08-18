@@ -68,10 +68,23 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
 
     if not out_dir:
         ts = datetime.now().strftime("%d%m%Y_%H%M%S")
-        out_dir = (
-            f"./checkpoints/{cfg['data_config']['dataset_name']}_"
+        # Get checkpoint prefix if specified in config
+        checkpoint_prefix = cfg["output_log_config"]["logging"].get("checkpoint_prefix", "")
+        
+        run_name = (
+            f"{cfg['data_config']['dataset_name']}_"
             f"{cfg['data_config']['dimension']}D_{cfg['model_config']['model_name']}_{ts}"
         )
+        if checkpoint_prefix:
+            run_name = f"{checkpoint_prefix}_{run_name}"
+        
+        # Build the output directory path, optionally nesting under a top-level checkpoint_prefix directory
+        if checkpoint_prefix:
+            out_dir = os.path.join(checkpoint_prefix, "checkpoints", run_name)
+        else:
+            out_dir = os.path.join("checkpoints", run_name)
+        
+        print(f"Location of the checkpoints directory: {out_dir}")
 
     # Prepend "HP_" if we are running hyper-parameter optimisation and the
     # directory name is not already prefixed.
