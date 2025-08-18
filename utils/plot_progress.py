@@ -43,6 +43,7 @@ import wandb
 import io  # For in-memory PNG buffers
 from PIL import Image  # To create a PIL image object for wandb
 from utils.compute_stats import re_normalize_data
+from typing import Tuple
 
 
 def preprocess_for_plotting(
@@ -249,7 +250,7 @@ def _plot_data(ax, data, ndim, ch_names=None):
         else:
             ncols = C
             fig = ax.figure
-            gs = ax.get_subplotspec().subgridspec(1, ncols, wspace=0.6)  # Add spacing between channels
+            gs = ax.get_subplotspec().subgridspec(1, ncols, wspace=0.2)  # Tighter spacing between channel sub-axes
             ax.remove()
             sub_axes = []
             for c in range(C):
@@ -440,8 +441,10 @@ def plot_examples(
             # for 1-D plots.
             x_label_pad = 40 if ndim == 2 else 30
 
-            # Use a uniform but larger wspace to create clearer separation between logical columns.
-            main_wspace = 1.2  # Empirically chosen for good visual separation
+            # Reduce horizontal spacing so each subplot takes up more space within its
+            # column, effectively making the plots ~50 % larger without increasing the
+            # overall figure size.
+            main_wspace = 0.3
             
             # Adjust figure width based on total content
             base_width_per_unit = 4.0 if ndim == 2 else 5.0
@@ -459,7 +462,7 @@ def plot_examples(
                 fig_height = (nrows + header_ratio + footer_ratio) * cell_height
             else:  # Original calculation for 1D plots which can be non-square
                 fig_height = (nrows + header_ratio + footer_ratio + 1.3) * 3.5  # extra offset for titles
-
+            
             fig = plt.figure(figsize=(fig_width, fig_height))
 
             # Add main title
@@ -751,3 +754,156 @@ def plot_examples(
     # we perform one last evalutaion run even when the training ends.
     # ------------------------------------------------------------------
     return returned_figs
+
+
+def plot_rollout_metrics(step_metrics: dict, output_channel_names: list[str], save_dir: str, title: str | None = None, filename: str = "rollout_metrics.png", plot_type: str = "per_step") -> None:
+    """Plot per-metric curves over rollout steps for IC-start evaluations.
+
+    Parameters
+    ----------
+    step_metrics : dict
+        Mapping from metric name to a dictionary with keys like
+        "per_step_mean", "per_step_std", "cumulative_mean", "cumulative_std".
+        Each value is an array of shape (T, C+1) where columns 0..C-1 are
+        per-channel values and the last column is the overall value.
+    output_channel_names : list[str]
+        Names for the C output channels, used in the legend.
+    save_dir : str
+        Directory where the figure will be saved.
+    title : Optional[str]
+        Optional figure title.
+    filename : str
+        Output filename. Defaults to "rollout_metrics.png".
+    plot_type : {"cumulative", "per_step"}
+        Which statistics to plot. Defaults to "cumulative". When set to
+        "per_step", plots per_step_mean and per_step_std.
+    """
+    os.makedirs(save_dir, exist_ok=True)
+
+    num_metrics = len(step_metrics)
+    if num_metrics == 0:
+        return
+
+    # Determine keys for mean/std based on requested plot type
+    if plot_type not in {"cumulative", "per_step"}:
+        raise ValueError("plot_type must be 'cumulative' or 'per_step'")
+    mean_key = f"{plot_type}_mean"
+    std_key = f"{plot_type}_std"
+
+    # Create one subplot per metric
+    fig, axes = plt.subplots(num_metrics, 1, figsize=(10, max(3 * num_metrics, 4)), squeeze=False)
+    axes = axes[:, 0]
+
+    # Prepare legends (channels + overall)
+    channel_legends = list(output_channel_names)
+    overall_label = "overall"
+
+    for ax, (metric_name, stats) in zip(axes, step_metrics.items()):
+        if mean_key not in stats or std_key not in stats:
+            # Skip metrics missing requested stats
+            continue
+        means = stats[mean_key]   # (T, C+1)
+        stds = stats[std_key]     # (T, C+1)
+
+        T, total_cols = means.shape
+        num_channels = total_cols - 1
+        if num_channels != len(output_channel_names):
+            # Fallback if mismatch
+            channel_legends = [f"ch_{i}" for i in range(num_channels)]
+
+        x = np.arange(1, T + 1)
+        # Plot per-channel mean with std bands, using scatter markers and connecting lines
+        for c in range(num_channels):
+            channel_mean = means[:, c]
+            channel_std = stds[:, c]
+            line, = ax.plot(x, channel_mean, label=channel_legends[c], linewidth=1.5, alpha=0.95)
+            ax.scatter(x, channel_mean, s=18, color=line.get_color(), edgecolors="none", zorder=3)
+            ax.fill_between(x, channel_mean - channel_std, channel_mean + channel_std, color=line.get_color(), alpha=0.15)
+        # Plot overall mean with std band, with markers and connecting line
+        overall_mean = means[:, -1]
+        overall_std = stds[:, -1]
+        ax.plot(x, overall_mean, label=overall_label, linewidth=2.0, color="black")
+        ax.scatter(x, overall_mean, s=24, color="black", edgecolors="none", zorder=3)
+        ax.fill_between(x, overall_mean - overall_std, overall_mean + overall_std, color="black", alpha=0.12)
+
+        ax.set_xlabel("rollout step")
+        ax.set_ylabel(metric_name)
+        ax.grid(True, linestyle=":", alpha=0.6)
+        ax.legend(fontsize=8, ncols=min(4, num_channels + 1))
+
+    if title:
+        fig.suptitle(title, fontsize=14)
+    fig.tight_layout(rect=(0, 0, 1, 0.98))
+
+    out_path = os.path.join(save_dir, filename)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def build_info_strings(**kwargs) -> Tuple[str, str, str, str]:
+    """Build summary strings for model, data, training and scheduler sections.
+
+    This was moved from *bench/run.py* to centralise formatting utilities.
+    """
+    # ----------------- Model config string -----------------
+    model_obj = kwargs["model_obj"]
+    model_name = model_obj.__class__.__name__
+    n_params = sum(p.numel() for p in model_obj.parameters())
+
+    cfg_dict_raw = kwargs["model_config"]
+    if cfg_dict_raw is not None:
+        filtered_cfg = {
+            k: v
+            for k, v in cfg_dict_raw.items()
+            if k != "model_name" and not isinstance(v, (dict, list, tuple)) and not k.startswith("_")
+        }
+        kv_pairs = [f"{k}={v}" for k, v in filtered_cfg.items()]
+        lines = [", ".join(kv_pairs[i : i + 3]) for i in range(0, len(kv_pairs), 3)]
+        config_block = "\n".join(lines) if lines else "-"
+        model_info_str = f"{model_name} | Params: {n_params/1e6:.2f}M\nConfig: {config_block}"
+    else:
+        model_info_str = None
+
+    # ----------------- Data configuration string -----------------
+    flat_data = kwargs["data_config"]
+    if flat_data is not None:
+        filtered_data = {
+            k: v
+            for k, v in flat_data.items()
+            if not isinstance(v, (dict, list, tuple)) and not k.startswith("_")
+        }
+        data_kv = [f"{k}={v}" for k, v in filtered_data.items()]
+        data_lines = [", ".join(data_kv[i : i + 3]) for i in range(0, len(data_kv), 3)]
+        data_info_str = "\n".join(data_lines) if data_lines else "-"
+    else:
+        data_info_str = None
+
+    # ----------------- Train config strings -----------------
+    train_cfg_raw = kwargs["train_config"]
+    if train_cfg_raw is not None:
+        filtered_train_cfg = {
+            k: v
+            for k, v in train_cfg_raw.items()
+            if not isinstance(v, (dict, list, tuple)) and not k.startswith("_")
+        }
+        train_kv = [f"{k}={v}" for k, v in filtered_train_cfg.items()]
+        train_lines = [", ".join(train_kv[i : i + 3]) for i in range(0, len(train_kv), 3)]
+        train_info_str = "\n".join(train_lines) if train_lines else "-"
+    else:
+        train_info_str = None
+
+    # ----------------- Scheduler config strings -----------------
+    sched_cfg_raw = kwargs["scheduler_config"]
+    if sched_cfg_raw is not None:
+        filtered_sched_cfg = {
+            k: v
+            for k, v in sched_cfg_raw.items()
+            if not isinstance(v, (dict, list, tuple)) and not k.startswith("_")
+        }
+        sched_kv = [f"{k}={v}" for k, v in filtered_sched_cfg.items()]
+        sched_lines = [", ".join(sched_kv[i : i + 3]) for i in range(0, len(sched_kv), 3)]
+        sched_info_str = "\n".join(sched_lines) if sched_lines else "-"
+    else:
+        sched_info_str = None
+
+    return model_info_str, data_info_str, train_info_str, sched_info_str
