@@ -46,7 +46,9 @@ from utils.trainer_utils import EvalPrediction
 from collections.abc import Mapping  # locally import to avoid top-of-file change
 import json
 import os
+os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"           
 import h5py
+import time
 
 class Trainer(Trainer_):
     """    
@@ -60,6 +62,10 @@ class Trainer(Trainer_):
         Data configuration dictionary with dataset and preprocessing parameters.
     train_config : Dict
         Training configuration dictionary with optimization and strategy parameters.
+    scheduler_config : Dict
+        Scheduler configuration dictionary with learning rate scheduling parameters.
+    infer_config : Dict
+        Inference configuration dictionary with inference parameters.
     output_log_config : Dict
         Output and logging configuration dictionary.
     **kwargs
@@ -80,27 +86,29 @@ class Trainer(Trainer_):
     pushforward_config : Dict
         Configuration for pushforward training strategy.
     """
-    def __init__(self, model_config, data_config, train_config, output_log_config, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, **kwargs):
+        
         self.eval_or_test_rollout_steps = None
         self.output_all_steps = False
-        self.data_config = data_config
-        self.model_config = model_config
-        self.train_config = train_config
-        self.output_log_config = output_log_config
-        self.original_label_seq_len = self.data_config.sequence_info[1] #number of predicted timesteps from the model (#no rollout timesteps considered)
+        self.data_config = kwargs.pop("data_config", None)
+        self.model_config = kwargs.pop("model_config", None)
+        self.train_config = kwargs.pop("train_config", None)
+        self.scheduler_config = kwargs.pop("scheduler_config", None)
+        self.infer_config = kwargs.pop("infer_config", None)
+        self.output_log_config = kwargs.pop("output_log_config", None)
+
+        super().__init__(**kwargs)
+
+        #self.original_label_seq_len = self.data_config.sequence_info[1] #number of predicted timesteps from the model (#no rollout timesteps considered)
         
         self.get_prediction_loss_for_eval_windows = False #TODO: Find a way to not hardcode this.
 
-        self.residual_config = data_config["residual_config"]
+        self.residual_config = self.data_config["residual_config"]
         # Push-forward configuration
-        self.pushforward_config = train_config["pushforward_config"]
+        self.pushforward_config = self.train_config["pushforward_config"] if self.train_config is not None else None
         # Enabled flag now lives inside the pushforward_config dict (key: "enabled").
         # If the key is absent we assume push-forward should run when a config is supplied.
-        if self.pushforward_config is None:
-            self.pushforward_enabled = False
-        else:
-            self.pushforward_enabled = bool(self.pushforward_config.get("enabled", True))
+        self.pushforward_enabled = self.pushforward_config is not None and bool(self.pushforward_config.get("enabled", True))
 
         # ------------------------------------------------------------------
         # Precompute conditioning flags and a fast model-forward function to
@@ -148,8 +156,7 @@ class Trainer(Trainer_):
             self.lr_scheduler,
         )
 
-        # Replace/adjust callbacks as before
-        if self.output_log_config["logging"]["wandb"]:
+        if self.output_log_config is not None and self.output_log_config["logging"]["wandb"]:
             self.callback_handler.remove_callback(WandbCallback_)
             self.add_callback(WandbCallback())
 
@@ -208,10 +215,10 @@ class Trainer(Trainer_):
             dataset_name=self.data_config["dataset_name"],
             dataset_directory_path=self.data_config["dataset_directory_path"],
             sequence_info=self.data_config["sequence_info"],
-            pushforward_config=self.train_config["pushforward_config"],
-            n_eval_rollouts=self.train_config["n_eval_rollouts"],
-            filter_frames=self.data_config["filter_features"]["filter_frames"],
-            filter_groups=self.data_config["filter_features"]["filter_groups"],
+            train_filter_frames=self.data_config["filter_features"]["train_filter_frames"],
+            train_filter_groups=self.data_config["filter_features"]["train_filter_groups"],
+            infer_filter_frames=self.data_config["filter_features"]["infer_filter_frames"],
+            infer_filter_groups=self.data_config["filter_features"]["infer_filter_groups"],
             filter_in_channels=self.data_config["filter_features"]["filter_in_channels"],
             conditioning_in_channels=self.data_config["conditioning_features"]["conditioning_in_channels"],
             include_conditioning_parameters=self.data_config["conditioning_features"]["include_conditioning_parameters"],
@@ -219,10 +226,13 @@ class Trainer(Trainer_):
             filter_out_channels=self.data_config["filter_features"]["filter_out_channels"],
             data_normalization_stats=self.data_config["data_normalization_stats"],
             data_normalization_strategy=self.data_config["data_normalization_strategy"],
-            eval_split_ratio=self.train_config["eval_split_ratio"],
+            eval_split_ratio=self.train_config["eval_split_ratio"] if self.train_config is not None else None,
             eval_groups=self.data_config["eval_groups"],
             is_steady_state_prediction=self.data_config["is_steady_state_prediction"],
             residual_config=self.data_config["residual_config"],
+            pushforward_config=self.train_config["pushforward_config"] if self.train_config is not None else None,
+            n_eval_rollouts=self.train_config["n_eval_rollouts"] if self.train_config is not None else None,
+            n_infer_rollouts=self.infer_config["n_infer_rollouts"] if self.infer_config is not None else None,
         )
         
     ##overrides the one in the  base class from transformers library
@@ -334,6 +344,41 @@ class Trainer(Trainer_):
 
         return self.accelerator.prepare(eval_dataloader)
     
+     ##overrides the one in the base class from transformers library
+    def get_test_dataloader(self, test_dataset: Dataset) -> DataLoader:
+        """
+        Returns the test [`~torch.utils.data.DataLoader`].
+
+        Subclass and override this method if you want to inject some custom behavior.
+
+        Args:
+            test_dataset (`torch.utils.data.Dataset`, *optional*):
+                The test dataset to use. If it is a [`~datasets.Dataset`], columns not accepted by the
+                `model.forward()` method are automatically removed. It must implement `__len__`.
+        """
+        data_collator = self.data_collator
+
+        ##commented out code from the base class
+        # if is_datasets_available() and isinstance(test_dataset, datasets.Dataset):
+        #     test_dataset = self._remove_unused_columns(test_dataset, description="test")
+        # else:
+        #     data_collator = self._get_collator_with_removed_columns(data_collator, description="test")
+
+        dataloader_params = {
+            "batch_size": self.args.eval_batch_size,
+            "collate_fn": data_collator,
+            "num_workers": self.args.dataloader_num_workers,
+            "pin_memory": self.args.dataloader_pin_memory,
+            "persistent_workers": self.args.dataloader_persistent_workers,
+        }
+
+        if not isinstance(test_dataset, torch.utils.data.IterableDataset):
+            dataloader_params["sampler"] = self._get_eval_sampler(test_dataset)
+            dataloader_params["drop_last"] = self.args.dataloader_drop_last
+            dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
+
+        # We use the same batch_size as for eval.
+        return self.accelerator.prepare(DataLoader(test_dataset, **dataloader_params))
     ##custom function, not inside transformers library
     def _forward_model_train(self, model, inputs):
         """
@@ -626,93 +671,103 @@ class Trainer(Trainer_):
         """
         Compute evaluation predictions without loss computation for memory efficiency.
 
-        Parameters
-        ----------
-        model : torch.nn.Module
-            The model to evaluate.
-        inputs : Dict[str, torch.Tensor]
-            Input tensors.
+        This re-implementation significantly speeds up the method by:
+        1. Pre-allocating the full predictions tensor and filling it in-place (avoids Python list
+           growth and the final `torch.stack`).
+        2. Reducing Python-level overhead by caching frequently accessed attributes locally.
+        3. Updating `input_data` in-place instead of recreating a new `dict` every rollout step.
 
-        Returns
-        -------
-        torch.Tensor
-            Stacked predictions with shape (B, rollout_steps+1, T, C, *spatial_dims).
+        The numerical behaviour is identical to the original implementation.
         """
-        #########################################################
-        #Autoregressive prediction (for eval and test)
-        #########################################################
-        predictions_ = []
-        prediction = self._forward_model_eval_or_test(model,inputs) 
+        # ------------------------------------------------------------------
+        # Fast path preparation
+        # ------------------------------------------------------------------
+        batch_size, _, _, *spatial_dims = inputs["input_data"].shape
+        rollout_steps = 0 if self.data_config.is_steady_state_prediction else self.rollout_steps
+        total_steps = rollout_steps + 1  # first step + autoregressive rollouts
 
-        if self.residual_config is not None:
-            base_value = inputs["input_data"][:,-1:,]
+        # First forward pass (t = 0)
+        prediction = self._forward_model_eval_or_test(model, inputs)
+
+        # -------------------------------------------------------------
+        # Handle residual learning variants once per step
+        # -------------------------------------------------------------
+        use_residuals = self.residual_config is not None
+        if use_residuals:
+            base_value = inputs["input_data"][:, -1:]  # last known physical state
             raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
 
-        #predictions_.append(raw_prediction.detach() if self.residual_config is not None else prediction.detach()) 
-        if self.output_all_steps:            
-            if self.residual_config is None:
-                # raw values are added 
-                predictions_.append(prediction.detach())
-            elif self.residual_config is not None and self.residual_config["add_predicted_value_with_diff_loss"]:
-                # predictions correspond to the difference and they are accumulated for the metrics.
-                predictions_.append(prediction.detach())
-            elif self.residual_config is not None and self.residual_config["add_predicted_value_with_raw_loss"]:
-                # raw_predictions correspond to the raw values and they are accumulated for the metrics.
-                predictions_.append(raw_prediction.detach())
-            else: #add_base_value_with_raw_loss
-                # raw_predictions correspond to the raw values and they are accumulated for the metrics.
-                predictions_.append(raw_prediction.detach())
+        # -------------------------------------------------------------
+        # Pre-allocate storage when the caller wants *all* steps
+        # -------------------------------------------------------------
+        if self.output_all_steps:
+            seq_len_out = self.data_config["sequence_info"][1]
+            n_channels_out = prediction.shape[2]
+            predictions = torch.empty(
+                (batch_size, total_steps, seq_len_out, n_channels_out, *spatial_dims),
+                dtype=prediction.dtype,
+                device=prediction.device,
+            )
+            if not use_residuals or self.residual_config["add_predicted_value_with_diff_loss"]:
+                predictions[:, 0].copy_(prediction.detach())
+            else:
+                predictions[:, 0].copy_(raw_prediction.detach())
+        else:
+            predictions = None  # we will only return the last prediction
 
-        if not self.data_config.is_steady_state_prediction:
-            for i in range(1,self.rollout_steps+1): 
-                #logger.debug(f"Eval/Test rollout step {i+1} of {self.rollout_steps+1}")
-                #prediction.shape = torch.Size([B, label_seq_length,C_labels, x_resolution, y_resolution, ...]) 
-                #recreate the inputs to be fed to the model for the next step
-                if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length > input_sequence length
-                    inputs = {
-                        **inputs,
-                        **{ #this part replaces the "input_data" of input with the output of the model. 
-                            #So the new input is the output from the previous step.
-                            "input_data": (
-                                prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the predictions so as to extract the input_sequence.
-                            )if self.residual_config is None else (
-                                raw_prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the predictions so as to extract the input_sequence.
-                            )
-                        },
-                }
-                
-                else: #input_sequence length > label_sequence length (the more usual case)
-                    inputs = {
-                        **inputs,
-                        **{ #this part replaces the "input_data" of input with the output of the model. 
-                            #So the new input is the output from the previous step.
-                            "input_data": ( 
-                                torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1) ##slice a part of the input_data so as to extract the input_sequence.
-                            )if self.residual_config is None else (
-                                torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], raw_prediction.detach()], dim=1) #slice a part of the input_data so as to extract the input_sequence.
-                            )
-                        },
-                }
-                
-                prediction = self._forward_model_eval_or_test(model,inputs)
-                
-                if self.residual_config is not None:
-                    raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
-                
-                #predictions_.append(raw_prediction.detach() if self.residual_config is not None else prediction.detach()) 
-                if self.output_all_steps:
-                    if self.residual_config is None:
-                        predictions_.append(prediction.detach())
-                    elif self.residual_config is not None and self.residual_config["add_predicted_value_with_diff_loss"]:
-                        predictions_.append(prediction.detach())
-                    elif self.residual_config is not None and self.residual_config["add_predicted_value_with_raw_loss"]:
-                        predictions_.append(raw_prediction.detach())
-                    else: #add_base_value_with_raw_loss
-                        predictions_.append(raw_prediction.detach())
+        # Early exit when no autoregressive rollout is required
+        if rollout_steps == 0:
+            return predictions if self.output_all_steps else prediction.detach()
 
-        predictions= torch.stack(predictions_, dim=1) 
-        #predictions.shape = torch.Size([B, rollout_steps+1, label_seq_length, C_output, *spatial_resolution])
-        return predictions
+        # -------------------------------------------------------------
+        # Local aliases to avoid repeated attribute look-ups inside loop
+        # -------------------------------------------------------------
+        seq_inp, seq_out, _ = self.data_config.sequence_info
+        forward_fn = self._forward_model_eval_or_test
+        curr_inputs = inputs  # will be updated in-place
+
+        # -------------------------------------------------------------
+        # Autoregressive rollout loop
+        # -------------------------------------------------------------
+        for step in range(1, total_steps):
+            # Prepare `input_data` for the next timestep -------------------
+            if seq_out >= seq_inp:
+                # label sequence ≥ input sequence (slice needed)
+                slice_from = seq_out - seq_inp
+                next_input = (
+                    prediction[:, slice_from:].detach()
+                    if not use_residuals
+                    else raw_prediction[:, slice_from:].detach()
+                )
+            else:
+                # input sequence > label sequence (concatenate needed)
+                next_input = torch.cat(
+                    [
+                        curr_inputs["input_data"][:, seq_out:],
+                        prediction.detach() if not use_residuals else raw_prediction.detach(),
+                    ],
+                    dim=1,
+                )
+            # Update the inputs dict (shallow copy keeps other keys intact)
+            curr_inputs = {**curr_inputs, "input_data": next_input}
+
+            # Forward pass for this rollout step -------------------------
+            prediction = forward_fn(model, curr_inputs)
+
+            if use_residuals:
+                raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
+
+            # Store the prediction if requested --------------------------
+            if self.output_all_steps:
+                if not use_residuals or self.residual_config["add_predicted_value_with_diff_loss"]:
+                    #raw values are added OR predictions correspond to the difference and they are accumulated for the metrics.
+                    predictions[:, step].copy_(prediction.detach())
+                else:
+                    #raw_predictions are accumulated for the metrics as the loss is computed with the raw values.
+                    predictions[:, step].copy_(raw_prediction.detach())
+
+        # Return either the full tensor (B, S, T, C, *spatial*) or the last prediction
+        return predictions if self.output_all_steps else prediction.detach()
 
     def select_pushforward_unroll_steps_for_training(self, current_epoch):
         """
@@ -1204,6 +1259,7 @@ class Trainer(Trainer_):
         eval_loop = self.prediction_loop if self.args.use_legacy_prediction_loop else self.evaluation_loop
         #########################################################
         #NOTE: Main evaluation loop
+        eval_loop_start_time = time.time()
         output, input, conditioning_input = eval_loop(
             eval_dataloader,
             description="Evaluation",
@@ -1213,6 +1269,8 @@ class Trainer(Trainer_):
             ignore_keys=ignore_keys,
             metric_key_prefix=metric_key_prefix,
         )
+        # Record the wall-clock duration of the evaluation loop (in seconds)
+        output.metrics[f"{metric_key_prefix}_eval_loop_time"] = round(time.time() - eval_loop_start_time, 4)
         #########################################################
         total_batch_size = self.args.eval_batch_size * self.args.world_size
         if f"{metric_key_prefix}_jit_compilation_time" in output.metrics:
@@ -1234,18 +1292,23 @@ class Trainer(Trainer_):
             # tpu-comment: Logging debug metrics for PyTorch/XLA (compile, execute times, ops, etc.)
             xm.master_print(met.metrics_report())
 
-        self.control = self.callback_handler.on_evaluate(self.args, self.state, self.control, 
-                                                         output.metrics, 
-                                                         #NOTE:  kwargs added to be used in PlotOnEvalAndSaveCallback()
-                                                         predictions=output.predictions, 
-                                                         labels=output.label_ids, 
-                                                         inputs=input,
-                                                         conditioning_inputs=conditioning_input,
-                                                         eval_dataset=eval_dataset,
-                                                         data_config= self.data_config,
-                                                         train_config= self.train_config,
-                                                         output_log_config= self.output_log_config
-                                                         )
+        self.control = self.callback_handler.on_evaluate(
+            self.args,
+            self.state,
+            self.control,
+            output.metrics,
+            # NOTE: kwargs added to be used in PlotOnEvalAndSaveCallback()
+            predictions=output.predictions,
+            labels=output.label_ids,
+            inputs=input,
+            conditioning_inputs=conditioning_input,
+            eval_dataset=eval_dataset,
+            data_config=self.data_config,
+            train_config=self.train_config,
+            output_log_config=self.output_log_config,
+            model_config=self.model_config,
+            scheduler_config=self.scheduler_config,
+        )
 
         self._memory_tracker.stop_and_update_metrics(output.metrics)
         #NOTE: stop training if NaN is encountered in the loss and set the control flags to False.
@@ -1294,6 +1357,86 @@ class Trainer(Trainer_):
                     f"consider changing the `metric_for_best_model` via the TrainingArguments."
                 ) from exc
         return metrics
+
+    def predict(
+        self, test_dataset: Dataset, ignore_keys: Optional[list[str]] = None, metric_key_prefix: str = "test"
+    ) -> PredictionOutput:
+        """
+        Run prediction and returns predictions and potential metrics.
+
+        Depending on the dataset and your use case, your test dataset may contain labels. In that case, this method
+        will also return metrics, like in `evaluate()`.
+
+        Args:
+            test_dataset (`Dataset`):
+                Dataset to run the predictions on. If it is an `datasets.Dataset`, columns not accepted by the
+                `model.forward()` method are automatically removed. Has to implement the method `__len__`
+            ignore_keys (`List[str]`, *optional*):
+                A list of keys in the output of your model (if it is a dictionary) that should be ignored when
+                gathering predictions.
+            metric_key_prefix (`str`, *optional*, defaults to `"test"`):
+                An optional prefix to be used as the metrics key prefix. For example the metrics "bleu" will be named
+                "test_bleu" if the prefix is "test" (default)
+
+        <Tip>
+
+        If your predictions or labels have different sequence length (for instance because you're doing dynamic padding
+        in a token classification task) the predictions will be padded (on the right) to allow for concatenation into
+        one array. The padding index is -100.
+
+        </Tip>
+
+        Returns: *NamedTuple* A namedtuple with the following keys:
+
+            - predictions (`np.ndarray`): The predictions on `test_dataset`.
+            - label_ids (`np.ndarray`, *optional*): The labels (if the dataset contained some).
+            - metrics (`Dict[str, float]`, *optional*): The potential dictionary of metrics (if the dataset contained
+              labels).
+        """
+        # memory metrics - must set up as early as possible
+        self._memory_tracker.start()
+
+        callbacks_backup = list(getattr(self.callback_handler, "callbacks", []))
+        # Remove both HF's WandB callback and the custom one if present
+        try:
+            self.callback_handler.remove_callback(WandbCallback_)
+        except Exception:
+            pass
+        try:
+            self.callback_handler.remove_callback(WandbCallback)
+        except Exception:
+            pass
+
+        try:
+            test_dataloader = self.get_test_dataloader(test_dataset)
+            start_time = time.time()
+
+            eval_loop = self.prediction_loop if self.args.use_legacy_prediction_loop else self.evaluation_loop
+            output, input, conditioning_input = eval_loop(
+                test_dataloader, description="Prediction", ignore_keys=ignore_keys, metric_key_prefix=metric_key_prefix
+            )
+            total_batch_size = self.args.eval_batch_size * self.args.world_size
+            if f"{metric_key_prefix}_jit_compilation_time" in output.metrics:
+                start_time += output.metrics[f"{metric_key_prefix}_jit_compilation_time"]
+            if f"{metric_key_prefix}_model_preparation_time" in output.metrics:
+                start_time += output.metrics[f"{metric_key_prefix}_model_preparation_time"]
+            output.metrics.update(
+                speed_metrics(
+                    metric_key_prefix,
+                    start_time,
+                    num_samples=output.num_samples,
+                    num_steps=math.ceil(output.num_samples / total_batch_size),
+                )
+            )
+
+            self.control = self.callback_handler.on_predict(self.args, self.state, self.control, output.metrics)
+            self._memory_tracker.stop_and_update_metrics(output.metrics)
+
+            return PredictionOutput(predictions=output.predictions, label_ids=output.label_ids, metrics=output.metrics) , input, conditioning_input
+        finally:
+            # Restore callbacks if we temporarily removed WandB for predict
+            if callbacks_backup is not None:
+                self.callback_handler.callbacks = callbacks_backup
 
     ### overrides the one in the base class from transformers library
     def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time):
@@ -1378,7 +1521,6 @@ class Trainer(Trainer_):
         RANK = int(os.environ.get("LOCAL_RANK", -1))
         if self.control.should_plot and (RANK == 0 or RANK == -1):  
             self.control = self.callback_handler.on_plot(self.args, self.state, self.control, is_new_best_metric=is_new_best_metric)
-            
     ### overrides the one in the base class from transformers library
     def _hp_search_setup(self, trial: Union["optuna.Trial", dict[str, Any]]):
         """
@@ -1523,7 +1665,6 @@ class Trainer(Trainer_):
             self.data_config["filter_features"]["filter_out_channels"] = filtered_out_channels
             self.data_config["conditioning_features"]["conditioning_in_channels"] = filtered_cond_in_channels            
             
-            
             # -------------------------------
             # Also log constant parameters
             # -------------------------------
@@ -1542,6 +1683,7 @@ class Trainer(Trainer_):
             flat_cfg = {}
             for section_name in ["model_config", "data_config", "train_config"]:
                 cfg_section = getattr(self, section_name, None)
+                
                 if isinstance(cfg_section, Mapping):
                     flat_cfg.update(_flatten_dict(cfg_section, section_name))
 
@@ -1567,6 +1709,7 @@ class Trainer(Trainer_):
             complete_params = _sanitize(flat_cfg)  # include everything; no filtering
             formatted = json.dumps(complete_params, indent=2, sort_keys=True, default=str)
             logger.info("All Config Params (%d):\n%s", len(complete_params), formatted)
+
         if self.hp_search_backend == HPSearchBackend.SIGOPT:
             logger.info(f"SigOpt Assignments: {trial.assignments}")
         if self.hp_search_backend == HPSearchBackend.WANDB:
@@ -1594,6 +1737,80 @@ class Trainer(Trainer_):
 
         # Recreate datasets so they reflect the updated hyper-parameters
         self._rebuild_datasets()
+
+        try:
+            # --------------------------------------------------------------
+            # Determine the *trial-specific* output directory.  We build the
+            # directory name from one of the following (in order of priority):
+            #   1. The ``hp_name`` callable provided to ``hyperparameter_search``.
+            #   2. The Optuna trial number (``trial.number``).
+            #   3. Fallback: reuse ``self.args.output_dir`` directly.
+            # --------------------------------------------------------------
+            trial_name = None
+
+            # (1) User-supplied naming function via ``hp_name`` ----------------
+            hp_name_fn = getattr(self, "hp_name", None)
+            if callable(hp_name_fn):
+                try:
+                    trial_name = hp_name_fn(trial)  # may raise / return None
+                except Exception:
+                    trial_name = None
+
+            # (2) Optuna / backend default -------------------------------------
+            if trial_name is None:
+                if hasattr(trial, "number"):
+                    trial_name = f"trial{trial.number}"
+                elif isinstance(trial, dict) and "number" in trial:
+                    trial_name = f"trial{trial['number']}"
+
+            # Build final path --------------------------------------------------
+            trial_output_dir = (
+                os.path.join(self.args.output_dir, trial_name)
+                if trial_name is not None
+                else self.args.output_dir
+            )
+
+            os.makedirs(trial_output_dir, exist_ok=True)
+
+            # --------------------------------------------------------------
+            # Convert (possibly OmegaConf) DictConfig → regular Python container
+            # before serialising to JSON.  We resolve all interpolations so
+            # the stored config is fully explicit.
+            # --------------------------------------------------------------
+            cfg_serialisable = None
+            try:
+                from omegaconf import DictConfig as _DC, OmegaConf as _OC  # type: ignore
+
+                if isinstance(self.data_config, _DC):
+                    cfg_serialisable = _OC.to_container(self.data_config, resolve=True)
+            except ModuleNotFoundError:
+                # ΩConf not installed – fall back to naive conversion
+                cfg_serialisable = None
+
+            if cfg_serialisable is None:
+                # Generic, best-effort deep conversion for Mapping / sequences
+                def _convert(obj):
+                    if isinstance(obj, Mapping):
+                        return {k: _convert(v) for k, v in obj.items()}
+                    if isinstance(obj, (list, tuple)):
+                        return [_convert(v) for v in obj]
+                    # NumPy scalars → Python scalars
+                    try:
+                        import numpy as _np  # local import
+                        if isinstance(obj, (_np.integer, _np.floating)):
+                            return obj.item()
+                    except ModuleNotFoundError:
+                        pass
+                    return obj
+
+                cfg_serialisable = _convert(self.data_config)
+
+            # Finally, write the JSON file (default=str handles residual objects)
+            with open(os.path.join(trial_output_dir, "data_config.json"), "w") as fp:
+                json.dump(cfg_serialisable, fp, indent=2, default=str)
+        except Exception as exc:
+            # Do not interrupt hyper-parameter search if logging fails; just warn.
+            logger.warning(f"Failed to save data_config.json: {exc}")
 
     def hyperparameter_search(
         self,

@@ -1,5 +1,6 @@
 # For details on the parameters, refer to data_config-->example_data_config.yaml
 dataset_name: SyntheticFlow
+seed: 42
 dataset_directory_path: ./data/synthetic/SF/2D/blob
 dimension: 2
 grid_resolution: null 
@@ -8,8 +9,10 @@ is_steady_state_prediction: False
 sequence_info: [4, 3, 2]
 # available channels for SF_blob: ['density','schlieren','velocity'] OR ['density','schlieren','velocity_0','velocity_1'] 
 filter_features:
-  filter_frames: null
-  filter_groups: null
+  train_filter_frames: null
+  train_filter_groups: null
+  infer_filter_frames: null
+  infer_filter_groups: null
   filter_in_channels: ['density','schlieren','velocity'] 
   filter_out_channels: ['density','velocity']
 #NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels 

@@ -1,5 +1,6 @@
 # For details on the parameters, refer to data_config-->example_data_config.yaml
 dataset_name: PorousMedia
+seed: 42
 dataset_directory_path: ./data/fluids/Porous_Media_trimmed/2D
 dimension: 2
 grid_resolution: null
@@ -8,8 +9,10 @@ is_steady_state_prediction: True
 sequence_info: [1, 1, 1] #fixed for SS
 # available channels for porous media: ["mask", "density", "velocity"]
 filter_features:
-  filter_frames: null #fixed for SS
-  filter_groups: null
+  train_filter_frames: null #fixed for SS
+  train_filter_groups: null
+  infer_filter_frames: null #fixed for SS
+  infer_filter_groups: null
   filter_in_channels: ["mask"]
   filter_out_channels: ["density", "velocity"]
 #NOTE: For steady state simulations all mappings are possible
@@ -23,3 +26,4 @@ residual_config: null #fixed to null for SS datasets
   # add_predicted_value_with_raw_loss: False
 data_normalization_stats: null
 data_normalization_strategy: z_normalization
+coord_features: True

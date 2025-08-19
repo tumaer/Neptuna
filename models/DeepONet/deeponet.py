@@ -8,6 +8,7 @@ from utils.grid_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 from .deeponet_utils import FFN, FFNBranch, CnnBranch, grid_to_points, points_to_grid, calc_resnet_out_shape, linspace_int_list
 from models.ResNet.resnet import ResNet1D, ResNet2D, ResNet3D
 from transformers import PreTrainedModel
+from .deeponet_utils import DeepONetConfig
 
 class AutoDeepONet(PreTrainedModel):
     """
@@ -15,10 +16,16 @@ class AutoDeepONet(PreTrainedModel):
     """
     main_input_name = "input_data"  
     conditioning_input_name = "conditioning_input_data"
+    config_class = DeepONetConfig
+    
     def __init__(self, config):
         super().__init__(config)
         
         self.config = config
+
+        # Validate branch type explicitly
+        if not isinstance(getattr(config, "branch_net_str", None), str) or config.branch_net_str not in {"FFN", "CNN", "ResNet"}:
+            raise ValueError("config.branch_net_str must be one of {'FFN', 'CNN', 'ResNet'} and cannot be None.")
 
         activation_fn: nn.Module = activation_func.get_activation(config.activation_fn_name)
         if activation_fn is None:
