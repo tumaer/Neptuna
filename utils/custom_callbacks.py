@@ -49,7 +49,7 @@ Example Usage:
 Configuration Options:
     The callbacks support various configuration options through training arguments:
     - plot_after_epoch: Epoch threshold(s) for enabling plotting (int or list)
-    - n_plot_examples: Number of examples to plot (default varies by callback)
+    - n_eval_plot_examples: Number of validation examples to plot (default varies by callback)
     - trial_number: Trial identifier for hyperparameter optimization
     - run_name: W&B run name for experiment organization
 
@@ -70,10 +70,10 @@ from transformers.integrations.integration_utils import logger
 from omegaconf import ListConfig
 import tempfile
 import numpy as np
-from utils.compute_stats import re_normalize_data
+# Import high-level preprocessing helper
+from utils.plot_progress import plot_examples, preprocess_for_plotting, build_info_strings
 from transformers.trainer_callback import TrainerCallback
 import os
-from utils.plot_progress import plot_examples
 from PIL import Image
 
 class CallbackHandler(CallbackHandler_):
@@ -529,7 +529,9 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
         self.eval_dataset = kwargs['eval_dataset']
         self.data_config = kwargs['data_config']
         self.train_config = kwargs['train_config']
+        self.scheduler_config = kwargs['scheduler_config']
         self.output_log_config = kwargs['output_log_config']
+        self.model_config = kwargs['model_config']
         self.global_step = state.global_step
         self.residual_config = kwargs['data_config']['residual_config']
         control.should_plot = True
@@ -580,7 +582,7 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
             ##NOTE: This plotting is not present in the base class
             part_1 = args.output_dir
             part_2 = state.trial_name or ""
-            part_3 = f"plots"
+            part_3 = f"validation_plots"
             output_dir = os.path.join(part_1, part_2, part_3)
             
             len_eval_dataloader, num_eval_rollouts, label_seq_length, channel_dim, *spatial_dims = self.predictions.shape
@@ -610,82 +612,36 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
 
             if should_plot:
                 # ------------------------------------------------------------------
-                # Renormalize inputs, labels and predictions for visualization
+                # Preprocessing utility to renormalise data.
                 # ------------------------------------------------------------------
-                norm_stats = self.data_config["data_normalization_stats"]
-                norm_strategy = self.data_config["data_normalization_strategy"]
-
-                # Channel ordering in the dataset 
-                input_channel_names = getattr(self.eval_dataset, "input_channels", None)
-                output_channel_names = getattr(self.eval_dataset, "output_channels", None)
-                conditioning_input_channel_names = None
-
-                # Renormalize each channel separately
-                inputs_renormed = np.copy(self.inputs)
-                labels_renormed = np.copy(self.labels)
-                predictions_renormed = np.copy(self.predictions)
-                conditioning_inputs_renormed = None
-
-                if self.conditioning_inputs is not None:
-                    conditioning_input_channel_names = [ch_name for ch_name in input_channel_names if ch_name in getattr(self.eval_dataset, "conditioning_in_channels")]
-                    conditioning_inputs_renormed = np.copy(self.conditioning_inputs)
-                     # remove the conditioning_in_channels from the input_channel_names
-                    only_input_channel_names = [ch_name for ch_name in input_channel_names if ch_name not in conditioning_input_channel_names]
-
-                else:
-                    only_input_channel_names = input_channel_names
-
-                # Renormalize input channels (for inputs and conditioning_inputs if present)
-                for c_idx, ch_name in enumerate(only_input_channel_names):
-                    if ch_name not in norm_stats:
-                        raise ValueError(f"Stats for input channel {ch_name} are unavailable.")
-                    
-                    stats = norm_stats[ch_name]
-                    
-                    if "mask" not in ch_name.lower():
-                        # Renormalize inputs
-                        inputs_renormed[:, :, c_idx] = re_normalize_data(
-                            self.inputs[:, :, c_idx], stats, norm_strategy
-                        )
-
-                if self.conditioning_inputs is not None:
-                # Renormalize conditioning_inputs
-                    for c_idx, ch_name in enumerate(conditioning_input_channel_names):
-                        if ch_name not in norm_stats:
-                            raise ValueError(f"Stats for conditioning_input channel {ch_name} are unavailable.")
-                        
-                        stats = norm_stats[ch_name]
-
-                        if "mask" not in ch_name.lower():
-                            # Renormalize conditioning_inputs
-                            conditioning_inputs_renormed[:, :, c_idx] = re_normalize_data(
-                                self.conditioning_inputs[:, :, c_idx], stats, norm_strategy
-                            )
-                    
-                # Renormalize output channels (for labels and predictions)
-                for c_idx, ch_name in enumerate(output_channel_names):
-                    if ch_name not in norm_stats:
-                        raise ValueError(f"Stats for output channel {ch_name} are unavailable.")
-                    
-                    norm_key = ch_name if ((self.residual_config is None) or (self.residual_config["add_base_value_with_raw_loss"]) or (self.residual_config["add_predicted_value_with_raw_loss"])) else f"{ch_name}_residual"
-                    stats = norm_stats[norm_key]
-                    
-                    # Renormalize labels and predictions
-                    labels_renormed[:, :, c_idx] = re_normalize_data(
-                        self.labels[:, :, c_idx], stats, norm_strategy
-                    )
-                    predictions_renormed[:, :, c_idx] = re_normalize_data(
-                        self.predictions[:, :, c_idx], stats, norm_strategy
-                    )
-                #--------------------------------
-                #NOTE: Comment this section out to visualize the residuals instead of the raw values
-                if self.residual_config is not None and (self.residual_config["add_predicted_value_with_diff_loss"]):
-                    #Create raw values for plotting
-                    base_value = inputs_renormed[:, -1:, ]
-                    labels_renormed = labels_renormed.cumsum(axis=1) + base_value
-                    predictions_renormed = predictions_renormed.cumsum(axis=1) + base_value
-                #--------------------------------
+                (
+                    inputs_renormed,
+                    labels_renormed,
+                    predictions_renormed,
+                    only_input_channel_names,
+                    output_channel_names,
+                    conditioning_inputs_renormed,
+                    conditioning_input_channel_names,
+                ) = preprocess_for_plotting(
+                    self.inputs,
+                    self.labels,
+                    self.predictions,
+                    data_config=self.data_config,
+                    dataset=self.eval_dataset,
+                    residual_config=self.residual_config,
+                    conditioning_inputs=self.conditioning_inputs,
+                )
                 run_dir = os.path.join(part_1, part_2) if part_2 is not None else part_1
+                # ----------------------------------------------------------
+                # Get model and configuration information 
+                # ----------------------------------------------------------    
+                model_info_str, data_info_str, train_info_str, scheduler_info_str = build_info_strings(
+                    model_obj = kwargs.get("model", None),
+                    model_config=self.model_config,
+                    data_config=self.data_config,
+                    train_config=self.train_config,
+                    scheduler_config=self.scheduler_config
+                )
 
                 fig_dict = plot_examples(
                             inputs_renormed,
@@ -697,13 +653,17 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
                             conditioning_input_channel_names=conditioning_input_channel_names,
                             ndim=self.data_config["dimension"],
                             stride=self.data_config["sequence_info"][-1],
-                            extra_info=run_dir,
+                            extra_info=run_dir.split('/')[-2],
                             checkpoint_step=state.global_step,
                             epoch=round(state.epoch, 3),
-                            num_examples=self.train_config["n_plot_examples"], #NOTE: plotting is slow
+                            num_examples=self.train_config["n_eval_plot_examples"], #NOTE: plotting is slow
                             save_dir=output_dir,
                             log_to_wandb=self.output_log_config["logging"]["wandb"],
-                            is_best_metric=kwargs["is_new_best_metric"]
+                            is_best_metric=kwargs["is_new_best_metric"],
+                            model_info=model_info_str,
+                            data_info=data_info_str,
+                            train_info=train_info_str,
+                            scheduler_info=scheduler_info_str
                         )
 
                 # If W&B logging is enabled, log the figures now.

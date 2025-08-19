@@ -4,8 +4,8 @@
 #use_cpu
 use_cpu: False
 # Batch size for train and eval
-per_device_train_batch_size: 6
-per_device_eval_batch_size: 6
+per_device_train_batch_size: 8
+per_device_eval_batch_size: 8
 # Number of training epochs
 num_train_epochs: 2
 # Parameters related to the push-forward trick during training (see example below)
@@ -18,10 +18,15 @@ pushforward_config:
   max_allowed_unroll_steps: [0, 1, 2]
   # Probability of unroll steps between deciding epochs.
   relative_probabilities: [7, 2, 1]
-#To use mix precison training, set fp16 to true
-fp16: false
+#To use mix precison training
+mix_precision_config:
+  fp16: False
+  bf16: False
+  tf32: False
 #number of workers for dataloader
-dataloader_num_workers: 0
+dataloader_num_workers: 2
+#gradient accumulation steps for increasing effective batch size
+gradient_accumulation_steps: 1
 ########################################################
 # Evaluation parameters
 ########################################################
@@ -33,7 +38,7 @@ logging_strategy: "steps" #options are steps, epoch or no.
 logging_steps: 1 #only used if logging_strategy is steps
 save_strategy: "best" #options are best, steps, epoch or no.
 save_steps: 5 #only used if save_strategy is steps
-save_total_limit: 2 #Limits the total amount of checkpoints to the best two. Deletes the older checkpoints in the output_dir.
+save_total_limit: 1 #Limits the total amount of checkpoints to the best two. Deletes the older checkpoints in the output_dir.
 # Number of steps to accumulate predictions on GPU before moving to CPU
 eval_accumulation_steps: 16
 # Ratio of train.h5 dataset used for evaluation
@@ -48,7 +53,7 @@ n_eval_rollouts: 4
 # If null, then plotting is done after every validation step.
 plot_after_epoch: null
 # Number of examples to plot from the validation window and see how the training progresses over epochs for the same examples
-n_plot_examples: 1
+n_eval_plot_examples: 1
 #############################################################
 # Hugging-Face Hub options
 #############################################################

@@ -4,7 +4,7 @@ from torch import Tensor
 from models.CNO.cno_utils import CNOBlock, LiftProjectBlock, ResNet
 from transformers import PreTrainedModel
 from utils.grid_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
-
+from .cno_utils import CNOConfig
 def _div_size(size, factor):
     if isinstance(size, int):
         return size // factor
@@ -47,6 +47,7 @@ class CNO(PreTrainedModel):
     """
     main_input_name = "input_data"  
     conditioning_input_name = "conditioning_input_data"
+    config_class = CNOConfig
 
     def __init__(self, config):
         super().__init__(config)

@@ -1,5 +1,6 @@
 logging: 
   output_dir: null
+  checkpoint_prefix: null
   wandb: False  
   wandb_project: null
   wandb_entity: null

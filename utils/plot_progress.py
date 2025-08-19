@@ -42,6 +42,152 @@ import matplotlib.gridspec as gridspec
 import wandb
 import io  # For in-memory PNG buffers
 from PIL import Image  # To create a PIL image object for wandb
+from utils.compute_stats import re_normalize_data
+from typing import Tuple
+
+
+def preprocess_for_plotting(
+    inputs: np.ndarray,
+    labels: np.ndarray,
+    predictions: np.ndarray,
+    data_config: dict,
+    dataset,
+    residual_config: dict | None,
+    conditioning_inputs: np.ndarray | None = None,
+):
+    """Pre-process inputs, labels and predictions for plotting.
+
+    This helper mirrors the renormalisation logic originally implemented in
+    ``PlotOnEvalAndSaveCallback.on_plot`` so that it can be reused from other
+    modules without code duplication.
+
+    The function performs three main tasks:
+
+    1. Renormalises *inputs*, *labels* and *predictions* back to their original
+       physical scale using the statistics stored in *data_config*.
+    2. Applies the same procedure to *conditioning_inputs* (if provided).
+    3. Reconstructs raw values from residual predictions when residual learning
+       is enabled via *residual_config*.
+
+    Parameters
+    ----------
+    inputs, labels, predictions : np.ndarray
+        Arrays with shapes ``(N, T, C, *spatial_dims)`` where the leading axes
+        correspond to batch, time and channel respectively.
+    data_config : dict
+        Must contain the keys ``data_normalization_stats`` and
+        ``data_normalization_strategy`` produced during dataset creation.
+    dataset : Dataset
+        Dataset instance that provides ``input_channels``, ``output_channels``
+        and optionally ``conditioning_in_channels`` attributes.
+    residual_config : dict | None
+        Configuration dictionary controlling residual learning behaviour.  If
+        *None*, no residual reconstruction is performed.
+    conditioning_inputs : np.ndarray | None, optional
+        Optional conditioning input array with the same leading dimensions as
+        *inputs*.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray, np.ndarray, List[str], List[str],
+          Optional[np.ndarray], Optional[List[str]]]
+        ``(inputs_renormed, labels_renormed, predictions_renormed,
+        only_input_channel_names, output_channel_names,
+        conditioning_inputs_renormed, conditioning_input_channel_names)``
+    """
+
+    # ------------------------------------------------------------------
+    # Extract normalisation parameters and channel metadata
+    # ------------------------------------------------------------------
+    norm_stats = data_config["data_normalization_stats"]
+    norm_strategy = data_config["data_normalization_strategy"]
+
+    input_channel_names = getattr(dataset, "input_channels", None)
+    output_channel_names = getattr(dataset, "output_channels", None)
+    conditioning_input_channel_names = None
+
+    # Make *independent* copies so that callers keep their originals intact.
+    inputs_renormed = np.copy(inputs)
+    labels_renormed = np.copy(labels)
+    predictions_renormed = np.copy(predictions)
+    conditioning_inputs_renormed = None
+
+    # ------------------------------------------------------------------
+    # Handle conditioning inputs (if present)
+    # ------------------------------------------------------------------
+    if conditioning_inputs is not None:
+        conditioning_input_channel_names = [
+            ch_name
+            for ch_name in input_channel_names
+            if ch_name in getattr(dataset, "conditioning_in_channels", [])
+        ]
+        conditioning_inputs_renormed = np.copy(conditioning_inputs)
+        # Remove conditioning channels from *only* input channels
+        only_input_channel_names = [
+            ch_name for ch_name in input_channel_names if ch_name not in conditioning_input_channel_names
+        ]
+    else:
+        only_input_channel_names = input_channel_names
+
+    # ------------------------------------------------------------------
+    # Renormalise input channels (inputs & optionally conditioning_inputs)
+    # ------------------------------------------------------------------
+    for c_idx, ch_name in enumerate(only_input_channel_names):
+        if ch_name not in norm_stats:
+            raise ValueError(f"Stats for input channel {ch_name} are unavailable.")
+        stats = norm_stats[ch_name]
+        if "mask" not in ch_name.lower():
+            inputs_renormed[:, :, c_idx] = re_normalize_data(inputs[:, :, c_idx], stats, norm_strategy)
+
+    if conditioning_inputs is not None:
+        for c_idx, ch_name in enumerate(conditioning_input_channel_names):
+            if ch_name not in norm_stats:
+                raise ValueError(
+                    f"Stats for conditioning_input channel {ch_name} are unavailable."
+                )
+            stats = norm_stats[ch_name]
+            if "mask" not in ch_name.lower():
+                conditioning_inputs_renormed[:, :, c_idx] = re_normalize_data(
+                    conditioning_inputs[:, :, c_idx], stats, norm_strategy
+                )
+
+    # ------------------------------------------------------------------
+    # Renormalise output channels (labels & predictions)
+    # ------------------------------------------------------------------
+    for c_idx, ch_name in enumerate(output_channel_names):
+        if ch_name not in norm_stats:
+            raise ValueError(f"Stats for output channel {ch_name} are unavailable.")
+        norm_key = (
+            ch_name
+            if (
+                (residual_config is None)
+                or residual_config.get("add_base_value_with_raw_loss", False)
+                or residual_config.get("add_predicted_value_with_raw_loss", False)
+            )
+            else f"{ch_name}_residual"
+        )
+        stats = norm_stats[norm_key]
+        labels_renormed[:, :, c_idx] = re_normalize_data(labels[:, :, c_idx], stats, norm_strategy)
+        predictions_renormed[:, :, c_idx] = re_normalize_data(predictions[:, :, c_idx], stats, norm_strategy)
+
+    # ------------------------------------------------------------------
+    # Reconstruct raw values for residual learning if requested
+    # ------------------------------------------------------------------
+    if residual_config is not None and residual_config.get("add_predicted_value_with_diff_loss", False):
+        base_value = inputs_renormed[:, -1:, ]
+        labels_renormed = labels_renormed.cumsum(axis=1) + base_value
+        predictions_renormed = predictions_renormed.cumsum(axis=1) + base_value
+
+    return (
+        inputs_renormed,
+        labels_renormed,
+        predictions_renormed,
+        only_input_channel_names,
+        output_channel_names,
+        conditioning_inputs_renormed,
+        conditioning_input_channel_names,
+    )
+
 
 def _plot_data(ax, data, ndim, ch_names=None):
     """
@@ -104,7 +250,7 @@ def _plot_data(ax, data, ndim, ch_names=None):
         else:
             ncols = C
             fig = ax.figure
-            gs = ax.get_subplotspec().subgridspec(1, ncols, wspace=0.6)  # Add spacing between channels
+            gs = ax.get_subplotspec().subgridspec(1, ncols, wspace=0.2)  # Tighter spacing between channel sub-axes
             ax.remove()
             sub_axes = []
             for c in range(C):
@@ -144,7 +290,11 @@ def plot_examples(
     stride=1,
     save_dir="plots",
     log_to_wandb: bool = False,
-    is_best_metric: bool = False
+    is_best_metric: bool = False,
+    model_info: str | None = None,
+    data_info: str | None = None,
+    train_info: str | None = None,
+    scheduler_info: str | None = None,
 ):
     """
     Generate comprehensive visualization plots comparing model predictions with targets.
@@ -191,6 +341,14 @@ def plot_examples(
         Whether to log plots to Weights & Biases instead of saving to disk.
     is_best_metric : bool, default=False
         Whether this represents the best metric checkpoint for special handling.
+    model_info : Optional[str], default=None
+        Optional string to display the model info.
+    data_info : Optional[str], default=None
+        Optional string to display the data info.
+    train_info : Optional[str], default=None
+        Training configuration summary lines.
+    scheduler_info : Optional[str], default=None
+        Scheduler configuration summary lines.
 
     Returns
     -------
@@ -223,8 +381,6 @@ def plot_examples(
 
     N, T_in, C, *spatial_shape = input_array.shape
     T_pred = prediction_array.shape[1]
-
-    extra_info = extra_info.split('/')[-1]
 
     np.random.seed(42)
     example_indices = np.random.choice(N, size=num_examples, replace=False)
@@ -275,7 +431,8 @@ def plot_examples(
 
             # Layout tuning parameters
             header_ratio = 0.15  # Height allocated for column titles
-            footer_ratio = 2.4   # Further increase footer height for more space under time labels
+            time_label_ratio = 0.5  # Height for time label row
+            footer_ratio = 4.0   # Further increase footer height for more space under time labels
 
             # Padding between individual plot and its xlabel (time indicator). 
             # If this padding is too large, the xlabel from one subplot can overlap the
@@ -284,8 +441,10 @@ def plot_examples(
             # for 1-D plots.
             x_label_pad = 40 if ndim == 2 else 30
 
-            # Use a uniform but larger wspace to create clearer separation between logical columns.
-            main_wspace = 1.2  # Empirically chosen for good visual separation
+            # Reduce horizontal spacing so each subplot takes up more space within its
+            # column, effectively making the plots ~50 % larger without increasing the
+            # overall figure size.
+            main_wspace = 0.3
             
             # Adjust figure width based on total content
             base_width_per_unit = 4.0 if ndim == 2 else 5.0
@@ -303,15 +462,36 @@ def plot_examples(
                 fig_height = (nrows + header_ratio + footer_ratio) * cell_height
             else:  # Original calculation for 1D plots which can be non-square
                 fig_height = (nrows + header_ratio + footer_ratio + 1.3) * 3.5  # extra offset for titles
-
+            
             fig = plt.figure(figsize=(fig_width, fig_height))
 
             # Add main title
             # Adjust y-position to be relative to the new figure height calculation
             suptitle_y_pos = 1 - (0.10 / (nrows + header_ratio + footer_ratio)) if ndim == 2 else 0.965
-            # Use a multi-line title so that all components are visible without being truncated.
+            # --------------------------------------------------------------
+            # Title logic: include Checkpoint/Epoch only for validation plots
+            # --------------------------------------------------------------
+            include_ckpt = False
+            try:
+                # Determine if the parent directory name (split by "_") contains
+                # the keyword "validation" in the second-to-last token.
+                # Example: "plots/run_42_validation_2025" → parts[-2] == "validation".
+                parts = os.path.normpath(save_dir).split('_')
+                if len(parts) >= 2 and 'validation' in parts[-2].lower():
+                    include_ckpt = True
+            except Exception:
+                include_ckpt = False
+
+            if include_ckpt:
+                title_str = (
+                    f"{extra_info}\nCheckpoint Step: {checkpoint_step}, Epoch: {epoch} "
+                    f"\nExample Index: {idx}"
+                )
+            else:
+                title_str = f"{extra_info}\nExample Index: {idx}"
+
             fig.suptitle(
-                f"{extra_info}\nCheckpoint Step: {checkpoint_step}, Epoch: {epoch}\nExample Index: {idx}",
+                title_str,
                 fontsize=32,
                 y=suptitle_y_pos,
                 weight='bold'
@@ -319,26 +499,51 @@ def plot_examples(
             
             # Add dimensions info as subtitle, positioned farther below the suptitle to avoid overlap.
             dims_text = (
-                f"Additional Info: Total number of validation examples={N}, Spatial_res={spatial_shape}, "
+                f"Additional Info: Total number of examples={N}, Spatial_res={spatial_shape}, "
                 f"# Input_frames={T_in}, # Input_channels={C}, # Prediction_frames={T_pred}, "
                 f"# Prediction_channels={pred.shape[1]}"
             )
 
-            # Increase spacing below the suptitle further so that the dims text never
-            # collides with the (multi-line) suptitle.  Empirically a 0.10 offset for
-            # 2-D plots and 0.08 for 1-D plots provides sufficient clearance across a
-            # wide range of figure heights.
-            # Reduce the vertical offset so the dims_text sits closer to the suptitle.
+            # Keep dims_text focused on dataset statistics; append a one-line model summary.
+            if model_info is not None:
+                summary_line = model_info.split("\n")[0]  # e.g. "FNO | Params: 12.3M"
+                dims_text += "\n" + summary_line
+
+            # Increase spacing below the suptitle so dims_text never collides with it.
             text_y_pos = suptitle_y_pos - (0.06 if ndim == 2 else 0.06)
             fig.text(0.5, text_y_pos, dims_text, ha='center', va='center', fontsize=22)
+
+            # --------------------------------------------------------------
+            # Footer: detailed model & data configuration (indented bullets)
+            # --------------------------------------------------------------
+            footer_lines: list[str] = []
+
+            # Add remaining model configuration lines beneath a header
+            if model_info is not None and "\n" in model_info:
+                #detailed_cfg = "\n".join(model_info.split("\n")[1:])  # skip first line
+                #indented_cfg = "\n".join(["    " + ln for ln in model_info.split("\n")])
+                footer_lines.append("MODEL CONFIG:\n" + model_info + "\n")
+
+            # Add data configuration lines similarly
+            if data_info is not None:
+                #indented_data = "\n".join(["    " + ln for ln in data_info.split("\n")])
+                footer_lines.append("DATA CONFIG:\n" + data_info + "\n")
+
+            if train_info is not None:
+                #indented_train = "\n".join(["    " + ln for ln in train_info.split("\n")])
+                footer_lines.append("TRAIN CONFIG:\n" + train_info + "\n")
+
+            if scheduler_info is not None:
+                #indented_sched = "\n".join(["    " + ln for ln in scheduler_info.split("\n")])
+                footer_lines.append("SCHEDULER CONFIG:\n" + scheduler_info + "\n")
 
             # Create gridspec with variable column widths and specific height ratios
             # The hspace and wspace from the old plt.subplots_adjust are used here.
             # Anchor the top of the gridspec to be just below the dims_text for consistent spacing.
-            gs = gridspec.GridSpec(nrows + 2, total_grid_cols,
+            gs = gridspec.GridSpec(nrows + 3, total_grid_cols,
                                 figure=fig,
                                 top=text_y_pos - 0.02,
-                                height_ratios=[header_ratio] + [1] * nrows + [footer_ratio],
+                                height_ratios=[header_ratio] + [1] * nrows + [time_label_ratio, footer_ratio],
                                 hspace=0.4, wspace=main_wspace)
 
             # Add column titles at the top
@@ -349,7 +554,7 @@ def plot_examples(
 
             # Add time labels at the bottom  
             for col_idx, (start_col, end_col) in enumerate(col_positions):
-                time_ax = fig.add_subplot(gs[-1, start_col:end_col])
+                time_ax = fig.add_subplot(gs[-2, start_col:end_col])
                 time_ax.axis('off')
                 if col_idx == 0:  # Input column
                     time_label = f"t - {stride * (T_in - 1)} to t"
@@ -462,6 +667,24 @@ def plot_examples(
                         rel_err_ax.tick_params(labelbottom=True)
 
             # --------------------------------------------------------------
+            # Footer: detailed model & data configuration (indented bullets)
+            # --------------------------------------------------------------
+            if footer_lines:
+                footer_text = "\n".join(footer_lines)
+                footer_ax = fig.add_subplot(gs[-1, :])
+                footer_ax.axis('off')
+                
+                footer_ax.text(
+                    -0.10,
+                    -0.25,
+                    footer_text,
+                    ha="left",
+                    va="bottom",
+                    fontsize=20,
+                    wrap=True
+                )
+
+            # --------------------------------------------------------------
             # Saving behaviour
             # --------------------------------------------------------------
             # We *always* save the *best* figure to disk so it can later be
@@ -524,22 +747,157 @@ def plot_examples(
                 # A separate post-run routine uploads the saved PNG on_train_end inside WandbCallback.
             
             plt.close(fig)
-    # ------------------------------------------------------------------
-    # Final cleanup: remove any duplicate plots that have both a `_best.png`
-    # and the same name *without* the suffix.  This ensures only best plots
-    # remain on disk when `wandb` logging is disabled. This is needed as inside _maybe_log_save_evaluate,
-    # we perform one last evalutaion run even when the training ends.
-    # ------------------------------------------------------------------
-
-    # # Always remove non-best duplicates when a _best plot exists.
-    # for fname in os.listdir(save_dir):
-    #     if fname.endswith("_best.png"):
-    #         base_name = fname.replace("_best.png", ".png")
-    #         dup_path = os.path.join(save_dir, base_name)
-    #         if os.path.isfile(dup_path):
-    #             try:
-    #                 os.remove(dup_path)
-    #             except OSError as e:
-    #                 print(f"[plot_progress] Warning: could not delete duplicate plot '{dup_path}': {e}")
-
     return returned_figs
+
+
+def plot_rollout_metrics(step_metrics: dict, output_channel_names: list[str], save_dir: str, title: str | None = None, filename: str = "rollout_metrics.png", plot_type: str = "per_step") -> None:
+    """Plot per-metric curves over rollout steps for IC-start evaluations.
+
+    Parameters
+    ----------
+    step_metrics : dict
+        Mapping from metric name to a dictionary with keys like
+        "per_step_mean", "per_step_std", "cumulative_mean", "cumulative_std".
+        Each value is an array of shape (T, C+1) where columns 0..C-1 are
+        per-channel values and the last column is the overall value.
+    output_channel_names : list[str]
+        Names for the C output channels, used in the legend.
+    save_dir : str
+        Directory where the figure will be saved.
+    title : Optional[str]
+        Optional figure title.
+    filename : str
+        Output filename. Defaults to "rollout_metrics.png".
+    plot_type : {"cumulative", "per_step"}
+        Which statistics to plot. Defaults to "cumulative". When set to
+        "per_step", plots per_step_mean and per_step_std.
+    """
+    os.makedirs(save_dir, exist_ok=True)
+
+    num_metrics = len(step_metrics)
+    if num_metrics == 0:
+        return
+
+    # Determine keys for mean/std based on requested plot type
+    if plot_type not in {"cumulative", "per_step"}:
+        raise ValueError("plot_type must be 'cumulative' or 'per_step'")
+    mean_key = f"{plot_type}_mean"
+    std_key = f"{plot_type}_std"
+
+    # Create one subplot per metric
+    fig, axes = plt.subplots(num_metrics, 1, figsize=(10, max(3 * num_metrics, 4)), squeeze=False)
+    axes = axes[:, 0]
+
+    # Prepare legends (channels + overall)
+    channel_legends = list(output_channel_names)
+    overall_label = "overall"
+
+    for ax, (metric_name, stats) in zip(axes, step_metrics.items()):
+        if mean_key not in stats or std_key not in stats:
+            # Skip metrics missing requested stats
+            continue
+        means = stats[mean_key]   # (T, C+1)
+        stds = stats[std_key]     # (T, C+1)
+
+        T, total_cols = means.shape
+        num_channels = total_cols - 1
+        if num_channels != len(output_channel_names):
+            # Fallback if mismatch
+            channel_legends = [f"ch_{i}" for i in range(num_channels)]
+
+        x = np.arange(1, T + 1)
+        # Plot per-channel mean with std bands, using scatter markers and connecting lines
+        for c in range(num_channels):
+            channel_mean = means[:, c]
+            channel_std = stds[:, c]
+            line, = ax.plot(x, channel_mean, label=channel_legends[c], linewidth=1.5, alpha=0.95)
+            ax.scatter(x, channel_mean, s=18, color=line.get_color(), edgecolors="none", zorder=3)
+            ax.fill_between(x, channel_mean - channel_std, channel_mean + channel_std, color=line.get_color(), alpha=0.15)
+        # Plot overall mean with std band, with markers and connecting line
+        overall_mean = means[:, -1]
+        overall_std = stds[:, -1]
+        ax.plot(x, overall_mean, label=overall_label, linewidth=2.0, color="black")
+        ax.scatter(x, overall_mean, s=24, color="black", edgecolors="none", zorder=3)
+        ax.fill_between(x, overall_mean - overall_std, overall_mean + overall_std, color="black", alpha=0.12)
+
+        ax.set_xlabel("rollout step")
+        ax.set_ylabel(metric_name)
+        ax.grid(True, linestyle=":", alpha=0.6)
+        ax.legend(fontsize=8, ncols=min(4, num_channels + 1))
+
+    if title:
+        fig.suptitle(title, fontsize=14)
+    fig.tight_layout(rect=(0, 0, 1, 0.98))
+
+    out_path = os.path.join(save_dir, filename)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def build_info_strings(**kwargs) -> Tuple[str, str, str, str]:
+    """Build summary strings for model, data, training and scheduler sections.
+
+    This was moved from *bench/run.py* to centralise formatting utilities.
+    """
+    # ----------------- Model config string -----------------
+    model_obj = kwargs["model_obj"]
+    model_name = model_obj.__class__.__name__
+    n_params = sum(p.numel() for p in model_obj.parameters())
+
+    cfg_dict_raw = kwargs["model_config"]
+    if cfg_dict_raw is not None:
+        filtered_cfg = {
+            k: v
+            for k, v in cfg_dict_raw.items()
+            if k != "model_name" and not isinstance(v, (dict, list, tuple)) and not k.startswith("_")
+        }
+        kv_pairs = [f"{k}={v}" for k, v in filtered_cfg.items()]
+        lines = [", ".join(kv_pairs[i : i + 3]) for i in range(0, len(kv_pairs), 3)]
+        config_block = "\n".join(lines) if lines else "-"
+        model_info_str = f"{model_name} | Params: {n_params/1e6:.2f}M\nConfig: {config_block}"
+    else:
+        model_info_str = None
+
+    # ----------------- Data configuration string -----------------
+    flat_data = kwargs["data_config"]
+    if flat_data is not None:
+        filtered_data = {
+            k: v
+            for k, v in flat_data.items()
+            if not isinstance(v, (dict, list, tuple)) and not k.startswith("_")
+        }
+        data_kv = [f"{k}={v}" for k, v in filtered_data.items()]
+        data_lines = [", ".join(data_kv[i : i + 3]) for i in range(0, len(data_kv), 3)]
+        data_info_str = "\n".join(data_lines) if data_lines else "-"
+    else:
+        data_info_str = None
+
+    # ----------------- Train config strings -----------------
+    train_cfg_raw = kwargs["train_config"]
+    if train_cfg_raw is not None:
+        filtered_train_cfg = {
+            k: v
+            for k, v in train_cfg_raw.items()
+            if not isinstance(v, (dict, list, tuple)) and not k.startswith("_")
+        }
+        train_kv = [f"{k}={v}" for k, v in filtered_train_cfg.items()]
+        train_lines = [", ".join(train_kv[i : i + 3]) for i in range(0, len(train_kv), 3)]
+        train_info_str = "\n".join(train_lines) if train_lines else "-"
+    else:
+        train_info_str = None
+
+    # ----------------- Scheduler config strings -----------------
+    sched_cfg_raw = kwargs["scheduler_config"]
+    if sched_cfg_raw is not None:
+        filtered_sched_cfg = {
+            k: v
+            for k, v in sched_cfg_raw.items()
+            if not isinstance(v, (dict, list, tuple)) and not k.startswith("_")
+        }
+        sched_kv = [f"{k}={v}" for k, v in filtered_sched_cfg.items()]
+        sched_lines = [", ".join(sched_kv[i : i + 3]) for i in range(0, len(sched_kv), 3)]
+        sched_info_str = "\n".join(sched_lines) if sched_lines else "-"
+    else:
+        sched_info_str = None
+
+    return model_info_str, data_info_str, train_info_str, sched_info_str

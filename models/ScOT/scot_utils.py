@@ -46,8 +46,6 @@ class ScOTConfig(PretrainedConfig):
         norm_layer_eps (float): Epsilon value for layer normalization. Default is 1e-5.
         residual_model (str): Type of residual model to use ("convnext" or "resnet"). Default is "convnext".
         use_conditioning (bool): Whether to use conditioning in the model. Default is False.
-        output_hidden_states (bool): Whether to output hidden states. Default is False.
-        output_attentions (bool): Whether to output attention weights. Default is False.
         **kwargs: Additional keyword arguments passed to the parent class."""
 
     model_type = "swinv2"
@@ -157,22 +155,21 @@ class ConvNeXtBlock(nn.Module):
 
 
 class ResNetBlock(nn.Module):
-    def __init__(self, config, dim):
+    def __init__(self, config, input_resolution, dim):
         super().__init__()
         kernel_size = 3
+        self.input_resolution = input_resolution
         pad = (kernel_size - 1) // 2
         self.conv1 = nn.Conv2d(dim, dim, kernel_size=kernel_size, stride=1, padding=pad) # 48 -> 48
         self.conv2 = nn.Conv2d(dim, dim, kernel_size=kernel_size, stride=1, padding=pad)
         self.bn1 = nn.BatchNorm2d(dim)
         self.bn2 = nn.BatchNorm2d(dim)
 
-    def forward(self, x):
+    def forward(self, x, **kwargs):
         batch_size, sequence_length, hidden_size = x.shape
-        #! assumes square images
-        input_dim = math.floor(sequence_length**0.5) # 32
 
         input = x # [16, 1024, 48]
-        x = x.reshape(batch_size, input_dim, input_dim, hidden_size) # [16, 32, 32, 48]
+        x = x.reshape(batch_size, self.input_resolution[0], self.input_resolution[1], hidden_size) # [16, 32, 32, 48]
         x = x.permute(0, 3, 1, 2) # [16, 48, 32, 32]
         x = self.conv1(x) # [16, 48, 32, 32]
         x = self.bn1(x)

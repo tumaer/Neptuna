@@ -69,6 +69,46 @@
 
   },
   {
+    "name": "train 2D_Laser_Droplet_ScOT",
+    "type": "debugpy",
+    "request": "launch",
+    "program": "main.py",
+    "console": "integratedTerminal",
+    "justMyCode": false,
+    "args": [
+        "hydra.run.dir=.",
+        "hydra.output_subdir=null",
+        "data_config=fluids/Laser_Droplet/2d_laser_droplet_data_default.yaml",
+        "model_config=ScOT/default_scot",
+      ],
+    "env": {
+        "HYDRA_FULL_ERROR": "1",
+        "HYDRA_MAIN_DISABLE_RUN": "1",
+        "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "2.0"   // “-1” disables the warning entirely
+        }
+
+  },
+  {
+    "name": "train 2D_Laser_Droplet_ViT",
+    "type": "debugpy",
+    "request": "launch",
+    "program": "main.py",
+    "console": "integratedTerminal",
+    "justMyCode": false,
+    "args": [
+        "hydra.run.dir=.",
+        "hydra.output_subdir=null",
+        "data_config=fluids/Laser_Droplet/2d_laser_droplet_data_default.yaml",
+        "model_config=ViT/default_vit",
+      ],
+    "env": {
+        "HYDRA_FULL_ERROR": "1",
+        "HYDRA_MAIN_DISABLE_RUN": "1",
+        "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "2.0"   // “-1” disables the warning entirely
+        }
+
+  },
+  {
     "name": "UNet_HP_OPT_2D_Laser_Droplet_UNet",
     "type": "debugpy",
     "request": "launch",
@@ -170,7 +210,26 @@
 
         },
         {
-          "name": "WANDB_train 1D_KS_UNet:",
+          "name": "train 2D_KS_ViT",
+          "type": "debugpy",
+          "request": "launch",
+          "program": "main.py",
+          "console": "integratedTerminal",
+          "justMyCode": false,
+          "args": [
+              "hydra.run.dir=.",
+              "hydra.output_subdir=null",
+              "data_config=fluids/KS/2d_ks_data_default",
+              "model_config=ViT/default_vit"
+            ],
+          "env": {
+              "HYDRA_FULL_ERROR": "1",
+              "HYDRA_MAIN_DISABLE_RUN": "1"
+              }
+
+      },
+        {
+          "name": "train 1D_KS_UNet:",
           "type": "debugpy",
           "request": "launch",
           "program": "main.py",
@@ -181,7 +240,6 @@
               "hydra.output_subdir=null",
               "data_config=fluids/KS/1d_ks_data.yaml",
               "model_config=UNet/default_unet",
-              "output_log_config=wandb_log.yaml"
             ],
           "env": {
               "HYDRA_FULL_ERROR": "1",
@@ -697,6 +755,25 @@
               "hydra.output_subdir=null",
               "data_config=fluids/KVS/2d_kvs_data_default",
               "model_config=ScOT/default_scot"
+            ],
+          "env": {
+              "HYDRA_FULL_ERROR": "1",
+              "HYDRA_MAIN_DISABLE_RUN": "1"
+              }
+
+        },
+        {
+          "name": "train 2D_KVS_ViT",
+          "type": "debugpy",
+          "request": "launch",
+          "program": "main.py",
+          "console": "integratedTerminal",
+          "justMyCode": false,
+          "args": [
+              "hydra.run.dir=.",
+              "hydra.output_subdir=null",
+              "data_config=fluids/KVS/2d_kvs_data_default",
+              "model_config=ViT/default_vit"
             ],
           "env": {
               "HYDRA_FULL_ERROR": "1",

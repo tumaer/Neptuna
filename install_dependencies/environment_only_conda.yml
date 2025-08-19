@@ -1,7 +1,7 @@
 #NOTE: These are only half of the dependencies. Remaining dependencies are in requirements_only_pip.txt
 #To intall all the dependencies: 
 #1) conda env create -f environment_only_conda.yml
-#2) TMPDIR=/local/disk1/miniconda/temp/ pip --cache-dir /local/disk1/miniconda/temp/ install -r requirements_only_pip.txt
+#2) TMPDIR=/home/luisa/anaconda3/temp/ pip --cache-dir /home/luisa/anaconda3/temp/ install -r requirements_only_pip.txt
 name: neptuna
 channels:
   - conda-forge
@@ -50,7 +50,7 @@ dependencies:
   - ptyprocess=0.7.0
   - pure_eval=0.2.3
   - pygments=2.19.1
-  - python=3.13.1
+  - python=3.13
   - python-dateutil=2.9.0.post0
   - python_abi=3.13
   - pyzmq=26.2.0

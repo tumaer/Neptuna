@@ -9,12 +9,15 @@ from typing import Tuple, List
 from transformers import PreTrainedModel
 from utils.grid_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 from utils.model_utils import CustomNorm
+from .fno_utils import FNOConfig
 
 class FNO(PreTrainedModel):
     """Fourier neural operator (FNO) model."""
 
     main_input_name = "input_data"
     conditioning_input_name = "conditioning_input_data"
+    config_class = FNOConfig
+    
     def __init__(self, config) -> None:
         super().__init__(config)
 

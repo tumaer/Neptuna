@@ -2,9 +2,14 @@ dataset_name:
 # Type: str
 # Name of the dataset in CamelCase
 
+seed:
+# Type: int
+# Global random seed for reproducibility across models and data loaders
+
 dataset_directory_path:
 # Type: str 
 # Dataset 'folder' path
+# Paste the files named train.h5 (for train and validation) and test.h5 (for inference) inside this directory.
 
 dimension: 
 # [optional]
@@ -36,25 +41,37 @@ sequence_info:
 # and the stride (timestep difference) between them
 
 filter_features:
-  filter_frames: [null, null]
+  train_filter_frames: [null, null]
   # Type: List[int, int] 
-  # Filters the frames for train/test from the dataset file
+  # Filters the frames for train/validation from the dataset file
   # [min_frame, max_frame]
   # indexing of frames starts from 0.
 
-  filter_groups: null 
+  infer_filter_frames: [null, null]
+  # Type: List[int, int] 
+  # Filters the frames for inference from the dataset file
+  # [min_frame, max_frame]
+  # indexing of frames starts from 0.
+
+  train_filter_groups: null 
   # Type: List[str, str, ...]
-  # filters the groups for train/test from the dataset file
+  # filters the groups for train/validation from the dataset file
+  # Example: ["seed 000000", "seed 000049"]
+  # The group names can be discovered by running the script: misc/dataset_structure_viz.py
+
+  infer_filter_groups: null 
+  # Type: List[str, str, ...]
+  # filters the groups for inference from the dataset file
   # Example: ["seed 000000", "seed 000049"]
   # The group names can be discovered by running the script: misc/dataset_structure_viz.py
 
   filter_in_channels: null
   # Type: List[str, str, ...]
-  # filters the input channels to be used for train/test 
+  # filters the input channels to be used for train/validation/inference 
 
   filter_out_channels: null
   # Type: List[str, str, ...]
-  # filters the output channels to be used for train/test 
+  # filters the output channels to be used for train/validation/inference 
 
 conditioning_features:
   conditioning_in_channels: null
@@ -119,3 +136,7 @@ data_normalization_stats: null
     #   max: 0.04686852544546127
     #   median: 1.1994336546194972e-07
     #   iqr: 0.002700483484659344
+
+coord_features: True 
+# Type: bool
+# specifies whether coordinate features should be added
