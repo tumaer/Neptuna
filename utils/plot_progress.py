@@ -189,7 +189,7 @@ def preprocess_for_plotting(
     )
 
 
-def _plot_data(ax, data, ndim, ch_names=None):
+def _plot_data(ax, data, ndim, ch_names=None, vmin_arr=None, vmax_arr=None):
     """
     Plot data on given axes with dimension-specific formatting and styling.
 
@@ -203,6 +203,9 @@ def _plot_data(ax, data, ndim, ch_names=None):
         Number of spatial dimensions (1, 2, or 3).
     ch_names : Optional[List[str]]
         Channel names for labeling. If None, uses default naming.
+    vmin_arr, vmax_arr : Optional[Sequence[float]]
+        Optional per-channel min/max to enforce consistent colorbar limits across
+        related plots. Only used for 2D data.
 
     Returns
     -------
@@ -235,8 +238,22 @@ def _plot_data(ax, data, ndim, ch_names=None):
         h, w = data[0].shape
         aspect = 'equal' if h == w else 'auto'
         
+        # Guard against invalid vmin/vmax lengths
+        use_vlims = vmin_arr is not None and vmax_arr is not None and len(vmin_arr) >= C and len(vmax_arr) >= C
+
+        def _safe_vlims(c):
+            if not use_vlims:
+                return {}
+            vmin = float(vmin_arr[c])
+            vmax = float(vmax_arr[c])
+            if vmin == vmax:
+                eps = 1e-6 if vmin == 0.0 else abs(vmin) * 1e-6
+                vmin -= eps
+                vmax += eps
+            return {"vmin": vmin, "vmax": vmax}
+        
         if C == 1:
-            im = ax.imshow(data[0], cmap="coolwarm", aspect=aspect, origin='lower')
+            im = ax.imshow(data[0], cmap="coolwarm", aspect=aspect, origin='lower', **_safe_vlims(0))
             ax.set_title(ch_names[0], fontsize=8)
             # Increase the padding so the horizontal colorbar does not overlap the image grid.
             cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.12, orientation='horizontal', location='bottom')
@@ -255,7 +272,7 @@ def _plot_data(ax, data, ndim, ch_names=None):
             sub_axes = []
             for c in range(C):
                 sub_ax = fig.add_subplot(gs[0, c])
-                im = sub_ax.imshow(data[c], cmap="coolwarm", aspect=aspect, origin='lower')
+                im = sub_ax.imshow(data[c], cmap="coolwarm", aspect=aspect, origin='lower', **_safe_vlims(c))
                 sub_ax.set_title(ch_names[c], fontsize=8)
                 # Increase the padding so the horizontal colorbar does not overlap the image grid.
                 cbar = fig.colorbar(im, ax=sub_ax, fraction=0.046, pad=0.12, orientation='horizontal', location='bottom')
@@ -295,6 +312,7 @@ def plot_examples(
     data_info: str | None = None,
     train_info: str | None = None,
     scheduler_info: str | None = None,
+    example_indices: list[int] | None = None,
 ):
     """
     Generate comprehensive visualization plots comparing model predictions with targets.
@@ -382,8 +400,17 @@ def plot_examples(
     N, T_in, C, *spatial_shape = input_array.shape
     T_pred = prediction_array.shape[1]
 
-    np.random.seed(42)
-    example_indices = np.random.choice(N, size=num_examples, replace=False)
+    if example_indices is None:
+        np.random.seed(42)
+        num_pick = min(num_examples, N)
+        example_indices = np.random.choice(N, size=num_pick, replace=False)
+    else:
+        example_indices = np.array(example_indices, dtype=int)
+        # example_indices = example_indices[(example_indices >= 0) & (example_indices < N)]
+        # if example_indices.size == 0:
+        #     np.random.seed(42)
+        #     num_pick = min(num_examples, N)
+        #     example_indices = np.random.choice(N, size=num_pick, replace=False)
 
     returned_figs: dict[str, matplotlib.figure.Figure] = {}
 
@@ -404,6 +431,34 @@ def plot_examples(
             # Calculate relative widths for each column section
             input_channels = len(only_input_channel_names)
             output_channels = len(output_channel_names)
+            
+            # Compute per-channel vmin/vmax across Input, Prediction, and Target for consistent colorbars (2D only)
+            vmins = vmaxs = None
+            if ndim == 2:
+                C_inout = output_channels  # assume same channels for pred/target
+                vmins = np.zeros(C_inout, dtype=float)
+                vmaxs = np.zeros(C_inout, dtype=float)
+                for c_idx in range(C_inout):
+                    # Stack input channel if present; input may include more channels (e.g. conditioning removed already)
+                    # Find corresponding index for this channel name in inputs
+                    ch_name = output_channel_names[c_idx]
+                    if ch_name in only_input_channel_names:
+                        in_c = only_input_channel_names.index(ch_name)
+                        in_stack = inp[:, in_c]
+                    else:
+                        in_stack = None
+                    pred_stack = pred[:, c_idx]
+                    tgt_stack = tgt[:, c_idx]
+                    stacks = [arr for arr in [in_stack, pred_stack, tgt_stack] if arr is not None]
+                    all_vals = np.concatenate(stacks, axis=0)
+                    vmin = float(np.nanmin(all_vals))
+                    vmax = float(np.nanmax(all_vals))
+                    if vmin == vmax:
+                        eps = 1e-6 if vmin == 0.0 else abs(vmin) * 1e-6
+                        vmin -= eps
+                        vmax += eps
+                    vmins[c_idx] = vmin
+                    vmaxs[c_idx] = vmax
             
             if has_conditioning:
                 conditioning_channels = len(conditioning_input_channel_names)
@@ -574,7 +629,7 @@ def plot_examples(
                 if row < T_in:
                     time_val = "t" if row == T_in - 1 else f"t - {stride * (T_in - 1 - row)}"
                     input_ax = fig.add_subplot(gs[row_offset, start_col:end_col])
-                    axes_to_label = _plot_data(input_ax, inp[row], ndim, only_input_channel_names)
+                    axes_to_label = _plot_data(input_ax, inp[row], ndim, only_input_channel_names, vmins, vmaxs)
                     if isinstance(axes_to_label, list):  # Multi-channel 2D case
                         # Add time label only to the middle channel
                         mid_channel = len(axes_to_label) // 2
@@ -611,7 +666,7 @@ def plot_examples(
                 if row < T_pred:
                     time_val = f"t + {stride * (row + 1)}"
                     pred_ax = fig.add_subplot(gs[row_offset, start_col:end_col])
-                    axes_to_label = _plot_data(pred_ax, pred[row], ndim, output_channel_names)
+                    axes_to_label = _plot_data(pred_ax, pred[row], ndim, output_channel_names, vmins, vmaxs)
                     if isinstance(axes_to_label, list):  # Multi-channel 2D case
                         # Add time label only to the middle channel
                         mid_channel = len(axes_to_label) // 2
@@ -626,7 +681,7 @@ def plot_examples(
                 if row < T_pred:
                     time_val = f"t + {stride * (row + 1)}"
                     target_ax = fig.add_subplot(gs[row_offset, start_col:end_col])
-                    axes_to_label = _plot_data(target_ax, tgt[row], ndim, output_channel_names)
+                    axes_to_label = _plot_data(target_ax, tgt[row], ndim, output_channel_names, vmins, vmaxs)
                     if isinstance(axes_to_label, list):  # Multi-channel 2D case
                         # Add time label only to the middle channel
                         mid_channel = len(axes_to_label) // 2
