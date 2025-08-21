@@ -14,6 +14,7 @@ from omegaconf import DictConfig
 import json
 from utils.seed_utils import set_global_seed
 import torch
+import numpy as np
 
 def load_pretrained_model(model_config):
     """
@@ -208,9 +209,12 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         experiment_dir: Path to the experiment directory
         infer_config: Inference configuration
     """
-    print(f"\n{'='*60}")
+    print(f"\n{'#'*88}")
+    BOX_WIDTH = 88
+    header_sep = "*" * BOX_WIDTH
+    print("\n" + header_sep)
     print(f"Processing experiment: {os.path.basename(experiment_dir)}")
-    print(f"{'='*60}")
+    print(header_sep)
     
     # Check if data_config.json exists
     data_config_path = os.path.join(experiment_dir, "data_config.json")
@@ -246,10 +250,113 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         model_config["model_checkpoint_path"] = checkpoint_path
         model_config["model_name"] = model_config["architectures"][0]
         
-        # Set configs to None for inference-only mode
-        train_config = None
-        scheduler_config = None
+        # Attempt to reconstruct train_config and scheduler_config from training_args.bin
+        def _safe_get(obj, key, default=None):
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        def _enum_to_str(value):
+            try:
+                # HF enums typically expose .value or .name
+                if hasattr(value, "value"):
+                    return str(value.value)
+                if hasattr(value, "name"):
+                    return str(value.name)
+            except Exception:
+                pass
+            return str(value)
+
+        def extract_configs_from_training_args(checkpoint_path):
+            training_args_path = os.path.join(checkpoint_path, "training_args.bin")
+            if not os.path.exists(training_args_path):
+                return None, None
+            try:
+                args_obj = torch.load(training_args_path, map_location="cpu", weights_only=False)
+            except Exception as exc:
+                print(f"Warning: could not load {training_args_path}: {exc}")
+                return None, None
+
+            # Training config (best-effort reconstruction from HF TrainingArguments)
+            train_cfg = {
+                "use_cpu": bool(_safe_get(args_obj, "use_cpu", False)),
+                "per_device_train_batch_size": int(_safe_get(args_obj, "per_device_train_batch_size", 1)),
+                "per_device_eval_batch_size": int(_safe_get(args_obj, "per_device_eval_batch_size", 1)),
+                "num_train_epochs": float(_safe_get(args_obj, "num_train_epochs", 0)),
+                "mix_precision_config": {
+                    "fp16": bool(_safe_get(args_obj, "fp16", False)),
+                    "bf16": bool(_safe_get(args_obj, "bf16", False)),
+                    "tf32": bool(_safe_get(args_obj, "tf32", False)),
+                },
+                "dataloader_num_workers": int(_safe_get(args_obj, "dataloader_num_workers", 0)),
+                "gradient_accumulation_steps": int(_safe_get(args_obj, "gradient_accumulation_steps", 1)),
+                # Map HF naming to our config naming
+                "eval_strategy": _enum_to_str(_safe_get(args_obj, "evaluation_strategy", "steps")),
+                "eval_steps": int(_safe_get(args_obj, "eval_steps", 0) or 0),
+                "logging_strategy": _enum_to_str(_safe_get(args_obj, "logging_strategy", "steps")),
+                "logging_steps": int(_safe_get(args_obj, "logging_steps", 0) or 0),
+                "save_strategy": _enum_to_str(_safe_get(args_obj, "save_strategy", "steps")),
+                "save_steps": int(_safe_get(args_obj, "save_steps", 0) or 0),
+                "save_total_limit": int(_safe_get(args_obj, "save_total_limit", 0) or 0),
+                "eval_accumulation_steps": int(_safe_get(args_obj, "eval_accumulation_steps", 0) or 0),
+                "metric_for_best_model": _safe_get(args_obj, "metric_for_best_model", None),
+                # Not recoverable from HF TrainingArguments; keep sensible defaults or None
+                "pushforward_config": None,
+                "n_eval_rollouts": None,
+                "eval_split_ratio": None,
+            }
+
+            # Scheduler/optimizer config
+            scheduler_cfg = {
+                "optim": _enum_to_str(_safe_get(args_obj, "optim", "adamw_torch")),
+                "lr": float(_safe_get(args_obj, "learning_rate", 5e-5)),
+                "weight_decay": float(_safe_get(args_obj, "weight_decay", 0.0)),
+                "lr_scheduler": _enum_to_str(_safe_get(args_obj, "lr_scheduler_type", "linear")),
+                # Prefer ratio if present, else provide steps as a fallback via a separate key
+                "warmup_ratio": float(_safe_get(args_obj, "warmup_ratio", 0.0) or 0.0),
+            }
+            warmup_steps = int(_safe_get(args_obj, "warmup_steps", 0) or 0)
+            if warmup_steps and not scheduler_cfg.get("warmup_ratio"):
+                scheduler_cfg["warmup_steps"] = warmup_steps
+
+            return train_cfg, scheduler_cfg
+
+        train_config, scheduler_config = extract_configs_from_training_args(checkpoint_path)
         output_log_config = None
+        
+        # Log all available configs
+        def _print_config_block(name, cfg_obj):
+            import textwrap
+            BOX_WIDTH = 90
+            double_sep = "=" * BOX_WIDTH
+            single_sep = "-" * BOX_WIDTH
+            title = f"[ {name} ]"
+            print("\n")
+            print(double_sep)
+            print(title.center(BOX_WIDTH))
+            print(double_sep)
+            try:
+                if cfg_obj is None:
+                    body = "<None>"
+                elif isinstance(cfg_obj, DictConfig) or OmegaConf.is_config(cfg_obj):
+                    body = OmegaConf.to_yaml(cfg_obj, resolve=True)
+                else:
+                    body = json.dumps(cfg_obj, indent=2, default=str)
+                print(textwrap.indent(body.rstrip(), "  "))
+            except Exception as exc:
+                print(f"(Could not render {name}: {exc})")
+                print(textwrap.indent(str(cfg_obj), "  "))
+            print(single_sep)
+
+        print("\n" + "=" * 90)
+        print("CONFIGURATION OVERVIEW (INFERENCE)".center(90))
+        print("=" * 90)
+        _print_config_block("INFER CONFIG", infer_config)
+        _print_config_block("DATA CONFIG", data_config)
+        _print_config_block("MODEL CONFIG", model_config)
+        _print_config_block("TRAIN CONFIG", train_config)
+        _print_config_block("SCHEDULER CONFIG", scheduler_config)
+        #_print_config_block("OUTPUT LOG CONFIG", output_log_config)
         
         # Function to create a unique solo_inference directory
         def create_unique_inference_dir(base_dir):
@@ -344,8 +451,11 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             # Flatten rollout and label sequence dimensions if necessary
             if preds.ndim >= 5:
                 n, n_rollouts, seq_len, c = preds.shape[:4]
+                outputs_per_rollout = seq_len
                 extra_dims = preds.shape[4:]
                 preds = preds.reshape(n, n_rollouts * seq_len, c, *extra_dims) # (N, R*T, C, *spatial)
+            # else:
+            #     outputs_per_rollout = 1
 
             targets = predictions_obj.label_ids  # Expected shape: (N, R*T, C, *spatial)
 
@@ -392,29 +502,54 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                                                                                             scheduler_config=scheduler_config
                                                                                         )
 
-            # Create rollout sample plots 
-            plot_examples(
-                input_array=inp_renorm,
-                prediction_array=pred_renorm,
-                target_array=tgt_renorm,
-                only_input_channel_names=only_input_channel_names,
-                output_channel_names=output_channel_names,
-                conditioning_input_array=cond_inp_renorm,
-                conditioning_input_channel_names=cond_inp_channel_names,
-                checkpoint_step=None,
-                epoch=None,
-                extra_info=data_config.get("dataset_name")+"_Inference_plot_from_random_timestep",
-                ndim=ndim,
-                num_examples=infer_config["n_infer_plot_examples"],
-                stride=stride_val,
-                save_dir=plot_save_dir,
-                log_to_wandb=False,
-                is_best_metric=False,
-                model_info=model_info_str,
-                data_info=data_info_str,
-                train_info=train_info_str,
-                scheduler_info=sched_info_str,
-            )
+            # Create rollout sample plots and per-example rollout metrics, saved per example folder
+            # Compute the exact example indices used for plotting to reuse for per-example rollout metrics
+            N_examples = preds.shape[0]
+            num_plot = min(infer_config["n_infer_plot_examples"], N_examples)
+            np.random.seed(42)
+            chosen_example_indices = np.random.choice(N_examples, size=num_plot, replace=False)
+            # For each selected example, save the example plot and the rollout metrics into the same folder
+            for example_idx in chosen_example_indices:
+                ex_save_dir = os.path.join(plot_save_dir, f"example_{int(example_idx)}")
+                # Save the visual comparison plot for this example
+                plot_examples(
+                    input_array=inp_renorm,
+                    prediction_array=pred_renorm,
+                    target_array=tgt_renorm,
+                    only_input_channel_names=only_input_channel_names,
+                    output_channel_names=output_channel_names,
+                    conditioning_input_array=cond_inp_renorm,
+                    conditioning_input_channel_names=cond_inp_channel_names,
+                    checkpoint_step=None,
+                    epoch=None,
+                    extra_info=data_config.get("dataset_name")+"_Inference_plot_from_random_timestep",
+                    ndim=ndim,
+                    num_examples=1,
+                    stride=stride_val,
+                    save_dir=ex_save_dir,
+                    log_to_wandb=False,
+                    is_best_metric=False,
+                    model_info=model_info_str,
+                    data_info=data_info_str,
+                    train_info=train_info_str,
+                    scheduler_info=sched_info_str,
+                    example_indices=[int(example_idx)],
+                )
+
+                # Create a rollout metrics plot for this example (no batch aggregation)
+                ex_preds = preds[example_idx:example_idx+1]      # shape (1, R*T, C, *spatial)
+                ex_targets = targets[example_idx:example_idx+1]
+                per_rollout_metrics_ex = compute_metrics_for_n_rollouts(
+                    ex_preds, ex_targets, outputs_per_rollout=outputs_per_rollout
+                )
+                ex_title = f"Per-rollout metrics ({data_config.get('dataset_name', 'dataset')} - random start, example {int(example_idx)})"
+                plot_rollout_metrics(
+                    step_metrics=per_rollout_metrics_ex,
+                    output_channel_names=output_channel_names,
+                    save_dir=ex_save_dir,
+                    title=ex_title,
+                    filename="rollout_metrics.png",
+                )
 
         if infer_config["infer_from_ic"]:
             trainer.set_eval_or_test_rollout_steps(
