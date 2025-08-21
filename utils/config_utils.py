@@ -127,7 +127,7 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
             filter_groups=cfg["data_config"]["filter_features"]["train_filter_groups"] ,
             filter_frames=cfg["data_config"]["filter_features"]["train_filter_frames"],
             frame_stride=cfg["data_config"]["sequence_info"][2],
-            on_fly_stats=False,
+            on_fly_stats=True,
             num_workers=4
         )
         print(f"compute_statistics took {time.perf_counter() - _t_start:.2f} seconds")
