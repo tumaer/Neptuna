@@ -1,13 +1,13 @@
 # For details on the parameters, refer to data_config-->example_data_config.yaml
 dataset_name: LaserDroplet
-dataset_directory_path: ./data/fluids/Laser_Droplet_PDS/2D
+dataset_directory_path: /local/disk/szehisaadat/Neptuna/data/fluids/LaserDroplet/2D
 seed: 42
 dimension: 2
 grid_resolution: null
 eval_groups: null
 is_steady_state_prediction: False 
 sequence_info: [1, 1, 1]
-# Available channels for LaserDroplet: ["Pressure", "Energy", "Density", "Velocity_X", "Velocity_Y", "Volume_Fraction"]
+# Available channels for LaserDroplet: ["Pressure","Density", "Schlieren"]
 filter_features:
   train_filter_frames: null
   train_filter_groups: null
