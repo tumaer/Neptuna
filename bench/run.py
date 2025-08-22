@@ -37,7 +37,7 @@ def run(cfg):
     # Global seeding
     # ------------------------------------------------------------------
     seed = int(cfg["data_config"].get("seed", 0))
-    set_global_seed(seed)
+    set_global_seed(seed, deterministic=True)
 
     # ------------------------------------------------------------------
     # Setup WANDB Project

@@ -1,6 +1,6 @@
 # For details on the parameters, refer to data_config-->example_data_config.yaml
 dataset_name: LaserDroplet
-dataset_directory_path: ./data/fluids/Laser_Droplet/2D
+dataset_directory_path: ./data/fluids/Laser_Droplet_PDS/2D
 seed: 42
 dimension: 2
 grid_resolution: null
@@ -25,37 +25,21 @@ residual_config: null
 #   add_base_value_with_raw_loss: False
 #   add_predicted_value_with_diff_loss: True
 #   add_predicted_value_with_raw_loss: False
-coord_features: False
+coord_features: True
 data_normalization_strategy: z_normalization
-data_normalization_stats:
-##Stats for the 80 GB Laser-droplet dataset
-  Density:
-    mean: 69.76413338290627
-    std: 248.16409765414215
-    min: 0.04093359544062778
-    max: 1384.147587498247
-  Energy:
-    mean: 65963929.69712705
-    std: 260135683.592898
-    min: 94081.6170445948
-    max: 21858738189.89047
-  Pressure:
-    mean: 5881923.379977499
-    std: 73108421.83759212
-    min: -575312371.8314054
-    max: 7213316794.813375
-  Velocity_X:
-    mean: 174.69987558668464
-    std: 360.98912486704563
-    min: -1332.7219171546162
-    max: 5676.529772723001
-  Velocity_Y:
-    mean: 342.07245638844245
-    std: 775.3818675620432
-    min: -1394.127878349322
-    max: 8519.925739267119
-  Volume_Fraction:
-    mean: 0.9326745447469692
-    std: 0.24844839138318242
+data_normalization_stats: 
+  Density: 
+    mean: 69.15749838331831
+    std: 246.92007530374036
+    min: 0.04284508956123448
+    max: 1390.0990886807508
+  Pressure: 
+    mean: 6447089.847962431
+    std: 83512064.37223315
+    min: -574292266.7745304
+    max: 7548400000.000001
+  Schlieren: 
+    mean: 36828740.39687321
+    std: 321071308.16520864
     min: 0.0
-    max: 1.0
+    max: 46219090641.15646
