@@ -92,6 +92,7 @@ class ViT(PreTrainedModel):
 
     main_input_name = "input_data"
     conditioning_input_name = "conditioning_input_data"
+    
     config_class = ViTConfig
 
     def __init__(self, config):
@@ -115,6 +116,13 @@ class ViT(PreTrainedModel):
 
         if input_data is None:
             raise ValueError("input_data cannot be None")
+        
+        if "conditioning_input_data" in kwargs:
+            #NOTE: Conditioning data can be passed into a conv network before concatination with input_data.
+            conditioning_input_data = kwargs["conditioning_input_data"]
+            input_data = torch.cat([input_data, conditioning_input_data], dim=2)
+        else:
+            conditioning_input_data = None
         
         batch, input_seq, channels, *spatial = input_data.shape
         input_data = input_data.reshape(batch, input_seq * channels, *spatial)
