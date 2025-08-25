@@ -73,7 +73,7 @@ def l2_error(preds, targets):
     return l2_error
 
 
-def compute_metrics_for_n_rollouts(preds, targets, outputs_per_rollout=1, metrics=("l1", "l2")):
+def compute_metrics_for_n_rollouts(preds, targets, outputs_per_rollout=1, metrics=("l1", "l2"), include_per_timestep: bool = False):
     """Compute specified error metrics per rollout step.
 
     Parameters
@@ -87,6 +87,11 @@ def compute_metrics_for_n_rollouts(preds, targets, outputs_per_rollout=1, metric
         Number of outputs produced per rollout step (``T_out``). Defaults to 1.
         Used to regroup flattened inputs so that metrics are computed per rollout step (R),
         aggregating across the ``T_out`` outputs of that step.
+    include_per_timestep : bool, optional
+        When True, also compute per-timestep metrics using the flattened arrays
+        of shape ``(B, R*T_out, C, *spatial)``: returns per-timestep mean/std for
+        per-channel and overall, stacked as ``(R*T_out, C+1)`` under keys
+        ``per_timestep_mean`` and ``per_timestep_std`` for each metric.
     metrics : tuple | list
         Iterable of metric identifiers to compute. Supported strings:
         - "l1": mean absolute error (MAE)
@@ -119,13 +124,6 @@ def compute_metrics_for_n_rollouts(preds, targets, outputs_per_rollout=1, metric
             f"Got preds.shape={preds_arr.shape}, targets.shape={targets_arr.shape}."
         )
 
-    # # Regroup to (B, R, T_out, C, *spatial)
-    # if preds_arr.ndim >= 5:
-    #     # Assume already grouped as (B, R, T_out, C, *spatial)
-    #     grouped_preds = preds_arr
-    #     grouped_targets = targets_arr
-    # else:
-    #     # Expect flattened as (B, R*T_out, C, *spatial)
     if preds_arr.ndim < 3:
         raise ValueError("Expected input of at least 3 dims when flattened (B, T, C, …).")
     if outputs_per_rollout is None or outputs_per_rollout < 1:
@@ -148,6 +146,7 @@ def compute_metrics_for_n_rollouts(preds, targets, outputs_per_rollout=1, metric
     grouped_targets = targets_arr.reshape(grouped_shape)
 
     difference = grouped_preds - grouped_targets  # (B, R, T_out, C, *spatial)
+    flat_difference = preds_arr - targets_arr      # (B, R*T_out, C, *spatial)
 
     # Internal metric implementation
     def _mae(values):
@@ -249,10 +248,73 @@ def compute_metrics_for_n_rollouts(preds, targets, outputs_per_rollout=1, metric
         )
 
         metric_name_to_values[metric_key_name] = {
-            "per_step_mean": per_step_mean,
-            "per_step_std": per_step_std,
-            "cumulative_mean": cumulative_mean,
-            "cumulative_std": cumulative_std,
+            "per_rollout_step_mean": per_step_mean,
+            "per_rollout_step_std": per_step_std,
+            "cumulative_rollout_step_mean": cumulative_mean,
+            "cumulative_rollout_step_std": cumulative_std,
         }
+
+        # ------------------------------------------------------------------
+        # Optional: Per-timestep metrics using flattened arrays (B, R*T_out, C,…)
+        # T_flat = R*T_out
+        # Here the output_sequence_length is always 1, only the stride shows the jump between timesteps
+        # ------------------------------------------------------------------
+        if include_per_timestep:
+            elem_err_flat = elementwise_transform(flat_difference)  # (B, T_flat, C, *spatial)
+
+            # Spatial axes start at dim=3 for flattened arrays
+            spatial_axes_start_flat = 3
+            spatial_reduction_axes_flat = tuple(range(spatial_axes_start_flat, elem_err_flat.ndim))
+
+            # Per-sample per-timestep per-channel mean over spatial -> (B, T_flat, C)
+            per_sample_channel_mean_flat = np.mean(elem_err_flat, axis=spatial_reduction_axes_flat)
+            if use_rmse:
+                per_sample_channel_metric_flat = np.sqrt(per_sample_channel_mean_flat)
+            else:
+                per_sample_channel_metric_flat = per_sample_channel_mean_flat
+
+            # Overall per-sample per-timestep mean over spatial+channel -> (B, T_flat)
+            overall_reduction_axes_flat = (2,) + spatial_reduction_axes_flat
+            per_sample_overall_mean_flat = np.mean(elem_err_flat, axis=overall_reduction_axes_flat)
+            if use_rmse:
+                per_sample_overall_metric_flat = np.sqrt(per_sample_overall_mean_flat)
+            else:
+                per_sample_overall_metric_flat = per_sample_overall_mean_flat
+
+            # Aggregate across batch resulting in shapes -> (T_flat, C) and (T_flat,)
+            per_timestep_channel_mean = per_sample_channel_metric_flat.mean(axis=0)
+            per_timestep_channel_std = per_sample_channel_metric_flat.std(axis=0, ddof=0)
+            per_timestep_overall_mean = per_sample_overall_metric_flat.mean(axis=0)
+            per_timestep_overall_std = per_sample_overall_metric_flat.std(axis=0, ddof=0)
+
+            per_timestep_mean = np.concatenate(
+                [per_timestep_channel_mean, per_timestep_overall_mean[:, None]], axis=-1
+            )
+            per_timestep_std = np.concatenate(
+                [per_timestep_channel_std, per_timestep_overall_std[:, None]], axis=-1
+            )
+
+            # Cumulative over timesteps (time axis=1 -> T_flat)
+            cumulative_channel_per_sample_flat = np.cumsum(per_sample_channel_metric_flat, axis=1)  # (B, T_flat, C)
+            cumulative_overall_per_sample_flat = np.cumsum(per_sample_overall_metric_flat, axis=1)  # (B, T_flat)
+
+            cumulative_timestep_channel_mean = cumulative_channel_per_sample_flat.mean(axis=0)  # (T_flat, C)
+            cumulative_timestep_channel_std = cumulative_channel_per_sample_flat.std(axis=0, ddof=0)  # (T_flat, C)
+            cumulative_timestep_overall_mean = cumulative_overall_per_sample_flat.mean(axis=0)  # (T_flat,)
+            cumulative_timestep_overall_std = cumulative_overall_per_sample_flat.std(axis=0, ddof=0)  # (T_flat,)
+
+            cumulative_timestep_mean = np.concatenate(
+                [cumulative_timestep_channel_mean, cumulative_timestep_overall_mean[:, None]], axis=-1
+            )
+            cumulative_timestep_std = np.concatenate(
+                [cumulative_timestep_channel_std, cumulative_timestep_overall_std[:, None]], axis=-1
+            )
+
+            metric_name_to_values[metric_key_name].update({
+                "per_timestep_mean": per_timestep_mean,
+                "per_timestep_std": per_timestep_std,
+                "cumulative_timestep_mean": cumulative_timestep_mean,
+                "cumulative_timestep_std": cumulative_timestep_std,
+            })
 
     return metric_name_to_values
