@@ -5,6 +5,7 @@ import glob
 from utils.load_data import fetch_dataset
 from utils.plot_progress import build_info_strings
 from utils.plot_progress import plot_examples, preprocess_for_plotting, plot_rollout_metrics
+from utils.plot_progress import plot_multi_run_rollout_metrics
 from metrics.default_metrics import l1_error, l2_error, compute_metrics_for_n_rollouts
 from transformers.trainer import EvalPrediction
 from transformers import TrainingArguments
@@ -51,8 +52,6 @@ def load_pretrained_model(model_config):
     module = importlib.import_module(module_path)
     model_class = getattr(module, class_name)
     
-
-
     model, loading_info = model_class.from_pretrained(
         checkpoint_path,
         output_loading_info=True,
@@ -198,8 +197,6 @@ def find_checkpoint_path(experiment_dir):
     # If multiple checkpoints exist, take the one with the highest number
     checkpoint_dirs.sort(key=lambda x: int(x.split('-')[-1]))
     return checkpoint_dirs[-1]
-
-
 
 def run_inference_for_each_experiment(experiment_dir, infer_config):
     """
@@ -386,12 +383,12 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             if infer_config["filter_features"].get("infer_filter_groups") is not None:
                 print(f"Original infer_filter_groups from data_config: {infer_filter_groups}")
                 infer_filter_groups = infer_config["filter_features"]["infer_filter_groups"]
-                print(f"Using infer_filter_groups from inference config: {infer_filter_groups}")
+                print(f"** Using infer_filter_groups from inference config: {infer_filter_groups} **")
             
             if infer_config["filter_features"].get("infer_filter_frames") is not None:
                 print(f"Original infer_filter_frames from data_config: {infer_filter_frames}")
                 infer_filter_frames = infer_config["filter_features"]["infer_filter_frames"]
-                print(f"Using infer_filter_frames from inference config: {infer_filter_frames}")
+                print(f"** Using infer_filter_frames from inference config: {infer_filter_frames} **")
         
         print("Running solo inference...")
         infer_ds, infer_ds_from_ic = fetch_dataset(
@@ -528,7 +525,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                     stride=stride_val,
                     save_dir=ex_save_dir,
                     log_to_wandb=False,
-                    is_best_metric=False,
+                    best_plot_at_train_end=False,
                     model_info=model_info_str,
                     data_info=data_info_str,
                     train_info=train_info_str,
@@ -549,8 +546,10 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                     save_dir=ex_save_dir,
                     title=ex_title,
                     filename="rollout_metrics.png",
+                    sequence_info=data_config.get("sequence_info", [1, 1, 1]),
                 )
 
+        ic_return = None
         if infer_config["infer_from_ic"]:
             trainer.set_eval_or_test_rollout_steps(
                 rollout_steps=infer_config["n_infer_rollouts"], output_all_steps=True
@@ -577,10 +576,11 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 extra_dims = preds.shape[4:]
                 preds = preds.reshape(n, n_rollouts * seq_len, c, *extra_dims) # (N, R*T, C, *spatial)
 
-            # Compute per-rollout errors (mean across batch) before plotting
+            # Compute per-rollout metrics; also compute per-timestep metrics for IC start
             per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(
-                preds, targets, outputs_per_rollout=outputs_per_rollout
+                preds, targets, outputs_per_rollout=outputs_per_rollout, include_per_timestep=True
             )
+            
             for metric_name, values in per_rollout_step_metrics_ic.items():
                 print(f"{metric_name} per-step (IC start): {values}")
 
@@ -606,19 +606,17 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             # Infer spatial dimensionality (1D / 2D / 3D)
             ndim = pred_renorm.ndim - 3  # subtract batch, time, channel dims
 
-            # Use stride from the config if available
             stride_val = data_config.get("sequence_info", [1, 1, 1])[2]
 
-            # Directory for saving inference plots
             plot_save_dir = os.path.join(solo_inference_dir, "inference_plots/ic_start")
 
-            # Plot rollout metrics (per metric subplot)
             plot_rollout_metrics(
                 step_metrics=per_rollout_step_metrics_ic,
                 output_channel_names=output_channel_names,
                 save_dir=plot_save_dir,
-                title=f"Per-rollout metrics ({data_config.get('dataset_name', 'dataset')} - IC start)",
-                filename="rollout_metrics.png",
+                title=f"Per-(rollout and time) step metrics ({data_config.get('dataset_name', 'dataset')} - IC start)",
+                filename="per_step_metrics.png",
+                sequence_info=data_config.get("sequence_info", [1, 1, 1]),
             )
 
             model_info_str, data_info_str, train_info_str, sched_info_str = build_info_strings(
@@ -646,15 +644,23 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 stride=stride_val,
                 save_dir=plot_save_dir,
                 log_to_wandb=False,
-                is_best_metric=False,
+                best_plot_at_train_end=False,
                 model_info=model_info_str,
                 data_info=data_info_str,
                 train_info=train_info_str,
                 scheduler_info=sched_info_str,
             )
 
+            # Prepare return payload for top-level multi-run plotting
+            ic_return = {
+                "metrics": per_rollout_step_metrics_ic,
+                "sequence_info": list(data_config.get("sequence_info", [1, 1, 1])),
+            }
+
         print(f"Inference completed for {os.path.basename(experiment_dir)}")
         print(f"Results saved to: {solo_inference_dir}")
+
+        return ic_return
         
     except Exception as e:
         print(f"Error processing {experiment_dir}: {str(e)}")
@@ -672,12 +678,50 @@ def main(cfg: DictConfig):
         print(f"Error: Inference directory {inference_dir} does not exist!")
         return
     
-    # Find all subdirectories in the inference directory
-    experiment_dirs = [
-        os.path.join(inference_dir, d) 
-        for d in os.listdir(inference_dir) 
-        if os.path.isdir(os.path.join(inference_dir, d))
-    ]
+    # Discover experiment directories supporting both flat and checkpoint_prefix layouts
+    def discover_experiment_dirs(root_dir):
+        discovered = []
+        seen = set()
+
+        def _add_if_run_dir(path_dir):
+            if not os.path.isdir(path_dir):
+                return
+            cfg_path = os.path.join(path_dir, "data_config.json")
+            if os.path.exists(cfg_path):
+                key = os.path.realpath(path_dir)
+                if key not in seen:
+                    seen.add(key)
+                    discovered.append(path_dir)
+
+        # Case A: flat layout -> runs are direct children of root_dir
+        for name in os.listdir(root_dir):
+            child = os.path.join(root_dir, name)
+            _add_if_run_dir(child)
+
+        # Case B: root_dir/checkpoints/*
+        checkpoints_dir = os.path.join(root_dir, "checkpoints")
+        if os.path.isdir(checkpoints_dir):
+            for name in os.listdir(checkpoints_dir):
+                _add_if_run_dir(os.path.join(checkpoints_dir, name))
+
+        # Case C: checkpoint_prefix layout -> root_dir/*/checkpoints/*
+        for name in os.listdir(root_dir):
+            prefix_dir = os.path.join(root_dir, name)
+            if not os.path.isdir(prefix_dir):
+                continue
+            pref_ckpt = os.path.join(prefix_dir, "checkpoints")
+            if os.path.isdir(pref_ckpt):
+                for run_name in os.listdir(pref_ckpt):
+                    _add_if_run_dir(os.path.join(pref_ckpt, run_name))
+
+        # Fallback: recursive search for any data_config.json under root_dir
+        if not discovered:
+            for cfg_path in glob.glob(os.path.join(root_dir, "**", "data_config.json"), recursive=True):
+                _add_if_run_dir(os.path.dirname(cfg_path))
+
+        return discovered
+
+    experiment_dirs = discover_experiment_dirs(inference_dir)
     
     if not experiment_dirs:
         print(f"No experiment directories found in {inference_dir}")
@@ -687,9 +731,33 @@ def main(cfg: DictConfig):
     for exp_dir in experiment_dirs:
         print(f"  - {os.path.basename(exp_dir)}")
     
-    # Process each experiment directory
+    # Process each experiment directory and collect IC-start metrics for multi-run overlay (no aggregation)
+    runs_step_metrics = {}
+    runs_sequence_info = {}
+    sequence_info_ref = None
+
     for experiment_dir in experiment_dirs:
-        run_inference_for_each_experiment(experiment_dir, infer_config)
+        res = run_inference_for_each_experiment(experiment_dir, infer_config)
+        if isinstance(res, dict) and res.get("metrics") is not None:
+            run_label = os.path.basename(experiment_dir)
+            runs_step_metrics[run_label] = res["metrics"]
+            if sequence_info_ref is None and res.get("sequence_info") is not None:
+                sequence_info_ref = res.get("sequence_info")
+            # Keep per-run sequence info for correct timestep x-axis
+            if res.get("sequence_info") is not None:
+                runs_sequence_info[run_label] = res.get("sequence_info")
+
+    # Create a single overlay plot of all runs in inference_dir if IC metrics are available
+    # Here the overall all-channel combinedmetrics of each run are plotted and NOT the channel-wise metrics
+    if bool(infer_config.get("infer_from_ic", False)) and len(runs_step_metrics) > 0:
+        plot_multi_run_rollout_metrics(
+            runs_step_metrics=runs_step_metrics,
+            save_dir=inference_dir,
+            title="Summary Plot: per-(rollout and time) step all channels combined metrics (IC start)",
+            filename="all_runs_ic_rollout_timestep_metrics.png",
+            sequence_info=sequence_info_ref if sequence_info_ref is not None else [1, 1, 1],
+            runs_sequence_info=runs_sequence_info if len(runs_sequence_info) > 0 else None,
+        )
     
     print(f"\n{'='*60}")
     print("All inference runs completed!")
