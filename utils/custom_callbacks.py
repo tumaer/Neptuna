@@ -73,8 +73,11 @@ import numpy as np
 # Import high-level preprocessing helper
 from utils.plot_progress import plot_examples, preprocess_for_plotting, build_info_strings
 from transformers.trainer_callback import TrainerCallback
+from transformers.trainer_callback import TrainerState
 import os
 from PIL import Image
+import torch
+import json
 
 class CallbackHandler(CallbackHandler_):
     """
@@ -422,7 +425,7 @@ class WandbCallback(WandbCallback_):
         # --------------------------------------------------------------
 
         if wandb.run is not None:
-            plots_dir = os.path.join(args.output_dir, "plots")
+            plots_dir = os.path.join(args.output_dir, "validation_plots")
             if os.path.isdir(plots_dir):
                 best_pngs = [f for f in os.listdir(plots_dir) if f.endswith("_best.png")]
                 if best_pngs:
@@ -480,6 +483,7 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
         Sets up internal state tracking for plot generation, including
         threshold tracking to plot only once after the threshold is reached.
         """
+        self.trainer = None
         self._should_plot = False
         self.global_step = None
         self.trial = None
@@ -610,6 +614,17 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
             else:
                 should_plot = state.epoch >= plot_after_epoch
 
+            # Always plot at the end of training regardless of thresholds
+            # Also flag this condition so we can mark the saved image as "best".
+            best_plot_at_train_end = False
+            try:
+                final_epoch = self.train_config.get("num_train_epochs", None)
+                if final_epoch is not None and kwargs["best_plot_at_train_end"]:
+                    should_plot = True
+                    best_plot_at_train_end = True
+            except Exception:
+                pass
+ 
             if should_plot:
                 # ------------------------------------------------------------------
                 # Preprocessing utility to renormalise data.
@@ -659,7 +674,8 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
                             num_examples=self.train_config["n_eval_plot_examples"], #NOTE: plotting is slow
                             save_dir=output_dir,
                             log_to_wandb=self.output_log_config["logging"]["wandb"],
-                            is_best_metric=kwargs["is_new_best_metric"],
+                            # Save with "_best.png" suffix only for final-epoch plots
+                            best_plot_at_train_end=best_plot_at_train_end,
                             model_info=model_info_str,
                             data_info=data_info_str,
                             train_info=train_info_str,
@@ -706,6 +722,49 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
             print(log_dict)
 
     def on_train_end(self, args, state, control, **kwargs):
+        # --------------------------------------------------------------
+        # Perform one last validation on the best checkpoint found inside
+        # output_dir and save plots with the `_best` suffix. This runs
+        # regardless of W&B being on or off and happens before W&B is
+        # finished by its own callback.
+        # --------------------------------------------------------------
+        
+        try:
+            logger.info("\n One last validation with the best model to save the plot with _best.png suffix.")
+            trainer = getattr(self, "trainer", None)
+            try:
+                _ = trainer.evaluate()
+                # ----------------------------------------------------------
+                # After evaluation, reload TrainerState from the best/latest
+                # checkpoint-# directory inside the run directory.
+                # ----------------------------------------------------------
+                try:
+                    # Build run directory (may be nested by trial name during HPO)
+                    run_dir = os.path.join(
+                        trainer.args.output_dir,
+                        trainer.state.trial_name,
+                    ) if getattr(trainer.state, "trial_name", None) else trainer.args.output_dir
+
+                    # Prefer the best checkpoint path recorded by TrainerState
+                    ckpt_path = getattr(trainer.state, "best_model_checkpoint", None)
+
+                    if ckpt_path and os.path.isdir(ckpt_path):
+                        state_path = os.path.join(ckpt_path, "trainer_state.json")
+                        if os.path.isfile(state_path):
+                            trainer.state = TrainerState.load_from_json(state_path)
+                except Exception as ie:
+                    logger.warning(f"Could not reload TrainerState from checkpoint: {ie}")
+                # Flag a plot pass and enforce best-suffix saving
+                trainer.control.should_plot = True
+                self.on_plot(
+                    trainer.args, trainer.state, trainer.control, is_new_best_metric=True, model=trainer.model, best_plot_at_train_end=True
+                )
+            except Exception as e:
+                logger.warning(f"Final validation/plotting failed: {e}")
+        except Exception as e:
+            logger.warning(f"Final validation block failed: {e}")
+
+        # Reset local state
         self._plotted_thresholds = set()
         self._should_plot = False
 
