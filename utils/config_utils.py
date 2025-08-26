@@ -107,17 +107,6 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     # 3) Normalisation stats
     # ------------------------------------------------------------------
     if cfg["data_config"]["data_normalization_stats"] is None:
-        # Collect all HDF5 files in the dataset directory so that the
-        # normalisation statistics reflect the *entire* data set and not
-        # just the training split.
-        # h5_dir = cfg["data_config"]["dataset_directory_path"]
-        # h5_paths = [
-        #     os.path.join(h5_dir, fname) for fname in os.listdir(h5_dir) if fname.endswith(".h5")
-        # ]
-
-        # if len(h5_paths) == 0:
-        #     raise FileNotFoundError(f"No .h5 files found in directory '{h5_dir}'.")
-
         _t_start = time.perf_counter()
         #TODO: compute_statistics_parallel doesnt provide median and iqr (on_fly_stats=True by default in parallel mode)
         #NOTE: compute only the stats for the train dataset(test data is assumed to be inside/close to the train distribution)
@@ -133,10 +122,16 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
         print(f"compute_statistics took {time.perf_counter() - _t_start:.2f} seconds")
         cfg["data_config"]["data_normalization_stats"] = stats
     else:
-        channel_names = list(cfg["data_config"]["data_normalization_stats"].keys())
+        raw_keys = list(cfg["data_config"]["data_normalization_stats"].keys())
+        # Collapse residual keys: if both "foo" and "foo_residual" exist, keep only "foo"
+        channel_names = []
+        for k in raw_keys:
+            base = k[:-9] if k.endswith("_residual") else k
+            if base not in channel_names:
+                channel_names.append(base)
         if (cfg["data_config"]["residual_config"] is not None) and (
             len(cfg["data_config"]["data_normalization_stats"])
-            != 2 * len(channel_names)
+            != 2* len(channel_names)
         ):
             raise ValueError(
                 f"Insufficient statistics provided in the data_normalization_stats dictionary. Please provide statistics also for the residual channels."
