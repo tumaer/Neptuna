@@ -1,6 +1,6 @@
 logging: 
   output_dir: null
-  checkpoint_prefix: null # Optional prefix for checkpoints directory
+  checkpoint_prefix: null # Optional prefix for checkpoints directory, should be a string
   wandb: True  
   wandb_project: 'droplet_resnet_P' #just this one
   wandb_run_name: null

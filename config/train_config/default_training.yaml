@@ -7,7 +7,7 @@ use_cpu: False
 per_device_train_batch_size: 8
 per_device_eval_batch_size: 8
 # Number of training epochs
-num_train_epochs: 2
+num_train_epochs: 1
 # Parameters related to the push-forward trick during training (see example below)
 pushforward_config:
   #By default, pf is deactivated, set enabled to True to activate pf with the conifg below
@@ -36,7 +36,8 @@ eval_strategy: "steps" #options are steps, epoch or no.
 eval_steps: 5 #only used if eval_strategy is steps
 logging_strategy: "steps" #options are steps, epoch or no.
 logging_steps: 1 #only used if logging_strategy is steps
-save_strategy: "best" #options are best, steps, epoch or no.
+save_strategy: "steps" #options are steps, epoch or no 
+#NOTE: save_strategy must be same as eval_strategy for loading the best model at the end for one last validation to obtain the best plot.
 save_steps: 5 #only used if save_strategy is steps
 save_total_limit: 1 #Limits the total amount of checkpoints to the best two. Deletes the older checkpoints in the output_dir.
 # Number of steps to accumulate predictions on GPU before moving to CPU

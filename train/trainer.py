@@ -143,9 +143,8 @@ class Trainer(Trainer_):
             self._use_cond_input_data, self._use_cond_parameters
         )
 
-        # Rebuild the callback handler with our custom implementation so that on_evaluate accepts **kwargs
-        # Preserve the list of callbacks that may have been created by the HuggingFace Trainer during super().__init__.
-        # NOTE: `CallbackHandler` here refers to our subclass imported from train.trainer_callback.
+        # Capture any callbacks created by the base Trainer, then re-instantiate using our custom
+        # CallbackHandler class so the overridden methods are used.
         existing_callbacks = getattr(self.callback_handler, "callbacks", [])
         # Re-instantiate using our custom CallbackHandler class so the overridden methods are used.
         self.callback_handler = CallbackHandler(
@@ -156,9 +155,23 @@ class Trainer(Trainer_):
             self.lr_scheduler,
         )
 
+        # Inject a reference to this Trainer into all registered callbacks so they can
+        # access training context (datasets, model, args, etc.).
+        try:
+            for cb in getattr(self.callback_handler, "callbacks", []) or []:
+                setattr(cb, "trainer", self)
+        except Exception:
+            pass
+
         if self.output_log_config is not None and self.output_log_config["logging"]["wandb"]:
             self.callback_handler.remove_callback(WandbCallback_)
             self.add_callback(WandbCallback())
+            # Ensure the newly added callback also gets a trainer reference
+            try:
+                for cb in getattr(self.callback_handler, "callbacks", []) or []:
+                    setattr(cb, "trainer", self)
+            except Exception:
+                pass
 
     def _compute_raw_prediction(self, prediction: torch.Tensor, base_value: torch.Tensor):
         """
@@ -1515,6 +1528,29 @@ class Trainer(Trainer_):
                 self.control.should_save = is_new_best_metric
 
         if self.control.should_save: 
+            # Remove any transient keys related to plotting progress from the trainer state
+            # before saving checkpoints to avoid checkpoint serialization errors.
+            try:
+                state_slot = self.__dict__.get("state", None)
+                if state_slot is not None:
+                    state_dict = getattr(state_slot, "__dict__", None)
+                    if isinstance(state_dict, dict):
+                        # NOTE: filter out any log history entries that contain keys starting with "plot_progress" 
+                        # as wandb images cannot be saved in .json files.
+                        log_history = state_dict.get("log_history")
+                        if isinstance(log_history, list):
+                            filtered_history = []
+                            for _entry in log_history:
+                                if isinstance(_entry, dict) and any(
+                                    isinstance(_kk, str) and _kk.startswith("plot_progress") for _kk in _entry.keys()
+                                ):
+                                    continue
+                                filtered_history.append(_entry)
+                            # mutate in place to preserve references held elsewhere
+                            log_history[:] = filtered_history
+            except Exception:
+                # Never fail checkpointing due to cleanup issues
+                pass
             self._save_checkpoint(model, trial)
             self.control = self.callback_handler.on_save(self.args, self.state, self.control)
 

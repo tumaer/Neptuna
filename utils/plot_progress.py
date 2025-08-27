@@ -307,7 +307,7 @@ def plot_examples(
     stride=1,
     save_dir="plots",
     log_to_wandb: bool = False,
-    is_best_metric: bool = False,
+    best_plot_at_train_end: bool = False,
     model_info: str | None = None,
     data_info: str | None = None,
     train_info: str | None = None,
@@ -357,8 +357,8 @@ def plot_examples(
         Directory to save plots when not logging to W&B.
     log_to_wandb : bool, default=False
         Whether to log plots to Weights & Biases instead of saving to disk.
-    is_best_metric : bool, default=False
-        Whether this represents the best metric checkpoint for special handling.
+    best_plot_at_train_end : bool, default=False
+        When True, save with a "_best.png" suffix (used at train end).
     model_info : Optional[str], default=None
         Optional string to display the model info.
     data_info : Optional[str], default=None
@@ -406,11 +406,6 @@ def plot_examples(
         example_indices = np.random.choice(N, size=num_pick, replace=False)
     else:
         example_indices = np.array(example_indices, dtype=int)
-        # example_indices = example_indices[(example_indices >= 0) & (example_indices < N)]
-        # if example_indices.size == 0:
-        #     np.random.seed(42)
-        #     num_pick = min(num_examples, N)
-        #     example_indices = np.random.choice(N, size=num_pick, replace=False)
 
     returned_figs: dict[str, matplotlib.figure.Figure] = {}
 
@@ -617,7 +612,7 @@ def plot_examples(
                     time_label = f"t - {stride * (T_in - 1)} to t"
                 else:  # Other columns (prediction, target, errors)
                     time_label = f"t + {stride} to t + {stride * T_pred}"
-                time_ax.text(0.5, 0.5, time_label, ha='center', va='center', fontsize=28)
+                time_ax.text(0.5, 0.5, time_label, ha='center', va='center', fontsize=25)
 
             plot_time_fontsize = 20  # Font size for per-plot time labels
 
@@ -742,29 +737,13 @@ def plot_examples(
             # --------------------------------------------------------------
             # Saving behaviour
             # --------------------------------------------------------------
-            # We *always* save the *best* figure to disk so it can later be
-            # uploaded to W&B after the training run has concluded.  If
-            # ``log_to_wandb`` is *False* we additionally save all other
-            # figures for offline inspection.
-
-            save_this_fig = (not log_to_wandb) or is_best_metric
+            # Save best figures regardless of W&B logging. Otherwise, save only
+            # when not logging to W&B (to avoid duplicating large artifacts).
+            save_this_fig = (not log_to_wandb) or best_plot_at_train_end
 
             if save_this_fig:
-                # prepend the word "best" if this is the best metric figure
-                if is_best_metric:
-                    # Before writing the new "best" file, rename a previous
-                    # best (if any) so it is no longer tagged as best.
-                    for prev_file in os.listdir(save_dir):
-                        if prev_file.endswith("_best.png"):
-                            old_path = os.path.join(save_dir, prev_file)
-                            new_file = prev_file.replace("_best.png", ".png")
-                            new_path = os.path.join(save_dir, new_file)
-                            try:
-                                os.rename(old_path, new_path)
-                            except OSError as e:
-                                print(
-                                    f"[plot_progress] Warning: could not rename previous best file '{prev_file}': {e}"
-                                )
+                # Use a special suffix for best figures
+                if best_plot_at_train_end:
                     filename = f"ckpt_{checkpoint_step}_epoch_{epoch}_example_{idx}_best.png"
                 else:
                     filename = f"ckpt_{checkpoint_step}_epoch_{epoch}_example_{idx}.png"
@@ -772,23 +751,12 @@ def plot_examples(
                 img_path = os.path.join(save_dir, filename)
                 fig.savefig(img_path, dpi=150, bbox_inches="tight")
 
-                # When W&B logging is active we want *only* the best figure in
-                # the directory.  Remove any other PNGs that do not correspond
-                # to the freshly written best file.
-                if log_to_wandb and is_best_metric:
-                    for other_file in os.listdir(save_dir):
-                        if other_file.endswith(".png") and other_file != filename:
-                            try:
-                                os.remove(os.path.join(save_dir, other_file))
-                            except OSError as e:
-                                print(f"[plot_progress] Warning: could not delete '{other_file}': {e}")
-
             # --------------------------------------------------------------
             # W&B logging (only create the image object here; actual logging
             # timing can be handled by the caller).
             # --------------------------------------------------------------
 
-            if log_to_wandb:
+            if log_to_wandb and not best_plot_at_train_end:
                 # Use an in-memory buffer with bbox_inches='tight' so nothing is cut off
                 buf = io.BytesIO()
                 fig.savefig(buf, format="png", dpi=150, bbox_inches="tight", pad_inches=0.1)
@@ -799,14 +767,14 @@ def plot_examples(
 
                 # We purposely **do not** store the best plot in
                 # ``returned_figs`` so that it lives **only on disk**.
-                # A separate post-run routine uploads the saved PNG on_train_end inside WandbCallback.
+                # A separate post-run routine (on_train_end) uploads the saved PNG to W&B.
             
             plt.close(fig)
     return returned_figs
 
 
-def plot_rollout_metrics(step_metrics: dict, output_channel_names: list[str], save_dir: str, title: str | None = None, filename: str = "rollout_metrics.png", plot_type: str = "per_step") -> None:
-    """Plot per-metric curves over rollout steps for IC-start evaluations.
+def plot_rollout_metrics(step_metrics: dict, output_channel_names: list[str], save_dir: str, title: str | None = None, filename: str = "rollout_metrics.png", plot_type: str = "per_step", sequence_info: list[int] | tuple[int, int, int] | None = None) -> None:
+    """Plot per-metric curves over time steps for IC-start evaluations.
 
     Parameters
     ----------
@@ -824,8 +792,12 @@ def plot_rollout_metrics(step_metrics: dict, output_channel_names: list[str], sa
     filename : str
         Output filename. Defaults to "rollout_metrics.png".
     plot_type : {"cumulative", "per_step"}
-        Which statistics to plot. Defaults to "cumulative". When set to
-        "per_step", plots per_step_mean and per_step_std.
+        Which statistics to plot. Defaults to "per_step".
+    sequence_info : List[int] | Tuple[int, int, int] | None
+        Sequence configuration [input_steps, output_steps, stride]. If provided,
+        the x-axis is offset by input_steps and scaled by stride, and each
+        rollout step advances by output_steps frames, i.e., time =
+        stride * (input_steps + output_steps * rollout_step).
     """
     os.makedirs(save_dir, exist_ok=True)
 
@@ -836,52 +808,111 @@ def plot_rollout_metrics(step_metrics: dict, output_channel_names: list[str], sa
     # Determine keys for mean/std based on requested plot type
     if plot_type not in {"cumulative", "per_step"}:
         raise ValueError("plot_type must be 'cumulative' or 'per_step'")
-    mean_key = f"{plot_type}_mean"
-    std_key = f"{plot_type}_std"
 
-    # Create one subplot per metric
-    fig, axes = plt.subplots(num_metrics, 1, figsize=(10, max(3 * num_metrics, 4)), squeeze=False)
-    axes = axes[:, 0]
+    # Create a subplot grid: rows = num_metrics, cols = 2 (rollout | timestep)
+    fig, axes = plt.subplots(num_metrics, 2, figsize=(14, max(3 * num_metrics, 4)), squeeze=False)
+    # Column titles
+    if num_metrics > 0:
+        axes[0, 0].set_title("Rollout step metrics", fontsize=12)
+        axes[0, 1].set_title("Timestep metrics", fontsize=12)
 
-    # Prepare legends (channels + overall)
-    channel_legends = list(output_channel_names)
+    # Prepare legends (overall label)
     overall_label = "overall"
 
-    for ax, (metric_name, stats) in zip(axes, step_metrics.items()):
-        if mean_key not in stats or std_key not in stats:
-            # Skip metrics missing requested stats
-            continue
-        means = stats[mean_key]   # (T, C+1)
-        stds = stats[std_key]     # (T, C+1)
+    # Determine stride for x-axis scaling if provided
+    input_steps = sequence_info[0]
+    stride = sequence_info[2]
 
-        T, total_cols = means.shape
-        num_channels = total_cols - 1
-        if num_channels != len(output_channel_names):
-            # Fallback if mismatch
-            channel_legends = [f"ch_{i}" for i in range(num_channels)]
+    # Key mapping for rollout vs. timestep metrics
+    rollout_mean_key = "per_rollout_step_mean" if plot_type == "per_step" else "cumulative_rollout_step_mean"
+    rollout_std_key = "per_rollout_step_std" if plot_type == "per_step" else "cumulative_rollout_step_std"
+    timestep_mean_key = "per_timestep_mean" if plot_type == "per_step" else "cumulative_timestep_mean"
+    timestep_std_key = "per_timestep_std" if plot_type == "per_step" else "cumulative_timestep_std"
 
-        x = np.arange(1, T + 1)
-        # Plot per-channel mean with std bands, using scatter markers and connecting lines
-        for c in range(num_channels):
-            channel_mean = means[:, c]
-            channel_std = stds[:, c]
-            line, = ax.plot(x, channel_mean, label=channel_legends[c], linewidth=1.5, alpha=0.95)
-            ax.scatter(x, channel_mean, s=18, color=line.get_color(), edgecolors="none", zorder=3)
-            ax.fill_between(x, channel_mean - channel_std, channel_mean + channel_std, color=line.get_color(), alpha=0.15)
-        # Plot overall mean with std band, with markers and connecting line
-        overall_mean = means[:, -1]
-        overall_std = stds[:, -1]
-        ax.plot(x, overall_mean, label=overall_label, linewidth=2.0, color="black")
-        ax.scatter(x, overall_mean, s=24, color="black", edgecolors="none", zorder=3)
-        ax.fill_between(x, overall_mean - overall_std, overall_mean + overall_std, color="black", alpha=0.12)
+    for row_idx, (metric_name, stats) in enumerate(step_metrics.items()):
+        ax_rollout = axes[row_idx, 0]
+        ax_timestep = axes[row_idx, 1]
 
-        ax.set_xlabel("rollout step")
-        ax.set_ylabel(metric_name)
-        ax.grid(True, linestyle=":", alpha=0.6)
-        ax.legend(fontsize=8, ncols=min(4, num_channels + 1))
+        # ---------------------
+        # Left column: Rollout
+        # ---------------------
+        if rollout_mean_key in stats and rollout_std_key in stats:
+            means_r = stats[rollout_mean_key]  # (R, C+1)
+            stds_r = stats[rollout_std_key]    # (R, C+1)
+            R, total_cols_r = means_r.shape
+            num_channels_r = total_cols_r - 1
+            channel_legends_r = list(output_channel_names) if num_channels_r == len(output_channel_names) else [f"ch_{i}" for i in range(num_channels_r)]
+            x_r = np.arange(1, R + 1)
+            for c in range(num_channels_r):
+                m = means_r[:, c]
+                s = stds_r[:, c]
+                line, = ax_rollout.plot(x_r, m, label=channel_legends_r[c], linewidth=1.5, alpha=0.95)
+                ax_rollout.scatter(x_r, m, s=18, color=line.get_color(), edgecolors="none", zorder=3)
+                ax_rollout.fill_between(x_r, m - s, m + s, color=line.get_color(), alpha=0.15)
+            m_overall_r = means_r[:, -1]
+            s_overall_r = stds_r[:, -1]
+            ax_rollout.plot(x_r, m_overall_r, label=overall_label, linewidth=2.0, color="black")
+            ax_rollout.scatter(x_r, m_overall_r, s=24, color="black", edgecolors="none", zorder=3)
+            ax_rollout.fill_between(x_r, m_overall_r - s_overall_r, m_overall_r + s_overall_r, color="black", alpha=0.12)
+            ax_rollout.set_xlabel("rollout step")
+            ax_rollout.set_ylabel(metric_name)
+            ax_rollout.grid(True, linestyle=":", alpha=0.6)
+            ax_rollout.legend(fontsize=8, ncols=min(4, num_channels_r + 1))
+        else:
+            ax_rollout.text(0.5, 0.5, f"No rollout metrics for '{metric_name}'", ha="center", va="center")
+            ax_rollout.axis("off")
+
+        # ----------------------
+        # Right column: Timestep
+        # ----------------------
+        if timestep_mean_key in stats and timestep_std_key in stats:
+            means_t = stats[timestep_mean_key]  # (T_flat, C+1)
+            stds_t = stats[timestep_std_key]    # (T_flat, C+1)
+            Tflat, total_cols_t = means_t.shape
+            num_channels_t = total_cols_t - 1
+            channel_legends_t = list(output_channel_names) if num_channels_t == len(output_channel_names) else [f"ch_{i}" for i in range(num_channels_t)]
+            #starts from index 0 so if input_steps=4: 0,1,2,3 then x_t starts from 4
+            x_t = (input_steps - 1 + np.arange(1, Tflat + 1))*stride
+
+            for c in range(num_channels_t):
+                m = means_t[:, c]
+                s = stds_t[:, c]
+                line, = ax_timestep.plot(x_t, m, label=channel_legends_t[c], linewidth=1.5, alpha=0.95)
+                ax_timestep.scatter(x_t, m, s=18, color=line.get_color(), edgecolors="none", zorder=3)
+                ax_timestep.fill_between(x_t, m - s, m + s, color=line.get_color(), alpha=0.15)
+            
+            m_overall_t = means_t[:, -1]
+            s_overall_t = stds_t[:, -1]
+            ax_timestep.plot(x_t, m_overall_t, label=overall_label, linewidth=2.0, color="black")
+            ax_timestep.scatter(x_t, m_overall_t, s=24, color="black", edgecolors="none", zorder=3)
+            ax_timestep.fill_between(x_t, m_overall_t - s_overall_t, m_overall_t + s_overall_t, color="black", alpha=0.12)
+            # Ensure uniform x-ticks at 'stride' between x_t[0] and x_t[-1], and also include 0
+            try:
+                xmin, xmax = ax_timestep.get_xlim()
+                if xmin > 0:
+                    ax_timestep.set_xlim(left=0)
+                if len(x_t) > 0:
+                    start_tick = float(x_t[0])
+                    end_tick = float(x_t[-1])
+                    step = float(stride) if float(stride) > 0 else max(1.0, end_tick - start_tick)
+                    uniform_ticks = np.arange(start_tick, end_tick + 0.5 * step, step)
+                    ticks_with_zero = np.unique(np.append(uniform_ticks, 0.0))
+                    ax_timestep.set_xticks(ticks_with_zero)
+            except Exception:
+                pass
+            ax_timestep.set_xlabel("time step")
+            ax_timestep.set_ylabel(metric_name)
+            ax_timestep.grid(True, linestyle=":", alpha=0.6)
+            ax_timestep.legend(fontsize=8, ncols=min(4, num_channels_t + 1))
+        else:
+            ax_timestep.text(0.5, 0.5, f"No timestep metrics for '{metric_name}'", ha="center", va="center")
+            ax_timestep.axis("off")
 
     if title:
-        fig.suptitle(title, fontsize=14)
+        title_str = title
+        if sequence_info is not None:
+            title_str = f"{title}\nsequence_info={sequence_info}"
+        fig.suptitle(title_str, fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, 0.98))
 
     out_path = os.path.join(save_dir, filename)
@@ -956,3 +987,164 @@ def build_info_strings(**kwargs) -> Tuple[str, str, str, str]:
         sched_info_str = None
 
     return model_info_str, data_info_str, train_info_str, sched_info_str
+
+
+def plot_multi_run_rollout_metrics(
+    runs_step_metrics: dict,
+    save_dir: str,
+    title: str | None = None,
+    filename: str = "all_runs_rollout_timestep_metrics.png",
+    sequence_info: list[int] | tuple[int, int, int] | None = None,
+    runs_sequence_info: dict | None = None,
+) -> None:
+    """Overlay per-metric rollout and timestep curves from multiple runs in one figure.
+
+    Parameters
+    ----------
+    runs_step_metrics : dict[str, dict]
+        Mapping from run label to the per-run step_metrics dict returned by
+        `compute_metrics_for_n_rollouts(..., include_per_timestep=True)`.
+    save_dir : str
+        Directory to save the figure.
+    title : Optional[str]
+        Figure title.
+    filename : str
+        Output filename.
+    sequence_info : List[int] | Tuple[int, int, int] | None
+        Default sequence configuration [input_steps, output_steps, stride] used when a run
+        does not supply its own configuration.
+    runs_sequence_info : Optional[dict[str, list[int] | tuple[int, int, int]]]
+        Optional mapping from run label to its sequence configuration; when provided,
+        each run's timestep x-axis is computed using its own configuration.
+    """
+    os.makedirs(save_dir, exist_ok=True)
+
+    if not runs_step_metrics:
+        return
+
+    # Collect union of metric names across runs
+    metric_names: set[str] = set()
+    for run_metrics in runs_step_metrics.values():
+        metric_names.update(run_metrics.keys())
+    metric_names = sorted(metric_names)
+
+    # Prepare figure with two columns (rollout | timestep)
+    num_metrics = len(metric_names)
+    if num_metrics == 0:
+        return
+
+    fig, axes = plt.subplots(num_metrics, 2, figsize=(14, max(3 * num_metrics, 4)), squeeze=False)
+
+    # Column titles
+    axes[0, 0].set_title("Rollout step metrics", fontsize=12)
+    axes[0, 1].set_title("Timestep metrics", fontsize=12)
+
+    # Default x-axis scaling for timesteps (used if a run-specific value is absent)
+    default_input_steps = sequence_info[0] if sequence_info is not None else 1
+    default_stride = sequence_info[2] if sequence_info is not None else 1
+
+    # Track one handle per run for a global legend
+    run_label_to_handle: dict[str, any] = {}
+
+    for row_idx, metric_name in enumerate(metric_names):
+        ax_rollout = axes[row_idx, 0]
+        ax_timestep = axes[row_idx, 1]
+
+        # Keys expected in per-run stats (use per_step keys by default)
+        rollout_mean_key = "per_rollout_step_mean"
+        rollout_std_key = "per_rollout_step_std"
+        timestep_mean_key = "per_timestep_mean"
+        timestep_std_key = "per_timestep_std"
+
+        # Plot each run's overall curve with its std band
+        # Collect required x-ticks (each run's first/last x_t)
+        timestep_ticks: set[float] = set()
+
+        for run_label, run_metrics in runs_step_metrics.items():
+            if metric_name not in run_metrics:
+                continue
+            stats = run_metrics[metric_name]
+
+            # Left: rollout step overlay
+            if rollout_mean_key in stats and rollout_std_key in stats:
+                means_r = stats[rollout_mean_key]  # (R, C+1)
+                stds_r = stats[rollout_std_key]    # (R, C+1)
+                R = means_r.shape[0]
+                x_r = np.arange(1, R + 1)
+                m_overall_r = means_r[:, -1]
+                s_overall_r = stds_r[:, -1]
+                line, = ax_rollout.plot(x_r, m_overall_r, label=run_label, linewidth=2.0)
+                ax_rollout.fill_between(x_r, m_overall_r - s_overall_r, m_overall_r + s_overall_r, color=line.get_color(), alpha=0.15)
+                # Capture a handle for the global legend if not set yet
+                if run_label not in run_label_to_handle:
+                    run_label_to_handle[run_label] = line
+
+            # Right: timestep overlay
+            if timestep_mean_key in stats and timestep_std_key in stats:
+                means_t = stats[timestep_mean_key]  # (T_flat, C+1)
+                stds_t = stats[timestep_std_key]    # (T_flat, C+1)
+                Tflat = means_t.shape[0]
+                # Determine per-run sequence info for x-axis
+                if runs_sequence_info is not None and run_label in runs_sequence_info and runs_sequence_info[run_label] is not None:
+                    run_si = runs_sequence_info[run_label]
+                    run_input_steps = int(run_si[0]) if len(run_si) > 0 else default_input_steps
+                    run_stride = int(run_si[2]) if len(run_si) > 2 else default_stride
+                else:
+                    run_input_steps = default_input_steps
+                    run_stride = default_stride
+                # starts from index 0 so if input_steps=4: 0,1,2,3 then x_t starts from 4
+                x_t = (run_input_steps - 1 + np.arange(1, Tflat + 1)) * run_stride
+                m_overall_t = means_t[:, -1]
+                s_overall_t = stds_t[:, -1]
+                line, = ax_timestep.plot(x_t, m_overall_t, label=run_label, linewidth=2.0)
+                ax_timestep.fill_between(x_t, m_overall_t - s_overall_t, m_overall_t + s_overall_t, color=line.get_color(), alpha=0.15)
+                # Required ticks: include each run's first and last x_t
+                if x_t.size > 0:
+                    timestep_ticks.add(float(x_t[0]))
+                    timestep_ticks.add(float(x_t[-1]))
+                # Capture a handle for the global legend if not already captured from rollout panel
+                if run_label not in run_label_to_handle:
+                    run_label_to_handle[run_label] = line
+
+        # Common styling per row
+        ax_rollout.set_xlabel("rollout step")
+        ax_rollout.set_ylabel(metric_name)
+        ax_rollout.grid(True, linestyle=":", alpha=0.6)
+        # No per-axes legend; use a single global legend instead
+
+        ax_timestep.set_xlabel("time step")
+        ax_timestep.set_ylabel(metric_name)
+        ax_timestep.grid(True, linestyle=":", alpha=0.6)
+        # Apply required timestep ticks (union of first/last for all runs in this row)
+        if len(timestep_ticks) > 0:
+            try:
+                sorted_ticks = sorted(timestep_ticks)
+                ax_timestep.set_xticks(sorted_ticks)
+            except Exception:
+                pass
+
+    if title:
+        title_str = title
+        # if sequence_info is not None:
+        #     title_str = f"{title}\nsequence_info={sequence_info}"
+        fig.suptitle(title_str, fontsize=14)
+
+    # Global legend at the bottom for all runs
+    if len(run_label_to_handle) > 0:
+        try:
+            fig.legend(
+                handles=list(run_label_to_handle.values()),
+                labels=list(run_label_to_handle.keys()),
+                loc="lower center",
+                ncol=min(6, max(1, len(run_label_to_handle))),
+                frameon=False,
+            )
+        except Exception:
+            pass
+
+    # Leave space at bottom for the global legend
+    fig.tight_layout(rect=(0, 0.06, 1, 0.98))
+
+    out_path = os.path.join(save_dir, filename)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)

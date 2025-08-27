@@ -70,7 +70,7 @@ def run(cfg):
         # ------------------------------------------------------------------
         # Testing 
         # ------------------------------------------------------------------
-        load_best_model_at_end=cfg["infer_config"]["load_best_model_at_end"], # enable when save & eval strategy align
+        load_best_model_at_end=True, # Ensure that the save & eval strategy align
         # ------------------------------------------------------------------
         # Batching
         # ------------------------------------------------------------------
@@ -239,7 +239,7 @@ def run(cfg):
             trainer.push_to_hub()
         
         # ------------------------------------------------------------------
-        # Inference
+        # Inference (Continued after training)
         # ------------------------------------------------------------------
         
         if cfg["infer_config"]["do_infer"]:
@@ -305,20 +305,18 @@ def run(cfg):
                 # Infer spatial dimensionality (1D / 2D / 3D)
                 ndim = pred_renorm.ndim - 3  # subtract batch, time, channel dims
 
-                # Use stride from the config if available
+                seq_info = cfg["data_config"].get("sequence_info", [1, 1, 1])
+
                 stride_val = cfg["data_config"].get("sequence_info", [1, 1, 1])[2]
 
-                # Directory for saving inference plots
                 plot_save_dir = os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots/random_start")
 
-                # Build formatted info strings
                 model_info_str, data_info_str, train_info_str, sched_info_str = build_info_strings(model_obj=trainer.model, 
                                                                                                     data_config=cfg["data_config"],
                                                                                                     model_config=cfg["model_config"],
                                                                                                     train_config=cfg["train_config"],
                                                                                                     scheduler_config=cfg["scheduler_config"]
-                                                                                                    )
-
+                                                                         )
                 # Create rollout sample plots 
                 plot_examples(
                     input_array=inp_renorm,
@@ -336,7 +334,7 @@ def run(cfg):
                     stride=stride_val,
                     save_dir=plot_save_dir,
                     log_to_wandb=False,
-                    is_best_metric=False,
+                    best_plot_at_train_end=False,
                     model_info=model_info_str,
                     data_info=data_info_str,
                     train_info=train_info_str,
@@ -354,13 +352,6 @@ def run(cfg):
                 predictions_obj, inputs, conditioning_inputs = trainer.predict(infer_ds_from_ic, metric_key_prefix="")
 
                 preds = predictions_obj.predictions
-
-                # # Flatten rollout and label sequence dimensions if necessary
-                # if preds.ndim >= 5:
-                #     n, n_rollouts, seq_len, c = preds.shape[:4]
-                #     extra_dims = preds.shape[4:]
-                #     preds = preds.reshape(n, n_rollouts * seq_len, c, *extra_dims)
-
                 targets = predictions_obj.label_ids
                 inp_arr = inputs
                 cond_inp_arr = conditioning_inputs if conditioning_inputs is not None else None
@@ -414,6 +405,7 @@ def run(cfg):
                     save_dir=plot_save_dir,
                     title=f"Per-rollout step metric(s) ({cfg['data_config'].get('dataset_name', 'dataset')} - IC start)",
                     filename="rollout_metrics.png",
+                    sequence_info=seq_info,
                 )
 
                 model_info_str, data_info_str, train_info_str, sched_info_str = build_info_strings(
@@ -441,7 +433,7 @@ def run(cfg):
                     stride=stride_val,
                     save_dir=plot_save_dir,
                     log_to_wandb=False,
-                    is_best_metric=False,
+                    best_plot_at_train_end=False,
                     model_info=model_info_str,
                     data_info=data_info_str,
                     train_info=train_info_str,
