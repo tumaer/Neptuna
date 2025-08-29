@@ -50,6 +50,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import imageio.v2 as imageio
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection  # for isometric rendering
+from matplotlib.ticker import ScalarFormatter
 
 try:
     from skimage.measure import marching_cubes
@@ -175,8 +176,8 @@ def parse_args():
     )
     parser.add_argument(
         "--cmap",
-        default="viridis",
-        help='Colour-map for scalar fields; velocity channels use "coolwarm"',
+        default="coolwarm",
+        help="Colormap to use for all fields (default: 'coolwarm')",
     )
     parser.add_argument(
         "--seed",
@@ -400,7 +401,7 @@ def plot_timestep(
     nrows = int(np.ceil(n_plots / ncols))
 
     fig, axes = plt.subplots(
-        nrows, ncols, figsize=(4 * ncols, 4 * nrows), squeeze=False
+        nrows, ncols, figsize=(6 * ncols, 6 * nrows), squeeze=False
     )
     axes_iter = iter(axes.flat)
     plot_counter = 0  # keep track of subplot index for potential 3-D axes
@@ -435,13 +436,7 @@ def plot_timestep(
                 ax = fig.add_subplot(nrows, ncols, plot_counter, projection="3d")
                 # Use marching cubes if available, else fallback to voxel plot
                 try:
-                    cmap_sel = (
-                        "coolwarm"
-                        if dset_name.lower().startswith("velocity")
-                        or (n_ch >= 2 and dset_name.lower().startswith("vel"))
-                        else cmap_scalar
-                    )
-                    cmap_obj = plt.get_cmap(cmap_sel)
+                    cmap_obj = plt.get_cmap(cmap_scalar)
                     vmin, vmax = float(img.min()), float(img.max())
 
                     if marching_cubes is not None:
@@ -510,7 +505,9 @@ def plot_timestep(
                         cmap=cmap_obj, norm=plt.Normalize(vmin=vmin, vmax=vmax)
                     )
                     sm.set_array([])
-                    fig.colorbar(sm, ax=ax, shrink=0.7)
+                    cb = fig.colorbar(sm, ax=ax, shrink=0.7)
+                    cb.formatter = ScalarFormatter(useOffset=False, useMathText=True)
+                    cb.update_ticks()
                 except Exception as e:
                     ax.text(0.5, 0.5, 0.5, f"ISO err: {e}", ha="center")
                 im_data = None  # nothing for 2-D processing further
@@ -528,12 +525,7 @@ def plot_timestep(
 
             if im_data is not None and im_data.ndim == 2:
                 # 2D field -> image
-                if dset_name.lower().startswith("velocity") or (
-                    n_ch >= 2 and dset_name.lower().startswith("vel")
-                ):
-                    im = ax.imshow(im_data, cmap="coolwarm", origin="lower")
-                else:
-                    im = ax.imshow(im_data, cmap=cmap_scalar, origin="lower")
+                im = ax.imshow(im_data, cmap=cmap_scalar, origin="lower")
 
                 # ------------------------------------------------------------------
                 # Show resolution ticks (axes) – x/y in pixel coordinates
@@ -555,7 +547,9 @@ def plot_timestep(
                 #ax.set_xlabel("X")
                 #ax.set_ylabel("Y")
 
-                fig.colorbar(im, ax=ax, shrink=0.7)
+                cb = fig.colorbar(im, ax=ax, shrink=0.7)
+                cb.formatter = ScalarFormatter(useOffset=False, useMathText=True)
+                cb.update_ticks()
             elif im_data is not None and im_data.ndim == 1:
                 ax.plot(im_data)
             else:
@@ -597,9 +591,10 @@ def plot_timestep(
     proj_descr = (
         f"{volume_proj}" if volume_proj != "slice" else f"slice {title_vars['slice']}"
     )
-    fig.text(0.5, 0.92, proj_descr, ha="center", va="top", fontsize=10, style="italic")
+    fig.text(0.5, 0.90, proj_descr, ha="center", va="top", fontsize=10, style="italic")
 
-    plt.tight_layout()
+    # Make room for the suptitle and projection description and add horizontal margins
+    fig.subplots_adjust(left=0.06, right=0.94, top=0.86, bottom=0.06)
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
 
