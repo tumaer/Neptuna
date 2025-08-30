@@ -6,7 +6,7 @@ dimension: 2
 grid_resolution: null
 eval_groups: null
 is_steady_state_prediction: False 
-sequence_info: [1, 1, 10]
+sequence_info: [1, 1, 5]
 # Available channels for Aerobreakup: ["Density", "Pressure", "Schlieren", "Velocity_X", "Velocity_Y", "Vorticity"]
 filter_features:
   train_filter_frames: null
@@ -27,35 +27,35 @@ residual_config: null
   # add_predicted_value_with_raw_loss: False
 coord_features: True
 data_normalization_strategy: z_normalization
-#NOTE: Statistics are according to sequence_stride = 10
+#NOTE: Statistics are according to sequence_stride = 5
 data_normalization_stats:
   Density:
-    mean: 83.08188291821756
-    std: 269.13974378989326
+    mean: 83.33162437995082
+    std: 269.420102937082
     min: 0.4107901177015075
-    max: 1002.9563369127018
+    max: 1004.1108081220093
   Pressure:
-    mean: 571639.4458159533
-    std: 601926.8398557565
+    mean: 592008.2094240573
+    std: 605112.7013391693
     min: -4350961.485024929
-    max: 6441141.148584604
+    max: 8856365.6638062
   Schlieren:
-    mean: 373326.57327680656
-    std: 3627867.6884807292
+    mean: 371672.7765653216
+    std: 3620035.2535395394
     min: 0.0
     max: 55955355.28965796
   Velocity_X:
-    mean: -3.7592636966383752
-    std: 88.28302044275172
-    min: -559.9370169283507
+    mean: -3.6010844316246753
+    std: 88.62828894297455
+    min: -561.2317582929994
     max: 780.3227694469102
   Velocity_Y:
-    mean: 308.24901030139006
-    std: 344.37925203194527
+    mean: 321.6043573946111
+    std: 344.0918270179068
     min: -999.8758150190431
     max: 1695.5617260034319
   Vorticity:
-    mean: 393382.6123027885
-    std: 1516421.7312119373
+    mean: 402167.6854025066
+    std: 1550129.5940915134
     min: 0.0
-    max: 44510759.31314768
+    max: 45238240.011306755
