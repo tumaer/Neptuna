@@ -5,5 +5,5 @@ filter_features:
   infer_filter_groups: null
 n_infer_rollouts: 9
 n_infer_plot_examples: 2
-infer_from_random_timestep: False
+infer_from_random_timestep: True
 infer_from_ic: True
