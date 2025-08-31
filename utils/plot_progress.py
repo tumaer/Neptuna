@@ -236,7 +236,9 @@ def _plot_data(ax, data, ndim, ch_names=None, vmin_arr=None, vmax_arr=None):
     elif ndim == 2:
         # Determine if the domain is square or rectangular
         h, w = data[0].shape
-        aspect = 'equal' if h == w else 'auto'
+        is_rectangular = (h != w)
+        # Use 'auto' for rectangular images to reduce whitespace; keep 'equal' for square
+        aspect = 'auto' if is_rectangular else 'equal'
         
         # Guard against invalid vmin/vmax lengths
         use_vlims = vmin_arr is not None and vmax_arr is not None and len(vmin_arr) >= C and len(vmax_arr) >= C
@@ -254,14 +256,21 @@ def _plot_data(ax, data, ndim, ch_names=None, vmin_arr=None, vmax_arr=None):
         
         if C == 1:
             im = ax.imshow(data[0], cmap="coolwarm", aspect=aspect, origin='lower', **_safe_vlims(0))
+            # Keep adjustable box only for square plots where aspect is 'equal'
+            if not is_rectangular:
+                ax.set_adjustable('box')
             ax.set_title(ch_names[0], fontsize=8)
-            # Increase the padding so the horizontal colorbar does not overlap the image grid.
-            cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.12, orientation='horizontal', location='bottom')
+            # Hide x-axis tick labels to avoid overlap with horizontal colorbar
+            ax.tick_params(axis='x', labelbottom=False)
+            # Increase the padding for rectangular subplots to prevent overlap with axis tick labels.
+            cbar_pad = 0.27 if is_rectangular else 0.12
+            cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=cbar_pad, orientation='horizontal', location='bottom')
             cbar.ax.tick_params(labelsize=12)
             cbar.formatter.set_scientific(True)
             cbar.formatter.set_powerlimits((0, 0))
             cbar.formatter.set_useMathText(True)  # Use math text for consistent font
-            cbar.ax.xaxis.offsetText.set_y(-1.0)  # Move the offset text further down
+            offset_y = -1.2 if is_rectangular else -1.0
+            cbar.ax.xaxis.offsetText.set_y(offset_y)  # Move the offset text further down
             cbar.ax.xaxis.offsetText.set_fontsize(14)  # Match the tick label font size
             cbar.update_ticks()
         else:
@@ -273,14 +282,20 @@ def _plot_data(ax, data, ndim, ch_names=None, vmin_arr=None, vmax_arr=None):
             for c in range(C):
                 sub_ax = fig.add_subplot(gs[0, c])
                 im = sub_ax.imshow(data[c], cmap="coolwarm", aspect=aspect, origin='lower', **_safe_vlims(c))
+                if not is_rectangular:
+                    sub_ax.set_adjustable('box')
                 sub_ax.set_title(ch_names[c], fontsize=8)
-                # Increase the padding so the horizontal colorbar does not overlap the image grid.
-                cbar = fig.colorbar(im, ax=sub_ax, fraction=0.046, pad=0.12, orientation='horizontal', location='bottom')
+                # Hide x-axis tick labels to avoid overlap with horizontal colorbar
+                sub_ax.tick_params(axis='x', labelbottom=False)
+                # Increase the padding for rectangular subplots to prevent overlap with axis tick labels.
+                cbar_pad = 0.29 if is_rectangular else 0.12
+                cbar = fig.colorbar(im, ax=sub_ax, fraction=0.046, pad=cbar_pad, orientation='horizontal', location='bottom')
                 cbar.ax.tick_params(labelsize=12)
                 cbar.formatter.set_scientific(True)
                 cbar.formatter.set_powerlimits((0, 0))
                 cbar.formatter.set_useMathText(True)  # Use math text for consistent font
-                cbar.ax.xaxis.offsetText.set_y(-1.0)  # Move the offset text further down
+                offset_y = -1.2 if is_rectangular else -1.0
+                cbar.ax.xaxis.offsetText.set_y(offset_y)  # Move the offset text further down
                 cbar.ax.xaxis.offsetText.set_fontsize(14)  # Match the tick label font size
                 cbar.update_ticks()
                 sub_axes.append(sub_ax)
@@ -480,21 +495,31 @@ def plot_examples(
                 current_pos += width
 
             # Layout tuning parameters
-            header_ratio = 0.15  # Height allocated for column titles
-            time_label_ratio = 0.5  # Height for time label row
-            footer_ratio = 4.0   # Further increase footer height for more space under time labels
+            dims_ratio = 0.8      # Reserved height for dims/info text row (new, to avoid overlaps)
+            header_ratio = 0.15   # Height allocated for column titles
+            time_label_ratio = 0.5 # Base height for time label row
+            spacer_ratio = 0.2    # Spacer row ratio between time labels and footer (reduced)
+            footer_ratio = 4.0    # Base footer height for more space under time labels
+
+            # Determine rectangular 2D status upfront for spacing tweaks
+            is_rectangular2d = False
+            if ndim == 2 and len(spatial_shape) >= 2:
+                H, W = spatial_shape[:2]
+                is_rectangular2d = (H != W)
 
             # Padding between individual plot and its xlabel (time indicator). 
             # If this padding is too large, the xlabel from one subplot can overlap the
             # axes of the subplot in the row below.  Use a smaller value for 2-D plots
             # (which typically have less vertical space per row) and a moderate value
             # for 1-D plots.
-            x_label_pad = 40 if ndim == 2 else 30
+            x_label_pad = (55 if is_rectangular2d else 40) if ndim == 2 else 30
 
             # Reduce horizontal spacing so each subplot takes up more space within its
             # column, effectively making the plots ~50 % larger without increasing the
             # overall figure size.
-            main_wspace = 0.3
+            main_wspace = 0.5
+            # Increase vertical spacing between rows for rectangular plots to make room for xlabels
+            main_hspace = 0.6 if is_rectangular2d else 0.4
             
             # Adjust figure width based on total content
             base_width_per_unit = 4.0 if ndim == 2 else 5.0
@@ -502,22 +527,30 @@ def plot_examples(
 
             # For ndim=2, make plot cells match data aspect ratio by adjusting figure height.
             # The height of a plot row (where height_ratio=1) should equal the width of a grid cell, scaled by the data's aspect ratio.
-            # The total height in ratio units is header_ratio + nrows*1 (plots) + footer_ratio.
+            # IMPORTANT: Account for all grid rows (dims + header + plot rows + time label + footer) when computing total height.
             if ndim == 2:
-                H, W = spatial_shape
                 data_aspect_ratio = H / W
-                # We want the height for a ratio of 1.0 to be `base_width_per_unit * data_aspect_ratio`.
-                # So, total height = (total_ratio_units) * (height_of_one_ratio_unit).
-                cell_height = base_width_per_unit * data_aspect_ratio
-                fig_height = (nrows + header_ratio + footer_ratio) * cell_height
+                # For rectangular domains, set height to half the current length (width): height/width = 0.5
+                # For square domains, keep proportional to H/W (i.e., 1.0)
+                target_height_scale = 0.5 if (H != W) else data_aspect_ratio
+                # Height of one ratio unit (i.e., one plot row) in inches
+                cell_height = base_width_per_unit * target_height_scale
+                # Enforce a minimum cell height to prevent text overlaps
+                min_cell_height = 1.2  # inches
+                cell_height = max(cell_height, min_cell_height)
+                total_ratio_units = dims_ratio + header_ratio + nrows + time_label_ratio + footer_ratio
+                fig_height = total_ratio_units * cell_height
+                # Ensure overall figure height grows proportionally with current length (width) for rectangular domains
+                if is_rectangular2d:
+                    fig_height = max(fig_height, fig_width * data_aspect_ratio)
             else:  # Original calculation for 1D plots which can be non-square
-                fig_height = (nrows + header_ratio + footer_ratio + 1.3) * 3.5  # extra offset for titles
+                fig_height = (dims_ratio + header_ratio + nrows + time_label_ratio + footer_ratio + 1.3 + 0.6) * 3.5  # extra offset for titles
             
             fig = plt.figure(figsize=(fig_width, fig_height))
 
             # Add main title
-            # Adjust y-position to be relative to the new figure height calculation
-            suptitle_y_pos = 1 - (0.10 / (nrows + header_ratio + footer_ratio)) if ndim == 2 else 0.965
+            # Place at a constant relative position; dedicated dims row avoids collisions
+            suptitle_y_pos = 0.98
             # --------------------------------------------------------------
             # Title logic: include Checkpoint/Epoch only for validation plots
             # --------------------------------------------------------------
@@ -547,7 +580,7 @@ def plot_examples(
                 weight='bold'
             )
             
-            # Add dimensions info as subtitle, positioned farther below the suptitle to avoid overlap.
+            # Build dimensions/info text to render inside a dedicated top row in the GridSpec
             dims_text = (
                 f"Additional Info: Total number of examples={N}, Spatial_res={spatial_shape}, "
                 f"# Input_frames={T_in}, # Input_channels={C}, # Prediction_frames={T_pred}, "
@@ -558,10 +591,6 @@ def plot_examples(
             if model_info is not None:
                 summary_line = model_info.split("\n")[0]  # e.g. "FNO | Params: 12.3M"
                 dims_text += "\n" + summary_line
-
-            # Increase spacing below the suptitle so dims_text never collides with it.
-            text_y_pos = suptitle_y_pos - (0.06 if ndim == 2 else 0.06)
-            fig.text(0.5, text_y_pos, dims_text, ha='center', va='center', fontsize=22)
 
             # --------------------------------------------------------------
             # Footer: detailed model & data configuration (indented bullets)
@@ -587,67 +616,77 @@ def plot_examples(
                 #indented_sched = "\n".join(["    " + ln for ln in scheduler_info.split("\n")])
                 footer_lines.append("SCHEDULER CONFIG:\n" + scheduler_info + "\n")
 
-            # Create gridspec with variable column widths and specific height ratios
-            # The hspace and wspace from the old plt.subplots_adjust are used here.
-            # Anchor the top of the gridspec to be just below the dims_text for consistent spacing.
-            gs = gridspec.GridSpec(nrows + 3, total_grid_cols,
-                                figure=fig,
-                                top=text_y_pos - 0.02,
-                                height_ratios=[header_ratio] + [1] * nrows + [time_label_ratio, footer_ratio],
-                                hspace=0.4, wspace=main_wspace)
+            # Create GridSpec with variable column widths and specific height ratios
+            # New: include a dedicated dims row at the top to avoid overlapping with plots
+            # For rectangular 2D plots, allocate extra space for time labels and footer
+            time_label_ratio_eff = (time_label_ratio + 0.3) if is_rectangular2d else time_label_ratio
+            spacer_ratio_eff = (spacer_ratio + 0.3) if is_rectangular2d else spacer_ratio
+            footer_ratio_eff = (footer_ratio + 1.8) if is_rectangular2d else footer_ratio
+            gs = gridspec.GridSpec(
+                nrows + 5,
+                total_grid_cols,
+                figure=fig,
+                top=0.94,
+                height_ratios=[dims_ratio, header_ratio] + [1] * nrows + [time_label_ratio_eff, spacer_ratio_eff, footer_ratio_eff],
+                hspace=main_hspace,
+                wspace=main_wspace,
+            )
+
+            # Add dims/info text row at the very top
+            dims_ax = fig.add_subplot(gs[0, :])
+            dims_ax.axis('off')
+            dims_ax.text(0.5, 0.8, dims_text, ha='center', va='center', fontsize=22)
 
             # Add column titles at the top
             for col_idx, (start_col, end_col) in enumerate(col_positions):
-                title_ax = fig.add_subplot(gs[0, start_col:end_col])
+                title_ax = fig.add_subplot(gs[1, start_col:end_col])
                 title_ax.axis('off')
                 title_ax.text(0.5, 0.5, column_titles[col_idx], ha='center', va='center', fontsize=14, weight='bold')
 
             # Add time labels at the bottom  
             for col_idx, (start_col, end_col) in enumerate(col_positions):
-                time_ax = fig.add_subplot(gs[-2, start_col:end_col])
+                # Time labels now occupy the third-from-last row (because we added a spacer row)
+                time_ax = fig.add_subplot(gs[-3, start_col:end_col])
                 time_ax.axis('off')
+                time_y = 0.62 if is_rectangular2d else 0.45
                 if col_idx == 0:  # Input column
                     time_label = f"t - {stride * (T_in - 1)} to t"
                 elif has_conditioning and col_idx == 1:  # Conditioning column
                     time_label = f"t - {stride * (T_in - 1)} to t"
                 else:  # Other columns (prediction, target, errors)
                     time_label = f"t + {stride} to t + {stride * T_pred}"
-                time_ax.text(0.5, 0.5, time_label, ha='center', va='center', fontsize=25)
+                time_fs = 22 if is_rectangular2d else 25
+                time_ax.text(0.5, time_y, time_label, ha='center', va='center', fontsize=time_fs)
 
             plot_time_fontsize = 20  # Font size for per-plot time labels
 
             for row in range(nrows):
-                row_offset = row + 1
+                # +2 offset to account for [dims row, header row] at the top of the GridSpec
+                row_offset = row + 2
 
                 # Column 0: Input
                 start_col, end_col = col_positions[0]
                 if row < T_in:
-                    time_val = "t" if row == T_in - 1 else f"t - {stride * (T_in - 1 - row)}"
                     input_ax = fig.add_subplot(gs[row_offset, start_col:end_col])
                     axes_to_label = _plot_data(input_ax, inp[row], ndim, only_input_channel_names, vmins, vmaxs)
                     if isinstance(axes_to_label, list):  # Multi-channel 2D case
-                        # Add time label only to the middle channel
+                        # Ensure bottom ticks are shown without adding per-plot time labels
                         mid_channel = len(axes_to_label) // 2
-                        axes_to_label[mid_channel].set_xlabel(time_val, fontsize=plot_time_fontsize, labelpad=x_label_pad)
                         axes_to_label[mid_channel].tick_params(labelbottom=True)
                     else:  # Single channel or 1D case
-                        input_ax.set_xlabel(time_val, fontsize=plot_time_fontsize, labelpad=x_label_pad)
                         input_ax.tick_params(labelbottom=True)
 
                 # Column 1: Conditioning (if present)
                 if has_conditioning:
                     start_col, end_col = col_positions[1]
                     if row < T_in:
-                        time_val = "t" if row == T_in - 1 else f"t - {stride * (T_in - 1 - row)}"
                         cond_inp = conditioning_input_array[idx]  # [T_in, C_cond, ...]
                         cond_ax = fig.add_subplot(gs[row_offset, start_col:end_col])
                         axes_to_label = _plot_data(cond_ax, cond_inp[row], ndim, conditioning_input_channel_names)
                         if isinstance(axes_to_label, list):  # Multi-channel 2D case
                             mid_channel = len(axes_to_label) // 2
-                            axes_to_label[mid_channel].set_xlabel(time_val, fontsize=plot_time_fontsize, labelpad=x_label_pad)
                             axes_to_label[mid_channel].tick_params(labelbottom=True)
                         else:  # Single channel or 1D case
-                            cond_ax.set_xlabel(time_val, fontsize=plot_time_fontsize, labelpad=x_label_pad)
                             cond_ax.tick_params(labelbottom=True)
 
                 # Determine column indices for remaining plots
@@ -659,61 +698,45 @@ def plot_examples(
                 # Prediction column
                 start_col, end_col = col_positions[pred_col_idx]
                 if row < T_pred:
-                    time_val = f"t + {stride * (row + 1)}"
                     pred_ax = fig.add_subplot(gs[row_offset, start_col:end_col])
                     axes_to_label = _plot_data(pred_ax, pred[row], ndim, output_channel_names, vmins, vmaxs)
                     if isinstance(axes_to_label, list):  # Multi-channel 2D case
-                        # Add time label only to the middle channel
                         mid_channel = len(axes_to_label) // 2
-                        axes_to_label[mid_channel].set_xlabel(time_val, fontsize=plot_time_fontsize, labelpad=x_label_pad)
                         axes_to_label[mid_channel].tick_params(labelbottom=True)
                     else:  # Single channel or 1D case
-                        pred_ax.set_xlabel(time_val, fontsize=plot_time_fontsize, labelpad=x_label_pad)
                         pred_ax.tick_params(labelbottom=True)
 
                 # Target column
                 start_col, end_col = col_positions[target_col_idx]
                 if row < T_pred:
-                    time_val = f"t + {stride * (row + 1)}"
                     target_ax = fig.add_subplot(gs[row_offset, start_col:end_col])
                     axes_to_label = _plot_data(target_ax, tgt[row], ndim, output_channel_names, vmins, vmaxs)
                     if isinstance(axes_to_label, list):  # Multi-channel 2D case
-                        # Add time label only to the middle channel
                         mid_channel = len(axes_to_label) // 2
-                        axes_to_label[mid_channel].set_xlabel(time_val, fontsize=plot_time_fontsize, labelpad=x_label_pad)
                         axes_to_label[mid_channel].tick_params(labelbottom=True)
                     else:  # Single channel or 1D case
-                        target_ax.set_xlabel(time_val, fontsize=plot_time_fontsize, labelpad=x_label_pad)
                         target_ax.tick_params(labelbottom=True)
 
                 # Abs Error column
                 start_col, end_col = col_positions[abs_err_col_idx]
                 if row < T_pred:
-                    time_val = f"t + {stride * (row + 1)}"
                     abs_err_ax = fig.add_subplot(gs[row_offset, start_col:end_col])
                     axes_to_label = _plot_data(abs_err_ax, abs_err[row], ndim, output_channel_names)
                     if isinstance(axes_to_label, list):  # Multi-channel 2D case
-                        # Add time label only to the middle channel
                         mid_channel = len(axes_to_label) // 2
-                        axes_to_label[mid_channel].set_xlabel(time_val, fontsize=plot_time_fontsize, labelpad=x_label_pad)
                         axes_to_label[mid_channel].tick_params(labelbottom=True)
                     else:  # Single channel or 1D case
-                        abs_err_ax.set_xlabel(time_val, fontsize=plot_time_fontsize, labelpad=x_label_pad)
                         abs_err_ax.tick_params(labelbottom=True)
 
                 # Rel Error column
                 start_col, end_col = col_positions[rel_err_col_idx]
                 if row < T_pred:
-                    time_val = f"t + {stride * (row + 1)}"
                     rel_err_ax = fig.add_subplot(gs[row_offset, start_col:end_col])
                     axes_to_label = _plot_data(rel_err_ax, rel_err[row], ndim, output_channel_names)
                     if isinstance(axes_to_label, list):  # Multi-channel 2D case
-                        # Add time label only to the middle channel
                         mid_channel = len(axes_to_label) // 2
-                        axes_to_label[mid_channel].set_xlabel(time_val, fontsize=plot_time_fontsize, labelpad=x_label_pad)
                         axes_to_label[mid_channel].tick_params(labelbottom=True)
                     else:  # Single channel or 1D case
-                        rel_err_ax.set_xlabel(time_val, fontsize=plot_time_fontsize, labelpad=x_label_pad)
                         rel_err_ax.tick_params(labelbottom=True)
 
             # --------------------------------------------------------------
@@ -723,16 +746,8 @@ def plot_examples(
                 footer_text = "\n".join(footer_lines)
                 footer_ax = fig.add_subplot(gs[-1, :])
                 footer_ax.axis('off')
-                
-                footer_ax.text(
-                    -0.10,
-                    -0.25,
-                    footer_text,
-                    ha="left",
-                    va="bottom",
-                    fontsize=20,
-                    wrap=True
-                )
+                # Place footer text at top-left within the footer axes to maximize clearance
+                footer_ax.text(0.0, 0.98, footer_text, ha='left', va='top', fontsize=20, wrap=True)
 
             # --------------------------------------------------------------
             # Saving behaviour
