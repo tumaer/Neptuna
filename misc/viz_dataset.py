@@ -13,24 +13,35 @@ Key Features:
 - Flexible group selection (random, specific, or all groups)
 - Customizable colormaps and frame rates
 - Command-line interface for easy usage
+- Optional dataset normalization using statistics loaded from YAML data-configs
 
 Example Usage:
     # Visualize a random group with default settings
     python viz_dataset.py --h5-path data/train.h5
     
     # Visualize specific groups with custom settings
-    python viz_dataset.py --h5-path data/train.h5 --groups "group_0" "group_1" \\
+    python viz_dataset.py --h5-path data/train.h5 --groups "group_0" "group_1" \
         --fps 15 --cmap plasma --keep-frames --title <Figure_title> --out <output_dir> 
 
     python3 ./misc/viz_dataset.py --h5-path ./data/fluids/Laser_Droplet/2D/train.h5 --random --fps 20 --title "My Data" --out "./misc/ld"
     
     # Create video for all groups with frame range
-    python viz_dataset.py --h5-path data/train.h5 --all --frame-range 50 100 \\
+    python viz_dataset.py --h5-path data/train.h5 --all --frame-range 50 100 \
         --step 5 --title "CFD Simulation - Group {g}, t={t}"
     
     # 3D volume visualization with isometric view
-    python viz_dataset.py --h5-path data/3d_data.h5 --volume-proj iso \\
+    python viz_dataset.py --h5-path data/3d_data.h5 --volume-proj iso \
         --groups "volume_data"
+
+    # Normalized visualization using stats from a data-config YAML
+    python viz_dataset.py --h5-path data/train.h5 \
+        --data-config config/data_config/fluids/Laser_Droplet/2d_laser_droplet_data_default.yaml \
+        --normalize
+
+    # Normalized visualization with strategy override
+    python viz_dataset.py --h5-path data/train.h5 \
+        --data-config config/data_config/fluids/Laser_Droplet/2d_laser_droplet_data_default.yaml \
+        --normalize --norm-strategy z_normalization
 
 Dependencies:
     - h5py: HDF5 file handling
@@ -38,9 +49,10 @@ Dependencies:
     - numpy: Numerical operations
     - imageio: Video creation
     - scikit-image (optional): For marching cubes algorithm in 3D visualization
+    - PyYAML: Loading normalization statistics from YAML configuration
 
 Install dependencies:
-    pip install h5py matplotlib numpy imageio imageio-ffmpeg scikit-image
+    pip install h5py matplotlib numpy imageio imageio-ffmpeg scikit-image PyYAML
 """
 
 import argparse
@@ -52,6 +64,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import imageio.v2 as imageio
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection  # for isometric rendering
+from matplotlib.ticker import ScalarFormatter
+import yaml
 
 try:
     from skimage.measure import marching_cubes
@@ -145,26 +159,46 @@ def parse_args():
         Example: --seed 42 (always select same "random" group)
         Example: --seed 12345
     
+    **Data Normalization Options:**
+    --data-config : str, optional
+        Path to data-config YAML under config/data_config/<case_name> containing
+        'data_normalization_stats' (and optional 'data_normalization_strategy').
+        Example: --data-config config/data_config/fluids/Laser_Droplet/2d_laser_droplet_data_default.yaml
+    
+    --normalize : flag
+        Apply normalization using statistics from the provided data-config.
+        Example: --normalize (requires --data-config)
+    
+    --norm-strategy : str, optional
+        Override normalization strategy. If omitted, the strategy from YAML is
+        used (defaulting to 'z_normalization' if not present in YAML).
+        Choices: z_normalization, min_max_normalization, robust_normalization
+    
     **Complete Example Commands:**
     
     # Basic usage - visualize random group
     python viz_dataset.py --h5-path data/train.h5
     
     # Advanced usage - specific groups with custom settings
-    python viz_dataset.py --h5-path data/cfd_sim.h5 \\
-        --groups "simulation_1" "simulation_2" \\
-        --frame-range 50 150 --step 5 --fps 15 \\
-        --cmap plasma --title "CFD Results - {g} at t={t}" \\
+    python viz_dataset.py --h5-path data/cfd_sim.h5 \
+        --groups "simulation_1" "simulation_2" \
+        --frame-range 50 150 --step 5 --fps 15 \
+        --cmap plasma --title "CFD Results - {g} at t={t}" \
         --out ./results --keep-frames
     
     # 3D volume visualization
-    python viz_dataset.py --h5-path data/3d_volume.h5 \\
-        --volume-proj iso --groups "volume_data" \\
+    python viz_dataset.py --h5-path data/3d_volume.h5 \
+        --volume-proj iso --groups "volume_data" \
         --fps 8 --title "3D Volume - {proj} view"
     
     # Process all groups with reproducible random seed
-    python viz_dataset.py --h5-path data/train.h5 --all \\
+    python viz_dataset.py --h5-path data/train.h5 --all \
         --seed 42 --step 10 --fps 20
+    
+    # Normalized visualization using YAML-provided statistics
+    python viz_dataset.py --h5-path data/train.h5 \
+        --data-config config/data_config/fluids/Aerobreakup/2d_aerobreakup_data_default.yaml \
+        --normalize --fps 12 --cmap viridis
     """
     parser = argparse.ArgumentParser(
         description="Visualise all timesteps of a randomly chosen group inside a train.h5 file."
@@ -177,8 +211,8 @@ def parse_args():
     )
     parser.add_argument(
         "--cmap",
-        default="viridis",
-        help='Colour-map for scalar fields; velocity channels use "coolwarm"',
+        default="coolwarm",
+        help="Colormap to use for all fields (default: 'coolwarm')",
     )
     parser.add_argument(
         "--seed",
@@ -246,6 +280,25 @@ def parse_args():
         type=int,
         default=None,
         help="Index of the slice to show when --volume-proj=slice. Defaults to the middle slice if not specified.",
+    )
+    # Normalization options
+    parser.add_argument(
+        "--data-config",
+        dest="data_config",
+        default=None,
+        help="Path to the YAML under config/data_config/<case_name> to read normalization stats.",
+    )
+    parser.add_argument(
+        "--normalize",
+        action="store_true",
+        help="If set, normalize datasets using statistics from the provided data-config before plotting.",
+    )
+    parser.add_argument(
+        "--norm-strategy",
+        dest="norm_strategy",
+        choices=["z_normalization", "min_max_normalization", "robust_normalization"],
+        default=None,
+        help="Override normalization strategy. If omitted, uses strategy from the YAML.",
     )
     return parser.parse_args()
 
@@ -321,6 +374,90 @@ def load_group_datasets(group: h5py.Group):
             )
         data[dset_name] = arr
     return data, time_dim
+
+
+def _apply_normalization(arr: np.ndarray, stats: dict, strategy: str) -> np.ndarray:
+    """
+    Apply normalization to an array using channel-agnostic scalar stats.
+
+    The same scalar stats are applied to every spatial/temporal element. If the
+    array contains an explicit channel dimension (e.g., shape (T,C,H,W)), the
+    same stats are applied to all channels.
+    """
+    eps = 1e-8
+    if strategy == "z_normalization":
+        mean = float(stats["mean"]) if "mean" in stats else 0.0
+        std = float(stats.get("std", 1.0))
+        std = std if abs(std) > eps else eps
+        return (arr - mean) / std
+    if strategy == "min_max_normalization":
+        vmin = float(stats.get("min", 0.0))
+        vmax = float(stats.get("max", 1.0))
+        denom = (vmax - vmin) if (vmax - vmin) > eps else eps
+        return (arr - vmin) / denom
+    if strategy == "robust_normalization":
+        median = float(stats["median"]) if "median" in stats else 0.0
+        iqr = float(stats.get("iqr", 1.0))
+        iqr = iqr if abs(iqr) > eps else eps
+        return (arr - median) / iqr
+    # Unknown strategy -> return unmodified
+    return arr
+
+
+def _lookup_stats(stats_map: dict, dset_name: str, channel_index: int | None) -> dict | None:
+    """Find stats for dataset name, optionally trying a <name>_<idx> key for channels."""
+    if dset_name in stats_map:
+        return stats_map[dset_name]
+    if channel_index is not None:
+        key = f"{dset_name}_{channel_index}"
+        return stats_map.get(key)
+    return None
+
+
+def normalize_datasets(datasets: dict, stats_map: dict, strategy: str) -> dict:
+    """
+    Normalize all datasets using the provided statistics map and strategy.
+
+    - If stats are missing for a dataset, it is left unmodified (with a warning).
+    - Supports arrays with shapes like (T,H,W), (T,C,H,W), (T,H,W,D), (T,C,H,W,D), etc.
+    """
+    normalized = {}
+    for name, arr in datasets.items():
+        # Determine channel dimension based on heuristics in plot_timestep
+        if arr.ndim >= 5:
+            # (T, C, ...)
+            out = arr.copy()
+            C = arr.shape[1]
+            for c in range(C):
+                stats = _lookup_stats(stats_map, name, c)
+                if stats is None:
+                    stats = _lookup_stats(stats_map, name, None)
+                if stats is None:
+                    print(f"[normalize] Missing stats for '{name}' (ch {c}); leaving unmodified.")
+                    continue
+                out[:, c] = _apply_normalization(out[:, c], stats, strategy)
+        elif arr.ndim == 4 and arr.shape[1] <= 3:
+            # (T, C, H, W) treated as channels
+            out = arr.copy()
+            C = arr.shape[1]
+            for c in range(C):
+                stats = _lookup_stats(stats_map, name, c)
+                if stats is None:
+                    stats = _lookup_stats(stats_map, name, None)
+                if stats is None:
+                    print(f"[normalize] Missing stats for '{name}' (ch {c}); leaving unmodified.")
+                    continue
+                out[:, c] = _apply_normalization(out[:, c], stats, strategy)
+        else:
+            # No explicit channel dim; apply one set of stats
+            stats = _lookup_stats(stats_map, name, None)
+            if stats is None:
+                print(f"[normalize] Missing stats for '{name}'; leaving unmodified.")
+                out = arr
+            else:
+                out = _apply_normalization(arr, stats, strategy)
+        normalized[name] = out
+    return normalized
 
 
 def plot_timestep(
@@ -402,7 +539,7 @@ def plot_timestep(
     nrows = int(np.ceil(n_plots / ncols))
 
     fig, axes = plt.subplots(
-        nrows, ncols, figsize=(4 * ncols, 4 * nrows), squeeze=False
+        nrows, ncols, figsize=(6 * ncols, 6 * nrows), squeeze=False
     )
     axes_iter = iter(axes.flat)
     plot_counter = 0  # keep track of subplot index for potential 3-D axes
@@ -437,13 +574,7 @@ def plot_timestep(
                 ax = fig.add_subplot(nrows, ncols, plot_counter, projection="3d")
                 # Use marching cubes if available, else fallback to voxel plot
                 try:
-                    cmap_sel = (
-                        "coolwarm"
-                        if dset_name.lower().startswith("velocity")
-                        or (n_ch >= 2 and dset_name.lower().startswith("vel"))
-                        else cmap_scalar
-                    )
-                    cmap_obj = plt.get_cmap(cmap_sel)
+                    cmap_obj = plt.get_cmap(cmap_scalar)
                     vmin, vmax = float(img.min()), float(img.max())
 
                     if marching_cubes is not None:
@@ -512,7 +643,9 @@ def plot_timestep(
                         cmap=cmap_obj, norm=plt.Normalize(vmin=vmin, vmax=vmax)
                     )
                     sm.set_array([])
-                    fig.colorbar(sm, ax=ax, shrink=0.7)
+                    cb = fig.colorbar(sm, ax=ax, shrink=0.7)
+                    cb.formatter = ScalarFormatter(useOffset=False, useMathText=True)
+                    cb.update_ticks()
                 except Exception as e:
                     ax.text(0.5, 0.5, 0.5, f"ISO err: {e}", ha="center")
                 im_data = None  # nothing for 2-D processing further
@@ -530,12 +663,7 @@ def plot_timestep(
 
             if im_data is not None and im_data.ndim == 2:
                 # 2D field -> image
-                if dset_name.lower().startswith("velocity") or (
-                    n_ch >= 2 and dset_name.lower().startswith("vel")
-                ):
-                    im = ax.imshow(im_data, cmap="coolwarm", origin="lower")
-                else:
-                    im = ax.imshow(im_data, cmap=cmap_scalar, origin="lower")
+                im = ax.imshow(im_data, cmap=cmap_scalar, origin="lower")
 
                 # ------------------------------------------------------------------
                 # Show resolution ticks (axes) – x/y in pixel coordinates
@@ -557,7 +685,9 @@ def plot_timestep(
                 #ax.set_xlabel("X")
                 #ax.set_ylabel("Y")
 
-                fig.colorbar(im, ax=ax, shrink=0.7)
+                cb = fig.colorbar(im, ax=ax, shrink=0.7)
+                cb.formatter = ScalarFormatter(useOffset=False, useMathText=True)
+                cb.update_ticks()
             elif im_data is not None and im_data.ndim == 1:
                 ax.plot(im_data)
             else:
@@ -599,9 +729,10 @@ def plot_timestep(
     proj_descr = (
         f"{volume_proj}" if volume_proj != "slice" else f"slice {title_vars['slice']}"
     )
-    fig.text(0.5, 0.92, proj_descr, ha="center", va="top", fontsize=10, style="italic")
+    fig.text(0.5, 0.90, proj_descr, ha="center", va="top", fontsize=10, style="italic")
 
-    plt.tight_layout()
+    # Make room for the suptitle and projection description and add horizontal margins
+    fig.subplots_adjust(left=0.06, right=0.94, top=0.86, bottom=0.06)
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
 
@@ -640,6 +771,22 @@ def main():
     output_dir = Path(args.out)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Load normalization configuration if requested
+    norm_stats = None
+    norm_strategy = None
+    if args.normalize:
+        if args.data_config is None:
+            raise ValueError("--normalize requires --data-config pointing to a YAML with data_normalization_stats")
+        cfg_path = Path(args.data_config)
+        if not cfg_path.is_file():
+            raise FileNotFoundError(f"Cannot find data-config YAML: {cfg_path}")
+        with open(cfg_path, "r") as fcfg:
+            cfg_body = yaml.safe_load(fcfg) or {}
+        norm_stats = cfg_body.get("data_normalization_stats")
+        if not isinstance(norm_stats, dict) or not norm_stats:
+            raise ValueError("No data_normalization_stats found in the provided data-config YAML")
+        norm_strategy = args.norm_strategy or cfg_body.get("data_normalization_strategy", "z_normalization")
+
     with h5py.File(h5_path, "r") as f:
         # Decide which groups to process based on CLI flags
         if args.all:
@@ -662,6 +809,12 @@ def main():
 
         for group_name in group_names:
             datasets, n_timesteps = load_group_datasets(f[group_name])
+            if args.normalize and norm_stats is not None:
+                datasets_proc = normalize_datasets(datasets, norm_stats, norm_strategy)
+                title_tpl = args.title or "{g} (norm: {proj})"
+            else:
+                datasets_proc = datasets
+                title_tpl = args.title
             print(
                 f"Processing group '{group_name}' containing {len(datasets)} channels, names: {list(datasets.keys())} and "
                 f"{n_timesteps} timesteps. Saving every {args.step}-th frame."
@@ -684,11 +837,11 @@ def main():
             for t in range(t_start, t_end + 1, args.step):
                 out_file = output_dir / f"{group_name}_t{t:04d}.png"
                 plot_timestep(
-                    datasets,
+                    datasets_proc,
                     t,
                     out_file,
                     cmap_scalar=args.cmap,
-                    title_tpl=args.title,
+                    title_tpl=title_tpl,
                     group_name=group_name,
                     volume_proj=args.volume_proj,
                     slice_index=args.slice_index,

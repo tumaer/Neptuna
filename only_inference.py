@@ -16,6 +16,7 @@ import json
 from utils.seed_utils import set_global_seed
 import torch
 import numpy as np
+import csv
 
 def load_pretrained_model(model_config):
     """
@@ -197,6 +198,25 @@ def find_checkpoint_path(experiment_dir):
     # If multiple checkpoints exist, take the one with the highest number
     checkpoint_dirs.sort(key=lambda x: int(x.split('-')[-1]))
     return checkpoint_dirs[-1]
+
+def save_errors_to_csv(errors, output_dir):
+    """
+    Save errors to a CSV file in the specified output directory.
+
+    Args:
+        errors: Dictionary of errors to save.
+        output_dir: Directory where the CSV file will be saved.
+    """
+    csv_file = os.path.join(output_dir, "results.csv")
+    file_is_empty = not os.path.exists(csv_file) or os.stat(csv_file).st_size == 0
+
+    with open(csv_file, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        # Write header only if the file is empty
+        if file_is_empty:
+            writer.writerow(["Metric", "Value"])
+        for key, value in errors.items():
+            writer.writerow([key, value])
 
 def run_inference_for_each_experiment(experiment_dir, infer_config):
     """
@@ -391,6 +411,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 print(f"** Using infer_filter_frames from inference config: {infer_filter_frames} **")
         
         print("Running solo inference...")
+
         infer_ds, infer_ds_from_ic = fetch_dataset(
                                                 data_config["dataset_name"], 
                                                 mode="infer",
@@ -437,9 +458,12 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
 
             # pretty print the keys which have the word error in them
             print('Accumulated error for the whole test set (random start):')
+            errors = {} 
             for key, value in predictions_obj.metrics.items():
                 if "error" in key:
                     print(f"{key}: {value}")
+                    errors["random_start"+key] = value
+            save_errors_to_csv(errors, solo_inference_dir)
             # ----------------------------------------------------------
             # Prepare prediction, target and input arrays
             # ----------------------------------------------------------
@@ -560,9 +584,12 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             predictions_obj, inputs, conditioning_inputs = trainer.predict(infer_ds_from_ic, metric_key_prefix="")
 
             print('Accumulated error for the whole test set (IC start):')
+            errors = {}
             for key, value in predictions_obj.metrics.items():
                 if "error" in key:
                     print(f"{key}: {value}")
+                    errors["ic_start"+key] = value
+            save_errors_to_csv(errors, solo_inference_dir)
 
             preds = predictions_obj.predictions
             targets = predictions_obj.label_ids
@@ -581,8 +608,11 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 preds, targets, outputs_per_rollout=outputs_per_rollout, include_per_timestep=True
             )
             
+            errors = {}
             for metric_name, values in per_rollout_step_metrics_ic.items():
                 print(f"{metric_name} per-step (IC start): {values}")
+                errors[metric_name] = values
+            save_errors_to_csv(errors, solo_inference_dir)
 
             # ----------------------------------------------------------
             # Renormalise data and reconstruct residuals for plotting

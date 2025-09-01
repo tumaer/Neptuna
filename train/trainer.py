@@ -1299,7 +1299,33 @@ class Trainer(Trainer_):
             )
         )
 
-        self.log(output.metrics) #NOTE: logs into wandb during evaluation
+        # Optionally log with the epoch corresponding to the best checkpoint
+        # (used for the final evaluation pass at the end of training to avoid
+        # logging the last epoch instead of the best one).
+        _logged_with_best_epoch = False
+        try:
+            if getattr(self, "_force_best_epoch_for_logging", False):
+                ckpt_path = getattr(self.state, "best_model_checkpoint", None)
+                if ckpt_path is not None:
+                    state_path = os.path.join(ckpt_path, "trainer_state.json")
+                    if os.path.isfile(state_path):
+                        try:
+                            with open(state_path, "r") as _fp:
+                                _state_json = json.load(_fp)
+                            _best_epoch = _state_json.get("epoch", None)
+                            if _best_epoch is not None:
+                                _prev_epoch = self.state.epoch
+                                self.state.epoch = _best_epoch
+                                self.log(output.metrics)  # logs using the best epoch value
+                                self.state.epoch = _prev_epoch
+                                _logged_with_best_epoch = True
+                        except Exception:
+                            pass
+        finally:
+            pass
+
+        if not _logged_with_best_epoch:
+            self.log(output.metrics) #NOTE: logs into wandb during evaluation
 
         if DebugOption.TPU_METRICS_DEBUG in self.args.debug:
             # tpu-comment: Logging debug metrics for PyTorch/XLA (compile, execute times, ops, etc.)

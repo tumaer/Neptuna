@@ -147,7 +147,7 @@ class ViT2D(ViTModel):
         self.decoder = nn.Sequential(
             nn.Conv2d(
                 in_channels=config.latent_channels,
-                out_channels=config.patch_size**2 * config.out_channels,
+                out_channels=config.patch_size**2 * config.out_channels * config.sequence_info[1],
                 kernel_size=1,
             ),
             nn.PixelShuffle(config.patch_size),

@@ -1,0 +1,61 @@
+# For details on the parameters, refer to data_config-->example_data_config.yaml
+dataset_name: Aerobreakup
+dataset_directory_path: ./data/fluids/Aerobreakup_DPUVVoS/2D
+seed: 42
+dimension: 2
+grid_resolution: null
+eval_groups: null
+is_steady_state_prediction: False 
+sequence_info: [1, 1, 5]
+# Available channels for Aerobreakup: ["Density", "Pressure", "Schlieren", "Velocity_X", "Velocity_Y", "Vorticity"]
+filter_features:
+  train_filter_frames: null
+  train_filter_groups: null
+  infer_filter_frames: null
+  infer_filter_groups: null
+  filter_in_channels: null
+  filter_out_channels: null
+#NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels
+conditioning_features:
+  conditioning_in_channels: null
+  include_conditioning_parameters: False
+  num_cond_params: null
+  parameter_min_max_stats: null
+residual_config: null
+  # add_base_value_with_raw_loss: True
+  # add_predicted_value_with_diff_loss: False
+  # add_predicted_value_with_raw_loss: False
+coord_features: True
+data_normalization_strategy: z_normalization
+#NOTE: Statistics are according to sequence_stride = 5
+data_normalization_stats:
+  Density:
+    mean: 83.33162437995082
+    std: 269.420102937082
+    min: 0.4107901177015075
+    max: 1004.1108081220093
+  Pressure:
+    mean: 592008.2094240573
+    std: 605112.7013391693
+    min: -4350961.485024929
+    max: 8856365.6638062
+  Schlieren:
+    mean: 371672.7765653216
+    std: 3620035.2535395394
+    min: 0.0
+    max: 55955355.28965796
+  Velocity_X:
+    mean: -3.6010844316246753
+    std: 88.62828894297455
+    min: -561.2317582929994
+    max: 780.3227694469102
+  Velocity_Y:
+    mean: 321.6043573946111
+    std: 344.0918270179068
+    min: -999.8758150190431
+    max: 1695.5617260034319
+  Vorticity:
+    mean: 402167.6854025066
+    std: 1550129.5940915134
+    min: 0.0
+    max: 45238240.011306755
