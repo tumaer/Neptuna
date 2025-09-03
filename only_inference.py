@@ -257,6 +257,24 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
     try:
         # Load configurations
         data_config = OmegaConf.load(data_config_path)
+        # Post-load fix: convert parameter_min_max_stats keys to integers
+        try:
+            cond_cfg = data_config.get("conditioning_features", None)
+            if cond_cfg is not None:
+                param_stats = cond_cfg.get("parameter_min_max_stats", None)
+                if isinstance(param_stats, dict):
+                    coerced = {}
+                    for k, v in param_stats.items():
+                        try:
+                            coerced[int(k)] = v
+                        except Exception:
+                            coerced[k] = v
+                    data_config["conditioning_features"]["parameter_min_max_stats"] = coerced
+                elif isinstance(param_stats, list):
+                    # If stored as a list, convert to index-keyed dict for downstream .get(i) usage
+                    data_config["conditioning_features"]["parameter_min_max_stats"] = {i: v for i, v in enumerate(param_stats)}
+        except Exception:
+            print(f" Parameter_min_max_stats not available, skipping...")
         model_config = OmegaConf.load(model_config_path)
         
         # Set global seed from data_config (default 0)
