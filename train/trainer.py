@@ -1351,7 +1351,7 @@ class Trainer(Trainer_):
 
         self._memory_tracker.stop_and_update_metrics(output.metrics)
         #NOTE: stop training if NaN is encountered in the loss and set the control flags to False.
-        if self.control.should_training_stop and self.state.epoch<self.train_config['num_train_epochs']:
+        if self.control.should_training_stop_due_to_nan and self.state.epoch<self.train_config['num_train_epochs']:
             self.control.should_evaluate = False
             self.control.should_save = False
             self.control.should_plot = False
@@ -1533,16 +1533,6 @@ class Trainer(Trainer_):
 
             self.log(logs, start_time) #NOTE: logs into wandb for training
         
-        # ------------------------------------------------------------------
-        # Ensure final evaluation is run at the end of training
-        # ------------------------------------------------------------------
-        # if (
-        #     self.control.should_training_stop  # training loop is signaled to stop
-        #     and self.state.epoch >= self.train_config["num_train_epochs"]  # we have reached (or slightly passed) the last epoch
-        # ):
-        #     # Trigger a last evaluation regardless of the usual evaluation schedule.
-        #     self.control.should_evaluate = True
-
         metrics = None
         if self.control.should_evaluate:
             metrics = self._evaluate(trial, ignore_keys_for_eval) 

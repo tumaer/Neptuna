@@ -178,7 +178,7 @@ class NaNCallback(TrainerCallback):
         loss = logs.get("loss") or logs.get("eval_l2_error") or logs.get("eval_l1_error")
         if loss is not None and (loss != loss):  # NaN check
             print("🛑 NaN encountered in loss. Stopping training.")
-            control.should_training_stop = True
+            control.should_training_stop_due_to_nan = True
             control.should_evaluate = False
             control.should_save = False
             control.should_plot = False
@@ -865,7 +865,8 @@ if not hasattr(TrainerCallback_, "on_plot"):
 @dataclass
 class TrainerControl(TrainerControl_):
     """
-    TrainerControl subclass with an additional `should_plot` switch.
+    TrainerControl subclass with an additional `should_plot` and `should_training_stop_due_to_nan`
+    switch.
     
     This extended control class adds plotting state management to the standard
     Transformers training control flow. It maintains all original functionality
@@ -876,7 +877,8 @@ class TrainerControl(TrainerControl_):
     should_plot : bool, default=False
         Flag indicating whether plotting operations should be performed.
         Set by evaluation callbacks and consumed by plotting callbacks.
-        
+    should_training_stop_due_to_nan : bool, default=False
+        Flag indicating if training should stop due to NaN in loss.
     Methods
     -------
     _new_step()
@@ -893,6 +895,7 @@ class TrainerControl(TrainerControl_):
     """
 
     should_plot: bool = False
+    should_training_stop_due_to_nan: bool = False  # New flag to indicate NaN-induced stop
 
     def _new_step(self):
         """
