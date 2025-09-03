@@ -23,3 +23,9 @@ wandb/
 *.err
 *.job
 *.csv
+data_config.json
+config.json
+model.safetensors
+rng_state.pth
+trainer_state.json
+training_args.bin
