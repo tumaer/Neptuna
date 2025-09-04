@@ -1,0 +1,10 @@
+model_name: UNet
+latent_channels: 48
+activation_fn_name: gelu
+channel_multiplier: [1,2,2,4]
+is_attn: [False,False,False,False]
+mid_attn: False
+n_blocks: 1 #Number of DownBlock/UpBlock in each level
+use1x1: False
+norm_layer_eps: 1e-5
+norm: 'layer' # layer, batch, group (see model_utils.py for max_groups), identity
