@@ -437,7 +437,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         infer_ds, infer_ds_from_ic = fetch_dataset(
                                                 data_config["dataset_name"], 
                                                 mode="infer",
-                                                dataset_directory_path=data_config["dataset_directory_path"],
+                                                dataset_directory_path=dataset_directory_path,
                                                 sequence_info=data_config["sequence_info"],
                                                 infer_filter_groups=infer_filter_groups,
                                                 infer_filter_frames=infer_filter_frames,
