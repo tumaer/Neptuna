@@ -999,7 +999,12 @@ class TransientDataset(Dataset):
         self.input_channels = filter_in_channels
         self.conditioning_in_channels = conditioning_in_channels
         self.output_channels = filter_out_channels
-        self.include_conditioning_parameters = kwargs["include_conditioning_parameters"] or False
+        _inc_params = kwargs.get("include_conditioning_parameters", False)
+        if not isinstance(_inc_params, bool):
+            raise TypeError(
+                f"include_conditioning_parameters must be a boolean (True/False), got {type(_inc_params).__name__}: {_inc_params}"
+            )
+        self.include_conditioning_parameters = _inc_params
         # Parameter normalisation ranges (optional)
         self.parameter_min_max_stats = kwargs["parameter_min_max_stats"]
         
@@ -1365,7 +1370,12 @@ class SteadyStateDataset(Dataset):
         self.input_channels = filter_in_channels
         self.conditioning_in_channels = conditioning_in_channels
         self.output_channels = filter_out_channels
-        self.include_conditioning_parameters = kwargs["include_conditioning_parameters"] or False
+        _inc_params = kwargs.get("include_conditioning_parameters", False)
+        if not isinstance(_inc_params, bool):
+            raise TypeError(
+                f"include_conditioning_parameters must be a boolean (True/False), got {type(_inc_params).__name__}: {_inc_params}"
+            )
+        self.include_conditioning_parameters = _inc_params
         self.parameter_min_max_stats = kwargs["parameter_min_max_stats"]
 
         if len(self.input_channels) != len(self.output_channels):
