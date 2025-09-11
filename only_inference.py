@@ -427,6 +427,13 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         
         print("Running solo inference...")
 
+        if infer_config["dataset_directory_path"] is not None:
+            dataset_directory_path = infer_config["dataset_directory_path"]
+        else:
+            dataset_directory_path = data_config["dataset_directory_path"]
+
+        print(f"Dataset directory path: {dataset_directory_path}")
+
         infer_ds, infer_ds_from_ic = fetch_dataset(
                                                 data_config["dataset_name"], 
                                                 mode="infer",
