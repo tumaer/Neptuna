@@ -118,8 +118,6 @@ class kFNO1D(PreTrainedModel):
                                array_length=3,
                                channel_at_last_position=False)
        
-        
-        #===========kFNO stuff==================
         self.num_repeats = config.out_size // config.out_channels
         self.share_A_weights = getattr(config, 'share_A_weights', False)
         self.share_Q_weights = getattr(config, 'share_Q_weights', False)
@@ -165,11 +163,18 @@ class kFNO1D(PreTrainedModel):
                     num_fno_layers=config.num_Q_layers,
                     dimension=1,
                 )
-                self.Q_norm = self.norm
+                self.Q_norm = CustomNorm(
+                    config=config, 
+                    num_channels=config.latent_channels,
+                    array_length=3,
+                    channel_at_last_position=False
+                )
             elif config.Q_type == "coupled":
+                temporal_fno_modes = max(1, min(self.num_repeats // 2, int(round(0.35 * self.num_repeats))))
+
                 self.Q_spconv_layers, self.Q_conv_layers = build_fno(
                     fno_width=config.latent_channels,
-                    num_fno_modes=num_fno_modes,
+                    num_fno_modes=[config.num_fno_modes, temporal_fno_modes],
                     num_fno_layers=config.num_Q_layers,
                     dimension=2,
                 )
