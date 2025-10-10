@@ -18,7 +18,7 @@ norm: 'batch' # layer, batch, group (see model_utils.py for max_groups), identit
 
 num_A_layers: 2
 linear_A: True #linear, nonlinear
-share_A_weights: True
+share_A_weights: False
 
 num_Q_layers: 1
 Q_type: 'coupled' #separate, coupled

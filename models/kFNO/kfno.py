@@ -153,40 +153,30 @@ class kFNO1D(PreTrainedModel):
 
         # 4. Koopman decoder/mixing (Q block) with separate or coupled processing
         # and optional weight sharing
-        if self.share_Q_weights:
-            if config.Q_type == "separate":
+        if config.Q_type == "separate":
+            # For separate mode, weight sharing matters
+            if self.share_Q_weights:
+                # Single Q block for all frames
                 self.Q_spconv_layers, self.Q_conv_layers = build_fno(
                     fno_width=config.latent_channels,
                     num_fno_modes=num_fno_modes,
                     num_fno_layers=config.num_Q_layers,
                     dimension=1,
                 )
+                # Create a NEW norm instance to avoid parameter sharing
                 self.Q_norm = CustomNorm(
                     config=config, 
                     num_channels=config.latent_channels,
                     array_length=3,
                     channel_at_last_position=False
                 )
-            elif config.Q_type == "coupled":
-                temporal_fno_modes = max(1, min(self.num_repeats // 2, int(round(0.35 * self.num_repeats))))
-
-                self.Q_spconv_layers, self.Q_conv_layers = build_fno(
-                    fno_width=config.latent_channels,
-                    num_fno_modes=[config.num_fno_modes, temporal_fno_modes],
-                    num_fno_layers=config.num_Q_layers,
-                    dimension=2,
-                )
-                self.Q_norm = CustomNorm(config=config, 
-                            num_channels=config.latent_channels,
-                            array_length=4,  
-                            channel_at_last_position=False)
-        else:
-            self.Q_spconv_blocks = nn.ModuleList()
-            self.Q_conv_blocks = nn.ModuleList()
-            self.Q_norms = nn.ModuleList()
-            
-            for _ in range(self.num_repeats):
-                if config.Q_type == "separate":
+            else:
+                # Multiple Q blocks (one per frame)
+                self.Q_spconv_blocks = nn.ModuleList()
+                self.Q_conv_blocks = nn.ModuleList()
+                self.Q_norms = nn.ModuleList()
+                
+                for _ in range(self.num_repeats):
                     Q_spconv, Q_conv = build_fno(
                         fno_width=config.latent_channels,
                         num_fno_modes=num_fno_modes,
@@ -201,21 +191,27 @@ class kFNO1D(PreTrainedModel):
                         array_length=3,
                         channel_at_last_position=False
                     ))
-                elif config.Q_type == "coupled":
-                    temporal_fno_modes = max(1, min(self.num_repeats // 2, int(round(0.35 * self.num_repeats))))
-
-                    Q_spconv, Q_conv = build_fno(
-                        fno_width=config.latent_channels,
-                        num_fno_modes=[config.num_fno_modes, temporal_fno_modes],
-                        num_fno_layers=config.num_Q_layers,
-                        dimension=2,
-                    )
-                    self.Q_spconv_blocks.append(Q_spconv)
-                    self.Q_conv_blocks.append(Q_conv)
-                    self.Q_norms.append(CustomNorm(config=config, 
-                                num_channels=config.latent_channels,
-                                array_length=4,  
-                                channel_at_last_position=False))
+        elif config.Q_type == "coupled":
+            # For coupled mode, always just one block (weight sharing setting doesn't matter)
+            temporal_fno_modes = max(1, min(self.num_repeats // 2, int(round(0.35 * self.num_repeats))))
+            
+            self.Q_spconv_layers, self.Q_conv_layers = build_fno(
+                fno_width=config.latent_channels,
+                num_fno_modes=[num_fno_modes[0], temporal_fno_modes],
+                num_fno_layers=config.num_Q_layers,
+                dimension=2,
+            )
+            self.Q_norm = CustomNorm(
+                config=config, 
+                num_channels=config.latent_channels,
+                array_length=4,  
+                channel_at_last_position=False
+            )
+            
+            # Flag to use in forward pass
+            self.is_coupled = True
+        else:
+            raise ValueError(f"Unknown Q_type: {config.Q_type}. Expected 'separate' or 'coupled'")
 
     def decoder_net(self) -> nn.Module:
         return FullyConnected(
@@ -227,15 +223,16 @@ class kFNO1D(PreTrainedModel):
         )
 
     def forward(self, x: Tensor, **kwargs) -> Tensor:
+
+        # --- L block ---
         if self.config.coord_features:
             coord_feat = oned_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
 
         x = self.lift_network(x)
-
         x = F.pad(x, (0, self.pad[0]), mode=self.padding_type)
 
-        # Apply H block
+        # --- H block ---
         x = self.apply_fno_block(
             x, 
             self.H_spconv_layers, 
@@ -246,62 +243,14 @@ class kFNO1D(PreTrainedModel):
 
         x_prev = x
     
-        # For the coupled case, collect all A-block outputs first
+        # --- A and Q blocks ---
         if self.config.Q_type == "coupled":
+            # For coupled mode: collect all A-outputs, then process together with 2D Q-block
             a_outputs = []
+
+            # Process through A blocks sequentially
             for i in range(self.num_repeats):
-                if self.share_A_weights:
-                    a_out = self.apply_fno_block(
-                        x_prev, 
-                        self.A_spconv_layers, 
-                        self.A_conv_layers,
-                        self.norm,
-                        use_activation=not self.config.linear_A,
-                        **kwargs
-                    )
-                else:
-                    a_out = self.apply_fno_block(
-                        x_prev, 
-                        self.A_spconv_blocks[i], 
-                        self.A_conv_blocks[i],
-                        self.norm,
-                        use_activation=not self.config.linear_A,
-                        **kwargs
-                    )
-                a_outputs.append(a_out)
-                x_prev = a_out
-            
-            # Stack all A outputs along a new dimension
-            a_stacked = torch.stack(a_outputs, dim=-1)  # [batch, channels, spatial_dim, time]
-            
-            # Process through the d+1 Q block
-            if self.share_Q_weights:
-                q_out = self.apply_fno_block(
-                    a_stacked, 
-                    self.Q_spconv_layers, 
-                    self.Q_conv_layers,
-                    self.Q_norm,
-                    use_activation=True, 
-                    **kwargs
-                )
-            else:
-                q_norm = self.Q_norms[0]
-                q_out = self.apply_fno_block(
-                    a_stacked, 
-                    self.Q_spconv_blocks[0], 
-                    self.Q_conv_blocks[0],
-                    q_norm,
-                    use_activation=True,
-                    **kwargs
-                )
-            
-            # Split back into separate frames
-            outputs = [q_out[..., i] for i in range(self.num_repeats)]
-            
-        else:  # For the separate case, process sequentially
-            outputs = []
-            for i in range(self.num_repeats):
-                # Apply A block
+                # Apply A block (with or without shared weights)
                 if self.share_A_weights:
                     a_out = self.apply_fno_block(
                         x_prev, 
@@ -321,7 +270,50 @@ class kFNO1D(PreTrainedModel):
                         **kwargs
                     )
                 
-                # Apply Q block for separate case
+                a_outputs.append(a_out)
+                x_prev = a_out # Next A block gets previous A output
+            
+            # Stack all A outputs along a new dimension
+            a_stacked = torch.stack(a_outputs, dim=-1)  # [batch, channels, spatial_dim, time]
+            
+            # Apply 2D Q block to process all outputs together
+            q_out = self.apply_fno_block(
+                a_stacked, 
+                self.Q_spconv_layers, 
+                self.Q_conv_layers,
+                self.Q_norm,
+                use_activation=True, 
+                **kwargs
+            )
+            
+            # Split back into separate frames
+            outputs = [q_out[..., i] for i in range(self.num_repeats)]
+            
+        else:
+            # For the separate case, process sequentially
+            outputs = []
+            for i in range(self.num_repeats):
+                # 1. Apply appropriate A block for this timestep
+                if self.share_A_weights:
+                    a_out = self.apply_fno_block(
+                        x_prev, 
+                        self.A_spconv_layers, 
+                        self.A_conv_layers,
+                        self.norm,
+                        use_activation=not self.config.linear_A,
+                        **kwargs
+                    )
+                else:
+                    a_out = self.apply_fno_block(
+                        x_prev, 
+                        self.A_spconv_blocks[i], 
+                        self.A_conv_blocks[i],
+                        self.norm,
+                        use_activation=not self.config.linear_A,
+                        **kwargs
+                    )
+                
+                # 2. Apply appropriate Q block for this timestep
                 if self.share_Q_weights:
                     q_out = self.apply_fno_block(
                         a_out, 
@@ -340,13 +332,15 @@ class kFNO1D(PreTrainedModel):
                         use_activation=True,
                         **kwargs
                     )
-                    
+                
+                # Store output and update state
                 outputs.append(q_out)
                 x_prev = a_out
     
-        # Stack the outputs
+        # Stack outputs along time dimension
         x = torch.stack(outputs, dim=1)  # [batch, time_steps, ...]
 
+        # Remove padding
         x = x[..., : self.ipad[0]]
         return x
 
