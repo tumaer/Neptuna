@@ -144,7 +144,40 @@ def fetch_model(model_config: Dict,
                     norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
                     norm=model_config['norm']
                     )
-        model = FNO(config=config)         
+        model = FNO(config=config)
+
+    elif model_name == "kfno":
+        from models.kFNO.kfno import kFNO
+        from models.kFNO.kfno_utils import kFNOConfig
+        config = kFNOConfig(
+                    dimension=data_config['dimension'],
+                    in_channels=len(data_config['filter_features']['filter_in_channels']),
+                    out_channels=len(data_config['filter_features']['filter_out_channels']), 
+                    grid_resolution=data_config['grid_resolution'],
+                    sequence_info=data_config["sequence_info"],
+                    latent_channels=model_config['latent_channels'],
+                    num_fno_modes=model_config['fno_modes'],
+                    num_H_layers=model_config['num_H_layers'],
+                    padding=model_config['padding'],
+                    padding_type=model_config['padding_type'],
+                    decoder_layers=model_config['decoder_layers'],
+                    decoder_layer_size=model_config['decoder_layer_size'],
+                    decoder_activation_fn_name=model_config['decoder_activation_fn_name'],
+                    activation_fn_name=model_config['activation_fn_name'],
+                    coord_features=data_config['coord_features'],
+                    conditioning=data_config['conditioning_features']['include_conditioning_parameters'],
+                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
+                    norm_layer_eps=model_config['norm_layer_eps'],
+                    norm=model_config['norm'],
+                    num_A_layers=model_config['num_A_layers'],
+                    linear_A=model_config['linear_A'],
+                    share_A_weights=model_config['share_A_weights'],
+                    num_Q_layers=model_config['num_Q_layers'],
+                    Q_type=model_config['Q_type'],
+                    skip_percentage=model_config['skip_percentage'],
+                    share_Q_weights=model_config['share_Q_weights']
+                    )
+        model = kFNO(config=config)         
         
     elif model_name == "resnet":
         from models.ResNet.resnet import ResNet

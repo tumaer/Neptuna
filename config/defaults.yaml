@@ -1,6 +1,6 @@
 defaults:
   - data_config: fluids/KS/1d_ks_data
-  - model_config: FNO/default_fno
+  - model_config: FNO/default_kfno
   - output_log_config: default_output_log
   - scheduler_config: default_scheduler
   - train_config: default_training
