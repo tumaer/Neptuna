@@ -86,15 +86,15 @@ class kFNO(PreTrainedModel):
         return x
 
 class kFNO1D(PreTrainedModel):
-    """1D FNO"""
+    """1D kFNO"""
 
     def __init__(self, config, activation_fn: nn.Module) -> None:
         super().__init__(config)
 
         self.activation_fn = activation_fn
         self.num_repeats = config.out_size // config.out_channels
-        self.share_A_weights = getattr(config, 'share_A_weights', False)
-        self.share_Q_weights = getattr(config, 'share_Q_weights', False)
+        self.share_A_weights = config.share_A_weights
+        self.share_Q_weights = config.share_Q_weights
         
         # Padding values for spectral conv
         if isinstance(config.padding, int):
@@ -103,10 +103,18 @@ class kFNO1D(PreTrainedModel):
         self.ipad = [-pad if pad > 0 else None for pad in self.pad]
         self.padding_type = config.padding_type
 
+        # Prepare modes for spectral conv
         if isinstance(config.num_fno_modes, int):
             num_fno_modes = [config.num_fno_modes]
 
-        # build lift
+        # Standard norm layer
+        self.norm = CustomNorm(config=config, 
+                               num_channels=config.latent_channels,
+                               array_length=3,
+                               channel_at_last_position=False)
+
+        # Build model components
+        # 1. Lift network (L block)
         self.lift_network = build_lift_network(
             in_channels=config.in_size,
             fno_width=config.latent_channels,
@@ -114,12 +122,7 @@ class kFNO1D(PreTrainedModel):
             dimension=1,
         )
 
-        self.norm = CustomNorm(config=config, 
-                               num_channels=config.latent_channels,
-                               array_length=3,
-                               channel_at_last_position=False)
-       
-        # build H block
+        # 2. Latent Koopman encoder (H block)
         self.H_spconv_layers, self.H_conv_layers = build_fno(
             fno_width=config.latent_channels,
             num_fno_modes=num_fno_modes,
@@ -127,8 +130,7 @@ class kFNO1D(PreTrainedModel):
             dimension=1,
         )
 
-        # build A block with options:
-        # 1) shared or unshared weights (self.share_A_weights)
+        # 3. Koopman operator (A block) with optional weight sharing
         if self.share_A_weights:
             self.A_spconv_layers, self.A_conv_layers = build_fno(
                 fno_width=config.latent_channels,
@@ -149,9 +151,8 @@ class kFNO1D(PreTrainedModel):
                 self.A_spconv_blocks.append(A_spconv)
                 self.A_conv_blocks.append(A_conv)
 
-        # build Q block with options:
-        # 1) separate or coupled frame processing (config.Q_type)
-        # 2) shared or unshared weights (self.share_Q_weights)
+        # 4. Koopman decoder/mixing (Q block) with separate or coupled processing
+        # and optional weight sharing
         if self.share_Q_weights:
             if config.Q_type == "separate":
                 self.Q_spconv_layers, self.Q_conv_layers = build_fno(
@@ -201,9 +202,11 @@ class kFNO1D(PreTrainedModel):
                         channel_at_last_position=False
                     ))
                 elif config.Q_type == "coupled":
+                    temporal_fno_modes = max(1, min(self.num_repeats // 2, int(round(0.35 * self.num_repeats))))
+
                     Q_spconv, Q_conv = build_fno(
                         fno_width=config.latent_channels,
-                        num_fno_modes=num_fno_modes,
+                        num_fno_modes=[config.num_fno_modes, temporal_fno_modes],
                         num_fno_layers=config.num_Q_layers,
                         dimension=2,
                     )
