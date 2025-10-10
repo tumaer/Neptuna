@@ -57,12 +57,13 @@ class kFNO(PreTrainedModel):
         batch, input_seq, input_channels, *spatial = input_data.shape
         input_data=input_data.reshape(batch, input_seq * input_channels, *spatial)
 
-        # Fourier encoder
+        # Main kFNO sequence: L, H, K, Q blocks
         x_latent = self.fno(input_data, **kwargs)
 
+        # P block (decoder applied individually to each output frame)
         outputs = []
-        for i in range(x_latent.shape[1]):  # Iterate over num_repeats dimension
-            frame = x_latent[:, i]  # [batch, latent_channels, spatial_dim]
+        for i in range(x_latent.shape[1]):
+            frame = x_latent[:, i]
             
             # Reshape to pointwise inputs
             frame_points, _ = self.fno.grid_to_points(frame)
@@ -72,17 +73,14 @@ class kFNO(PreTrainedModel):
             
             # Calculate output shape for a single frame
             batch_size = input_data.shape[0]
-            out_channels = self.config.out_channels  # Number of output channels per frame
-            spatial_dim = frame.shape[-1]  # Spatial dimension from input
-            
-            # Use the correct output shape
+            out_channels = self.config.out_channels
+            spatial_dim = frame.shape[-1]
             output_shape = (batch_size, out_channels, spatial_dim)
             
-            # Convert back to grid with proper output shape
+            # Reshape back to grid
             grid_frame = self.fno.points_to_grid(decoded_frame, output_shape)
             outputs.append(grid_frame)
-        
-        # Stack along the output channel dimension to match original FNO output
+
         x = torch.stack(outputs, dim=1)
 
         return x
@@ -94,6 +92,9 @@ class kFNO1D(PreTrainedModel):
         super().__init__(config)
 
         self.activation_fn = activation_fn
+        self.num_repeats = config.out_size // config.out_channels
+        self.share_A_weights = getattr(config, 'share_A_weights', False)
+        self.share_Q_weights = getattr(config, 'share_Q_weights', False)
         
         # Padding values for spectral conv
         if isinstance(config.padding, int):
@@ -118,11 +119,7 @@ class kFNO1D(PreTrainedModel):
                                array_length=3,
                                channel_at_last_position=False)
        
-        self.num_repeats = config.out_size // config.out_channels
-        self.share_A_weights = getattr(config, 'share_A_weights', False)
-        self.share_Q_weights = getattr(config, 'share_Q_weights', False)
-
-        # build H block (used once)
+        # build H block
         self.H_spconv_layers, self.H_conv_layers = build_fno(
             fno_width=config.latent_channels,
             num_fno_modes=num_fno_modes,
@@ -130,9 +127,9 @@ class kFNO1D(PreTrainedModel):
             dimension=1,
         )
 
-        # A blocks with optional weight sharing
+        # build A block with options:
+        # 1) shared or unshared weights (self.share_A_weights)
         if self.share_A_weights:
-            # Create single A block to be reused
             self.A_spconv_layers, self.A_conv_layers = build_fno(
                 fno_width=config.latent_channels,
                 num_fno_modes=num_fno_modes,
@@ -140,7 +137,6 @@ class kFNO1D(PreTrainedModel):
                 dimension=1,
             )
         else:
-            # Create multiple A blocks (one per repeat)
             self.A_spconv_blocks = nn.ModuleList()
             self.A_conv_blocks = nn.ModuleList()
             for _ in range(self.num_repeats):
@@ -153,9 +149,10 @@ class kFNO1D(PreTrainedModel):
                 self.A_spconv_blocks.append(A_spconv)
                 self.A_conv_blocks.append(A_conv)
 
-        # Q blocks with optional weight sharing
+        # build Q block with options:
+        # 1) separate or coupled frame processing (config.Q_type)
+        # 2) shared or unshared weights (self.share_Q_weights)
         if self.share_Q_weights:
-            # Create single Q block to be reused
             if config.Q_type == "separate":
                 self.Q_spconv_layers, self.Q_conv_layers = build_fno(
                     fno_width=config.latent_channels,
@@ -183,7 +180,6 @@ class kFNO1D(PreTrainedModel):
                             array_length=4,  
                             channel_at_last_position=False)
         else:
-            # Create multiple Q blocks (one per repeat)
             self.Q_spconv_blocks = nn.ModuleList()
             self.Q_conv_blocks = nn.ModuleList()
             self.Q_norms = nn.ModuleList()
@@ -218,8 +214,6 @@ class kFNO1D(PreTrainedModel):
                                 array_length=4,  
                                 channel_at_last_position=False))
 
-
-
     def decoder_net(self) -> nn.Module:
         return FullyConnected(
             in_features=self.config.latent_channels,
@@ -252,16 +246,14 @@ class kFNO1D(PreTrainedModel):
         # For the coupled case, collect all A-block outputs first
         if self.config.Q_type == "coupled":
             a_outputs = []
-            # Process all frames through A blocks first
             for i in range(self.num_repeats):
                 if self.share_A_weights:
-                    # Use linear_A parameter to determine if activation should be used
                     a_out = self.apply_fno_block(
                         x_prev, 
                         self.A_spconv_layers, 
                         self.A_conv_layers,
                         self.norm,
-                        use_activation=not self.config.linear_A,  # Skip activation if linear_A is True
+                        use_activation=not self.config.linear_A,
                         **kwargs
                     )
                 else:
@@ -270,16 +262,16 @@ class kFNO1D(PreTrainedModel):
                         self.A_spconv_blocks[i], 
                         self.A_conv_blocks[i],
                         self.norm,
-                        use_activation=not self.config.linear_A,  # Skip activation if linear_A is True
+                        use_activation=not self.config.linear_A,
                         **kwargs
                     )
                 a_outputs.append(a_out)
-                x_prev = a_out  # Update for next iteration
+                x_prev = a_out
             
             # Stack all A outputs along a new dimension
             a_stacked = torch.stack(a_outputs, dim=-1)  # [batch, channels, spatial_dim, time]
             
-            # Process through the 2D Q block - always with activation
+            # Process through the d+1 Q block
             if self.share_Q_weights:
                 q_out = self.apply_fno_block(
                     a_stacked, 
@@ -313,7 +305,7 @@ class kFNO1D(PreTrainedModel):
                         self.A_spconv_layers, 
                         self.A_conv_layers,
                         self.norm,
-                        use_activation=not self.config.linear_A,  # Skip activation if linear_A is True
+                        use_activation=not self.config.linear_A,
                         **kwargs
                     )
                 else:
@@ -322,11 +314,11 @@ class kFNO1D(PreTrainedModel):
                         self.A_spconv_blocks[i], 
                         self.A_conv_blocks[i],
                         self.norm,
-                        use_activation=not self.config.linear_A,  # Skip activation if linear_A is True
+                        use_activation=not self.config.linear_A,
                         **kwargs
                     )
                 
-                # Apply Q block for separate case - always with activation
+                # Apply Q block for separate case
                 if self.share_Q_weights:
                     q_out = self.apply_fno_block(
                         a_out, 
@@ -360,10 +352,8 @@ class kFNO1D(PreTrainedModel):
         Helper method to process x through a block of FNO layers with optional activation
         and configurable skip connection
         """
-        # Store original input for skip connection
         x_input = x
         
-        # Process through the layers
         for k, (conv, w) in enumerate(zip(conv_layers, spconv_layers)):
             if k < len(conv_layers) - 1:
                 x = conv(x) + w(x)
@@ -374,12 +364,8 @@ class kFNO1D(PreTrainedModel):
                 x = conv(x) + w(x)
                 x = norm_layer(x, **kwargs)
         
-        # Apply skip connection based on skip_percentage
         if hasattr(self.config, 'skip_percentage') and self.config.skip_percentage > 0:
-            # Ensure skip_percentage is between 0 and 1
             skip_pct = max(0.0, min(1.0, self.config.skip_percentage))
-            
-            # Blend the processed output with the original input
             x = (1 - skip_pct) * x + skip_pct * x_input
         
         return x
