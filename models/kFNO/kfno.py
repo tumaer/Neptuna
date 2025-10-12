@@ -680,6 +680,9 @@ class kFNO3D(PreTrainedModel):
         super().__init__(config)
 
         self.activation_fn = activation_fn
+        self.num_repeats = config.out_size // config.out_channels
+        self.share_A_weights = config.share_A_weights
+        self.share_Q_weights = config.share_Q_weights
 
         # Padding values for spectral conv
         if isinstance(config.padding, int):
@@ -692,7 +695,13 @@ class kFNO3D(PreTrainedModel):
         if isinstance(config.num_fno_modes, int):
             num_fno_modes = [config.num_fno_modes, config.num_fno_modes, config.num_fno_modes]
 
-        # build lift
+        # Standard norm layer
+        self.norm = CustomNorm(config=config, 
+                              num_channels=config.latent_channels,
+                              array_length=5,
+                              channel_at_last_position=False)
+
+        # 1. Lift network (L block)
         self.lift_network = build_lift_network(
             in_channels=config.in_size,
             fno_width=config.latent_channels,
@@ -700,84 +709,244 @@ class kFNO3D(PreTrainedModel):
             dimension=3,
         )
 
-        self.norm = CustomNorm(config=config, 
-                               num_channels=config.latent_channels,
-                               array_length=5, #len(x.shape for 3D datasets)
-                               channel_at_last_position=False)
-
-        # build main part
-        self.spconv_layers,self.conv_layers = build_fno(
+        # 2. Latent Koopman encoder (H block)
+        self.H_spconv_layers, self.H_conv_layers = build_fno(
             fno_width=config.latent_channels,
             num_fno_modes=num_fno_modes,
-            num_fno_layers=config.num_fno_layers,
+            num_fno_layers=config.num_H_layers,
             dimension=3,
         )
+
+        # 3. Koopman operator (A block) with optional weight sharing
+        if self.share_A_weights:
+            self.A_spconv_layers, self.A_conv_layers = build_fno(
+                fno_width=config.latent_channels,
+                num_fno_modes=num_fno_modes,
+                num_fno_layers=config.num_A_layers,
+                dimension=3,
+            )
+        else:
+            self.A_spconv_blocks = nn.ModuleList()
+            self.A_conv_blocks = nn.ModuleList()
+            for _ in range(self.num_repeats):
+                A_spconv, A_conv = build_fno(
+                    fno_width=config.latent_channels,
+                    num_fno_modes=num_fno_modes,
+                    num_fno_layers=config.num_A_layers,
+                    dimension=3,
+                )
+                self.A_spconv_blocks.append(A_spconv)
+                self.A_conv_blocks.append(A_conv)
+
+        # 4. Koopman decoder/mixing (Q block)
+        if config.Q_type == "separate":
+            # For separate mode, weight sharing matters
+            if self.share_Q_weights:
+                self.Q_spconv_layers, self.Q_conv_layers = build_fno(
+                    fno_width=config.latent_channels,
+                    num_fno_modes=num_fno_modes,
+                    num_fno_layers=config.num_Q_layers,
+                    dimension=3,
+                )
+                self.Q_norm = CustomNorm(
+                    config=config, 
+                    num_channels=config.latent_channels,
+                    array_length=5,
+                    channel_at_last_position=False
+                )
+            else:
+                self.Q_spconv_blocks = nn.ModuleList()
+                self.Q_conv_blocks = nn.ModuleList()
+                self.Q_norms = nn.ModuleList()
+                
+                for _ in range(self.num_repeats):
+                    Q_spconv, Q_conv = build_fno(
+                        fno_width=config.latent_channels,
+                        num_fno_modes=num_fno_modes,
+                        num_fno_layers=config.num_Q_layers,
+                        dimension=3,
+                    )
+                    self.Q_spconv_blocks.append(Q_spconv)
+                    self.Q_conv_blocks.append(Q_conv)
+                    self.Q_norms.append(CustomNorm(
+                        config=config, 
+                        num_channels=config.latent_channels,
+                        array_length=5,
+                        channel_at_last_position=False
+                    ))
+        elif config.Q_type == "coupled":
+            temporal_fno_modes = max(1, min(self.num_repeats // 2, int(round(0.35 * self.num_repeats))))
+            
+            # For 3D data with temporal dimension, we need 4D FNO
+            self.Q_spconv_layers, self.Q_conv_layers = build_fno(
+                fno_width=config.latent_channels,
+                num_fno_modes=[num_fno_modes[0], num_fno_modes[1], num_fno_modes[2], temporal_fno_modes],
+                num_fno_layers=config.num_Q_layers,
+                dimension=4,
+            )
+            self.Q_norm = CustomNorm(
+                config=config, 
+                num_channels=config.latent_channels,
+                array_length=6,  # 6D tensor (batch, channels, depth, height, width, time)
+                channel_at_last_position=False
+            )
+        else:
+            raise ValueError(f"Unknown Q_type: {config.Q_type}. Expected 'separate' or 'coupled'")
 
     def decoder_net(self) -> nn.Module:
         return FullyConnected(
             in_features=self.config.latent_channels,
             layer_size=self.config.decoder_layer_size,
-            out_features=self.config.out_size,
+            out_features=self.config.out_channels,
             num_layers=self.config.decoder_layers,
             activation_fn=self.config.decoder_activation_fn_name,
         )
 
     def forward(self, x: Tensor, **kwargs) -> Tensor:
+        if x.dim() != 5:
+            raise ValueError(
+                "Only 5D tensors [batch, in_channels, grid_x, grid_y, grid_z] accepted for 3D FNO"
+            )
+
+        # --- L block ---
         if self.config.coord_features:
             coord_feat = threed_meshgrid(list(x.shape), x.device)
             x = torch.cat((x, coord_feat), dim=1)
 
         x = self.lift_network(x)
-        # (left, right, top, bottom, front, back)
-        x = F.pad(
-            x,
-            (0, self.pad[2], 0, self.pad[1], 0, self.pad[0]),
-            mode=self.padding_type,
-        )
-        # Spectral layers
-        for k, conv_w in enumerate(zip(self.conv_layers, self.spconv_layers)):
-            conv, w = conv_w
-            if k < len(self.conv_layers) - 1:
-                x = conv(x) + w(x)
-                x = self.norm(x, **kwargs)
-                x = self.activation_fn(x)
-            else:
-                x = conv(x) + w(x)
-                x = self.norm(x, **kwargs)
+        x = F.pad(x, (0, self.pad[2], 0, self.pad[1], 0, self.pad[0]), mode=self.padding_type)
 
+        # --- H block ---
+        x = self.apply_fno_block(
+            x, 
+            self.H_spconv_layers, 
+            self.H_conv_layers,
+            self.norm, 
+            **kwargs
+        )
+
+        # --- A and Q blocks ---
+        x_prev = x
+        
+        if self.config.Q_type == "coupled":
+            outputs = self._process_coupled_mode(x_prev, **kwargs)
+        else:
+            outputs = self._process_separate_mode(x_prev, **kwargs)
+    
+        # Stack outputs along time dimension
+        x = torch.stack(outputs, dim=1)  # [batch, time_steps, ...]
+
+        # Remove padding
         x = x[..., : self.ipad[0], : self.ipad[1], : self.ipad[2]]
         return x
 
+    def _process_coupled_mode(self, x_prev, **kwargs):
+        """Process in coupled mode: collect all A-outputs, then apply 4D Q-block."""
+        a_outputs = []
+        
+        for i in range(self.num_repeats):
+            a_out = self._apply_A_block(x_prev, i, **kwargs)
+            a_outputs.append(a_out)
+            x_prev = a_out
+        
+        # Stack all A outputs and apply 4D Q block
+        a_stacked = torch.stack(a_outputs, dim=-1)  # [batch, channels, depth, height, width, time]
+        q_out = self.apply_fno_block(
+            a_stacked, 
+            self.Q_spconv_layers, 
+            self.Q_conv_layers,
+            self.Q_norm,
+            use_activation=True, 
+            **kwargs
+        )
+        
+        # Split back into separate frames
+        return [q_out[..., i] for i in range(self.num_repeats)]
+
+    def _process_separate_mode(self, x_prev, **kwargs):
+        """Process in separate mode: apply A and Q blocks sequentially."""
+        outputs = []
+        
+        for i in range(self.num_repeats):
+            a_out = self._apply_A_block(x_prev, i, **kwargs)
+            q_out = self._apply_Q_block(a_out, i, **kwargs)
+            
+            outputs.append(q_out)
+            x_prev = a_out
+        
+        return outputs
+
+    def _apply_A_block(self, x, timestep, use_activation=None, **kwargs):
+        """Apply A block with appropriate weights based on sharing configuration."""
+        use_activation = not self.config.linear_A if use_activation is None else use_activation
+        
+        if self.share_A_weights:
+            return self.apply_fno_block(
+                x, 
+                self.A_spconv_layers, 
+                self.A_conv_layers,
+                self.norm,
+                use_activation=use_activation,
+                **kwargs
+            )
+        else:
+            return self.apply_fno_block(
+                x, 
+                self.A_spconv_blocks[timestep], 
+                self.A_conv_blocks[timestep],
+                self.norm,
+                use_activation=use_activation,
+                **kwargs
+            )
+
+    def _apply_Q_block(self, x, timestep, **kwargs):
+        """Apply Q block with appropriate weights based on sharing configuration."""
+        if self.share_Q_weights:
+            return self.apply_fno_block(
+                x, 
+                self.Q_spconv_layers, 
+                self.Q_conv_layers,
+                self.Q_norm,
+                use_activation=True,
+                **kwargs
+            )
+        else:
+            return self.apply_fno_block(
+                x, 
+                self.Q_spconv_blocks[timestep], 
+                self.Q_conv_blocks[timestep],
+                self.Q_norms[timestep],
+                use_activation=True,
+                **kwargs
+            )
+
+    def apply_fno_block(self, x, spconv_layers, conv_layers, norm_layer, use_activation=True, **kwargs):
+        """Helper method to process x through a block of FNO layers."""
+        x_input = x
+        
+        for k, (conv, w) in enumerate(zip(conv_layers, spconv_layers)):
+            if k < len(conv_layers) - 1:
+                x = conv(x) + w(x)
+                x = norm_layer(x, **kwargs)
+                if use_activation:
+                    x = self.activation_fn(x)
+            else:
+                x = conv(x) + w(x)
+                x = norm_layer(x, **kwargs)
+        
+        if hasattr(self.config, 'skip_percentage') and self.config.skip_percentage > 0:
+            skip_pct = max(0.0, min(1.0, self.config.skip_percentage))
+            x = (1 - skip_pct) * x + skip_pct * x_input
+        
+        return x
+
     def grid_to_points(self, value: Tensor) -> Tuple[Tensor, List[int]]:
-        """converting from grid based (image) to point based representation
-
-        Parameters
-        ----------
-        value : Meshgrid tensor
-
-        Returns
-        -------
-        Tuple
-            Tensor, meshgrid shape
-        """
+        """converting from grid based (image) to point based representation"""
         y_shape = list(value.size())
         output = torch.permute(value, (0, 2, 3, 4, 1))
         return output.reshape(-1, output.size(-1)), y_shape
 
     def points_to_grid(self, value: Tensor, shape: List[int]) -> Tensor:
-        """converting from point based to grid based (image) representation
-
-        Parameters
-        ----------
-        value : Tensor
-            Tensor
-        shape : List[int]
-            meshgrid shape
-
-        Returns
-        -------
-        Tensor
-            Meshgrid tensor
-        """
+        """converting from point based to grid based (image) representation"""
         output = value.reshape(shape[0], shape[2], shape[3], shape[4], value.size(-1))
         return torch.permute(output, (0, 4, 1, 2, 3))

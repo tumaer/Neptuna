@@ -526,7 +526,27 @@
           "HYDRA_MAIN_DISABLE_RUN": "1"
           }
 
-  },
+    },
+
+    {
+      "name": "train 3D_KS_kFNO:",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "main.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+          "hydra.run.dir=.",
+          "hydra.output_subdir=null",
+          "data_config=fluids/KS/3d_ks_data.yaml",
+          "model_config=kFNO/default_kfno"
+        ],
+      "env": {
+          "HYDRA_FULL_ERROR": "1",
+          "HYDRA_MAIN_DISABLE_RUN": "1"
+          }
+
+    },
       
       {
         "name": "FNO_HP_OPT_train_1D_KS:",
