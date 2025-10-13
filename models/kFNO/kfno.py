@@ -105,11 +105,27 @@ class kFNO1D(PreTrainedModel):
         if isinstance(config.num_fno_modes, int):
             num_fno_modes = [config.num_fno_modes]
 
-        # Standard norm layer
-        self.norm = CustomNorm(config=config, 
-                               num_channels=config.latent_channels,
-                               array_length=3,
-                               channel_at_last_position=False)
+        # Separate norm layers for H, A, and Q blocks
+        # H norm layer
+        self.H_norm = CustomNorm(config=config, 
+                            num_channels=config.latent_channels,
+                            array_length=3,
+                            channel_at_last_position=False)
+        
+        # A norm layer(s) - either shared or separate
+        if self.share_A_weights:
+            self.A_norm = CustomNorm(config=config, 
+                                num_channels=config.latent_channels,
+                                array_length=3,
+                                channel_at_last_position=False)
+        else:
+            self.A_norms = nn.ModuleList([
+                CustomNorm(config=config,
+                        num_channels=config.latent_channels,
+                        array_length=3,
+                        channel_at_last_position=False)
+                for _ in range(self.num_repeats)
+            ])
 
         # Build model components
         # 1. Lift network (L block)
@@ -235,7 +251,7 @@ class kFNO1D(PreTrainedModel):
             x, 
             self.H_spconv_layers, 
             self.H_conv_layers,
-            self.norm, 
+            self.H_norm, 
             **kwargs
         )
 
@@ -301,7 +317,7 @@ class kFNO1D(PreTrainedModel):
                 x, 
                 self.A_spconv_layers, 
                 self.A_conv_layers,
-                self.norm,
+                self.A_norm,
                 use_activation=use_activation,
                 **kwargs
             )
@@ -310,7 +326,7 @@ class kFNO1D(PreTrainedModel):
                 x, 
                 self.A_spconv_blocks[timestep], 
                 self.A_conv_blocks[timestep],
-                self.norm,
+                self.A_norms[timestep],
                 use_activation=use_activation,
                 **kwargs
             )
@@ -416,11 +432,27 @@ class kFNO2D(PreTrainedModel):
         if isinstance(config.num_fno_modes, int):
             num_fno_modes = [config.num_fno_modes, config.num_fno_modes]
 
-        # Standard norm layer
-        self.norm = CustomNorm(config=config, 
+        # Separate norm layers for H, A, and Q blocks
+        # H norm layer
+        self.H_norm = CustomNorm(config=config, 
                                num_channels=config.latent_channels,
                                array_length=4,
                                channel_at_last_position=False)
+        
+        # A norm layer(s) - either shared or separate
+        if self.share_A_weights:
+            self.A_norm = CustomNorm(config=config, 
+                                   num_channels=config.latent_channels,
+                                   array_length=4,
+                                   channel_at_last_position=False)
+        else:
+            self.A_norms = nn.ModuleList([
+                CustomNorm(config=config,
+                         num_channels=config.latent_channels,
+                         array_length=4,
+                         channel_at_last_position=False)
+                for _ in range(self.num_repeats)
+            ])
 
         # 1. Lift network (L block)
         self.lift_network = build_lift_network(
@@ -542,7 +574,7 @@ class kFNO2D(PreTrainedModel):
             x, 
             self.H_spconv_layers, 
             self.H_conv_layers,
-            self.norm, 
+            self.H_norm, 
             **kwargs
         )
 
@@ -606,7 +638,7 @@ class kFNO2D(PreTrainedModel):
                 x, 
                 self.A_spconv_layers, 
                 self.A_conv_layers,
-                self.norm,
+                self.A_norm,
                 use_activation=use_activation,
                 **kwargs
             )
@@ -615,7 +647,7 @@ class kFNO2D(PreTrainedModel):
                 x, 
                 self.A_spconv_blocks[timestep], 
                 self.A_conv_blocks[timestep],
-                self.norm,
+                self.A_norms[timestep],
                 use_activation=use_activation,
                 **kwargs
             )
@@ -695,11 +727,27 @@ class kFNO3D(PreTrainedModel):
         if isinstance(config.num_fno_modes, int):
             num_fno_modes = [config.num_fno_modes, config.num_fno_modes, config.num_fno_modes]
 
-        # Standard norm layer
-        self.norm = CustomNorm(config=config, 
-                              num_channels=config.latent_channels,
-                              array_length=5,
-                              channel_at_last_position=False)
+        # Separate norm layers for H, A, and Q blocks
+        # H norm layer
+        self.H_norm = CustomNorm(config=config, 
+                               num_channels=config.latent_channels,
+                               array_length=5,
+                               channel_at_last_position=False)
+        
+        # A norm layer(s) - either shared or separate
+        if self.share_A_weights:
+            self.A_norm = CustomNorm(config=config, 
+                                   num_channels=config.latent_channels,
+                                   array_length=5,
+                                   channel_at_last_position=False)
+        else:
+            self.A_norms = nn.ModuleList([
+                CustomNorm(config=config,
+                         num_channels=config.latent_channels,
+                         array_length=5,
+                         channel_at_last_position=False)
+                for _ in range(self.num_repeats)
+            ])
 
         # 1. Lift network (L block)
         self.lift_network = build_lift_network(
@@ -821,7 +869,7 @@ class kFNO3D(PreTrainedModel):
             x, 
             self.H_spconv_layers, 
             self.H_conv_layers,
-            self.norm, 
+            self.H_norm, 
             **kwargs
         )
 
@@ -885,7 +933,7 @@ class kFNO3D(PreTrainedModel):
                 x, 
                 self.A_spconv_layers, 
                 self.A_conv_layers,
-                self.norm,
+                self.A_norm,
                 use_activation=use_activation,
                 **kwargs
             )
@@ -894,7 +942,7 @@ class kFNO3D(PreTrainedModel):
                 x, 
                 self.A_spconv_blocks[timestep], 
                 self.A_conv_blocks[timestep],
-                self.norm,
+                self.A_norms[timestep],
                 use_activation=use_activation,
                 **kwargs
             )

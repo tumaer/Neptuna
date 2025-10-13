@@ -21,6 +21,6 @@ linear_A: True #linear, nonlinear
 share_A_weights: False
 
 num_Q_layers: 1
-Q_type: 'coupled' #separate, coupled
+Q_type: 'separate' #separate, coupled
 skip_percentage: 0.0 #skip connection percentage in each FNO layer (alpha in the paper)
-share_Q_weights: True
+share_Q_weights: False
