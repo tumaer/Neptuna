@@ -353,26 +353,18 @@ class kFNO1D(PreTrainedModel):
             )
 
     def apply_fno_block(self, x, spconv_layers, conv_layers, norm_layer, use_activation=True, **kwargs):
-        """
-        Helper method to process x through a block of FNO layers with optional activation
-        and configurable skip connection
-        """
-        x_input = x
-        
+        """Helper method to process x through a block of FNO layers with skip connections after each layer."""
         for k, (conv, w) in enumerate(zip(conv_layers, spconv_layers)):
-            if k < len(conv_layers) - 1:
-                x = conv(x) + w(x)
-                x = norm_layer(x, **kwargs)
-                if use_activation:
-                    x = self.activation_fn(x)
-            else:
-                x = conv(x) + w(x)
-                x = norm_layer(x, **kwargs)
-        
-        if hasattr(self.config, 'skip_percentage') and self.config.skip_percentage > 0:
-            skip_pct = max(0.0, min(1.0, self.config.skip_percentage))
-            x = (1 - skip_pct) * x + skip_pct * x_input
-        
+            x_layer_input = x
+            x = conv(x) + w(x)
+            x = norm_layer(x, **kwargs)
+            
+            if hasattr(self.config, 'skip_percentage') and self.config.skip_percentage > 0:
+                skip_pct = max(0.0, min(1.0, self.config.skip_percentage))
+                x = (1 - skip_pct) * x + skip_pct * x_layer_input
+            
+            if use_activation and k < len(conv_layers) - 1:
+                x = self.activation_fn(x)
         return x
 
     def grid_to_points(self, value: Tensor) -> Tuple[Tensor, List[int]]:
@@ -673,23 +665,18 @@ class kFNO2D(PreTrainedModel):
             )
 
     def apply_fno_block(self, x, spconv_layers, conv_layers, norm_layer, use_activation=True, **kwargs):
-        """Helper method to process x through a block of FNO layers."""
-        x_input = x
-        
+        """Helper method to process x through a block of FNO layers with skip connections after each layer."""
         for k, (conv, w) in enumerate(zip(conv_layers, spconv_layers)):
-            if k < len(conv_layers) - 1:
-                x = conv(x) + w(x)
-                x = norm_layer(x, **kwargs)
-                if use_activation:
-                    x = self.activation_fn(x)
-            else:
-                x = conv(x) + w(x)
-                x = norm_layer(x, **kwargs)
-        
-        if hasattr(self.config, 'skip_percentage') and self.config.skip_percentage > 0:
-            skip_pct = max(0.0, min(1.0, self.config.skip_percentage))
-            x = (1 - skip_pct) * x + skip_pct * x_input
-        
+            x_layer_input = x
+            x = conv(x) + w(x)
+            x = norm_layer(x, **kwargs)
+            
+            if hasattr(self.config, 'skip_percentage') and self.config.skip_percentage > 0:
+                skip_pct = max(0.0, min(1.0, self.config.skip_percentage))
+                x = (1 - skip_pct) * x + skip_pct * x_layer_input
+            
+            if use_activation and k < len(conv_layers) - 1:
+                x = self.activation_fn(x)
         return x
 
     def grid_to_points(self, value: Tensor) -> Tuple[Tensor, List[int]]:
@@ -968,23 +955,18 @@ class kFNO3D(PreTrainedModel):
             )
 
     def apply_fno_block(self, x, spconv_layers, conv_layers, norm_layer, use_activation=True, **kwargs):
-        """Helper method to process x through a block of FNO layers."""
-        x_input = x
-        
+        """Helper method to process x through a block of FNO layers with skip connections after each layer."""
         for k, (conv, w) in enumerate(zip(conv_layers, spconv_layers)):
-            if k < len(conv_layers) - 1:
-                x = conv(x) + w(x)
-                x = norm_layer(x, **kwargs)
-                if use_activation:
-                    x = self.activation_fn(x)
-            else:
-                x = conv(x) + w(x)
-                x = norm_layer(x, **kwargs)
-        
-        if hasattr(self.config, 'skip_percentage') and self.config.skip_percentage > 0:
-            skip_pct = max(0.0, min(1.0, self.config.skip_percentage))
-            x = (1 - skip_pct) * x + skip_pct * x_input
-        
+            x_layer_input = x
+            x = conv(x) + w(x)
+            x = norm_layer(x, **kwargs)
+            
+            if hasattr(self.config, 'skip_percentage') and self.config.skip_percentage > 0:
+                skip_pct = max(0.0, min(1.0, self.config.skip_percentage))
+                x = (1 - skip_pct) * x + skip_pct * x_layer_input
+            
+            if use_activation and k < len(conv_layers) - 1:
+                x = self.activation_fn(x)
         return x
 
     def grid_to_points(self, value: Tensor) -> Tuple[Tensor, List[int]]:
