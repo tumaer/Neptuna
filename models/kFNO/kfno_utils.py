@@ -115,7 +115,7 @@ class ConvNdFCLayer(nn.Module):
         elif dimension == 3:
             Conv = nn.Conv3d
         elif dimension == 4:
-            Conv = Conv4d  # Use our custom Conv4d
+            Conv = Conv4d  # added custom Conv4d
         else:
             raise ValueError(f"Unsupported dimension: {dimension}. Must be 1, 2, 3, or 4.")
         self.conv = Conv(self.in_channels, self.out_channels, kernel_size=1, bias=True)
@@ -199,6 +199,7 @@ class SpectralConvNd(nn.Module):
                 nn.Parameter(torch.empty(in_channels, out_channels, modes[0], modes[1], modes[2], 2))
             ])
         elif self.dimension == 4:
+            # Experimental for 3D kFNO
             # For 4D, we need 2^4 = 16 weight tensors for different combinations of modes
             self.weights = nn.ParameterList([
                 nn.Parameter(torch.empty(in_channels, out_channels, modes[0], modes[1], modes[2], modes[3], 2)),

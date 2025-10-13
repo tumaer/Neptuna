@@ -493,7 +493,6 @@ class kFNO2D(PreTrainedModel):
 
         # 4. Koopman decoder/mixing (Q block)
         if config.Q_type == "separate":
-            # For separate mode, weight sharing matters
             if self.share_Q_weights:
                 self.Q_spconv_layers, self.Q_conv_layers = build_fno(
                     fno_width=config.latent_channels,
