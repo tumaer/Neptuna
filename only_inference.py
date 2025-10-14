@@ -40,6 +40,7 @@ def load_pretrained_model(model_config):
         "cno": ("models.CNO.cno", "CNO"),
         "scot": ("models.ScOT.scot", "ScOT"),
         "vit": ("models.ViT.vit", "ViT"),
+        "kfno": ("models.kFNO.kfno", "kFNO"),
     }
     
     if model_name not in model_registry:

@@ -1,4 +1,4 @@
-do_infer: True
+do_infer: False
 filter_features:
   infer_filter_frames: [null, null]
   infer_filter_groups: null
