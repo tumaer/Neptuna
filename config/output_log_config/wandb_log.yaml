@@ -1,10 +1,10 @@
 logging: 
   output_dir: null
-  checkpoint_prefix: null # Optional prefix for checkpoints directory, should be a string
+  checkpoint_prefix: "0" # Optional prefix for checkpoints directory, should be a string
   wandb: True  
-  wandb_project: 'wandb_trials'
+  wandb_project: 'KS-50M'
   wandb_run_name: null
   disable_progress_bar: True
-  wandb_api_key: null
+  wandb_api_key: bda71f2f2826f164e8f3027ae7b80c680e35ae94
   # if wandb is already setup and logged into the machine, then api key is obtained as follows:
   # python -c "import wandb; print(wandb.Api().api_key)"  

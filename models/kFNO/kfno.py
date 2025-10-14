@@ -11,6 +11,23 @@ from utils.grid_utils import oned_meshgrid, twod_meshgrid, threed_meshgrid
 from utils.model_utils import CustomNorm
 from .kfno_utils import kFNOConfig
 
+"""
+Koopman Fourier Neural Operator (kFNO) implementation.
+
+This module implements the Koopman Fourier Neural Operator architecture, which combines 
+Fourier Neural Operators (FNO) with Koopman theory for dynamical systems prediction.
+
+The architecture consists of:
+- Lifting network (L block) that maps input to latent space
+- Koopman encoder (H block) that processes in latent space 
+- Koopman evolution operator (A block) that applies dynamics
+- Mixing/decoding network (Q block) that processes operator outputs
+- Final decoder (P block) that maps from latent space to output space
+
+Reference:
+- https://arxiv.org/abs/2412.08426
+"""
+
 class kFNO(PreTrainedModel):
     """Fourier neural operator (FNO) model."""
 
@@ -88,6 +105,28 @@ class kFNO1D(PreTrainedModel):
 
     def __init__(self, config, activation_fn: nn.Module) -> None:
         super().__init__(config)
+        """Initialize the 2D Koopman Fourier Neural Operator (kFNO).
+
+        The kFNO2D architecture consists of several blocks:
+        1. L block (lift network): Maps input features to latent space
+        2. H block (latent Koopman encoder): Processes latent space features
+        3. A block (Koopman operator): Applies dynamical evolution operator
+        4. Q block (decoder/mixing): Processes A-block outputs for each timestep
+        5. P block (decoder): Maps latent representation back to output space (in parent class)
+        
+        Parameters
+        ----------
+        config : kFNOConfig
+            Configuration object containing model hyperparameters
+        activation_fn : nn.Module
+            Activation function to use throughout the model
+            
+        Notes
+        -----
+        - Supports two Q block modes: "separate" (process each frame individually) 
+        or "coupled" (process all frames with a higher-dimensional FNO)
+        - Can share weights across A and Q blocks for parameter efficiency
+        """
 
         self.activation_fn = activation_fn
         self.num_repeats = config.out_size // config.out_channels
@@ -237,6 +276,34 @@ class kFNO1D(PreTrainedModel):
         )
 
     def forward(self, x: Tensor, **kwargs) -> Tensor:
+        """Forward pass through the 2D kFNO model.
+    
+        The forward pass follows this sequence:
+        1. L block: Lift input to latent space (optionally adding coordinate features)
+        2. H block: Process through latent Koopman encoder
+        3. A & Q blocks: Apply dynamics evolution and mixing/decoding
+        - For "separate" mode: Apply A and Q blocks sequentially for each timestep
+        - For "coupled" mode: Apply A blocks sequentially, then process all outputs 
+            with a single higher-dimensional Q block
+        
+        Parameters
+        ----------
+        x : Tensor
+            Input tensor with shape [batch, in_channels, grid_x, grid_y]
+        **kwargs : dict
+            Additional arguments, may contain conditioning_input_data
+            
+        Returns
+        -------
+        Tensor
+            Output tensor with shape [batch, time_steps, out_channels, grid_x, grid_y]
+            representing the predicted sequence
+            
+        Raises
+        ------
+        ValueError
+            If input tensor doesn't have 4 dimensions
+        """
 
         # --- L block ---
         if self.config.coord_features:

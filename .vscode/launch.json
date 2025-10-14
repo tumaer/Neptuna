@@ -95,6 +95,8 @@
           }
 
     },
+
+    
     
     {
       "name": "UNet_HP_OPT_2D_Laser_Droplet_UNet",
@@ -539,6 +541,69 @@
           "hydra.output_subdir=null",
           "data_config=fluids/KS/2d_ks_data_default.yaml",
           "model_config=kFNO/default_kfno"
+        ],
+      "env": {
+          "HYDRA_FULL_ERROR": "1",
+          "HYDRA_MAIN_DISABLE_RUN": "1"
+          }
+
+    },
+
+    {
+      "name": "train 2D_KS_kFNO_wandb:",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "main.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+          "hydra.run.dir=.",
+          "hydra.output_subdir=null",
+          "data_config=fluids/KS/2d_ks_data_default.yaml",
+          "model_config=kFNO/kfno_50M",
+          "output_log_config=wandb_log.yaml"
+        ],
+      "env": {
+          "HYDRA_FULL_ERROR": "1",
+          "HYDRA_MAIN_DISABLE_RUN": "1"
+          }
+
+    },
+
+    {
+      "name": "train 2D_KS_FNO_wandb:",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "main.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+          "hydra.run.dir=.",
+          "hydra.output_subdir=null",
+          "data_config=fluids/KS/2d_ks_data_default.yaml",
+          "model_config=FNO/fno_50M",
+          "output_log_config=wandb_log.yaml"
+        ],
+      "env": {
+          "HYDRA_FULL_ERROR": "1",
+          "HYDRA_MAIN_DISABLE_RUN": "1"
+          }
+
+    },
+
+    {
+      "name": "train 2D_KS_CNO_wandb:",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "main.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+          "hydra.run.dir=.",
+          "hydra.output_subdir=null",
+          "data_config=fluids/KS/2d_ks_data_default.yaml",
+          "model_config=CNO/cno_50M",
+          "output_log_config=wandb_log.yaml"
         ],
       "env": {
           "HYDRA_FULL_ERROR": "1",
