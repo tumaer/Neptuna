@@ -1299,7 +1299,33 @@ class Trainer(Trainer_):
             )
         )
 
-        self.log(output.metrics) #NOTE: logs into wandb during evaluation
+        # Optionally log with the epoch corresponding to the best checkpoint
+        # (used for the final evaluation pass at the end of training to avoid
+        # logging the last epoch instead of the best one).
+        _logged_with_best_epoch = False
+        try:
+            if getattr(self, "_force_best_epoch_for_logging", False):
+                ckpt_path = getattr(self.state, "best_model_checkpoint", None)
+                if ckpt_path is not None:
+                    state_path = os.path.join(ckpt_path, "trainer_state.json")
+                    if os.path.isfile(state_path):
+                        try:
+                            with open(state_path, "r") as _fp:
+                                _state_json = json.load(_fp)
+                            _best_epoch = _state_json.get("epoch", None)
+                            if _best_epoch is not None:
+                                _prev_epoch = self.state.epoch
+                                self.state.epoch = _best_epoch
+                                self.log(output.metrics)  # logs using the best epoch value
+                                self.state.epoch = _prev_epoch
+                                _logged_with_best_epoch = True
+                        except Exception:
+                            pass
+        finally:
+            pass
+
+        if not _logged_with_best_epoch:
+            self.log(output.metrics) #NOTE: logs into wandb during evaluation
 
         if DebugOption.TPU_METRICS_DEBUG in self.args.debug:
             # tpu-comment: Logging debug metrics for PyTorch/XLA (compile, execute times, ops, etc.)
@@ -1325,7 +1351,7 @@ class Trainer(Trainer_):
 
         self._memory_tracker.stop_and_update_metrics(output.metrics)
         #NOTE: stop training if NaN is encountered in the loss and set the control flags to False.
-        if self.control.should_training_stop and self.state.epoch<self.train_config['num_train_epochs']:
+        if self.control.should_training_stop_due_to_nan and self.state.epoch<self.train_config['num_train_epochs']:
             self.control.should_evaluate = False
             self.control.should_save = False
             self.control.should_plot = False
@@ -1507,16 +1533,6 @@ class Trainer(Trainer_):
 
             self.log(logs, start_time) #NOTE: logs into wandb for training
         
-        # ------------------------------------------------------------------
-        # Ensure final evaluation is run at the end of training
-        # ------------------------------------------------------------------
-        # if (
-        #     self.control.should_training_stop  # training loop is signaled to stop
-        #     and self.state.epoch >= self.train_config["num_train_epochs"]  # we have reached (or slightly passed) the last epoch
-        # ):
-        #     # Trigger a last evaluation regardless of the usual evaluation schedule.
-        #     self.control.should_evaluate = True
-
         metrics = None
         if self.control.should_evaluate:
             metrics = self._evaluate(trial, ignore_keys_for_eval) 

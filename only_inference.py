@@ -16,6 +16,7 @@ import json
 from utils.seed_utils import set_global_seed
 import torch
 import numpy as np
+import csv
 
 def load_pretrained_model(model_config):
     """
@@ -198,6 +199,25 @@ def find_checkpoint_path(experiment_dir):
     checkpoint_dirs.sort(key=lambda x: int(x.split('-')[-1]))
     return checkpoint_dirs[-1]
 
+def save_errors_to_csv(errors, output_dir):
+    """
+    Save errors to a CSV file in the specified output directory.
+
+    Args:
+        errors: Dictionary of errors to save.
+        output_dir: Directory where the CSV file will be saved.
+    """
+    csv_file = os.path.join(output_dir, "results.csv")
+    file_is_empty = not os.path.exists(csv_file) or os.stat(csv_file).st_size == 0
+
+    with open(csv_file, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        # Write header only if the file is empty
+        if file_is_empty:
+            writer.writerow(["Metric", "Value"])
+        for key, value in errors.items():
+            writer.writerow([key, value])
+
 def run_inference_for_each_experiment(experiment_dir, infer_config):
     """
     Run inference for a single experiment directory.
@@ -237,6 +257,21 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
     try:
         # Load configurations
         data_config = OmegaConf.load(data_config_path)
+        # Post-load fix: convert parameter_min_max_stats keys to integers
+        try:
+            cond_cfg = data_config.get("conditioning_features", None)
+            if cond_cfg is not None:
+                param_stats = cond_cfg.get("parameter_min_max_stats", None)
+                if isinstance(param_stats, DictConfig):
+                    coerced = {}
+                    for k, v in param_stats.items():
+                        try:
+                            coerced[int(k)] = v
+                        except Exception:
+                            coerced[k] = v
+                    data_config["conditioning_features"]["parameter_min_max_stats"] = coerced
+        except Exception:
+            print(f" Parameter_min_max_stats not available, skipping...")
         model_config = OmegaConf.load(model_config_path)
         
         # Set global seed from data_config (default 0)
@@ -391,10 +426,18 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 print(f"** Using infer_filter_frames from inference config: {infer_filter_frames} **")
         
         print("Running solo inference...")
+
+        if infer_config["dataset_directory_path"] is not None:
+            dataset_directory_path = infer_config["dataset_directory_path"]
+        else:
+            dataset_directory_path = data_config["dataset_directory_path"]
+
+        print(f"Dataset directory path: {dataset_directory_path}")
+
         infer_ds, infer_ds_from_ic = fetch_dataset(
                                                 data_config["dataset_name"], 
                                                 mode="infer",
-                                                dataset_directory_path=data_config["dataset_directory_path"],
+                                                dataset_directory_path=dataset_directory_path,
                                                 sequence_info=data_config["sequence_info"],
                                                 infer_filter_groups=infer_filter_groups,
                                                 infer_filter_frames=infer_filter_frames,
@@ -437,9 +480,12 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
 
             # pretty print the keys which have the word error in them
             print('Accumulated error for the whole test set (random start):')
+            errors = {} 
             for key, value in predictions_obj.metrics.items():
                 if "error" in key:
                     print(f"{key}: {value}")
+                    errors["random_start"+key] = value
+            save_errors_to_csv(errors, solo_inference_dir)
             # ----------------------------------------------------------
             # Prepare prediction, target and input arrays
             # ----------------------------------------------------------
@@ -560,9 +606,12 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             predictions_obj, inputs, conditioning_inputs = trainer.predict(infer_ds_from_ic, metric_key_prefix="")
 
             print('Accumulated error for the whole test set (IC start):')
+            errors = {}
             for key, value in predictions_obj.metrics.items():
                 if "error" in key:
                     print(f"{key}: {value}")
+                    errors["ic_start"+key] = value
+            save_errors_to_csv(errors, solo_inference_dir)
 
             preds = predictions_obj.predictions
             targets = predictions_obj.label_ids
@@ -581,8 +630,11 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 preds, targets, outputs_per_rollout=outputs_per_rollout, include_per_timestep=True
             )
             
+            errors = {}
             for metric_name, values in per_rollout_step_metrics_ic.items():
                 print(f"{metric_name} per-step (IC start): {values}")
+                errors[metric_name] = values
+            save_errors_to_csv(errors, solo_inference_dir)
 
             # ----------------------------------------------------------
             # Renormalise data and reconstruct residuals for plotting

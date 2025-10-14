@@ -1,5 +1,4 @@
-do_infer: False
-inference_directory: ./checkpoints
+do_infer: True
 filter_features:
   infer_filter_frames: [null, null]
   infer_filter_groups: null

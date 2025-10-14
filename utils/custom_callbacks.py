@@ -69,15 +69,13 @@ import wandb
 from transformers.integrations.integration_utils import logger
 from omegaconf import ListConfig
 import tempfile
-import numpy as np
 # Import high-level preprocessing helper
 from utils.plot_progress import plot_examples, preprocess_for_plotting, build_info_strings
 from transformers.trainer_callback import TrainerCallback
 from transformers.trainer_callback import TrainerState
 import os
 from PIL import Image
-import torch
-import json
+from pathlib import Path
 
 class CallbackHandler(CallbackHandler_):
     """
@@ -180,7 +178,7 @@ class NaNCallback(TrainerCallback):
         loss = logs.get("loss") or logs.get("eval_l2_error") or logs.get("eval_l1_error")
         if loss is not None and (loss != loss):  # NaN check
             print("🛑 NaN encountered in loss. Stopping training.")
-            control.should_training_stop = True
+            control.should_training_stop_due_to_nan = True
             control.should_evaluate = False
             control.should_save = False
             control.should_plot = False
@@ -213,6 +211,12 @@ class WandbCallback(WandbCallback_):
     on_train_end(args, state, control, **kwargs)
         Clean up W&B session at training completion.
     """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # When True, metric logs (e.g., eval_*) are suppressed from being sent to W&B.
+        # Plot artifacts (keys starting with "plot_") are still allowed through.
+        self.suppress_metrics_logging = False
+
     def setup(self, args, state, model, **kwargs):
         """
         Setup the optional Weights & Biases (*wandb*) integration.
@@ -379,9 +383,22 @@ class WandbCallback(WandbCallback_):
             self._initialized = False  # force full re-initialisation path
             self.setup(args, state, model)
         if state.is_world_process_zero:
-            for k, v in logs.items():
-                if k in single_value_scalars:
-                    self._wandb.run.summary[k] = v
+            logs = logs or {}
+            # When suppression is enabled, block metric logs that do not contain plot artifacts.
+            has_plot_keys = any(k.startswith("plot_") for k in logs.keys())
+            if self.suppress_metrics_logging and not has_plot_keys:
+                return
+
+            # If suppression is enabled and there are plot keys mixed with metrics, keep only plot keys.
+            if self.suppress_metrics_logging and has_plot_keys:
+                logs = {k: v for k, v in logs.items() if k.startswith("plot_")}
+
+            # Update summary only for scalar metrics and only when not suppressing metrics.
+            if not self.suppress_metrics_logging:
+                for k, v in logs.items():
+                    if k in single_value_scalars:
+                        self._wandb.run.summary[k] = v
+
             non_scalar_logs = {k: v for k, v in logs.items() if k not in single_value_scalars}
             # If all non-scalar log keys start with the special "plot_" prefix, we skip the standard
             # key rewrite performed by 🤗 Transformers so that these entries are logged verbatim.
@@ -391,6 +408,15 @@ class WandbCallback(WandbCallback_):
                 non_scalar_logs = rewrite_logs(non_scalar_logs)
             # else: leave non_scalar_logs untouched to preserve the original keys.
             self._wandb.log({**non_scalar_logs, "train/global_step": state.global_step}, step=state.global_step)
+    
+    def on_predict(self, args, state, control, metrics, **kwargs):
+        if self._wandb is None:
+            return
+        if not self._initialized:
+            self.setup(args, state, **kwargs)
+        if state.is_world_process_zero:
+            metrics = rewrite_logs(metrics)
+            self._wandb.log(metrics)
 
     def on_train_end(self, args, state, control, **kwargs):
         """
@@ -733,7 +759,36 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
             logger.info("\n One last validation with the best model to save the plot with _best.png suffix.")
             trainer = getattr(self, "trainer", None)
             try:
-                _ = trainer.evaluate()
+                # Temporarily suppress metric logging to W&B so we don't overwrite
+                # the final-epoch metrics with this last validation pass.
+                callbacks = []
+                try:
+                    callbacks = list(getattr(trainer.callback_handler, "callbacks", []) or [])
+                except Exception:
+                    callbacks = []
+                wandb_callbacks = [cb for cb in callbacks if isinstance(cb, WandbCallback)]
+                # Enable suppression for the duration of this evaluate + plotting sequence
+                for cb in wandb_callbacks:
+                    try:
+                        cb.suppress_metrics_logging = True
+                    except Exception:
+                        pass
+
+                try:
+                    # Force logging with the best epoch during this final evaluate
+                    setattr(trainer, "_force_best_epoch_for_logging", True)
+                    _ = trainer.evaluate()
+                finally:
+                    # Always restore suppression flag
+                    try:
+                        setattr(trainer, "_force_best_epoch_for_logging", False)
+                    except Exception:
+                        pass
+                    for cb in wandb_callbacks:
+                        try:
+                            cb.suppress_metrics_logging = False
+                        except Exception:
+                            pass
                 # ----------------------------------------------------------
                 # After evaluation, reload TrainerState from the best/latest
                 # checkpoint-# directory inside the run directory.
@@ -754,11 +809,31 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
                             trainer.state = TrainerState.load_from_json(state_path)
                 except Exception as ie:
                     logger.warning(f"Could not reload TrainerState from checkpoint: {ie}")
-                # Flag a plot pass and enforce best-suffix saving
-                trainer.control.should_plot = True
-                self.on_plot(
-                    trainer.args, trainer.state, trainer.control, is_new_best_metric=True, model=trainer.model, best_plot_at_train_end=True
-                )
+                # Flag a plot pass and enforce best-suffix saving. We suppress metric
+                # logging again during the plot logging, since trainer.log will invoke
+                # callback on_log; we only want plot_* entries to go through.
+                for cb in wandb_callbacks:
+                    try:
+                        cb.suppress_metrics_logging = True
+                    except Exception:
+                        pass
+                try:
+                    # Ensure that the epoch we log corresponds to the best checkpoint's epoch
+                    setattr(trainer, "_force_best_epoch_for_logging", True)
+                    trainer.control.should_plot = True
+                    self.on_plot(
+                        trainer.args, trainer.state, trainer.control, is_new_best_metric=True, model=trainer.model, best_plot_at_train_end=True
+                    )
+                finally:
+                    try:
+                        setattr(trainer, "_force_best_epoch_for_logging", False)
+                    except Exception:
+                        pass
+                    for cb in wandb_callbacks:
+                        try:
+                            cb.suppress_metrics_logging = False
+                        except Exception:
+                            pass
             except Exception as e:
                 logger.warning(f"Final validation/plotting failed: {e}")
         except Exception as e:
@@ -790,7 +865,8 @@ if not hasattr(TrainerCallback_, "on_plot"):
 @dataclass
 class TrainerControl(TrainerControl_):
     """
-    TrainerControl subclass with an additional `should_plot` switch.
+    TrainerControl subclass with an additional `should_plot` and `should_training_stop_due_to_nan`
+    switch.
     
     This extended control class adds plotting state management to the standard
     Transformers training control flow. It maintains all original functionality
@@ -801,7 +877,8 @@ class TrainerControl(TrainerControl_):
     should_plot : bool, default=False
         Flag indicating whether plotting operations should be performed.
         Set by evaluation callbacks and consumed by plotting callbacks.
-        
+    should_training_stop_due_to_nan : bool, default=False
+        Flag indicating if training should stop due to NaN in loss.
     Methods
     -------
     _new_step()
@@ -818,6 +895,7 @@ class TrainerControl(TrainerControl_):
     """
 
     should_plot: bool = False
+    should_training_stop_due_to_nan: bool = False  # New flag to indicate NaN-induced stop
 
     def _new_step(self):
         """
