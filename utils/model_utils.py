@@ -333,6 +333,15 @@ class BatchNormChannelLast(nn.Module):
             x = x.permute(0, 4, 1, 2, 3)
             x = self.bn(x)
             x = x.permute(0, 2, 3, 4, 1)
+        elif self.dim == 6:
+            # ADDED FOR 3D kFNO
+            # x: (N, D1, D2, D3, D4, C) → (N, C, D1, D2, D3*D4)
+            N, D1, D2, D3, D4, C = x.shape
+            x = x.permute(0, 5, 1, 2, 3, 4)
+            x = x.reshape(N, C, D1, D2, D3*D4)
+            x = self.bn(x)
+            x = x.reshape(N, C, D1, D2, D3, D4)
+            x = x.permute(0, 2, 3, 4, 5, 1)
         return x
 
 class GroupNormChannelLast(nn.Module):
@@ -387,8 +396,29 @@ class GroupNormChannelLast(nn.Module):
             x = x.permute(0, 4, 1, 2, 3)
             x = self.gn(x)
             x = x.permute(0, 2, 3, 4, 1)
+        elif self.dim == 6:
+            # ADDED FOR 3D kFNO
+            x = x.permute(0, 5, 1, 2, 3, 4) # (N, D1, D2, D3, D4, C) → (N, C, D1, D2, D3, D4)
+            x = self.gn(x)
+            x = x.permute(0, 2, 3, 4, 5, 1)
         else:
             raise ValueError(f"Unsupported dimension: {self.dim}")
+        return x
+
+class WrappedBatchNorm6D(nn.Module):
+    """Helper for applying BatchNorm3D to 6D tensors with channel in front."""
+    def __init__(self, num_channels, **kwargs):
+        super().__init__()
+        self.bn = nn.BatchNorm3d(num_channels, **kwargs)
+    
+    def forward(self, x):
+        # x: (N, C, D1, D2, D3, D4) → reshape to (N, C, D1, D2, D3*D4)
+        orig_shape = x.shape
+        N, C = orig_shape[0], orig_shape[1]
+        x = x.reshape(N, C, orig_shape[2], orig_shape[3], -1)
+        x = self.bn(x)
+        # Restore original shape
+        x = x.reshape(orig_shape)
         return x
 
 class CustomNorm(nn.Module):
@@ -421,7 +451,7 @@ class CustomNorm(nn.Module):
         # Basic validation
         if num_channels <= 0:
             raise ValueError("num_channels must be positive")
-        if array_length not in (3, 4, 5):
+        if array_length not in (3, 4, 5, 6):
             raise ValueError("array_length must be 3, 4, or 5 (including batch dimension)")
 
         self.num_channels = num_channels
@@ -463,13 +493,15 @@ class CustomNorm(nn.Module):
                     dim=self.array_length, num_channels=self.num_channels, eps=eps
                 )
             # channel-first mapping by spatial rank
-            bn_cls_map = {3: nn.BatchNorm1d, 4: nn.BatchNorm2d, 5: nn.BatchNorm3d}
+            bn_cls_map = {3: nn.BatchNorm1d, 4: nn.BatchNorm2d, 5: nn.BatchNorm3d, 6: nn.BatchNorm3d}
             try:
                 bn_cls = bn_cls_map[self.array_length]
             except KeyError:
                 raise ValueError(
                     f"Unsupported tensor rank {self.array_length} for batch norm"
                 )
+            if self.array_length == 6:
+                return WrappedBatchNorm6D(self.num_channels, eps=eps)
             return bn_cls(self.num_channels, eps=eps)
 
         # -------------------- GROUP NORM --------------------
