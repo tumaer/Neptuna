@@ -29,3 +29,4 @@ model.safetensors
 rng_state.pth
 trainer_state.json
 training_args.bin
+bash_folder/

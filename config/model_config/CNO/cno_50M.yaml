@@ -1,8 +1,8 @@
 model_name: CNO
-cno_depth: 4 #number of down/up sampling blocks in the network
-n_blocks: 6 #number of residual blocks per level (except the neck)
-n_blocks_bottleneck: 6 #number of residual blocks in the bottleneck
-channel_multiplier: 67 #base channel multiplier for network width
-latent_channels: 160 #number of channels in latent space of the lifting/projection block
+cno_depth: 5 #number of down/up sampling blocks in the network
+n_blocks: 8 #number of residual blocks per level (except the neck)
+n_blocks_bottleneck: 14 #number of residual blocks in the bottleneck
+channel_multiplier: 24 #base channel multiplier for network width
+latent_channels: 256 #number of channels in latent space of the lifting/projection block
 norm_layer_eps: 1e-5
-norm: 'batch' # layer, batch, group, identity
+norm: 'group' # layer, batch, group, identity
