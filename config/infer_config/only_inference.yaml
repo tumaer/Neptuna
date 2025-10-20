@@ -1,10 +1,10 @@
 do_infer: True
-inference_directory: ./checkpoints
-dataset_directory_path: null  # if null, will use the dataset_directory_path from data_config.json inside the experiment directory.
+inference_directory: ./sample_inference/AB-1M
+dataset_directory_path: ./data/fluids/Laser_Droplet_DPUVES/2D  # if null, will use the dataset_directory_path from data_config.json inside the experiment directory.
 filter_features:
   infer_filter_frames: [null, null]
   infer_filter_groups: null
-n_infer_rollouts: 4
+n_infer_rollouts: 20
 n_infer_plot_examples: 2
 infer_from_random_timestep: True
 infer_from_ic: True
