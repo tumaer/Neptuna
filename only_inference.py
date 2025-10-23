@@ -17,6 +17,7 @@ from utils.seed_utils import set_global_seed
 import torch
 import numpy as np
 import csv
+import pickle
 
 def load_pretrained_model(model_config):
     """
@@ -787,8 +788,9 @@ def main(cfg: DictConfig):
     # Process each experiment directory and collect IC-start metrics for multi-run overlay (no aggregation)
     runs_step_metrics = {}
     runs_sequence_info = {}
+    run_configs = {}
     sequence_info_ref = None
-
+    
     for experiment_dir in experiment_dirs:
         res = run_inference_for_each_experiment(experiment_dir, infer_config)
         if isinstance(res, dict) and res.get("metrics") is not None:
@@ -799,6 +801,18 @@ def main(cfg: DictConfig):
             # Keep per-run sequence info for correct timestep x-axis
             if res.get("sequence_info") is not None:
                 runs_sequence_info[run_label] = res.get("sequence_info")
+        try:
+            checkpoint_path = find_checkpoint_path(experiment_dir)
+            if checkpoint_path:
+                model_config_path = os.path.join(checkpoint_path, "config.json")
+                if os.path.exists(model_config_path):
+                    # Load the config as a dictionary
+                    with open(model_config_path, 'r') as f:
+                        run_config = json.load(f)
+                    run_configs[os.path.basename(experiment_dir)] = run_config
+                    print(f"Loaded config for {os.path.basename(experiment_dir)}")
+        except Exception as e:
+            print(f"Error loading config for {experiment_dir}: {str(e)}")
 
     # Create a single overlay plot of all runs in inference_dir if IC metrics are available
     # Here the overall all-channel combinedmetrics of each run are plotted and NOT the channel-wise metrics
@@ -811,7 +825,14 @@ def main(cfg: DictConfig):
             sequence_info=sequence_info_ref if sequence_info_ref is not None else [1, 1, 1],
             runs_sequence_info=runs_sequence_info if len(runs_sequence_info) > 0 else None,
         )
-    
+
+    plot_rollout_metrics_bar_chart(
+        runs_step_metrics=runs_step_metrics,
+        save_dir=inference_dir,
+        run_configs=run_configs,
+        filename="rollout_metrics_bar_chart.png"
+    )
+
     print(f"\n{'='*60}")
     print("All inference runs completed!")
     print(f"{'='*60}")
