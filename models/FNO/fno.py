@@ -97,11 +97,14 @@ class FNO1D(PreTrainedModel):
             activation_fn=self.activation_fn,
             dimension=1,
         )
-
-        self.norm = CustomNorm(config=config, 
-                               num_channels=config.latent_channels,
-                               array_length=3,
-                               channel_at_last_position=False)
+        
+        self.norm = nn.ModuleList([
+            CustomNorm(config=config, 
+                       num_channels=config.latent_channels,
+                       array_length=3,
+                       channel_at_last_position=False)
+            for _ in range(config.num_fno_layers)
+        ])
        
         # build main part
         self.spconv_layers,self.conv_layers = build_fno(
@@ -133,11 +136,11 @@ class FNO1D(PreTrainedModel):
             conv, w = conv_w
             if k < len(self.conv_layers) - 1:
                 x = conv(x) + w(x)
-                x = self.norm(x, **kwargs)
+                x = self.norm[k](x, **kwargs)
                 x = self.activation_fn(x)
             else:
                 x = conv(x) + w(x)
-                x = self.norm(x, **kwargs)
+                x = self.norm[k](x, **kwargs)
 
         x = x[..., : self.ipad[0]]
         return x
@@ -204,10 +207,13 @@ class FNO2D(PreTrainedModel):
             dimension=2,
         )
 
-        self.norm = CustomNorm(config=config, 
-                               num_channels=config.latent_channels,
-                               array_length=4, #len(x.shape for 2D datasets)
-                               channel_at_last_position=False)
+        self.norm = nn.ModuleList([
+            CustomNorm(config=config, 
+                       num_channels=config.latent_channels,
+                       array_length=4, #len(x.shape for 2D datasets)
+                       channel_at_last_position=False)
+            for _ in range(config.num_fno_layers)
+        ])
 
         # build main part
         self.spconv_layers,self.conv_layers = build_fno(
@@ -244,11 +250,11 @@ class FNO2D(PreTrainedModel):
             conv, w = conv_w
             if k < len(self.conv_layers) - 1:   
                 x = conv(x) + w(x)
-                x = self.norm(x, **kwargs)
+                x = self.norm[k](x, **kwargs)
                 x = self.activation_fn(x)
             else:
                 x = conv(x) + w(x)
-                x = self.norm(x, **kwargs)
+                x = self.norm[k](x, **kwargs)
         # remove padding
         x = x[..., : self.ipad[0], : self.ipad[1]]
 
@@ -316,10 +322,13 @@ class FNO3D(PreTrainedModel):
             dimension=3,
         )
 
-        self.norm = CustomNorm(config=config, 
-                               num_channels=config.latent_channels,
-                               array_length=5, #len(x.shape for 3D datasets)
-                               channel_at_last_position=False)
+        self.norm = nn.ModuleList([
+            CustomNorm(config=config, 
+                       num_channels=config.latent_channels,
+                       array_length=5, #len(x.shape for 3D datasets)
+                       channel_at_last_position=False)
+            for _ in range(config.num_fno_layers)
+        ])
 
         # build main part
         self.spconv_layers,self.conv_layers = build_fno(
@@ -355,11 +364,11 @@ class FNO3D(PreTrainedModel):
             conv, w = conv_w
             if k < len(self.conv_layers) - 1:
                 x = conv(x) + w(x)
-                x = self.norm(x, **kwargs)
+                x = self.norm[k](x, **kwargs)
                 x = self.activation_fn(x)
             else:
                 x = conv(x) + w(x)
-                x = self.norm(x, **kwargs)
+                x = self.norm[k](x, **kwargs)
 
         x = x[..., : self.ipad[0], : self.ipad[1], : self.ipad[2]]
         return x

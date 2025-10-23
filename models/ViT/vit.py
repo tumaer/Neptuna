@@ -4,10 +4,9 @@ from transformers.modeling_outputs import BaseModelOutput
 from transformers.models.vit.modeling_vit import ViTPreTrainedModel
 
 from utils.model_utils import CustomNorm
-from .vit_utils import ViTEmbeddings, ViTEncoder
+from .vit_utils import ViTEmbeddings, ViTEncoder, ViTConfig
 import torch
 from torch import nn, Tensor
-from .vit_utils import ViTConfig
 from utils.grid_utils import twod_meshgrid
 
 
