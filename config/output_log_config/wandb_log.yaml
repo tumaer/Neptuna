@@ -1,8 +1,8 @@
 logging: 
   output_dir: null
   checkpoint_prefix: "2" # Optional prefix for checkpoints directory, should be a string
-  wandb: False  
-  wandb_project: 'KS-50M'
+  wandb: True
+  wandb_project: 'test-project'
   wandb_run_name: null
   disable_progress_bar: True
   wandb_api_key: bda71f2f2826f164e8f3027ae7b80c680e35ae94

@@ -204,8 +204,8 @@ class LayoutConfig:
     base_visual_size: float = 3.5
     
     # Fixed margins (in inches)
-    margin_between_plots_h: float = 0.9
-    margin_between_plots_v: float = 0.9
+    margin_between_plots_h: float = 0.65
+    margin_between_plots_v: float = 0.65
     
     # Colorbar space (in inches, added to plot height/width)
     colorbar_thickness: float = 0.25
@@ -229,7 +229,6 @@ class LayoutConfig:
     # Timestamp row/column dimensions (in inches)
     timestamp_row_height: float = 0.2  # For horizontal layout
     timestamp_column_width: float = 0.3  # For vertical layout
-
 
 @dataclass
 class ColorbarConfig:

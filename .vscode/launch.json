@@ -581,9 +581,9 @@
           "hydra.run.dir=.",
           "hydra.output_subdir=null",
           "data_config=fluids/KS/2d_ks_data_default.yaml",
-          "model_config=FNO/fno_50M",
+          "model_config=FNO/fno_1M",
           "output_log_config=wandb_log.yaml",
-          "train_config=long_training.yaml"
+          "train_config=default_training.yaml"
         ],
       "env": {
           "HYDRA_FULL_ERROR": "1",

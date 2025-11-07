@@ -4,7 +4,9 @@ import os
 import glob
 from utils.load_data import fetch_dataset
 from utils.plot_progress import build_info_strings
-from utils.plot_progress import plot_examples, preprocess_for_plotting, plot_rollout_metrics
+from utils.plot_progress import preprocess_for_plotting, plot_rollout_metrics
+from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
+from utils.plot_progress import plot_rollout_metrics_bar_chart
 from utils.plot_progress import plot_multi_run_rollout_metrics
 from metrics.default_metrics import l1_error, l2_error, compute_metrics_for_n_rollouts
 from transformers.trainer import EvalPrediction
@@ -17,7 +19,6 @@ from utils.seed_utils import set_global_seed
 import torch
 import numpy as np
 import csv
-import pickle
 
 def load_pretrained_model(model_config):
     """
@@ -557,29 +558,45 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             for example_idx in chosen_example_indices:
                 ex_save_dir = os.path.join(plot_save_dir, f"example_{int(example_idx)}")
                 # Save the visual comparison plot for this example
-                plot_examples(
+
+                layout_config = LayoutConfig(
+                    base_visual_size=3.5,
+                    margin_between_plots_h=0.65,
+                    margin_between_plots_v=0.65
+                )
+
+                slice_config = Slice3DConfig(
+                    slice_axis=0,
+                    num_slices=4
+                )
+
+                plotter = create_plotter(
+                    orientation='vertical',
                     input_array=inp_renorm,
                     prediction_array=pred_renorm,
                     target_array=tgt_renorm,
-                    only_input_channel_names=only_input_channel_names,
+                    input_channel_names=only_input_channel_names,
                     output_channel_names=output_channel_names,
                     conditioning_input_array=cond_inp_renorm,
-                    conditioning_input_channel_names=cond_inp_channel_names,
+                    conditioning_channel_names=cond_inp_channel_names,
                     checkpoint_step=None,
                     epoch=None,
                     extra_info=data_config.get("dataset_name")+"_Inference_plot_from_random_timestep",
                     ndim=ndim,
+                    slice_config=slice_config,
                     num_examples=1,
                     stride=stride_val,
                     save_dir=ex_save_dir,
                     log_to_wandb=False,
                     best_plot_at_train_end=False,
+                    layout_config=layout_config,
+                    include_relative_error=True,
                     model_info=model_info_str,
                     data_info=data_info_str,
-                    train_info=train_info_str,
-                    scheduler_info=sched_info_str,
-                    example_indices=[int(example_idx)],
+                    train_info=train_info_str
                 )
+                
+                plotter.plot()
 
                 # Create a rollout metrics plot for this example (no batch aggregation)
                 ex_preds = preds[example_idx:example_idx+1]      # shape (1, R*T, C, *spatial)
@@ -681,29 +698,44 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                                                                                             scheduler_config=scheduler_config
                                                                                         )
 
-            # Create rollout sample plots, these plots start from the initial condition in the test dataset
-            plot_examples(
+            layout_config = LayoutConfig(
+                base_visual_size=3.5,
+                margin_between_plots_h=0.65,
+                margin_between_plots_v=0.65
+            )
+
+            slice_config = Slice3DConfig(
+                slice_axis=0,
+                num_slices=4
+            )
+
+            plotter = create_plotter(
+                orientation='vertical',
                 input_array=inp_renorm,
                 prediction_array=pred_renorm,
                 target_array=tgt_renorm,
-                only_input_channel_names=only_input_channel_names,
+                input_channel_names=only_input_channel_names,
                 output_channel_names=output_channel_names,
                 conditioning_input_array=cond_inp_renorm,
-                conditioning_input_channel_names=cond_inp_channel_names,
+                conditioning_channel_names=cond_inp_channel_names,
                 checkpoint_step=None,
                 epoch=None,
                 extra_info=data_config.get("dataset_name")+"_Inference_plot_from_IC",
                 ndim=ndim,
+                slice_config=slice_config,
                 num_examples=infer_config["n_infer_plot_examples"],
                 stride=stride_val,
                 save_dir=plot_save_dir,
                 log_to_wandb=False,
                 best_plot_at_train_end=False,
+                layout_config=layout_config,
+                include_relative_error=True,
                 model_info=model_info_str,
                 data_info=data_info_str,
-                train_info=train_info_str,
-                scheduler_info=sched_info_str,
+                train_info=train_info_str
             )
+            
+            plotter.plot()
 
             # Prepare return payload for top-level multi-run plotting
             ic_return = {

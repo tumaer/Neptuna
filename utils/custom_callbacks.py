@@ -70,7 +70,8 @@ from transformers.integrations.integration_utils import logger
 from omegaconf import ListConfig
 import tempfile
 # Import high-level preprocessing helper
-from utils.plot_progress import plot_examples, preprocess_for_plotting, build_info_strings
+from utils.plot_progress import preprocess_for_plotting, build_info_strings
+from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
 from transformers.trainer_callback import TrainerCallback
 from transformers.trainer_callback import TrainerState
 import os
@@ -684,29 +685,44 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
                     scheduler_config=self.scheduler_config
                 )
 
-                fig_dict = plot_examples(
-                            inputs_renormed,
-                            predictions_renormed,
-                            labels_renormed,
-                            only_input_channel_names,
-                            output_channel_names,
-                            conditioning_input_array=conditioning_inputs_renormed,
-                            conditioning_input_channel_names=conditioning_input_channel_names,
-                            ndim=self.data_config["dimension"],
-                            stride=self.data_config["sequence_info"][-1],
-                            extra_info=run_dir.split('/')[-2],
-                            checkpoint_step=state.global_step,
-                            epoch=round(state.epoch, 3),
-                            num_examples=self.train_config["n_eval_plot_examples"], #NOTE: plotting is slow
-                            save_dir=output_dir,
-                            log_to_wandb=self.output_log_config["logging"]["wandb"],
-                            # Save with "_best.png" suffix only for final-epoch plots
-                            best_plot_at_train_end=best_plot_at_train_end,
-                            model_info=model_info_str,
-                            data_info=data_info_str,
-                            train_info=train_info_str,
-                            scheduler_info=scheduler_info_str
-                        )
+                layout_config = LayoutConfig(
+                    base_visual_size=3.5,
+                    margin_between_plots_h=0.65,
+                    margin_between_plots_v=0.65
+                )
+
+                slice_config = Slice3DConfig(
+                    slice_axis=0,
+                    num_slices=4
+                )
+
+                plotter = create_plotter(
+                    orientation='vertical',
+                    input_array=inputs_renormed,
+                    prediction_array=predictions_renormed,
+                    target_array=labels_renormed,
+                    input_channel_names=only_input_channel_names,
+                    output_channel_names=output_channel_names,
+                    conditioning_input_array=conditioning_inputs_renormed,
+                    conditioning_channel_names=conditioning_input_channel_names,
+                    checkpoint_step=state.global_step,
+                    epoch=round(state.epoch, 3),
+                    extra_info=run_dir.split('/')[-2],
+                    ndim=self.data_config["dimension"],
+                    slice_config=slice_config,
+                    num_examples=self.train_config["n_eval_plot_examples"],
+                    stride=self.data_config["sequence_info"][-1],
+                    save_dir=output_dir,
+                    log_to_wandb=self.output_log_config["logging"]["wandb"],
+                    best_plot_at_train_end=best_plot_at_train_end,
+                    layout_config=layout_config,
+                    include_relative_error=True,
+                    model_info=model_info_str,
+                    data_info=data_info_str,
+                    train_info=train_info_str
+                )
+                
+                fig_dict = plotter.plot()
 
                 # If W&B logging is enabled, log the figures now.
                 if self.output_log_config["logging"].get("wandb", False) and wandb.run is not None:
