@@ -226,6 +226,10 @@ class LayoutConfig:
     # Title column for horizontal layout
     title_column_width: float = 1.5
 
+    # Timestamp row/column dimensions (in inches)
+    timestamp_row_height: float = 0.2  # For horizontal layout
+    timestamp_column_width: float = 0.3  # For vertical layout
+
 
 @dataclass
 class ColorbarConfig:
@@ -284,7 +288,7 @@ class LayoutCalculator(ABC):
         elif ndim == 2:
             if len(spatial_shape) >= 2:
                 H, W = spatial_shape[:2]
-                aspect_ratio = H / W
+                aspect_ratio = H / W - (1 - H/W)*0.3 # Slight adjustment for aesthetics
                 
                 visual_width = self.config.base_visual_size
                 visual_height = self.config.base_visual_size * aspect_ratio
@@ -344,7 +348,7 @@ class VerticalLayoutCalculator(LayoutCalculator):
     """Layout calculator for vertical orientation (time as rows)."""
     
     def calculate(self, spatial_shape: tuple, num_columns: int, 
-                  num_rows: int, ndim: int) -> dict:
+                  num_rows: int, ndim: int, is_timestamp: List[bool] = None) -> dict:
         
         # Get visual dimensions from data shape
         visual_width, visual_height = self._get_visual_dimensions(spatial_shape, ndim)
@@ -356,12 +360,21 @@ class VerticalLayoutCalculator(LayoutCalculator):
         grid_cell_width = visual_width
         grid_cell_height = visual_height + colorbar_space
         
+        # Timestamp column width
+        timestamp_width = self.config.timestamp_column_width
+        
         # Calculate total figure dimensions
-        # Width: margins + columns + spacing between columns
+        # Width: margins + columns (mixing regular and timestamp widths) + spacing
+        if is_timestamp is not None:
+            total_width = sum(timestamp_width if is_ts else grid_cell_width 
+                            for is_ts in is_timestamp)
+            total_width += (num_columns - 1) * self.config.margin_between_plots_h
+        else:
+            total_width = num_columns * grid_cell_width + (num_columns - 1) * self.config.margin_between_plots_h
+        
         fig_width = (self.config.left_margin + 
                     self.config.right_margin +
-                    num_columns * grid_cell_width + 
-                    (num_columns - 1) * self.config.margin_between_plots_h)
+                    total_width)
         
         # Height: margins + headers + rows + spacing between rows + footer
         fig_height = (self.config.top_margin +
@@ -380,6 +393,7 @@ class VerticalLayoutCalculator(LayoutCalculator):
             'visual_height': visual_height,
             'grid_cell_width': grid_cell_width,
             'grid_cell_height': grid_cell_height,
+            'timestamp_width': timestamp_width,
             'num_rows': num_rows,
             'num_columns': num_columns,
             'cbar_config': self.cbar_config,
@@ -390,7 +404,7 @@ class HorizontalLayoutCalculator(LayoutCalculator):
     """Layout calculator for horizontal orientation (time as columns)."""
     
     def calculate(self, spatial_shape: tuple, num_rows: int, 
-                  num_columns: int, ndim: int) -> dict:
+                  num_columns: int, ndim: int, is_timestamp: List[bool] = None) -> dict:
         
         # Get visual dimensions from data shape
         visual_width, visual_height = self._get_visual_dimensions(spatial_shape, ndim)
@@ -402,21 +416,30 @@ class HorizontalLayoutCalculator(LayoutCalculator):
         grid_cell_width = visual_width
         grid_cell_height = visual_height + colorbar_space
         
+        # Timestamp row height
+        timestamp_height = self.config.timestamp_row_height
+        
         # Calculate total figure dimensions
         # Width: margins + title column + columns + spacing
         fig_width = (self.config.left_margin + 
                     self.config.title_column_width +
-                    self.config.margin_between_plots_h +  # Space after title column
+                    self.config.margin_between_plots_h +
                     num_columns * grid_cell_width + 
                     (num_columns - 1) * self.config.margin_between_plots_h +
                     self.config.right_margin)
         
-        # Height: margins + headers + rows + spacing + footer
+        # Height: margins + headers + rows (mixing regular and timestamp heights) + spacing + footer
+        if is_timestamp is not None:
+            total_height = sum(timestamp_height if is_ts else grid_cell_height 
+                             for is_ts in is_timestamp)
+            total_height += (num_rows - 1) * self.config.margin_between_plots_v
+        else:
+            total_height = num_rows * grid_cell_height + (num_rows - 1) * self.config.margin_between_plots_v
+        
         fig_height = (self.config.top_margin +
                      self.config.dims_height + 
                      self.config.header_height +
-                     num_rows * grid_cell_height + 
-                     (num_rows - 1) * self.config.margin_between_plots_v +
+                     total_height +
                      self.config.spacer_height + 
                      self.config.footer_height + 
                      self.config.bottom_margin)
@@ -428,9 +451,10 @@ class HorizontalLayoutCalculator(LayoutCalculator):
             'visual_height': visual_height,
             'grid_cell_width': grid_cell_width,
             'grid_cell_height': grid_cell_height,
+            'timestamp_height': timestamp_height,
+            'title_column_width': self.config.title_column_width,
             'num_rows': num_rows,
             'num_columns': num_columns,
-            'title_column_width': self.config.title_column_width,
             'cbar_config': self.cbar_config,
         }
 
@@ -494,7 +518,8 @@ class Renderer2D(DataRenderer):
             im = ax.imshow(data[0], cmap="coolwarm", aspect=aspect, 
                           origin='lower', **_safe_vlims(0))
             ax.set_title(channel_names[0], fontsize=8)
-            ax.tick_params(axis='both', labelsize=7, labelbottom=True)
+            ax.tick_params(axis='both', labelsize=7, labelbottom=False, labelleft=False, 
+               bottom=False, left=False)
             
             cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=cbar_pad,
                                orientation='horizontal', location='bottom')
@@ -511,7 +536,8 @@ class Renderer2D(DataRenderer):
                 im = sub_ax.imshow(data[c], cmap="coolwarm", aspect=aspect,
                                   origin='lower', **_safe_vlims(c))
                 sub_ax.set_title(channel_names[c], fontsize=8)
-                sub_ax.tick_params(axis='both', labelsize=7, labelbottom=True)
+                sub_ax.tick_params(axis='both', labelsize=7, labelbottom=False, labelleft=False,
+                   bottom=False, left=False)
                 
                 cbar = fig.colorbar(im, ax=sub_ax, fraction=0.046, pad=cbar_pad,
                                    orientation='horizontal', location='bottom')
@@ -627,7 +653,8 @@ class Renderer3D(DataRenderer):
                             title = f"Slice {slice_pos}"
                     
                     sub_ax.set_title(title, fontsize=7)
-                    sub_ax.tick_params(axis='both', labelsize=6, labelbottom=True)
+                    sub_ax.tick_params(axis='both', labelsize=6, labelbottom=False, labelleft=False,
+                   bottom=False, left=False)
                     
                     # Add colorbar
                     cbar = fig.colorbar(im, ax=sub_ax, fraction=0.046, pad=cbar_pad,
@@ -660,7 +687,8 @@ class Renderer3D(DataRenderer):
                             title = f"Slice {slice_pos}"
                     
                     sub_ax.set_title(title, fontsize=7)
-                    sub_ax.tick_params(axis='both', labelsize=6, labelbottom=True)
+                    sub_ax.tick_params(axis='both', labelsize=6, labelbottom=False, labelleft=False,
+                   bottom=False, left=False)
                     
                     # Add colorbar
                     cbar = fig.colorbar(im, ax=sub_ax, fraction=0.046, pad=cbar_pad,
@@ -703,53 +731,87 @@ class GridStructureBuilder:
         self.conditioning_channels = conditioning_channels
         self.include_relative_error = include_relative_error
     
-    def build_vertical(self) -> Tuple[List[int], List[str]]:
-        """Build structure for vertical layout (columns)."""
+    def build_vertical(self) -> Tuple[List[int], List[str], List[bool]]:
+        """Build structure for vertical layout (columns).
+        
+        Returns
+        -------
+        widths : List[int]
+            Width multipliers for each column
+        titles : List[str]
+            Title for each column
+        is_timestamp : List[bool]
+            Whether each column is a timestamp column
+        """
         has_conditioning = self.conditioning_channels is not None
         
         widths = []
         titles = []
+        is_timestamp = []
         
         # Input section
         widths.append(len(self.input_channels))
         titles.append("Input")
+        is_timestamp.append(False)
         
         # Conditioning section
         if has_conditioning:
             widths.append(len(self.conditioning_channels))
             titles.append("Conditioning")
+            is_timestamp.append(False)
         
-        # Output sections
+        # Output sections with timestamps after targets
         cols_per_field = 4 if self.include_relative_error else 3
         error_labels = (["Prediction", "Target", "Abs Error", "Rel Error"] 
                        if self.include_relative_error 
                        else ["Prediction", "Target", "Abs Error"])
         
         for ch_name in self.output_channels:
-            widths.extend([1] * cols_per_field)
-            titles.extend([f"{ch_name}\n{label}" for label in error_labels])
+            for i, label in enumerate(error_labels):
+                widths.append(1)
+                titles.append(f"{ch_name}\n{label}")
+                is_timestamp.append(False)
+                
+                # Add timestamp column after Target
+                if label == "Target":
+                    widths.append(1)
+                    titles.append("Time")
+                    is_timestamp.append(True)
         
-        return widths, titles
+        return widths, titles, is_timestamp
     
-    def build_horizontal_2d(self) -> Tuple[List[int], List[str]]:
-        """Build structure for horizontal layout with 2D data (rows)."""
+    def build_horizontal_2d(self) -> Tuple[List[int], List[str], List[bool]]:
+        """Build structure for horizontal layout with 2D data (rows).
+        
+        Returns
+        -------
+        heights : List[int]
+            Height multipliers for each row
+        titles : List[str]
+            Title for each row
+        is_timestamp : List[bool]
+            Whether each row is a timestamp row
+        """
         has_conditioning = self.conditioning_channels is not None
         
         heights = []
         titles = []
+        is_timestamp = []
         
         # Input rows (one per channel)
         for ch_name in self.input_channels:
             heights.append(1)
             titles.append(f"Input\n{ch_name}")
+            is_timestamp.append(False)
         
         # Conditioning rows
         if has_conditioning:
             for ch_name in self.conditioning_channels:
                 heights.append(1)
                 titles.append(f"Conditioning\n{ch_name}")
+                is_timestamp.append(False)
         
-        # Output rows
+        # Output rows with timestamps after targets
         error_labels = (["Prediction", "Target", "Abs Error", "Rel Error"] 
                        if self.include_relative_error 
                        else ["Prediction", "Target", "Abs Error"])
@@ -758,11 +820,16 @@ class GridStructureBuilder:
             for label in error_labels:
                 heights.append(1)
                 titles.append(f"{ch_name}\n{label}")
+                is_timestamp.append(False)
+                
+                # Add timestamp row after Target
+                if label == "Target":
+                    heights.append(1)
+                    titles.append("Time")
+                    is_timestamp.append(True)
         
-        return heights, titles
+        return heights, titles, is_timestamp
 
-
-# Modify BasePlotter.__init__ to include wandb parameters:
 class BasePlotter(ABC):
     """Abstract base plotter with template method pattern."""
     
@@ -783,11 +850,9 @@ class BasePlotter(ABC):
         cbar_config: Optional[ColorbarConfig] = None,
         slice_config: Optional[Slice3DConfig] = None,
         include_relative_error: bool = True,
-        # Wandb parameters
         log_to_wandb: bool = False,
         best_plot_at_train_end: bool = False,
         example_indices: Optional[list[int]] = None,
-        # Metadata parameters
         checkpoint_step: Optional[int] = None,
         epoch: Optional[int] = None,
         extra_info: Optional[str] = None,
@@ -901,7 +966,6 @@ class BasePlotter(ABC):
     def _add_title_section(self, fig, gs, idx: int, N: int, spatial_shape: tuple,
                            T_in: int, C: int, T_pred: int) -> None:
         """Add title section to figure."""
-        # Main title with checkpoint info if available
         include_ckpt = self.checkpoint_step is not None and self.epoch is not None
         
         if include_ckpt:
@@ -1018,22 +1082,20 @@ class VerticalPlotter(BasePlotter):
             vmins, vmaxs = self._compute_vminmax(inp, pred, tgt)
             
             # Build grid structure
-            col_widths, col_titles = self.grid_builder.build_vertical()
-            col_widths.append(1)  # Time column
-            col_titles.append("Time")
+            col_widths, col_titles, is_timestamp = self.grid_builder.build_vertical()
             
             # Calculate layout
             nrows = max(T_in, T_pred)
-            total_cols = sum(col_widths)
+            total_cols = len(col_widths)
             layout_calculator = self._create_layout_calculator()
             layout_params = layout_calculator.calculate(
-                spatial_shape, total_cols, nrows, self.ndim
+                spatial_shape, total_cols, nrows, self.ndim, is_timestamp
             )
             
             # Create figure with absolute positioning
             fig = self._create_figure_vertical(
                 idx, N, spatial_shape, T_in, C, T_pred,
-                col_widths, col_titles, nrows, layout_params
+                col_widths, col_titles, is_timestamp, nrows, layout_params
             )
             
             # Plot data
@@ -1042,14 +1104,14 @@ class VerticalPlotter(BasePlotter):
                 vmins, vmaxs, T_in, T_pred, layout_params
             )
             
-            # Save/log figure (replacing the old save logic)
+            # Save/log figure
             self._save_or_log_figure(fig, idx, returned_figs, suffix="")
             plt.close(fig)
         
         return returned_figs
     
     def _create_figure_vertical(self, idx, N, spatial_shape, T_in, C, T_pred,
-                                col_widths, col_titles, nrows, layout_params):
+                                col_widths, col_titles, is_timestamp, nrows, layout_params):
         """Create figure with fixed margin grid."""
         fig = plt.figure(figsize=(layout_params['fig_width'], 
                                 layout_params['fig_height']))
@@ -1070,8 +1132,9 @@ class VerticalPlotter(BasePlotter):
                 heights_inches.append(margin_v)
         heights_inches.extend([spacer_h, footer_h])
         
-        # Width ratios
+        # Width ratios (accounting for timestamp columns)
         grid_w = layout_params['grid_cell_width']
+        timestamp_w = layout_params['timestamp_width']
         margin_h = self.layout_config.margin_between_plots_h
         
         # Build widths
@@ -1079,9 +1142,12 @@ class VerticalPlotter(BasePlotter):
         col_gs_indices = []
         current_idx = 0
         
-        for i, width in enumerate(col_widths):
+        for i, (width, is_ts) in enumerate(zip(col_widths, is_timestamp)):
             col_gs_indices.append(current_idx)
-            widths_inches.append(grid_w * width)
+            if is_ts:
+                widths_inches.append(timestamp_w)
+            else:
+                widths_inches.append(grid_w * width)
             current_idx += 1
             
             if i < len(col_widths) - 1:
@@ -1115,6 +1181,7 @@ class VerticalPlotter(BasePlotter):
         
         fig.col_gs_indices = col_gs_indices
         fig.col_widths = col_widths
+        fig.is_timestamp = is_timestamp
         fig.gs = gs
         fig.example_idx = idx
         
@@ -1135,7 +1202,6 @@ class VerticalPlotter(BasePlotter):
             # Plot input
             if row < T_in:
                 gs_col = col_gs_indices[col_idx]
-                # Span is just 1 grid cell now (the section width is already in widths_inches)
                 self._plot_cell(fig, gs, row_gs_idx, gs_col, 1,
                             inp[row], self.input_channel_names,
                             vmins, vmaxs, layout_params)
@@ -1156,15 +1222,8 @@ class VerticalPlotter(BasePlotter):
                 col_idx = self._plot_predictions_vertical(
                     fig, gs, row_gs_idx, col_gs_indices, col_widths, col_idx,
                     pred[row], tgt[row], abs_err[row], rel_err[row],
-                    vmins, vmaxs, layout_params
+                    vmins, vmaxs, layout_params, row, T_in
                 )
-            
-            # Plot time label
-            gs_col = col_gs_indices[-1]
-            time_ax = fig.add_subplot(gs[row_gs_idx, gs_col])
-            time_ax.axis('off')
-            time_ax.text(0.5, 0.5, self._get_time_label(row, T_in),
-                        ha='center', va='center', fontsize=18, weight='bold')
     
     def _plot_cell(self, fig, gs, row_idx, col_idx, span, data, ch_names,
                    vmins, vmaxs, layout_params):
@@ -1176,48 +1235,67 @@ class VerticalPlotter(BasePlotter):
         )
     
     def _plot_predictions_vertical(self, fig, gs, row_idx, col_gs_indices, col_widths,
-                                   start_col_idx, pred, tgt, abs_err, rel_err, 
-                                   vmins, vmaxs, layout_params):
-        """Plot prediction/target/error columns."""
+                                start_col_idx, pred, tgt, abs_err, rel_err, 
+                                vmins, vmaxs, layout_params, current_time_step, T_in):
+        """Plot prediction/target/error columns with timestamps after targets."""
         col_idx = start_col_idx
+        is_timestamp = fig.is_timestamp
         
         if self.ndim == 2:
             for c_idx, ch_name in enumerate(self.output_channel_names):
                 # Prediction
                 gs_col = col_gs_indices[col_idx]
                 self._plot_cell(fig, gs, row_idx, gs_col, 1,
-                               pred[c_idx:c_idx+1], [ch_name],
-                               vmins[c_idx:c_idx+1], vmaxs[c_idx:c_idx+1], layout_params)
+                            pred[c_idx:c_idx+1], [ch_name],
+                            vmins[c_idx:c_idx+1], vmaxs[c_idx:c_idx+1], layout_params)
                 col_idx += 1
                 
                 # Target
                 gs_col = col_gs_indices[col_idx]
                 self._plot_cell(fig, gs, row_idx, gs_col, 1,
-                               tgt[c_idx:c_idx+1], [ch_name],
-                               vmins[c_idx:c_idx+1], vmaxs[c_idx:c_idx+1], layout_params)
+                            tgt[c_idx:c_idx+1], [ch_name],
+                            vmins[c_idx:c_idx+1], vmaxs[c_idx:c_idx+1], layout_params)
                 col_idx += 1
+                
+                # Timestamp after target
+                if col_idx < len(is_timestamp) and is_timestamp[col_idx]:
+                    gs_col = col_gs_indices[col_idx]
+                    time_ax = fig.add_subplot(gs[row_idx, gs_col])
+                    time_ax.axis('off')
+                    time_ax.text(0.5, 0.5, self._get_time_label(current_time_step, T_in),
+                                ha='center', va='center', fontsize=12, weight='bold')
+                    col_idx += 1
                 
                 # Absolute error
                 gs_col = col_gs_indices[col_idx]
                 self._plot_cell(fig, gs, row_idx, gs_col, 1,
-                               abs_err[c_idx:c_idx+1], [ch_name],
-                               None, None, layout_params)
+                            abs_err[c_idx:c_idx+1], [ch_name],
+                            None, None, layout_params)
                 col_idx += 1
                 
                 # Relative error
                 if self.include_relative_error:
                     gs_col = col_gs_indices[col_idx]
                     self._plot_cell(fig, gs, row_idx, gs_col, 1,
-                                   rel_err[c_idx:c_idx+1], [ch_name],
-                                   None, None, layout_params)
+                                rel_err[c_idx:c_idx+1], [ch_name],
+                                None, None, layout_params)
                     col_idx += 1
         else:  # 1D
-            for data in [pred, tgt, abs_err] + ([rel_err] if self.include_relative_error else []):
+            for i, data in enumerate([pred, tgt, abs_err] + ([rel_err] if self.include_relative_error else [])):
                 gs_col = col_gs_indices[col_idx]
                 self._plot_cell(fig, gs, row_idx, gs_col, 1,
-                               data, self.output_channel_names,
-                               None, None, layout_params)
+                            data, self.output_channel_names,
+                            None, None, layout_params)
                 col_idx += 1
+                
+                # Add timestamp after target (i == 1)
+                if i == 1 and col_idx < len(is_timestamp) and is_timestamp[col_idx]:
+                    gs_col = col_gs_indices[col_idx]
+                    time_ax = fig.add_subplot(gs[row_idx, gs_col])
+                    time_ax.axis('off')
+                    time_ax.text(0.5, 0.5, self._get_time_label(current_time_step, T_in),
+                                ha='center', va='center', fontsize=12, weight='bold')
+                    col_idx += 1
         
         return col_idx
 
@@ -1261,21 +1339,21 @@ class HorizontalPlotter(BasePlotter):
             
             # Build grid structure
             if self.ndim == 2:
-                row_heights, row_titles = self.grid_builder.build_horizontal_2d()
+                row_heights, row_titles, is_timestamp = self.grid_builder.build_horizontal_2d()
             else:
-                row_heights, row_titles = self._build_1d_horizontal_structure()
+                row_heights, row_titles, is_timestamp = self._build_1d_horizontal_structure()
             
             # Calculate layout
-            total_rows = sum(row_heights)
+            total_rows = len(row_heights)
             layout_calculator = self._create_layout_calculator()
             layout_params = layout_calculator.calculate(
-                spatial_shape, total_rows, max_time_steps, self.ndim
+                spatial_shape, total_rows, max_time_steps, self.ndim, is_timestamp
             )
             
             # Create figure
             fig = self._create_figure_horizontal(
                 idx, N, spatial_shape, T_in, C, T_pred,
-                row_heights, row_titles, max_time_steps, layout_params
+                row_heights, row_titles, is_timestamp, max_time_steps, layout_params
             )
             
             # Plot data
@@ -1284,57 +1362,71 @@ class HorizontalPlotter(BasePlotter):
                 vmins, vmaxs, T_in, T_pred, layout_params
             )
             
-            # Save/log figure (replacing the old save logic)
+            # Save/log figure
             self._save_or_log_figure(fig, idx, returned_figs, suffix="")
             plt.close(fig)
         
         return returned_figs
     
-    def _build_1d_horizontal_structure(self) -> Tuple[List[int], List[str]]:
+    def _build_1d_horizontal_structure(self) -> Tuple[List[int], List[str], List[bool]]:
         """Build structure for 1D data in horizontal layout."""
         has_conditioning = self.conditioning_input_array is not None
         
         heights = []
         titles = []
+        is_timestamp = []
         
         # Input row
         heights.append(1)
         titles.append("Input")
+        is_timestamp.append(False)
         
         # Conditioning row
         if has_conditioning:
             heights.append(1)
             titles.append("Conditioning")
+            is_timestamp.append(False)
         
-        # Output rows
+        # Output rows with timestamps after targets
         error_labels = (["Prediction", "Target", "Abs Error", "Rel Error"] 
-                       if self.include_relative_error 
-                       else ["Prediction", "Target", "Abs Error"])
+                    if self.include_relative_error 
+                    else ["Prediction", "Target", "Abs Error"])
         
         for label in error_labels:
             heights.append(1)
             titles.append(label)
+            is_timestamp.append(False)
+            
+            # Add timestamp row after Target
+            if label == "Target":
+                heights.append(1)
+                titles.append("Time")
+                is_timestamp.append(True)
         
-        return heights, titles
+        return heights, titles, is_timestamp
     
     def _create_figure_horizontal(self, idx, N, spatial_shape, T_in, C, T_pred,
-                                  row_heights, row_titles, max_time_steps, layout_params):
+                                row_heights, row_titles, is_timestamp, max_time_steps, layout_params):
         """Create figure with fixed margin grid."""
         fig = plt.figure(figsize=(layout_params['fig_width'], 
-                                  layout_params['fig_height']))
+                                layout_params['fig_height']))
         
         # Calculate dimensions in inches
         dims_h = self.layout_config.dims_height
         header_h = self.layout_config.header_height
         grid_h = layout_params['grid_cell_height']
+        timestamp_h = layout_params['timestamp_height']
         margin_v = self.layout_config.margin_between_plots_v
         spacer_h = self.layout_config.spacer_height
         footer_h = self.layout_config.footer_height
         
-        # Height ratios
+        # Height ratios (accounting for timestamp rows)
         heights_inches = [dims_h, header_h]
-        for i, height in enumerate(row_heights):
-            heights_inches.append(grid_h * height)
+        for i, (height, is_ts) in enumerate(zip(row_heights, is_timestamp)):
+            if is_ts:
+                heights_inches.append(timestamp_h)
+            else:
+                heights_inches.append(grid_h * height)
             if i < len(row_heights) - 1:
                 heights_inches.append(margin_v)
         heights_inches.extend([spacer_h, footer_h])
@@ -1370,34 +1462,44 @@ class HorizontalPlotter(BasePlotter):
             header_ax = fig.add_subplot(gs[1, col_gs_idx])
             header_ax.axis('off')
             header_ax.text(0.5, 0.5, self._get_time_label(col, T_in), 
-                          ha='center', va='center', fontsize=18, weight='bold')
+                        ha='center', va='center', fontsize=18, weight='bold')
         
         # Add row titles
-        row_gs_indices = [2] + [2 + i * 2 for i in range(1, len(row_heights))]
-        for row_idx, gs_row in enumerate(row_gs_indices):
-            span = row_heights[row_idx] * 2 - 1
-            title_ax = fig.add_subplot(gs[gs_row:gs_row + span, 0])
+        row_gs_indices = []
+        gs_idx = 2
+        for i, (height, is_ts) in enumerate(zip(row_heights, is_timestamp)):
+            row_gs_indices.append(gs_idx)
+            if i < len(row_heights) - 1:
+                gs_idx += 2  # Include margin
+            else:
+                gs_idx += 1
+        
+        for row_idx, (gs_row, is_ts) in enumerate(zip(row_gs_indices, is_timestamp)):
+            span = 1  # Each row is independent now
+            title_ax = fig.add_subplot(gs[gs_row, 0])
             title_ax.axis('off')
             title_ax.text(0.5, 0.5, row_titles[row_idx], 
-                         ha='center', va='center', fontsize=14, weight='bold')
+                        ha='center', va='center', fontsize=14, weight='bold')
         
-        # Add footer section (last row)
+        # Add footer section
         footer_row_idx = len(heights_inches) - 1
         self._add_footer_section(fig, gs, footer_row_idx)
         
         fig.row_gs_indices = row_gs_indices
         fig.row_heights = row_heights
+        fig.is_timestamp = is_timestamp
         fig.gs = gs
         fig.example_idx = idx
         
         return fig
     
     def _plot_data_horizontal(self, fig, inp, pred, tgt, abs_err, rel_err,
-                             vmins, vmaxs, T_in, T_pred, layout_params):
+                            vmins, vmaxs, T_in, T_pred, layout_params):
         """Plot all data columns for horizontal layout."""
         gs = fig.gs
         row_gs_indices = fig.row_gs_indices
         row_heights = fig.row_heights
+        is_timestamp = fig.is_timestamp
         max_time_steps = max(T_in, T_pred)
         
         for col in range(max_time_steps):
@@ -1419,14 +1521,14 @@ class HorizontalPlotter(BasePlotter):
                             input_vmax = None
                         
                         self._plot_cell(fig, gs, gs_row, col_gs_idx, 1,
-                                       inp[col, in_c:in_c+1], [ch_name],
-                                       input_vmin, input_vmax, layout_params)
+                                    inp[col, in_c:in_c+1], [ch_name],
+                                    input_vmin, input_vmax, layout_params)
                         row_idx += 1
                 else:  # 1D
                     gs_row = row_gs_indices[row_idx]
                     self._plot_cell(fig, gs, gs_row, col_gs_idx, 1,
-                                   inp[col], self.input_channel_names,
-                                   vmins, vmaxs, layout_params)
+                                inp[col], self.input_channel_names,
+                                vmins, vmaxs, layout_params)
                     row_idx += 1
             else:
                 row_idx += len(self.input_channel_names) if self.ndim == 2 else 1
@@ -1448,14 +1550,14 @@ class HorizontalPlotter(BasePlotter):
                                 cond_vmax = None
                             
                             self._plot_cell(fig, gs, gs_row, col_gs_idx, 1,
-                                           cond_inp[col, cond_c:cond_c+1], [ch_name],
-                                           cond_vmin, cond_vmax, layout_params)
+                                        cond_inp[col, cond_c:cond_c+1], [ch_name],
+                                        cond_vmin, cond_vmax, layout_params)
                             row_idx += 1
                     else:
                         gs_row = row_gs_indices[row_idx]
                         self._plot_cell(fig, gs, gs_row, col_gs_idx, 1,
-                                       cond_inp[col], self.conditioning_channel_names,
-                                       None, None, layout_params)
+                                    cond_inp[col], self.conditioning_channel_names,
+                                    None, None, layout_params)
                         row_idx += 1
                 else:
                     row_idx += len(self.conditioning_channel_names) if self.ndim == 2 else 1
@@ -1465,56 +1567,75 @@ class HorizontalPlotter(BasePlotter):
                 row_idx = self._plot_predictions_horizontal(
                     fig, gs, row_gs_indices, row_idx, col_gs_idx,
                     pred[col], tgt[col], abs_err[col], rel_err[col],
-                    vmins, vmaxs, layout_params
+                    vmins, vmaxs, layout_params, col, T_in
                 )
     
     def _plot_predictions_horizontal(self, fig, gs, row_gs_indices, start_row_idx,
-                                     col_gs_idx, pred, tgt, abs_err, rel_err,
-                                     vmins, vmaxs, layout_params):
-        """Plot prediction/target/error rows."""
+                                    col_gs_idx, pred, tgt, abs_err, rel_err,
+                                    vmins, vmaxs, layout_params, current_time_step, T_in):
+        """Plot prediction/target/error rows with timestamps after targets."""
         row_idx = start_row_idx
+        is_timestamp = fig.is_timestamp
         
         if self.ndim == 2:
             for c_idx, ch_name in enumerate(self.output_channel_names):
                 # Prediction
                 gs_row = row_gs_indices[row_idx]
                 self._plot_cell(fig, gs, gs_row, col_gs_idx, 1,
-                               pred[c_idx:c_idx+1], [ch_name],
-                               vmins[c_idx:c_idx+1], vmaxs[c_idx:c_idx+1], layout_params)
+                            pred[c_idx:c_idx+1], [ch_name],
+                            vmins[c_idx:c_idx+1], vmaxs[c_idx:c_idx+1], layout_params)
                 row_idx += 1
                 
                 # Target
                 gs_row = row_gs_indices[row_idx]
                 self._plot_cell(fig, gs, gs_row, col_gs_idx, 1,
-                               tgt[c_idx:c_idx+1], [ch_name],
-                               vmins[c_idx:c_idx+1], vmaxs[c_idx:c_idx+1], layout_params)
+                            tgt[c_idx:c_idx+1], [ch_name],
+                            vmins[c_idx:c_idx+1], vmaxs[c_idx:c_idx+1], layout_params)
                 row_idx += 1
+                
+                # Timestamp after target
+                if row_idx < len(is_timestamp) and is_timestamp[row_idx]:
+                    gs_row = row_gs_indices[row_idx]
+                    time_ax = fig.add_subplot(gs[gs_row, col_gs_idx])
+                    time_ax.axis('off')
+                    time_ax.text(0.5, 0.5, self._get_time_label(current_time_step, T_in),
+                                ha='center', va='center', fontsize=12, weight='bold')
+                    row_idx += 1
                 
                 # Absolute error
                 gs_row = row_gs_indices[row_idx]
                 self._plot_cell(fig, gs, gs_row, col_gs_idx, 1,
-                               abs_err[c_idx:c_idx+1], [ch_name],
-                               None, None, layout_params)
+                            abs_err[c_idx:c_idx+1], [ch_name],
+                            None, None, layout_params)
                 row_idx += 1
                 
                 # Relative error
                 if self.include_relative_error:
                     gs_row = row_gs_indices[row_idx]
                     self._plot_cell(fig, gs, gs_row, col_gs_idx, 1,
-                                   rel_err[c_idx:c_idx+1], [ch_name],
-                                   None, None, layout_params)
+                                rel_err[c_idx:c_idx+1], [ch_name],
+                                None, None, layout_params)
                     row_idx += 1
         else:  # 1D
             data_list = [pred, tgt, abs_err]
             if self.include_relative_error:
                 data_list.append(rel_err)
             
-            for data in data_list:
+            for i, data in enumerate(data_list):
                 gs_row = row_gs_indices[row_idx]
                 self._plot_cell(fig, gs, gs_row, col_gs_idx, 1,
-                               data, self.output_channel_names,
-                               None, None, layout_params)
+                            data, self.output_channel_names,
+                            None, None, layout_params)
                 row_idx += 1
+                
+                # Add timestamp after target (i == 1)
+                if i == 1 and row_idx < len(is_timestamp) and is_timestamp[row_idx]:
+                    gs_row = row_gs_indices[row_idx]
+                    time_ax = fig.add_subplot(gs[gs_row, col_gs_idx])
+                    time_ax.axis('off')
+                    time_ax.text(0.5, 0.5, self._get_time_label(current_time_step, T_in),
+                                ha='center', va='center', fontsize=12, weight='bold')
+                    row_idx += 1
         
         return row_idx
     
@@ -1526,6 +1647,7 @@ class HorizontalPlotter(BasePlotter):
             ax, data, ch_names, vmins, vmaxs,
             cbar_config=layout_params['cbar_config']
         )
+
 
 def create_plotter(orientation: str = 'vertical', **kwargs) -> BasePlotter:
     """Factory function to create appropriate plotter."""
