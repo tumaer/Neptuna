@@ -10,10 +10,10 @@ def main(cfg):
     cfg = prepare_config(cfg)
     print(cfg)
 
-    ## Load debug data
-    with open('./temporary/loss_debug_data/3D_KS_prediction.pkl', 'rb') as f:
+    ## Load debug data 
+    with open('./temporary/loss_debug_data/1D_KS_prediction.pkl', 'rb') as f:
         predictions = pickle.load(f)
-    with open('./temporary/loss_debug_data/3D_KS_label.pkl', 'rb') as f:
+    with open('./temporary/loss_debug_data/1D_KS_label.pkl', 'rb') as f:
         logits = pickle.load(f)
 
     # Fetch loss function

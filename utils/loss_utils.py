@@ -1,6 +1,13 @@
 from omegaconf import DictConfig, OmegaConf
 from metrics.training_metrics import CompositeLoss
-from metrics.losses import L2Loss, L1Loss, SSIM, MSSSIM
+from metrics.losses import (
+    L1Loss,
+    L2Loss,
+    SSIM,
+    MSSSIM,
+    PearsonCorrelationLoss,
+    SinkhornDivergence,
+)
 
 def fetch_loss_metric(cfg) -> CompositeLoss:
     """
@@ -17,6 +24,8 @@ def fetch_loss_metric(cfg) -> CompositeLoss:
         'L1Loss': L1Loss,
         'SSIM': SSIM,
         'MSSSIM': MSSSIM,
+        'PearsonCorrelationLoss': PearsonCorrelationLoss,
+        'SinkhornDivergence': SinkhornDivergence,
     }
     
     loss_components = []
