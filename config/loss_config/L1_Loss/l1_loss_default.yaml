@@ -1,0 +1,2 @@
+# L1Loss specific parameters
+reduction: mean

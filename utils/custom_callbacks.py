@@ -608,6 +608,13 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
         - Logs to W&B if enabled in configuration
         - Includes metadata like epoch, step, and performance indicators
         """
+        RANK = int(os.environ.get("LOCAL_RANK", -1))
+        IS_MAIN_PROCESS = RANK in [-1, 0]
+        
+        if not IS_MAIN_PROCESS:
+            control.should_plot = False
+            return control
+        
         # Only plot if an evaluation just happened before this save
         if control.should_plot:
             ##NOTE: This plotting is not present in the base class
@@ -771,6 +778,12 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
         # finished by its own callback.
         # --------------------------------------------------------------
         
+        RANK = int(os.environ.get("LOCAL_RANK", -1))
+        IS_MAIN_PROCESS = RANK in [-1, 0]
+        
+        if not IS_MAIN_PROCESS:
+            return
+
         try:
             logger.info("\n One last validation with the best model to save the plot with _best.png suffix.")
             trainer = getattr(self, "trainer", None)

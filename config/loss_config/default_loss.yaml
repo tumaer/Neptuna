@@ -1,0 +1,10 @@
+loss:
+  components:
+    - type: L2Loss
+      weight: 1.0
+      name: mse
+      config_file: L2_Loss/l2_loss_default
+    - type: MSSSIM
+      weight: 0.5
+      name: msssim
+      config_file: MSSSIM/msssim_default

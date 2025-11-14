@@ -504,7 +504,7 @@ class Trainer(Trainer_):
         #loss is computed only for the last rollout (pushforward trick!) (one-step MSE-loss), therefore no need to update the labels, just slice from the end of the "labels_including_rollouts" tensor
         #labels are automatically either the raw_values or the residuals. This is taken care inside load_data.py.
         loss = loss_fn(prediction, inputs["label_including_rollouts"][:,(self.data_config.sequence_info[1]*pushforward_unroll_steps):(self.data_config.sequence_info[1]*(pushforward_unroll_steps+1)) ,]) 
-        #return_outputs is true only when doing eval or test. By default it is false for training.
+        #return_outputs is true only when doing eval or test. By default it is false for training.        
         return (loss, prediction) if return_outputs else loss
 
     ##custom function, not inside transformers library
