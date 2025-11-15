@@ -6,6 +6,8 @@ from .pearson_correlation_loss import PearsonCorrelationLoss
 from .sinkhorn_divergence import SinkhornDivergence
 from .h1_semi_norm import H1SemiNorm
 from .h2_semi_norm import H2SemiNorm
+from .multilevel_wavelet_loss import MultilevelWaveletLoss
+from .wavelet_binned_rmse import WaveletBinnedRMSE
 
 __all__ = [
     'L1Loss',
@@ -16,4 +18,6 @@ __all__ = [
     'SinkhornDivergence',
     'H1SemiNorm',
     'H2SemiNorm',
+    'MultilevelWaveletLoss',
+    'WaveletBinnedRMSE',
 ]

@@ -4,7 +4,7 @@ loss:
       weight: 0.0
       name: mse
       config_file: L2_Loss/l2_loss_default
-    - type: H1SemiNorm
+    - type: WaveletBinnedRMSE
       weight: 0.5
-      name: h1_semi_norm
-      config_file: H1SemiNorm/h1_semi_norm_default
+      name: wavelet_binned_rmse
+      config_file: WaveletBinnedRMSE/wavelet_binned_rmse_default

@@ -1,0 +1,9 @@
+wavelet: db2
+alpha: 100.0
+beta: 10.0
+eps: 1e-6
+spatial_level: null
+temporal_level: null
+mode_spatial: reflect
+mode_temporal: reflect
+reduction: mean

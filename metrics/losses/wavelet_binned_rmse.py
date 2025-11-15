@@ -1,0 +1,286 @@
+import math
+import torch
+import torch.nn as nn
+import ptwt  # pip install ptwt
+from ..training_metrics import LossComponent
+from typing import Optional, List, Sequence
+
+class WaveletBinnedRMSE(LossComponent):
+    """
+    Wavelet-binned RMSE loss for spatial data.
+
+    Expects predictions and targets with shape:
+        (B, T, C, *spatial_dims)
+    where len(spatial_dims) is 1, 2, or 3.
+
+    For each spatial wavelet level i, computes RMSE_i between
+    pred and target wavelet detail coefficients at that level.
+    Levels are ordered from highest spatial frequency (i=0) to
+    lowest spatial frequency (i=n_levels-1).
+
+    You can aggregate the per-level RMSEs with 'aggregate' or
+    get them back (return_per_level=True).
+    """
+
+    def __init__(
+        self,
+        weight: float = 1.0,
+        name: Optional[str] = None,
+        data_dim: int = None,
+        field_names: List[str] = None,
+        wavelet: str = "db2",
+        spatial_level: Optional[int] = None,
+        mode_spatial: str = "reflect",
+        aggregate: str = "mean",   # 'mean', 'sum', or 'none'
+        level_weights: Optional[Sequence[float]] = None,
+        normalize_weights: bool = True,
+        return_per_level: bool = False,
+    ):
+        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names)
+        assert aggregate in ("mean", "sum", "weighted")
+        self.wavelet = wavelet
+        self.spatial_level = spatial_level
+        self.mode_spatial = mode_spatial
+        self.aggregate = aggregate
+        self.normalize_weights = normalize_weights
+        self.return_per_level = return_per_level
+
+        self._raw_level_weights = (
+            list(level_weights) if level_weights is not None else None
+        )
+
+    def forward(
+        self,
+        model: nn.Module,
+        predictions: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        predictions, labels: (B, T, C, *spatial_dims)
+        Returns weighted loss (and optionally per-level RMSE).
+        """
+        if predictions.shape != labels.shape:
+            raise ValueError(f"predictions and labels must have same shape, got {predictions.shape} vs {labels.shape}")
+
+        B, T, C, *spatial = predictions.shape
+        D = len(spatial)
+        if D not in (1, 2, 3):
+            raise ValueError(f"Expected 1D, 2D or 3D spatial data, got {D}D.")
+
+        # Flatten batch/time/channel into a single leading dimension
+        N = B * T * C
+        pred_flat = predictions.reshape(N, *spatial)
+        target_flat = labels.reshape(N, *spatial)
+
+        if D == 1:
+            per_level_rmse = self._binned_rmse_1d(pred_flat, target_flat)
+        elif D == 2:
+            per_level_rmse = self._binned_rmse_2d(pred_flat, target_flat)
+        else:  # D == 3
+            per_level_rmse = self._binned_rmse_3d(pred_flat, target_flat)
+
+        # Aggregate across levels to get a scalar loss, if requested
+        if self.aggregate == "mean":
+            loss = per_level_rmse.mean()
+        elif self.aggregate == "sum":
+            loss = per_level_rmse.sum()
+        elif self.aggregate == "weighted":
+            weights = self._get_level_weights(
+                n_levels=per_level_rmse.numel(),
+                device=per_level_rmse.device,
+                dtype=per_level_rmse.dtype,
+            )
+            loss = (weights * per_level_rmse).sum()
+        else:  # 'none'
+            raise RuntimeError(f"Unknown aggregate mode: {self.aggregate}")
+
+        # Apply component weight
+        weighted_loss = self.weight * loss
+
+        return weighted_loss
+
+    # ------------------------------------------------------------------
+    # 1D case
+    # ------------------------------------------------------------------
+    def _binned_rmse_1d(self, pred_flat: torch.Tensor, target_flat: torch.Tensor) -> torch.Tensor:
+        """
+        pred_flat, target_flat: (N, L)
+        Returns: rmse_per_level: (n_levels,)
+        """
+        # Multi-level DWT along last axis
+        coeffs_pred = ptwt.wavedec(
+            pred_flat,
+            self.wavelet,
+            mode=self.mode_spatial,
+            level=self._resolve_level(pred_flat.shape[-1]),
+            axis=-1,
+        )
+        coeffs_tgt = ptwt.wavedec(
+            target_flat,
+            self.wavelet,
+            mode=self.mode_spatial,
+            level=self._resolve_level(target_flat.shape[-1]),
+            axis=-1,
+        )
+
+        # coeffs = [cA_n, cD_n, cD_{n-1}, ..., cD_1]
+        approx_p, *details_p = coeffs_pred
+        approx_t, *details_t = coeffs_tgt
+
+        if len(details_p) != len(details_t):
+            raise RuntimeError("Mismatch in number of wavelet levels between pred and target (1D).")
+
+        # Reorder details so index 0 = highest frequency (D_1)
+        details_p = list(reversed(details_p))
+        details_t = list(reversed(details_t))
+
+        rmse_levels = []
+        for dp, dt in zip(details_p, details_t):
+            diff = dp - dt
+            mse = (diff ** 2).mean()   # average over N and spatial
+            rmse = torch.sqrt(mse)
+            rmse_levels.append(rmse)
+
+        return torch.stack(rmse_levels, dim=0)  # (n_levels,)
+
+    # ------------------------------------------------------------------
+    # 2D case
+    # ------------------------------------------------------------------
+    def _binned_rmse_2d(self, pred_flat: torch.Tensor, target_flat: torch.Tensor) -> torch.Tensor:
+        """
+        pred_flat, target_flat: (N, H, W)
+        Returns: rmse_per_level: (n_levels,)
+        """
+        coeffs_pred = ptwt.wavedec2(
+            pred_flat,
+            self.wavelet,
+            mode=self.mode_spatial,
+            level=self._resolve_level(min(pred_flat.shape[-2:])),
+            axes=(-2, -1),
+        )
+        coeffs_tgt = ptwt.wavedec2(
+            target_flat,
+            self.wavelet,
+            mode=self.mode_spatial,
+            level=self._resolve_level(min(target_flat.shape[-2:])),
+            axes=(-2, -1),
+        )
+
+        # coeffs = (cA_n, (cH_n, cV_n, cD_n), ..., (cH_1, cV_1, cD_1))
+        approx_p = coeffs_pred[0]
+        approx_t = coeffs_tgt[0]
+        details_p = coeffs_pred[1:]
+        details_t = coeffs_tgt[1:]
+
+        if len(details_p) != len(details_t):
+            raise RuntimeError("Mismatch in number of wavelet levels between pred and target (2D).")
+
+        # Reorder so index 0 = highest frequency (level 1)
+        details_p = list(reversed(details_p))
+        details_t = list(reversed(details_t))
+
+        rmse_levels = []
+        for (Hp, Vp, Dp), (Ht, Vt, Dt) in zip(details_p, details_t):
+            # We want MSE over all three subbands combined
+            sq_sum = 0.0
+            count = 0
+            for bp, bt in ((Hp, Ht), (Vp, Vt), (Dp, Dt)):
+                diff = bp - bt
+                sq_sum = sq_sum + diff.pow(2).sum()
+                count = count + diff.numel()
+            mse = sq_sum / count
+            rmse = torch.sqrt(mse)
+            rmse_levels.append(rmse)
+
+        return torch.stack(rmse_levels, dim=0)
+
+    # ------------------------------------------------------------------
+    # 3D case
+    # ------------------------------------------------------------------
+    def _binned_rmse_3d(self, pred_flat: torch.Tensor, target_flat: torch.Tensor) -> torch.Tensor:
+        """
+        pred_flat, target_flat: (N, D, H, W)
+        Returns: rmse_per_level: (n_levels,)
+        """
+        min_spatial = min(pred_flat.shape[-3:])
+        coeffs_pred = ptwt.wavedec3(
+            pred_flat,
+            self.wavelet,
+            mode=self.mode_spatial,
+            level=self._resolve_level(min_spatial),
+            axes=(-3, -2, -1),
+        )
+        coeffs_tgt = ptwt.wavedec3(
+            target_flat,
+            self.wavelet,
+            mode=self.mode_spatial,
+            level=self._resolve_level(min_spatial),
+            axes=(-3, -2, -1),
+        )
+
+        # coeffs = (cA_n, D_n, ..., D_1)
+        approx_p = coeffs_pred[0]
+        approx_t = coeffs_tgt[0]
+        detail_dicts_p = coeffs_pred[1:]
+        detail_dicts_t = coeffs_tgt[1:]
+
+        if len(detail_dicts_p) != len(detail_dicts_t):
+            raise RuntimeError("Mismatch in number of wavelet levels between pred and target (3D).")
+
+        # Reorder so index 0 = highest frequency (level 1)
+        detail_dicts_p = list(reversed(detail_dicts_p))
+        detail_dicts_t = list(reversed(detail_dicts_t))
+
+        rmse_levels = []
+        for dct_p, dct_t in zip(detail_dicts_p, detail_dicts_t):
+            # keys like 'aad', 'ada', ..., 'ddd' (7 high-frequency subbands)
+            keys = sorted(dct_p.keys())
+            sq_sum = 0.0
+            count = 0
+            for k in keys:
+                bp = dct_p[k]
+                bt = dct_t[k]
+                diff = bp - bt
+                sq_sum = sq_sum + diff.pow(2).sum()
+                count = count + diff.numel()
+            mse = sq_sum / count
+            rmse = torch.sqrt(mse)
+            rmse_levels.append(rmse)
+
+        return torch.stack(rmse_levels, dim=0)
+
+    # ------------------------------------------------------------------
+    # Utility
+    # ------------------------------------------------------------------
+    def _resolve_level(self, min_len: int) -> Optional[int]:
+        """
+        If self.spatial_level is set, use that.
+        Otherwise, approximate max sensible level as floor(log2(min_len)).
+        """
+        if self.spatial_level is not None:
+            return self.spatial_level
+        if min_len <= 1:
+            return 0
+        return int(math.log2(min_len))
+
+    def _get_level_weights(self, n_levels: int, device, dtype):
+        """
+        Turn YAML-provided 'level_weights' into a tensor of length n_levels.
+        We interpret index 0 as the highest-frequency bin (level 1).
+        """
+        if self._raw_level_weights is None:
+            # Default: uniform weights across all levels
+            return torch.full((n_levels,), 1.0 / n_levels, device=device, dtype=dtype)
+
+        w = torch.tensor(self._raw_level_weights, dtype=dtype, device=device)
+        if w.numel() != n_levels:
+            raise ValueError(
+                f"level_weights length ({w.numel()}) does not match number of levels ({n_levels}). "
+                f"Either adjust 'spatial_level' or your 'level_weights' in the YAML config."
+            )
+
+        if self.normalize_weights:
+            w_sum = w.sum()
+            if w_sum > 0:
+                w = w / w_sum
+        return w

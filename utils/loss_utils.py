@@ -8,7 +8,9 @@ from metrics.losses import (
     PearsonCorrelationLoss,
     SinkhornDivergence,
     H1SemiNorm,
-    H2SemiNorm
+    H2SemiNorm,
+    MultilevelWaveletLoss,
+    WaveletBinnedRMSE
 )
 
 def fetch_loss_metric(cfg) -> CompositeLoss:
@@ -29,7 +31,9 @@ def fetch_loss_metric(cfg) -> CompositeLoss:
         'PearsonCorrelationLoss': PearsonCorrelationLoss,
         'SinkhornDivergence': SinkhornDivergence,
         'H1SemiNorm': H1SemiNorm,
-        'H2SemiNorm': H2SemiNorm
+        'H2SemiNorm': H2SemiNorm,
+        'MultilevelWaveletLoss': MultilevelWaveletLoss,
+        'WaveletBinnedRMSE': WaveletBinnedRMSE,
     }
     
     loss_components = []

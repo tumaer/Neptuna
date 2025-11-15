@@ -10,7 +10,9 @@ from .losses import (
     PearsonCorrelationLoss,
     SinkhornDivergence,
     H1SemiNorm,
-    H2SemiNorm
+    H2SemiNorm,
+    MultilevelWaveletLoss,
+    WaveletBinnedRMSE
 )
 
 __all__ = [
@@ -24,4 +26,6 @@ __all__ = [
     'SinkhornDivergence',
     'H1SemiNorm',
     'H2SemiNorm',
+    'MultilevelWaveletLoss',
+    'WaveletBinnedRMSE',
 ]
