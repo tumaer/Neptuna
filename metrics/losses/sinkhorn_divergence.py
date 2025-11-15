@@ -21,6 +21,9 @@ except:
     keops_available = False
 
 
+# Adapted from geomloss:
+# https://github.com/jeanfeydy/geomloss
+
 class SinkhornDivergence(nn.Module):
     """
     Sinkhorn divergence loss component for optimal transport-based comparison.

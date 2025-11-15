@@ -9,6 +9,8 @@ from .losses import (
     MSSSIM,
     PearsonCorrelationLoss,
     SinkhornDivergence,
+    H1SemiNorm,
+    H2SemiNorm
 )
 
 __all__ = [
@@ -20,4 +22,6 @@ __all__ = [
     'MSSSIM',
     'PearsonCorrelationLoss',
     'SinkhornDivergence',
+    'H1SemiNorm',
+    'H2SemiNorm',
 ]

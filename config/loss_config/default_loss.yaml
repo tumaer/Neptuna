@@ -4,7 +4,7 @@ loss:
       weight: 0.0
       name: mse
       config_file: L2_Loss/l2_loss_default
-    - type: SinkhornDivergence
+    - type: H1SemiNorm
       weight: 0.5
-      name: sinkhorn_divergence
-      config_file: SinkhornDivergence/sinkhorn_divergence_default
+      name: h1_semi_norm
+      config_file: H1SemiNorm/h1_semi_norm_default

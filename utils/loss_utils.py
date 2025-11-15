@@ -7,6 +7,8 @@ from metrics.losses import (
     MSSSIM,
     PearsonCorrelationLoss,
     SinkhornDivergence,
+    H1SemiNorm,
+    H2SemiNorm
 )
 
 def fetch_loss_metric(cfg) -> CompositeLoss:
@@ -26,6 +28,8 @@ def fetch_loss_metric(cfg) -> CompositeLoss:
         'MSSSIM': MSSSIM,
         'PearsonCorrelationLoss': PearsonCorrelationLoss,
         'SinkhornDivergence': SinkhornDivergence,
+        'H1SemiNorm': H1SemiNorm,
+        'H2SemiNorm': H2SemiNorm
     }
     
     loss_components = []
