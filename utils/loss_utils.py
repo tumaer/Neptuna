@@ -10,7 +10,8 @@ from metrics.losses import (
     H1SemiNorm,
     H2SemiNorm,
     MultilevelWaveletLoss,
-    WaveletBinnedRMSE
+    WaveletBinnedRMSE,
+    IntegralConservationRMSE
 )
 
 def fetch_loss_metric(cfg) -> CompositeLoss:
@@ -34,12 +35,14 @@ def fetch_loss_metric(cfg) -> CompositeLoss:
         'H2SemiNorm': H2SemiNorm,
         'MultilevelWaveletLoss': MultilevelWaveletLoss,
         'WaveletBinnedRMSE': WaveletBinnedRMSE,
+        'IntegralConservationRMSE': IntegralConservationRMSE
     }
     
     loss_components = []
 
     data_dim = cfg.data_config.dimension
     field_names = cfg.data_config.filter_features.filter_out_channels
+    norm_stats = cfg.data_config.data_normalization_stats
     
     for component_cfg in cfg.loss_config.loss.components:
         loss_type = component_cfg.type
@@ -62,6 +65,7 @@ def fetch_loss_metric(cfg) -> CompositeLoss:
             name=name, 
             data_dim=data_dim, 
             field_names=field_names,
+            norm_stats=norm_stats,
             **metric_params
         )
         loss_components.append(loss_instance)

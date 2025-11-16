@@ -1,0 +1,25 @@
+conserved_keys:
+  - mass
+  - Px
+  - Py
+  - kinetic_energy
+
+# Whether to include boundary flux metrics
+use_boundary_fluxes: true
+
+boundary_keys:
+  - mass
+  - Px
+  - Py
+  - energy
+
+# Optional: weight different terms relative to each other
+quantity_weights:
+  domain/mass: 1.0
+  domain/Px: 0.5
+  domain/Py: 0.5
+  domain/kinetic_energy: 1.0
+  boundary/mass: 0.2
+  boundary/Px: 0.1
+  boundary/Py: 0.1
+  boundary/energy: 1.0

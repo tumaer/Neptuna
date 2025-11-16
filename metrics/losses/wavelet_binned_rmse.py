@@ -3,7 +3,13 @@ import torch
 import torch.nn as nn
 import ptwt  # pip install ptwt
 from ..training_metrics import LossComponent
-from typing import Optional, List, Sequence
+from typing import Optional, List, Sequence, Dict
+
+# Inspired by fRMSE from the paper by Takamoto et al.,
+# 'PDEBENCH: An Extensive Benchmark for Scientific Machine Learning'
+# https://arxiv.org/abs/2210.07182
+# Adapted to use wavelet transforms (rather than Fourier transforms) for
+# frequency binning, to support non-periodic BCs and spatially localized features.
 
 class WaveletBinnedRMSE(LossComponent):
     """
@@ -28,6 +34,7 @@ class WaveletBinnedRMSE(LossComponent):
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
+        norm_stats: Dict[str, Dict[str, float]] = None,
         wavelet: str = "db2",
         spatial_level: Optional[int] = None,
         mode_spatial: str = "reflect",
@@ -36,7 +43,7 @@ class WaveletBinnedRMSE(LossComponent):
         normalize_weights: bool = True,
         return_per_level: bool = False,
     ):
-        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names)
+        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_stats=norm_stats)
         assert aggregate in ("mean", "sum", "weighted")
         self.wavelet = wavelet
         self.spatial_level = spatial_level

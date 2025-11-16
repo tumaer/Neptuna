@@ -4,7 +4,7 @@ loss:
       weight: 0.0
       name: mse
       config_file: L2_Loss/l2_loss_default
-    - type: WaveletBinnedRMSE
+    - type: IntegralConservationRMSE
       weight: 0.5
-      name: wavelet_binned_rmse
-      config_file: WaveletBinnedRMSE/wavelet_binned_rmse_default
+      name: integral_conservation_rmse
+      config_file: IntegralConservationRMSE/integral_conservation_rmse_default

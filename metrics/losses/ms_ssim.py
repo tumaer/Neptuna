@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from ..training_metrics import LossComponent
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 # Adapted from mssim.pytorch:
 # https://github.com/lartpang/mssim.pytorch
@@ -17,6 +17,7 @@ class MSSSIM(LossComponent):
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
+        norm_stats: Dict[str, Dict[str, float]] = None,
         window_size=11,
         sigma=1.5,
         *,
@@ -48,7 +49,7 @@ class MSSSIM(LossComponent):
         [1] Wang, Zhou et al. “Image quality assessment: from error visibility to structural similarity.” IEEE Transactions on Image Processing 13 (2004): 600-612.
         [2] Wang, Zhou et al. “Multi-scale structural similarity for image quality assessment.” (2003).
         """
-        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names)
+        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_stats=norm_stats)
         
         self.data_dim = data_dim
         self.window_size = window_size

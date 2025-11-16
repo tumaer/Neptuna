@@ -1,7 +1,7 @@
 import numpy as np
 from functools import partial
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import List, Optional, Dict
 import torch
 import torch.nn as nn
 from torch.nn.functional import conv1d, avg_pool1d, avg_pool2d, avg_pool3d, interpolate
@@ -34,6 +34,7 @@ class SinkhornDivergence(nn.Module):
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
+        norm_stats: Dict[str, Dict[str, float]] = None,
         p: int = 2,
         blur: float = None,
         reach: float = None,
@@ -48,6 +49,7 @@ class SinkhornDivergence(nn.Module):
         self.name = name or self.__class__.__name__
         self.data_dim = data_dim
         self.field_names = field_names
+        self.norm_stats = norm_stats
         
         # Sinkhorn-specific parameters
         self.p = p

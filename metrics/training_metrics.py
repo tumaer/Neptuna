@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 import torch
 import torch.nn as nn
@@ -15,12 +15,14 @@ class LossComponent(nn.Module, ABC):
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
+        norm_stats: Dict[str, Dict[str, float]] = None,
     ):
         super().__init__()
         self.weight = weight
         self.name = name or self.__class__.__name__
         self.data_dim = data_dim
         self.field_names = field_names
+        self.norm_stats = norm_stats
 
     @abstractmethod
     def forward(

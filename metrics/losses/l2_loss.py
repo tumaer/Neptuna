@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 import torch
 import torch.nn as nn
@@ -17,10 +17,11 @@ class L2Loss(LossComponent):
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
+        norm_stats: Dict[str, Dict[str, float]] = None,
         reduction: str = 'mean',
         epsilon: float = 1e-8
     ):
-        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names)
+        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_stats=norm_stats)
         self.reduction = reduction
         self.epsilon = epsilon
     
@@ -32,5 +33,4 @@ class L2Loss(LossComponent):
     ) -> torch.Tensor:
         loss = F.mse_loss(predictions, labels, reduction=self.reduction)
         weighted_loss = self.weight * loss
-        
         return weighted_loss

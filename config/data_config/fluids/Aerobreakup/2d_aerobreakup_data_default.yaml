@@ -1,6 +1,6 @@
 # For details on the parameters, refer to data_config-->example_data_config.yaml
 dataset_name: Aerobreakup
-dataset_directory_path: ./data/fluids/Aerobreakup_DPUVVoS/2D
+dataset_directory_path: ./data/fluids/AB/2D
 seed: 42
 dimension: 2
 grid_resolution: null

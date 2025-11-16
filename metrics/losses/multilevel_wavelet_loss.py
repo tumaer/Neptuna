@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import ptwt
 
-from typing import Optional, List
+from typing import Optional, List, Dict
 from ..training_metrics import LossComponent
 
 # Based on paper by L. Prandtl et al.,
@@ -24,6 +24,7 @@ class MultilevelWaveletLoss(LossComponent):
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
+        norm_stats: Dict[str, Dict[str, float]] = None,
         wavelet: str = "db2",
         alpha: float = 100.0,
         beta: float = 10.0,
@@ -34,7 +35,7 @@ class MultilevelWaveletLoss(LossComponent):
         mode_temporal: str = "reflect",
         reduction: str = "mean",
     ):
-        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names)
+        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_stats=norm_stats)
         assert reduction in ("mean", "sum")
         self.wavelet = wavelet
         self.alpha = alpha

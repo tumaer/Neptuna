@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 import torch
 import torch.nn as nn
@@ -17,9 +17,10 @@ class L1Loss(LossComponent):
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
+        norm_stats: Dict[str, Dict[str, float]] = None,
         reduction: str = 'mean'
     ):
-        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names)
+        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_stats=norm_stats)
         self.reduction = reduction
     
     def forward(

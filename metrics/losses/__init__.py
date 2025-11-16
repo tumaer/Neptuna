@@ -8,6 +8,7 @@ from .h1_semi_norm import H1SemiNorm
 from .h2_semi_norm import H2SemiNorm
 from .multilevel_wavelet_loss import MultilevelWaveletLoss
 from .wavelet_binned_rmse import WaveletBinnedRMSE
+from .integral_conservation_rmse import IntegralConservationRMSE
 
 __all__ = [
     'L1Loss',
@@ -20,4 +21,5 @@ __all__ = [
     'H2SemiNorm',
     'MultilevelWaveletLoss',
     'WaveletBinnedRMSE',
+    'IntegralConservationRMSE',
 ]

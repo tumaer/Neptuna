@@ -4,7 +4,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Literal, Optional, List, Any, Union
+from typing import Literal, Optional, List, Any, Union, Dict
 from ..training_metrics import LossComponent
 
 # Filter kernels adapted from Kornia
@@ -29,10 +29,11 @@ class H2SemiNorm(LossComponent):
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
+        norm_stats: Dict[str, Dict[str, float]] = None,
         mode: Literal['sobel', 'diff'] = 'diff',
         reduction: str = 'mean'
     ):
-        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names)
+        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_stats=norm_stats)
         self.mode = mode
         self.reduction = reduction
         
