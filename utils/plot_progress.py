@@ -748,6 +748,11 @@ class GridStructureBuilder:
         titles = []
         is_timestamp = []
         
+        # Add leftmost time column
+        widths.append(1)
+        titles.append("Time")
+        is_timestamp.append(True)
+        
         # Input section
         widths.append(len(self.input_channels))
         titles.append("Input")
@@ -762,8 +767,8 @@ class GridStructureBuilder:
         # Output sections with timestamps after targets
         cols_per_field = 4 if self.include_relative_error else 3
         error_labels = (["Prediction", "Target", "Abs Error", "Rel Error"] 
-                       if self.include_relative_error 
-                       else ["Prediction", "Target", "Abs Error"])
+                    if self.include_relative_error 
+                    else ["Prediction", "Target", "Abs Error"])
         
         for ch_name in self.output_channels:
             for i, label in enumerate(error_labels):
@@ -957,7 +962,7 @@ class BasePlotter(ABC):
         """Generate time label for a given step."""
         if step < T_in:
             time_offset = self.stride * (T_in - 1 - step)
-            return "t = 0" if time_offset == 0 else f"t - {time_offset}"
+            return "t" if time_offset == 0 else f"t - {time_offset}"
         else:
             pred_step = step - T_in + 1
             return f"t + {self.stride * pred_step}"
@@ -1197,6 +1202,14 @@ class VerticalPlotter(BasePlotter):
         for row in range(nrows):
             row_gs_idx = 2 + row * 2
             col_idx = 0
+            
+            # Plot leftmost time column
+            gs_col = col_gs_indices[col_idx]
+            time_ax = fig.add_subplot(gs[row_gs_idx, gs_col])
+            time_ax.axis('off')
+            time_ax.text(0.5, 0.5, self._get_time_label(row, T_in),
+                        ha='center', va='center', fontsize=12, weight='bold')
+            col_idx += 1
             
             # Plot input
             if row < T_in:
