@@ -1,9 +1,9 @@
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Union, Tuple
 
 import torch
 import torch.nn as nn
 
-from ..training_metrics import LossComponent
+from ..training_metrics import LossComponent, WeightSchedule
 
 
 class PearsonCorrelationLoss(LossComponent):
@@ -13,14 +13,15 @@ class PearsonCorrelationLoss(LossComponent):
     """
     def __init__(
         self, 
-        weight: float = 1.0, 
+        weight: Union[float, WeightSchedule] = 1.0,
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
         norm_stats: Dict[str, Dict[str, float]] = None,
         epsilon: float = 1e-8
     ):
-        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_stats=norm_stats)
+        super().__init__(weight=weight, name=name, data_dim=data_dim, 
+                         field_names=field_names, norm_stats=norm_stats)
         self.epsilon = epsilon
     
     def forward(
@@ -28,7 +29,8 @@ class PearsonCorrelationLoss(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-    ) -> torch.Tensor:
+        return_detailed: bool = False
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         # Shape: (batch, frames, channels, *spatial_dims)
         # Compute correlation per (batch, frame, channel) across spatial points
         
@@ -54,10 +56,27 @@ class PearsonCorrelationLoss(LossComponent):
         label_std = torch.sqrt((label_centered ** 2).mean(dim=-1) + self.epsilon)
         
         correlation = covariance / (pred_std * label_std + self.epsilon)
+
+        unweighted = 1.0 - correlation
+
+        weight_tensor = self.weight_schedule.get_weight(unweighted.shape)
+        weighted = unweighted * weight_tensor
         
-        # Loss = 1 - r (maximize positive correlation)
-        # r ranges from -1 to 1, so loss ranges from 0 (perfect) to 2 (worst)
-        loss = (1.0 - correlation).mean()
-        weighted_loss = self.weight * loss
+        # Reduce to scalar
+        total_loss = weighted.mean()
         
-        return weighted_loss
+        if not return_detailed:
+            return total_loss
+        
+        # Build detailed breakdown
+        detailed = {}
+        
+        # Per-timestep: average over batch and channels
+        # Shape: (frames,)
+        detailed['per_timestep'] = weighted.mean(dim=(0, 2)).detach()
+        
+        # Per-channel: average over batch and frames
+        # Shape: (channels,)
+        detailed['per_channel'] = weighted.mean(dim=(0, 1)).detach()
+        
+        return total_loss, detailed

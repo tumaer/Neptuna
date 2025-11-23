@@ -2,8 +2,8 @@ import math
 import torch
 import torch.nn as nn
 import ptwt  # pip install ptwt
-from ..training_metrics import LossComponent
-from typing import Optional, List, Sequence, Dict
+from ..training_metrics import LossComponent, WeightSchedule
+from typing import Optional, List, Sequence, Dict, Union, Tuple
 
 # Inspired by fRMSE from the paper by Takamoto et al.,
 # 'PDEBENCH: An Extensive Benchmark for Scientific Machine Learning'
@@ -61,7 +61,8 @@ class WaveletBinnedRMSE(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-    ) -> torch.Tensor:
+        return_detailed: bool = False
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         predictions, labels: (B, T, C, *spatial_dims)
         Returns weighted loss (and optionally per-level RMSE).
@@ -69,15 +70,24 @@ class WaveletBinnedRMSE(LossComponent):
         if predictions.shape != labels.shape:
             raise ValueError(f"predictions and labels must have same shape, got {predictions.shape} vs {labels.shape}")
 
+        original_shape = predictions.shape
         B, T, C, *spatial = predictions.shape
         D = len(spatial)
         if D not in (1, 2, 3):
             raise ValueError(f"Expected 1D, 2D or 3D spatial data, got {D}D.")
 
+        # Get weight tensor with proper broadcasting
+        weight_tensor = self.weight_schedule.get_weight(original_shape)
+        
+        # Apply weights to inputs (scale by sqrt to preserve RMSE properties)
+        weight_sqrt = torch.sqrt(weight_tensor)
+        predictions_weighted = predictions * weight_sqrt
+        labels_weighted = labels * weight_sqrt
+
         # Flatten batch/time/channel into a single leading dimension
         N = B * T * C
-        pred_flat = predictions.reshape(N, *spatial)
-        target_flat = labels.reshape(N, *spatial)
+        pred_flat = predictions_weighted.reshape(N, *spatial)
+        target_flat = labels_weighted.reshape(N, *spatial)
 
         if D == 1:
             per_level_rmse = self._binned_rmse_1d(pred_flat, target_flat)
@@ -86,7 +96,7 @@ class WaveletBinnedRMSE(LossComponent):
         else:  # D == 3
             per_level_rmse = self._binned_rmse_3d(pred_flat, target_flat)
 
-        # Aggregate across levels to get a scalar loss, if requested
+        # Aggregate across levels to get a scalar loss
         if self.aggregate == "mean":
             loss = per_level_rmse.mean()
         elif self.aggregate == "sum":
@@ -98,13 +108,14 @@ class WaveletBinnedRMSE(LossComponent):
                 dtype=per_level_rmse.dtype,
             )
             loss = (weights * per_level_rmse).sum()
-        else:  # 'none'
+        else:
             raise RuntimeError(f"Unknown aggregate mode: {self.aggregate}")
 
-        # Apply component weight
-        weighted_loss = self.weight * loss
-
-        return weighted_loss
+        if not return_detailed:
+            return loss
+        
+        # Wavelet binned RMSE doesn't support detailed breakdown
+        return loss, {}
 
     # ------------------------------------------------------------------
     # 1D case

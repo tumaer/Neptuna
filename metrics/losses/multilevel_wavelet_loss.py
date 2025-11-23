@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 import ptwt
 
-from typing import Optional, List, Dict
-from ..training_metrics import LossComponent
+from typing import Optional, List, Dict, Union, Tuple
+from ..training_metrics import LossComponent, WeightSchedule
 
 # Based on paper by L. Prandtl et al.,
 # 'Wavelet-Based Loss for High-Frequency Interface Dynamics',
@@ -52,7 +52,8 @@ class MultilevelWaveletLoss(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-    ) -> torch.Tensor:
+        return_detailed: bool = False
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         predictions, labels: (B, T, C, *spatial)
         Returns weighted total loss.
@@ -60,17 +61,30 @@ class MultilevelWaveletLoss(LossComponent):
         if predictions.shape != labels.shape:
             raise ValueError(f"predictions and labels must have same shape, got {predictions.shape} vs {labels.shape}")
 
+        original_shape = predictions.shape
+        
+        # Get weight tensor with proper broadcasting
+        weight_tensor = self.weight_schedule.get_weight(original_shape)
+        
+        # Apply weights to inputs (scale by sqrt to preserve wavelet properties)
+        weight_sqrt = torch.sqrt(weight_tensor)
+        predictions_weighted = predictions * weight_sqrt
+        labels_weighted = labels * weight_sqrt
+
         # spatial wavelet loss (over spatial dimensions only)
-        Lws = self._wavelet_loss_spatial(predictions, labels)
+        Lws = self._wavelet_loss_spatial(predictions_weighted, labels_weighted)
 
         # temporal wavelet loss (over time dimension only)
-        Lwt = self._wavelet_loss_temporal(predictions, labels)
+        Lwt = self._wavelet_loss_temporal(predictions_weighted, labels_weighted)
 
         # total (unweighted)
         total = Lws + self.beta * Lwt
         
-        # Apply component weight
-        return self.weight * total
+        if not return_detailed:
+            return total
+        
+        # Wavelet loss doesn't support detailed breakdown due to non-linear aggregation
+        return total, {}
 
 
     def _reduce(self, x: torch.Tensor) -> torch.Tensor:

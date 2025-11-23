@@ -1,10 +1,20 @@
 loss:
   components:
     - type: L2Loss
-      weight: 0.0
+      weight: 0.5
+      timestep_weights: [1.0]
+      channel_weights: [1.5, 1.0, 0.5, 1.5, 1.0, 0.5]
       name: mse
       config_file: L2_Loss/l2_loss_default
-    - type: IntegralConservationRMSE
+    - type: SinkhornDivergence
       weight: 0.5
-      name: integral_conservation_rmse
-      config_file: IntegralConservationRMSE/integral_conservation_rmse_default
+      timestep_weights: [1.0]
+      channel_weights: [1.5, 1.0, 0.5, 1.5, 1.0, 0.5]
+      name: sinkhorn
+      config_file: SinkhornDivergence/sinkhorn_divergence_default
+    - type: SSIM
+      weight: 0.5
+      timestep_weights: [1.0]
+      channel_weights: [1.5, 1.0, 0.5, 1.5, 1.0, 0.5]
+      name: ssim
+      config_file: SSIM/ssim_default

@@ -1,11 +1,11 @@
 import numpy as np
 from functools import partial
 from abc import ABC, abstractmethod
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Union, Tuple
 import torch
 import torch.nn as nn
 from torch.nn.functional import conv1d, avg_pool1d, avg_pool2d, avg_pool3d, interpolate
-from ..training_metrics import LossComponent
+from ..training_metrics import LossComponent, WeightSchedule
 
 try:  # Import the keops library, www.kernel-operations.io
     from pykeops.torch import generic_logsumexp, LazyTensor
@@ -24,7 +24,7 @@ except:
 # Adapted from geomloss:
 # https://github.com/jeanfeydy/geomloss
 
-class SinkhornDivergence(nn.Module):
+class SinkhornDivergence(LossComponent):
     """
     Sinkhorn divergence loss component for optimal transport-based comparison.
     """
@@ -42,14 +42,11 @@ class SinkhornDivergence(nn.Module):
         scaling: float = 0.5,
         cost=None,
         debias: bool = True,
+
         **kwargs,
     ):
-        super().__init__()
-        self.weight = weight
-        self.name = name or self.__class__.__name__
-        self.data_dim = data_dim
-        self.field_names = field_names
-        self.norm_stats = norm_stats
+
+        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_stats=norm_stats)
         
         # Sinkhorn-specific parameters
         self.p = p
@@ -66,7 +63,8 @@ class SinkhornDivergence(nn.Module):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-    ) -> torch.Tensor:
+        return_detailed: bool = False
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         Compute Sinkhorn divergence between predictions and labels.
         
@@ -79,13 +77,26 @@ class SinkhornDivergence(nn.Module):
             Weighted Sinkhorn divergence loss
         """
         
-        predictions, labels, axes = prepare_for_sinkhorn(predictions, labels)
+        original_shape = predictions.shape
+        
+        # Get weight tensor with proper broadcasting
+        weight_tensor = self.weight_schedule.get_weight(original_shape)
+        
+        # Apply weights to inputs (scale by sqrt to preserve Sinkhorn properties)
+        weight_sqrt = torch.sqrt(weight_tensor)
+        predictions_weighted = predictions * weight_sqrt
+        labels_weighted = labels * weight_sqrt
+        
+        # Prepare tensors for Sinkhorn (handles reshaping, non-negativity, etc.)
+        predictions_weighted, labels_weighted, axes = prepare_for_sinkhorn(
+            predictions_weighted, labels_weighted
+        )
         
         axes_to_use = self.axes if self.axes is not None else axes
 
         divergence = sinkhorn_divergence(
-            a=predictions,
-            b=labels,
+            a=predictions_weighted,
+            b=labels_weighted,
             p=self.p,
             blur=self.blur,
             reach=self.reach,
@@ -97,7 +108,13 @@ class SinkhornDivergence(nn.Module):
             **self.kwargs,
         )
         
-        return self.weight * divergence.mean()
+        loss = divergence.mean()
+        
+        if not return_detailed:
+            return loss
+        
+        # Sinkhorn divergence doesn't support detailed breakdown
+        return loss, {}
 
 
 # Custom method for reshaping tensors for Sinkhorn divergence

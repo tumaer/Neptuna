@@ -1,5 +1,6 @@
 from omegaconf import DictConfig, OmegaConf
-from metrics.training_metrics import CompositeLoss
+import torch
+from metrics.training_metrics import CompositeLoss, WeightSchedule
 from metrics.losses import (
     L1Loss,
     L2Loss,
@@ -13,6 +14,61 @@ from metrics.losses import (
     WaveletBinnedRMSE,
     IntegralConservationRMSE
 )
+from typing import Union
+
+def create_weight_schedule(component_cfg) -> Union[float, WeightSchedule]:
+    """
+    Creates a weight or WeightSchedule from config.
+    
+    Args:
+        component_cfg: Configuration for a single loss component
+        
+    Returns:
+        Either a scalar weight or a WeightSchedule instance
+    """
+    base_weight = component_cfg.get('weight', 1.0)
+    timestep_weights = component_cfg.get('timestep_weights', None)
+    channel_weights = component_cfg.get('channel_weights', None)
+    component_weights = component_cfg.get('component_weights', None)
+    
+    # If no schedule weights specified, return scalar (backward compatible)
+    if timestep_weights is None and channel_weights is None and component_weights is None:
+        return base_weight
+    
+    # Convert OmegaConf ListConfig to tensor for timestep_weights
+    if timestep_weights is not None:
+        if OmegaConf.is_list(timestep_weights):
+            timestep_weights = OmegaConf.to_container(timestep_weights, resolve=True)
+        
+        if isinstance(timestep_weights, (list, tuple)):
+            timestep_weights = torch.tensor(timestep_weights, dtype=torch.float32)
+        elif not isinstance(timestep_weights, torch.Tensor):
+            raise ValueError(f"timestep_weights must be list, tuple, or tensor, got {type(timestep_weights)}")
+    
+    # Convert OmegaConf ListConfig to tensor for channel_weights
+    if channel_weights is not None:
+        if OmegaConf.is_list(channel_weights):
+            channel_weights = OmegaConf.to_container(channel_weights, resolve=True)
+        
+        if isinstance(channel_weights, (list, tuple)):
+            channel_weights = torch.tensor(channel_weights, dtype=torch.float32)
+        elif not isinstance(channel_weights, torch.Tensor):
+            raise ValueError(f"channel_weights must be list, tuple, or tensor, got {type(channel_weights)}")
+    
+    # Convert OmegaConf DictConfig to regular dict for component_weights
+    if component_weights is not None:
+        if OmegaConf.is_dict(component_weights):
+            component_weights = OmegaConf.to_container(component_weights, resolve=True)
+        
+        if not isinstance(component_weights, dict):
+            raise ValueError(f"component_weights must be a dict, got {type(component_weights)}")
+    
+    return WeightSchedule(
+        base_weight=base_weight,
+        timestep_weights=timestep_weights,
+        channel_weights=channel_weights,
+        component_weights=component_weights
+    )
 
 def fetch_loss_metric(cfg) -> CompositeLoss:
     """
@@ -46,11 +102,13 @@ def fetch_loss_metric(cfg) -> CompositeLoss:
     
     for component_cfg in cfg.loss_config.loss.components:
         loss_type = component_cfg.type
-        weight = component_cfg.get('weight', 1.0)
         name = component_cfg.get('name', None)
         
         if loss_type not in loss_registry:
             raise ValueError(f"Unknown loss type: {loss_type}")
+        
+        # Create weight or weight schedule from config
+        weight = create_weight_schedule(component_cfg)
         
         # Load metric-specific config if provided
         metric_params = {}

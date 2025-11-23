@@ -4,8 +4,8 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Literal, Optional, List, Any, Union, Dict
-from ..training_metrics import LossComponent
+from typing import Literal, Optional, List, Any, Union, Dict, Tuple
+from ..training_metrics import LossComponent, WeightSchedule
 
 # Filter kernels adapted from Kornia
 # https://github.com/kornia/kornia
@@ -78,7 +78,8 @@ class H2SemiNorm(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-    ) -> torch.Tensor:
+        return_detailed: bool = False
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         Compute H2 semi-norm loss based on second-order derivatives.
         
@@ -96,15 +97,49 @@ class H2SemiNorm(LossComponent):
         
         grad_diff = pred_grads - target_grads
         
-        if self.reduction == 'mean':
-            grad_loss = torch.mean(grad_diff ** 2)
-        elif self.reduction == 'sum':
-            grad_loss = torch.sum(grad_diff ** 2)
-        else:
-            grad_loss = torch.mean(grad_diff ** 2)
+        ndim = self.data_dim if self.data_dim is not None else (predictions.ndim - 3)
         
-        total_loss = grad_loss * self.weight
-        return total_loss
+        if ndim == 1:
+            # grad_diff shape: (B, F, C, H) - already no Hessian dimension
+            unweighted = grad_diff ** 2
+        elif ndim == 2:
+            # grad_diff shape: (B, F, C, 3, H, W) - sum over 3 Hessian components
+            unweighted = (grad_diff ** 2).sum(dim=3)
+        elif ndim == 3:
+            # grad_diff shape: (B, F, C, 6, D, H, W) - sum over 6 Hessian components
+            unweighted = (grad_diff ** 2).sum(dim=3)
+        
+        # Average over spatial dimensions to get (B, F, C)
+        spatial_dims = tuple(range(3, unweighted.ndim))
+        unweighted = unweighted.mean(dim=spatial_dims)
+        
+        # Get weight tensor with proper broadcasting
+        weight_tensor = self.weight_schedule.get_weight(unweighted.shape)
+        
+        # Apply weights element-wise
+        weighted = unweighted * weight_tensor
+        
+        # Reduce to scalar
+        if self.reduction == 'mean':
+            total_loss = weighted.mean()
+        elif self.reduction == 'sum':
+            total_loss = weighted.sum()
+        else:
+            total_loss = weighted.mean()
+        
+        if not return_detailed:
+            return total_loss
+        
+        # Build detailed breakdown
+        detailed = {}
+        
+        # Per-timestep: average over batch and channels
+        detailed['per_timestep'] = weighted.mean(dim=(0, 2)).detach()
+        
+        # Per-channel: average over batch and frames
+        detailed['per_channel'] = weighted.mean(dim=(0, 1)).detach()
+        
+        return total_loss, detailed
 
 def normalize_kernel2d(input: torch.Tensor) -> torch.Tensor:
     """Normalize both derivative and smoothing kernel."""

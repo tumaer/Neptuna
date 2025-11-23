@@ -1,9 +1,9 @@
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 import torch
 from torch import nn
-from ..training_metrics import LossComponent
+from ..training_metrics import LossComponent, WeightSchedule
 
 # Inspired by cRMSE and bRMSE from the paper by Takamoto et al.,
 # 'PDEBENCH: An Extensive Benchmark for Scientific Machine Learning'
@@ -90,27 +90,9 @@ class BoundaryFluxQuantity(ABC):
 
 
 class IntegralConservationRMSE(LossComponent):
-    """
-    Conservation-aware RMSE loss on domain-integrated quantities and boundary fluxes.
-
-    Computes RMSE between predicted and true conserved quantities (mass, momentum, 
-    energy, etc.), normalized by reference scales to produce dimensionless O(1) metrics.
-
-    Assumptions:
-    - Input tensors are normalized (z-scored).
-    - Layout: (B, T, C, *spatial) where C corresponds to field_names.
-    - norm_stats provides mean/std for denormalization.
-
-    Override these methods to customize:
-    - _denormalize_fields: control denormalization logic
-    - _build_domain_quantity_registry: add custom domain quantities
-    - _build_boundary_flux_registry: add custom boundary fluxes
-    - _get_reference_scales: change normalization strategy
-    """
-
     def __init__(
         self,
-        weight: float = 1.0,
+        weight: Union[float, WeightSchedule] = 1.0,
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
@@ -121,6 +103,16 @@ class IntegralConservationRMSE(LossComponent):
         quantity_weights: Optional[Dict[str, float]] = None,
         eps: float = 1e-8,
     ):
+        # Convert quantity_weights to WeightSchedule format
+        if isinstance(weight, (int, float)):
+            weight = WeightSchedule(
+                base_weight=float(weight),
+                component_weights=quantity_weights
+            )
+        elif isinstance(weight, WeightSchedule) and quantity_weights is not None:
+            # Merge quantity_weights into existing WeightSchedule
+            weight.component_weights = {**weight.component_weights, **quantity_weights}
+        
         super().__init__(
             weight=weight,
             name=name,
@@ -132,11 +124,10 @@ class IntegralConservationRMSE(LossComponent):
         self.conserved_keys: Tuple[str, ...] = tuple(conserved_keys or ())
         self.boundary_keys: Tuple[str, ...] = tuple(boundary_keys or ())
         self.use_boundary_fluxes = use_boundary_fluxes
-        self.quantity_weights: Dict[str, float] = quantity_weights or {}
         self.eps = eps
         self.last_components: Dict[str, torch.Tensor] = {}
 
-        # Build registries
+        # Build registries (same as before)
         self._domain_quantity_registry: Dict[str, DomainQuantity] = (
             self._build_domain_quantity_registry()
         )
@@ -144,7 +135,7 @@ class IntegralConservationRMSE(LossComponent):
             self._build_boundary_flux_registry()
         )
 
-        # Resolve domain quantities
+        # Resolve quantities (same as before)
         self.domain_quantities: List[DomainQuantity] = []
         for key in self.conserved_keys:
             if key not in self._domain_quantity_registry:
@@ -154,7 +145,6 @@ class IntegralConservationRMSE(LossComponent):
                 )
             self.domain_quantities.append(self._domain_quantity_registry[key])
 
-        # Resolve boundary flux quantities
         self.boundary_flux_quantities: List[BoundaryFluxQuantity] = []
         if self.use_boundary_fluxes:
             for key in self.boundary_keys:
@@ -170,29 +160,13 @@ class IntegralConservationRMSE(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Compute conservation-aware RMSE loss.
-
-        Parameters
-        ----------
-        model : nn.Module
-            Model being trained (unused, kept for API consistency).
-        predictions : Tensor
-            Normalized predictions, shape (B, T, C, *spatial).
-        labels : Tensor
-            Normalized ground truth, same shape as predictions.
-
-        Returns
-        -------
-        Tensor
-            Scalar loss.
-        """
+        return_detailed: bool = False
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         # Denormalize fields
         pred_fields = self._denormalize_fields(predictions, is_pred=True)
         true_fields = self._denormalize_fields(labels, is_pred=False)
 
-        # Compute domain-integrated quantities: key -> (B, T)
+        # Compute domain-integrated quantities
         domain_pred = self._compute_domain_conserved(pred_fields)
         domain_true = self._compute_domain_conserved(true_fields)
 
@@ -206,7 +180,6 @@ class IntegralConservationRMSE(LossComponent):
         # Compute boundary fluxes if enabled
         boundary_loss_dict: Dict[str, torch.Tensor] = {}
         if self.use_boundary_fluxes and len(self.boundary_keys) > 0:
-            # Compute fluxes: quantity -> patch -> (B, T)
             flux_pred = self._compute_boundary_fluxes(pred_fields)
             flux_true = self._compute_boundary_fluxes(true_fields)
             boundary_loss_dict = self._compute_cRMSE_boundary_dict(
@@ -214,16 +187,28 @@ class IntegralConservationRMSE(LossComponent):
                 flux_true,
             )
 
-        # Aggregate all components
+        # Aggregate with component weights from WeightSchedule
         all_components = {**domain_loss_dict, **boundary_loss_dict}
         self.last_components = all_components
 
         total = torch.zeros((), device=predictions.device, dtype=predictions.dtype)
         for name, value in all_components.items():
-            q_weight = self.quantity_weights.get(name, 1.0)
+            # Use WeightSchedule's component weights
+            q_weight = self.weight_schedule.get_component_weight(name)
             total = total + q_weight * value
 
-        return self.weight * total
+        # Apply base weight
+        weighted_total = self.weight_schedule.base_weight * total
+
+        if not return_detailed:
+            return weighted_total
+
+        # Build detailed breakdown
+        detailed = {}
+        for name, value in all_components.items():
+            detailed[name] = value.detach()
+
+        return weighted_total, detailed
 
     def _build_domain_quantity_registry(self) -> Dict[str, DomainQuantity]:
         """
@@ -604,9 +589,9 @@ class IntegralConservationRMSE(LossComponent):
         pred: torch.Tensor,
         true: torch.Tensor,
     ) -> torch.Tensor:
-        """Compute RMSE over all dimensions."""
+        """Compute MSE over all dimensions."""
         diff = pred - true
-        return torch.sqrt(torch.mean(diff**2))
+        return torch.mean(diff**2)
 
 
 # ------------------------------------------------------------------

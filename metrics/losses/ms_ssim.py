@@ -4,8 +4,8 @@ import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from ..training_metrics import LossComponent
-from typing import Optional, List, Dict
+from ..training_metrics import LossComponent, WeightSchedule
+from typing import Optional, List, Dict, Union, Tuple
 
 # Adapted from mssim.pytorch:
 # https://github.com/lartpang/mssim.pytorch
@@ -75,7 +75,8 @@ class MSSSIM(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-    ) -> torch.Tensor:
+        return_detailed: bool = False
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """Calculate the mean SSIM (MSSIM) between two 3d/4d/5d tensors.
 
         Args:
@@ -87,23 +88,36 @@ class MSSSIM(LossComponent):
             Tensor: Weighted SSIM loss
         """
         original_shape = predictions.shape
-        B, F, C = predictions.shape[:3]
+        B, T, C = predictions.shape[:3]
         spatial_dims = predictions.shape[3:]
         
-        # Reshape to (B*F, C, spatial_dims...)
-        predictions = predictions.reshape(B * F, C, *spatial_dims)
-        labels = labels.reshape(B * F, C, *spatial_dims)
+        # Get weight tensor with proper broadcasting
+        weight_tensor = self.weight_schedule.get_weight(original_shape)
         
-        if predictions.type() != self.gaussian_filter.gaussian_window.type():
-            predictions = predictions.type_as(self.gaussian_filter.gaussian_window)
-        if labels.type() != self.gaussian_filter.gaussian_window.type():
-            labels = labels.type_as(self.gaussian_filter.gaussian_window)
+        # Apply weights to inputs (scale by sqrt to preserve MS-SSIM properties)
+        # Since MS-SSIM involves squared terms, scaling inputs by sqrt(w) gives
+        # final weighting of w in the squared error components
+        weight_sqrt = torch.sqrt(weight_tensor)
+        predictions_weighted = predictions * weight_sqrt
+        labels_weighted = labels * weight_sqrt
+        
+        # Reshape to (B*T, C, spatial_dims...)
+        predictions_weighted = predictions_weighted.reshape(B * T, C, *spatial_dims)
+        labels_weighted = labels_weighted.reshape(B * T, C, *spatial_dims)
+        
+        if predictions_weighted.type() != self.gaussian_filter.gaussian_window.type():
+            predictions_weighted = predictions_weighted.type_as(self.gaussian_filter.gaussian_window)
+        if labels_weighted.type() != self.gaussian_filter.gaussian_window.type():
+            labels_weighted = labels_weighted.type_as(self.gaussian_filter.gaussian_window)
 
-        msssim_value = self.msssim(predictions, labels)
-        loss = 1.0 - msssim_value
-        weighted_loss = self.weight * loss
-
-        return weighted_loss
+        msssim_value = self.msssim(predictions_weighted, labels_weighted)
+        loss = (1.0 - msssim_value) * self.weight
+        
+        if not return_detailed:
+            return loss
+        
+        # MS-SSIM doesn't support detailed breakdown due to non-linear aggregation
+        return loss, {}
 
     def ssim(self, x, y):
         ssim, _ = self._ssim(x, y)
