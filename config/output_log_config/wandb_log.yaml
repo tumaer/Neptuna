@@ -1,7 +1,7 @@
 logging: 
   output_dir: null
   checkpoint_prefix: "2" # Optional prefix for checkpoints directory, should be a string
-  wandb: True
+  wandb: False
   wandb_project: 'test-project'
   wandb_run_name: null
   disable_progress_bar: True

@@ -39,14 +39,17 @@ class WeightSchedule(nn.Module):
         Args:
             shape: Expected shape (batch, timesteps, channels, ...) for broadcasting
         """
-        weight = torch.tensor(self.base_weight, device=self.get_device())
+        device = self.get_device()
+        weight = torch.tensor(self.base_weight, device=device)
         
         if self.timestep_weights is not None and shape is not None:
-            t_weights = self.timestep_weights.view(1, -1, *([1] * (len(shape) - 2)))
+            t_weights = self.timestep_weights.to(device)
+            t_weights = t_weights.view(1, -1, *([1] * (len(shape) - 2)))
             weight = weight * t_weights
             
         if self.channel_weights is not None and shape is not None:
-            c_weights = self.channel_weights.view(1, 1, -1, *([1] * (len(shape) - 3)))
+            c_weights = self.channel_weights.to(device)
+            c_weights = c_weights.view(1, 1, -1, *([1] * (len(shape) - 3)))
             weight = weight * c_weights
             
         return weight

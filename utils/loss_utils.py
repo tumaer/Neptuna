@@ -129,3 +129,16 @@ def fetch_loss_metric(cfg) -> CompositeLoss:
         loss_components.append(loss_instance)
     
     return CompositeLoss(loss_components=loss_components)
+
+def fetch_eval_loss_config(cfg):
+    #TODO: Make this more robust by adapting eval_loss_cfg to the dataset
+
+    eval_loss_config_path = "./config/loss_config/infer_loss.yaml"
+    eval_loss_cfg = OmegaConf.load(eval_loss_config_path)
+    
+    full_eval_cfg = OmegaConf.create({
+        "loss_config": eval_loss_cfg,
+        "data_config": cfg.data_config
+    })
+
+    return full_eval_cfg

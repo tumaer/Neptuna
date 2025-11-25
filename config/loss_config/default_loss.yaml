@@ -3,18 +3,12 @@ loss:
     - type: L2Loss
       weight: 0.5
       timestep_weights: [1.0]
-      channel_weights: [1.5, 1.0, 0.5, 1.5, 1.0, 0.5]
+      channel_weights: [1.0]
       name: mse
       config_file: L2_Loss/l2_loss_default
-    - type: SinkhornDivergence
-      weight: 0.5
-      timestep_weights: [1.0]
-      channel_weights: [1.5, 1.0, 0.5, 1.5, 1.0, 0.5]
-      name: sinkhorn
-      config_file: SinkhornDivergence/sinkhorn_divergence_default
     - type: SSIM
       weight: 0.5
       timestep_weights: [1.0]
-      channel_weights: [1.5, 1.0, 0.5, 1.5, 1.0, 0.5]
+      channel_weights: [1.0]
       name: ssim
       config_file: SSIM/ssim_default

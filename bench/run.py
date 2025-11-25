@@ -15,6 +15,7 @@ from optuna.pruners import NopPruner
 from utils.custom_callbacks import PlotOnEvalAndSaveCallback, NaNCallback
 import csv
 from utils.hp_optimization import trial_name_factory
+from utils.loss_utils import fetch_eval_loss_config, fetch_loss_metric
 from utils.plot_progress import preprocess_for_plotting, plot_rollout_metrics
 from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
 from utils.plot_progress import build_info_strings
@@ -22,6 +23,7 @@ from utils.seed_utils import set_global_seed
 import psutil
 from only_inference import save_errors_to_csv
 import numpy as np
+import torch
 
 __all__ = ["run"]
 
@@ -196,17 +198,78 @@ def run(cfg):
             *spatial,
         )
         targets = eval_pred.label_ids
-        # NOTE: more metrics to be added later here
-        return {
-            "l1_error": l1_error(preds, targets),
-            "l2_error": l2_error(preds, targets),
-        }
+        
+        metrics = {}
+    
+        # Determine device
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        # Convert to tensors (shared by both loss functions)
+        if isinstance(preds, np.ndarray):
+            preds_tensor = torch.from_numpy(preds).float().to(device)
+        else:
+            preds_tensor = preds.to(device)
+        
+        if isinstance(targets, np.ndarray):
+            targets_tensor = torch.from_numpy(targets).float().to(device)
+        else:
+            targets_tensor = targets.to(device)
+        
+        # 1. Training loss metric (composite_loss for checkpointing)
+        if hasattr(trainer, 'loss_fn') and trainer.loss_fn is not None:
+            try:
+                with torch.no_grad():
+                    composite_loss = trainer.loss_fn(
+                        model=None,
+                        predictions=preds_tensor,
+                        labels=targets_tensor,
+                        return_detailed=False
+                    )
+                
+                metrics["composite_loss"] = composite_loss.item()
+            
+            except Exception as e:
+                logger.warning(f"Failed to compute training loss metric: {e}")
+        
+        # 2. Evaluation loss metrics (for logging)
+        try:
+            # Fetch eval loss config
+            full_eval_cfg = fetch_eval_loss_config(cfg)
+            
+            # Create eval loss function
+            eval_loss_fn = fetch_loss_metric(full_eval_cfg)
+            eval_loss_fn = eval_loss_fn.to(device)
+            
+            # Compute with detailed breakdown
+            with torch.no_grad():
+                _, detailed = eval_loss_fn(
+                    model=None,
+                    predictions=preds_tensor,
+                    labels=targets_tensor,
+                    return_detailed=True
+                )
+            
+            # Add each component to metrics
+            for component_name, component_detailed in detailed.items():
+                component_total = component_detailed['total']
+                metrics[f"{component_name}"] = (
+                    component_total.item() if torch.is_tensor(component_total) else component_total
+                )
+        
+        except Exception as e:
+            logger.warning(f"Failed to compute evaluation loss metrics: {e}")
+        
+        return metrics
 
     # Build the callbacks list
     callbacks = []
     # Always add PlotOnEvalAndSaveCallback and NaNCallback
     callbacks.append(PlotOnEvalAndSaveCallback)
     callbacks.append(NaNCallback)
+
+    loss_config = None
+    if hasattr(cfg, 'loss_config'):
+        loss_config = cfg.loss_config
 
     trainer = Trainer(
         model_config=cfg["model_config"],
@@ -223,6 +286,7 @@ def run(cfg):
         eval_dataset=eval_ds,
         compute_metrics=compute_metrics,
         callbacks=callbacks if callbacks else None,
+        loss_config=loss_config,
     )
 
     trainer.set_eval_or_test_rollout_steps(

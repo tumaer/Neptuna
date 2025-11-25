@@ -43,12 +43,15 @@ from utils.custom_callbacks import WandbCallback #custom callbacks
 from utils.custom_callbacks import CallbackHandler 
 from transformers.integrations.integration_utils import WandbCallback as WandbCallback_
 from utils.trainer_utils import EvalPrediction
+from utils.loss_utils import fetch_loss_metric
+from omegaconf import OmegaConf
 from collections.abc import Mapping  # locally import to avoid top-of-file change
 import json
 import os
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"           
 import h5py
 import time
+
 
 class Trainer(Trainer_):
     """    
@@ -96,6 +99,7 @@ class Trainer(Trainer_):
         self.scheduler_config = kwargs.pop("scheduler_config", None)
         self.infer_config = kwargs.pop("infer_config", None)
         self.output_log_config = kwargs.pop("output_log_config", None)
+        self.loss_config = kwargs.pop("loss_config", None)
 
         super().__init__(**kwargs)
 
@@ -154,6 +158,24 @@ class Trainer(Trainer_):
             self.optimizer,
             self.lr_scheduler,
         )
+
+        # Initialize loss function
+        if self.loss_config is not None:
+            # Create a config object for the loss function
+            full_cfg = OmegaConf.create({
+                "loss_config": self.loss_config,
+                "data_config": self.data_config
+            })
+            self.loss_fn = fetch_loss_metric(full_cfg)
+            logger.info("Initialized composite loss function from config")
+
+            # Move loss function to appropriate device
+            device = self.args.device if hasattr(self.args, 'device') else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            self.loss_fn = self.loss_fn.to(device)
+        else:
+            # Fallback to MSE if no loss config provided
+            self.loss_fn = None
+            logger.warning("No loss_config provided, using default MSE loss")
 
         # Inject a reference to this Trainer into all registered callbacks so they can
         # access training context (datasets, model, args, etc.).
@@ -499,12 +521,27 @@ class Trainer(Trainer_):
         # Pushforward trick (for training)
         ########################################################
         prediction, pushforward_unroll_steps = self._forward_model_train(model, inputs)
-        #compute the training loss here. Assume l2 loss.
-        loss_fn = nn.functional.mse_loss
-        #loss is computed only for the last rollout (pushforward trick!) (one-step MSE-loss), therefore no need to update the labels, just slice from the end of the "labels_including_rollouts" tensor
-        #labels are automatically either the raw_values or the residuals. This is taken care inside load_data.py.
-        loss = loss_fn(prediction, inputs["label_including_rollouts"][:,(self.data_config.sequence_info[1]*pushforward_unroll_steps):(self.data_config.sequence_info[1]*(pushforward_unroll_steps+1)) ,]) 
-        #return_outputs is true only when doing eval or test. By default it is false for training.        
+        
+        # Get labels for the current rollout step
+        labels = inputs["label_including_rollouts"][
+            :,
+            (self.data_config.sequence_info[1]*pushforward_unroll_steps):
+            (self.data_config.sequence_info[1]*(pushforward_unroll_steps+1))
+        ]
+        
+        # Compute loss using composite loss function
+        if self.loss_fn is not None:
+            # Use new composite loss framework
+            loss = self.loss_fn(
+                model=model,
+                predictions=prediction,
+                labels=labels,
+                return_detailed=False  # Don't need detailed breakdown during training
+            )
+        else:
+            # Fallback to MSE
+            loss_fn = nn.functional.mse_loss
+            loss = loss_fn(prediction, labels)  
         return (loss, prediction) if return_outputs else loss
 
     ##custom function, not inside transformers library
@@ -566,9 +603,14 @@ class Trainer(Trainer_):
         
         prediction = self._forward_model_eval_or_test(model,inputs) 
 
-        loss_fn = nn.functional.mse_loss   #this is the eval_loss, which is NOT used for saving the best model.
+        # loss_fn = nn.functional.mse_loss   #this is the eval_loss, which is NOT used for saving the best model.
         if self.residual_config is None:
-            loss = loss_fn(prediction, inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1]]) 
+            loss = self.loss_fn(
+                model=model,
+                predictions=prediction,
+                labels=inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1]],
+                return_detailed=False
+                ) 
         
         else:
             if self.residual_config["add_predicted_value_with_diff_loss"]:
@@ -576,13 +618,23 @@ class Trainer(Trainer_):
                 base_value = inputs["input_data"][:,-1:,]
                 raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
                 #raw predictions are needed for continuing the autoregressive rollout.
-                loss = loss_fn(prediction, inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1]]) 
+                loss = self.loss_fn(
+                    model=model,
+                    predictions=prediction, 
+                    labels=inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1]],
+                    return_detailed=False
+                    ) 
 
             if (self.residual_config["add_predicted_value_with_raw_loss"] or self.residual_config["add_base_value_with_raw_loss"]):
                 base_value = inputs["input_data"][:,-1:,]
                 raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
                 #here the labels are the raw values. raw_predictions are needed for both loss computation and for continuing the autoregressive rollout.
-                loss = loss_fn(raw_prediction, inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1]])
+                loss = self.loss_fn(
+                    model=model,
+                    predictions=raw_prediction, 
+                    labels=inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1]],
+                    return_detailed=False
+                    )
 
         if self.output_all_steps:            
             if self.residual_config is None:
@@ -642,19 +694,32 @@ class Trainer(Trainer_):
 
                 if self.residual_config is None:
                     #here the predictions are the raw values and also the corresponding labels. 
-                    loss = loss_fn(prediction, inputs["label_including_rollouts"][:,i*self.data_config.sequence_info[1]:(i+1)*self.data_config.sequence_info[1]]) 
+                    loss = self.loss_fn(
+                        model=model,
+                        predictions=prediction, 
+                        labels=inputs["label_including_rollouts"][:,i*self.data_config.sequence_info[1]:(i+1)*self.data_config.sequence_info[1]],
+                        return_detailed=False
+                        ) 
                 
                 else:
                     if self.residual_config["add_predicted_value_with_diff_loss"]:
                         raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
                         #here the labels are the residuals.
-                        loss = loss_fn(prediction, inputs["label_including_rollouts"][:,i*self.data_config.sequence_info[1]:(i+1)*self.data_config.sequence_info[1]]) 
+                        loss = self.loss_fn(
+                            model=model,
+                            predictions=prediction,
+                            labels=inputs["label_including_rollouts"][:,i*self.data_config.sequence_info[1]:(i+1)*self.data_config.sequence_info[1]],
+                            return_detailed=False) 
 
                     if (self.residual_config["add_predicted_value_with_raw_loss"] or self.residual_config["add_base_value_with_raw_loss"]):
                         #here the base_value is not reinitalized, it is continued from the previous step.
                         raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
                         #here the labels are the raw values.
-                        loss = loss_fn(raw_prediction, inputs["label_including_rollouts"][:,i*self.data_config.sequence_info[1]:(i+1)*self.data_config.sequence_info[1]])                
+                        loss = self.loss_fn(
+                            model=model,
+                            predictions=raw_prediction,
+                            labels=inputs["label_including_rollouts"][:,i*self.data_config.sequence_info[1]:(i+1)*self.data_config.sequence_info[1]],
+                            return_detailed=False)                
 
                 if self.output_all_steps:
                     if self.residual_config is None:
@@ -1573,6 +1638,111 @@ class Trainer(Trainer_):
         RANK = int(os.environ.get("LOCAL_RANK", -1))
         if self.control.should_plot and (RANK == 0 or RANK == -1):  
             self.control = self.callback_handler.on_plot(self.args, self.state, self.control, is_new_best_metric=is_new_best_metric)
+    
+    # Override the _save_checkpoint method to include loss configuration saving
+    def _save_checkpoint(self, model, trial, metrics=None):
+        """
+        Save checkpoint with comprehensive loss configuration including current weights and metric parameters.
+        
+        Parameters
+        ----------
+        model : torch.nn.Module
+            The model to save
+        trial : Any
+            Hyperparameter search trial object
+        metrics : Optional[Dict], default=None
+            Metrics dictionary (not used by parent class but kept for compatibility)
+        """
+        super()._save_checkpoint(model, trial)
+        
+        # Save loss config if available
+        if self.loss_config is not None and self.loss_fn is not None:
+            try:                
+                # Get the checkpoint folder path
+                checkpoint_folder = (
+                    self.state.best_model_checkpoint 
+                    if self.state.best_model_checkpoint 
+                    else os.path.join(self.args.output_dir, f"checkpoint-{self.state.global_step}")
+                )
+                
+                loss_config_path = os.path.join(checkpoint_folder, "loss_config.json")
+                
+                # ================================================================
+                # Build loss config: structure + current weights + metric params
+                # ================================================================
+                comprehensive_config = {"loss": {"components": []}}
+                
+                # Get current weights from the loss function
+                weight_dict = self.loss_fn.get_weight_dict()
+                
+                # Helper to convert tensors to lists
+                def _tensorize_for_json(obj):
+                    """Recursively convert tensors to lists for JSON serialization."""
+                    if isinstance(obj, torch.Tensor):
+                        return obj.cpu().tolist()
+                    elif isinstance(obj, dict):
+                        return {k: _tensorize_for_json(v) for k, v in obj.items()}
+                    elif isinstance(obj, (list, tuple)):
+                        return [_tensorize_for_json(item) for item in obj]
+                    else:
+                        return obj
+                
+                # Iterate through components
+                for component_cfg in self.loss_config.loss.components:
+                    # Start with the base component config from the original config
+                    component_dict = (
+                        OmegaConf.to_container(component_cfg, resolve=True) 
+                        if OmegaConf.is_config(component_cfg) 
+                        else dict(component_cfg)
+                    )
+                    
+                    component_name = component_cfg.get('name', component_cfg.type)
+                    
+                    # ============================================================
+                    # Add current weights from get_weight_dict()
+                    # ============================================================
+                    if component_name in weight_dict:
+                        component_weights = weight_dict[component_name]
+                        component_dict['current_weights'] = _tensorize_for_json(component_weights)
+                    
+                    # ============================================================
+                    # Load and merge metric-specific config parameters
+                    # ============================================================
+                    if 'config_file' in component_cfg:
+                        config_file = component_cfg['config_file']
+                        config_path = f"config/loss_config/{config_file}.yaml"
+                        
+                        try:
+                            # Load the metric-specific config
+                            metric_config = OmegaConf.load(config_path)
+                            metric_config_dict = OmegaConf.to_container(metric_config, resolve=True)
+                            
+                            # Add metric-specific params
+                            component_dict['metric_params'] = metric_config_dict
+                            
+                            logger.debug(f"Loaded metric config from {config_path} for {component_name}")
+                        except FileNotFoundError:
+                            logger.warning(f"Metric config file not found: {config_path}")
+                            component_dict['metric_params'] = {}
+                        except Exception as e:
+                            logger.warning(f"Could not load metric config from {config_path}: {e}")
+                            component_dict['metric_params'] = {}
+                    else:
+                        component_dict['metric_params'] = {}
+                    
+                    comprehensive_config["loss"]["components"].append(component_dict)
+                
+                # Write comprehensive config to single file
+                with open(loss_config_path, 'w') as f:
+                    json.dump(comprehensive_config, f, indent=2)
+                
+                logger.info(f"Saved loss_config to {loss_config_path}")
+                
+            except Exception as e:
+                logger.warning(f"Failed to save loss configuration: {e}")
+                import traceback
+                traceback.print_exc()
+    
     ### overrides the one in the base class from transformers library
     def _hp_search_setup(self, trial: Union["optuna.Trial", dict[str, Any]]):
         """

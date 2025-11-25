@@ -19,7 +19,13 @@ from utils.seed_utils import set_global_seed
 import torch
 import numpy as np
 import csv
-
+from utils.loss_utils import fetch_loss_metric
+from metrics.default_metrics import (
+    l1_error, 
+    l2_error, 
+    compute_metrics_for_n_rollouts,
+    compute_loss_metrics_for_n_rollouts  # NEW IMPORT
+)
 
 def load_pretrained_model(model_config):
     """
@@ -602,9 +608,11 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 # Create a rollout metrics plot for this example (no batch aggregation)
                 ex_preds = preds[example_idx:example_idx+1]      # shape (1, R*T, C, *spatial)
                 ex_targets = targets[example_idx:example_idx+1]
+                
                 per_rollout_metrics_ex = compute_metrics_for_n_rollouts(
                     ex_preds, ex_targets, outputs_per_rollout=outputs_per_rollout
                 )
+
                 ex_title = f"Per-rollout metrics ({data_config.get('dataset_name', 'dataset')} - random start, example {int(example_idx)})"
                 plot_rollout_metrics(
                     step_metrics=per_rollout_metrics_ex,
