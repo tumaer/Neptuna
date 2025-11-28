@@ -1105,12 +1105,15 @@ class Trainer(Trainer_):
 
         batch_size = self.args.eval_batch_size
 
-        logger.info(f"\n***** Running {description} *****")
-        if has_length(dataloader):
-            logger.info(f"  Num examples = {self.num_examples(dataloader)}")
-        else:
-            logger.info("  Num examples: Unknown")
-        logger.info(f"  Batch size = {batch_size}")
+        RANK = int(os.environ.get("LOCAL_RANK", -1))
+        IS_MAIN_PROCESS = RANK in [-1, 0]
+        if IS_MAIN_PROCESS:
+            logger.info(f"\n***** Running {description} *****")
+            if has_length(dataloader):
+                logger.info(f"  Num examples = {self.num_examples(dataloader)}")
+            else:
+                logger.info("  Num examples: Unknown")
+            logger.info(f"  Batch size = {batch_size}")
 
         model.eval()
         if hasattr(self.optimizer, "eval") and callable(self.optimizer.eval):
@@ -1600,9 +1603,13 @@ class Trainer(Trainer_):
             self.log(logs, start_time) #NOTE: logs into wandb for training
         
         metrics = None
+        RANK = int(os.environ.get("LOCAL_RANK", -1))
+        IS_MAIN_PROCESS = RANK in [-1, 0]
+
         if self.control.should_evaluate:
             metrics = self._evaluate(trial, ignore_keys_for_eval) 
-            logger.info(f"Model checkpointing is done based on: eval_{self.args.metric_for_best_model}")
+            if IS_MAIN_PROCESS:
+                logger.info(f"Model checkpointing is done based on: eval_{self.args.metric_for_best_model}")
             ##NOTE: added predictions, labels, inputs as additional return arguments compared to the base class.
             is_new_best_metric = self._determine_best_metric(metrics=metrics, trial=trial)
 
@@ -1783,17 +1790,21 @@ class Trainer(Trainer_):
                         pass
                 setattr(self.args, final_part, value_for_args)
         #NOTE:add trial number to self.args, which will be passed to WandbCallback 
+        RANK = int(os.environ.get("LOCAL_RANK", -1))
+        IS_MAIN_PROCESS = RANK in [-1, 0]
+
         if hasattr(trial, "number"):
             setattr(self.args, "trial_number", trial.number)
         if self.hp_search_backend == HPSearchBackend.OPTUNA:
             #set 2 blank lines
-            logger.info("-----------------------------------------------------------------------")
-            logger.info("-----------------------------------------------------------------------")
-            logger.info("")
-            logger.info(f"Trial: {trial.params}")
-            logger.info("")
-            logger.info("-----------------------------------------------------------------------")
-            logger.info("-----------------------------------------------------------------------")
+            if IS_MAIN_PROCESS:
+                logger.info("-----------------------------------------------------------------------")
+                logger.info("-----------------------------------------------------------------------")
+                logger.info("")
+                logger.info(f"Trial: {trial.params}")
+                logger.info("")
+                logger.info("-----------------------------------------------------------------------")
+                logger.info("-----------------------------------------------------------------------")
             
             # ------------------------------------------------------------------
             # Retrieve all channel names present in the underlying HDF5 dataset.
@@ -1898,11 +1909,12 @@ class Trainer(Trainer_):
 
             complete_params = _sanitize(flat_cfg)  # include everything; no filtering
             formatted = json.dumps(complete_params, indent=2, sort_keys=True, default=str)
-            logger.info("All Config Params (%d):\n%s", len(complete_params), formatted)
+            if IS_MAIN_PROCESS:
+                logger.info("All Config Params (%d):\n%s", len(complete_params), formatted)
 
-        if self.hp_search_backend == HPSearchBackend.SIGOPT:
+        if self.hp_search_backend == HPSearchBackend.SIGOPT and IS_MAIN_PROCESS:
             logger.info(f"SigOpt Assignments: {trial.assignments}")
-        if self.hp_search_backend == HPSearchBackend.WANDB:
+        if self.hp_search_backend == HPSearchBackend.WANDB and IS_MAIN_PROCESS:
             logger.info(f"W&B Sweep parameters: {trial}")
         if self.is_deepspeed_enabled:
             if self.args.deepspeed is None:
@@ -1960,7 +1972,8 @@ class Trainer(Trainer_):
                 else self.args.output_dir
             )
 
-            os.makedirs(trial_output_dir, exist_ok=True)
+            if IS_MAIN_PROCESS:
+                os.makedirs(trial_output_dir, exist_ok=True)
 
             # --------------------------------------------------------------
             # Convert (possibly OmegaConf) DictConfig → regular Python container
@@ -1996,8 +2009,9 @@ class Trainer(Trainer_):
                 cfg_serialisable = _convert(self.data_config)
 
             # Finally, write the JSON file (default=str handles residual objects)
-            with open(os.path.join(trial_output_dir, "data_config.json"), "w") as fp:
-                json.dump(cfg_serialisable, fp, indent=2, default=str)
+            if IS_MAIN_PROCESS:
+                with open(os.path.join(trial_output_dir, "data_config.json"), "w") as fp:
+                    json.dump(cfg_serialisable, fp, indent=2, default=str)
         except Exception as exc:
             # Do not interrupt hyper-parameter search if logging fails; just warn.
             logger.warning(f"Failed to save data_config.json: {exc}")

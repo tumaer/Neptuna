@@ -30,6 +30,7 @@ __all__ = ["run"]
 def run(cfg):
     """Entry-point called by main.py after Hydra config is prepared."""
     RANK = int(os.environ.get("LOCAL_RANK", -1))
+    IS_MAIN_PROCESS = RANK in [-1, 0]
     print(f"RANK: {RANK}")
     try:
         affinity = psutil.Process().cpu_affinity()
@@ -47,7 +48,7 @@ def run(cfg):
     # ------------------------------------------------------------------
     # Setup WANDB Project
     # ------------------------------------------------------------------
-    if cfg["output_log_config"]["logging"]["wandb"]:
+    if cfg["output_log_config"]["logging"]["wandb"] and IS_MAIN_PROCESS:
         # Set WANDB_PROJECT environment variable
         wandb_project = cfg["output_log_config"]["logging"].get(
             "wandb_project", "neptuna"
@@ -302,7 +303,7 @@ def run(cfg):
         # trainer.train(resume_from_checkpoint=f"./checkpoints/KuramotoSivashinsky_2D_ScOT_09072025_074058/checkpoint-15")
         trainer.train(resume_from_checkpoint=False)
         print(f"Total train time: {time.time() - start:.2f} s")
-        if training_args.push_to_hub:
+        if training_args.push_to_hub and IS_MAIN_PROCESS:
             print("Pushing model to Hugging Face Hub...")
             trainer.push_to_hub()
         
@@ -329,75 +330,207 @@ def run(cfg):
                 # predictions_obj.metrics: the metrics computed after accumulating the outputs and ground truth
                 ############################################################
 
-                # pretty print the keys which have the word error in them
-                print('Accumulated error for the whole test set:')
-                errors = {}
-                for key, value in predictions_obj.metrics.items():
-                    if "error" in key:
-                        print(f"{key}: {value}")
-                        errors["random_start"+key] = value
-                save_errors_to_csv(errors, os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots"))
+                if IS_MAIN_PROCESS:
+                    # pretty print the keys which have the word error in them
+                    print('Accumulated error for the whole test set:')
+                    errors = {}
+                    for key, value in predictions_obj.metrics.items():
+                        if "error" in key:
+                            print(f"{key}: {value}")
+                            errors["random_start"+key] = value
+                    save_errors_to_csv(errors, os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots"))
+                    # ----------------------------------------------------------
+                    # Prepare prediction, target and input arrays
+                    # ----------------------------------------------------------
+                    preds = predictions_obj.predictions  # (N, R, T, C, *spatial)
+
+                    # Flatten rollout and label sequence dimensions if necessary
+                    if preds.ndim >= 5:
+                        n, n_rollouts, seq_len, c = preds.shape[:4]
+                        extra_dims = preds.shape[4:]
+                        preds = preds.reshape(n, n_rollouts * seq_len, c, *extra_dims) # (N, R*T, C, *spatial)
+
+                    targets = predictions_obj.label_ids  # Expected shape: (N, R*T, C, *spatial)
+
+                    # Inputs already returned by `trainer.predict`
+                    inp_arr = inputs  # Shape: (N, T_in, C_in, *spatial)
+
+                    # Conditioning inputs may be None
+                    cond_inp_arr = conditioning_inputs if conditioning_inputs is not None else None
+
+                    # ----------------------------------------------------------
+                    # Renormalise data and reconstruct residuals for plotting
+                    # ----------------------------------------------------------
+                    (inp_renorm,
+                        tgt_renorm,
+                        pred_renorm,
+                        only_input_channel_names,
+                        output_channel_names,
+                        cond_inp_renorm,
+                        cond_inp_channel_names) = preprocess_for_plotting(
+                        inputs=inp_arr,
+                        labels=targets,
+                        predictions=preds,
+                        data_config=cfg["data_config"],
+                        dataset=infer_ds,
+                        residual_config=cfg["data_config"].get("residual_config", None),
+                        conditioning_inputs=cond_inp_arr,
+                    )
+
+                    # Infer spatial dimensionality (1D / 2D / 3D)
+                    ndim = pred_renorm.ndim - 3  # subtract batch, time, channel dims
+
+                    seq_info = cfg["data_config"].get("sequence_info", [1, 1, 1])
+
+                    stride_val = cfg["data_config"].get("sequence_info", [1, 1, 1])[2]
+
+                    plot_save_dir = os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots/random_start")
+
+                    model_info_str, data_info_str, train_info_str, sched_info_str = build_info_strings(model_obj=trainer.model, 
+                                                                                                        data_config=cfg["data_config"],
+                                                                                                        model_config=cfg["model_config"],
+                                                                                                        train_config=cfg["train_config"],
+                                                                                                        scheduler_config=cfg["scheduler_config"]
+                                                                            )
+                    # Create rollout sample plots per example in dedicated folders
+                    N_examples = pred_renorm.shape[0]
+                    num_plot = min(cfg["infer_config"]["n_infer_plot_examples"], N_examples)
+                    np.random.seed(42)
+                    chosen_example_indices = np.random.choice(N_examples, size=num_plot, replace=False)
+
+                    for example_idx in chosen_example_indices:
+                        ex_save_dir = os.path.join(plot_save_dir, f"example_{int(example_idx)}")
+
+                        layout_config = LayoutConfig(
+                            base_visual_size=3.5,
+                            margin_between_plots_h=0.65,
+                            margin_between_plots_v=0.65
+                        )
+
+                        slice_config = Slice3DConfig(
+                            slice_axis=0,
+                            num_slices=4
+                        )
+
+                        plotter = create_plotter(
+                            orientation='vertical',
+                            input_array=inp_renorm,
+                            prediction_array=pred_renorm,
+                            target_array=tgt_renorm,
+                            input_channel_names=only_input_channel_names,
+                            output_channel_names=output_channel_names,
+                            conditioning_input_array=cond_inp_renorm,
+                            conditioning_channel_names=cond_inp_channel_names,
+                            checkpoint_step=None,
+                            epoch=None,
+                            extra_info=cfg["data_config"].get("dataset_name")+"_Inference_plot_from_random_timestep",
+                            ndim=ndim,
+                            slice_config=slice_config,
+                            num_examples=1,
+                            stride=stride_val,
+                            save_dir=ex_save_dir,
+                            log_to_wandb=False,
+                            best_plot_at_train_end=False,
+                            layout_config=layout_config,
+                            include_relative_error=True,
+                            model_info=model_info_str,
+                            data_info=data_info_str,
+                            train_info=train_info_str
+                        )
+                        
+                        plotter.plot()
+
+                
+
+            if cfg["infer_config"]["infer_from_ic"]:
+                print(" \n Running inference from IC...")
+                trainer.set_eval_or_test_rollout_steps(
+                    rollout_steps=cfg["infer_config"]["n_infer_rollouts"], output_all_steps=True
+                )
                 # ----------------------------------------------------------
                 # Prepare prediction, target and input arrays
                 # ----------------------------------------------------------
-                preds = predictions_obj.predictions  # (N, R, T, C, *spatial)
+                predictions_obj, inputs, conditioning_inputs = trainer.predict(infer_ds_from_ic, metric_key_prefix="")
 
-                # Flatten rollout and label sequence dimensions if necessary
-                if preds.ndim >= 5:
-                    n, n_rollouts, seq_len, c = preds.shape[:4]
-                    extra_dims = preds.shape[4:]
-                    preds = preds.reshape(n, n_rollouts * seq_len, c, *extra_dims) # (N, R*T, C, *spatial)
+                if IS_MAIN_PROCESS:
+                    print('Accumulated error for the whole test set (IC start):')
+                    errors = {}
+                    for key, value in predictions_obj.metrics.items():
+                        if "error" in key:
+                            print(f"{key}: {value}")
+                            errors["ic_start"+key] = value
+                    save_errors_to_csv(errors, os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots"))
 
-                targets = predictions_obj.label_ids  # Expected shape: (N, R*T, C, *spatial)
+                    preds = predictions_obj.predictions
+                    targets = predictions_obj.label_ids
+                    inp_arr = inputs
+                    cond_inp_arr = conditioning_inputs if conditioning_inputs is not None else None
 
-                # Inputs already returned by `trainer.predict`
-                inp_arr = inputs  # Shape: (N, T_in, C_in, *spatial)
+                    # Determine outputs per rollout (T_out) before flattening, default to 1
+                    if preds.ndim >= 5:
+                        n, n_rollouts, seq_len, c = preds.shape[:4]
+                        outputs_per_rollout = seq_len
+                        extra_dims = preds.shape[4:]
+                        preds = preds.reshape(n, n_rollouts * seq_len, c, *extra_dims)
 
-                # Conditioning inputs may be None
-                cond_inp_arr = conditioning_inputs if conditioning_inputs is not None else None
+                    # Compute per-rollout errors (mean across batch) before plotting
+                    per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(
+                        preds, targets, outputs_per_rollout=outputs_per_rollout
+                    )
 
-                # ----------------------------------------------------------
-                # Renormalise data and reconstruct residuals for plotting
-                # ----------------------------------------------------------
-                (inp_renorm,
-                    tgt_renorm,
-                    pred_renorm,
-                    only_input_channel_names,
-                    output_channel_names,
-                    cond_inp_renorm,
-                    cond_inp_channel_names) = preprocess_for_plotting(
-                    inputs=inp_arr,
-                    labels=targets,
-                    predictions=preds,
-                    data_config=cfg["data_config"],
-                    dataset=infer_ds,
-                    residual_config=cfg["data_config"].get("residual_config", None),
-                    conditioning_inputs=cond_inp_arr,
-                )
+                    errors = {}
+                    for metric_name, values in per_rollout_step_metrics_ic.items():
+                        print(f"{metric_name} per-step (IC start): {values}")
+                        errors[metric_name] = values
+                    save_errors_to_csv(errors, os.path.join(cfg["output_log_config"]["logging"]["output_dir"],"inference_plots"))
 
-                # Infer spatial dimensionality (1D / 2D / 3D)
-                ndim = pred_renorm.ndim - 3  # subtract batch, time, channel dims
+                    # ----------------------------------------------------------
+                    # Renormalise data and reconstruct residuals for plotting
+                    # ----------------------------------------------------------
+                    (inp_renorm,
+                        tgt_renorm,
+                        pred_renorm,
+                        only_input_channel_names,
+                        output_channel_names,
+                        cond_inp_renorm,
+                        cond_inp_channel_names) = preprocess_for_plotting(
+                        inputs=inp_arr,
+                        labels=targets,
+                        predictions=preds,
+                        data_config=cfg["data_config"],
+                        dataset=infer_ds,
+                        residual_config=cfg["data_config"].get("residual_config", None),
+                        conditioning_inputs=cond_inp_arr,
+                    )
+                    
+                    # Infer spatial dimensionality (1D / 2D / 3D)
+                    ndim = pred_renorm.ndim - 3  # subtract batch, time, channel dims
 
-                seq_info = cfg["data_config"].get("sequence_info", [1, 1, 1])
+                    # Use stride from the config if available
+                    stride_val = cfg["data_config"].get("sequence_info", [1, 1, 1])[2]
 
-                stride_val = cfg["data_config"].get("sequence_info", [1, 1, 1])[2]
+                    # Directory for saving inference plots (IC start)
+                    plot_save_dir = os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots/ic_start")
 
-                plot_save_dir = os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots/random_start")
+                    # Plot rollout metrics (per metric subplot)
+                    plot_rollout_metrics(
+                        step_metrics=per_rollout_step_metrics_ic,
+                        output_channel_names=output_channel_names,
+                        save_dir=plot_save_dir,
+                        title=f"Per-rollout step metric(s) ({cfg['data_config'].get('dataset_name', 'dataset')} - IC start)",
+                        filename="rollout_metrics.png",
+                        sequence_info=seq_info,
+                    )
 
-                model_info_str, data_info_str, train_info_str, sched_info_str = build_info_strings(model_obj=trainer.model, 
-                                                                                                    data_config=cfg["data_config"],
-                                                                                                    model_config=cfg["model_config"],
-                                                                                                    train_config=cfg["train_config"],
-                                                                                                    scheduler_config=cfg["scheduler_config"]
-                                                                         )
-                # Create rollout sample plots per example in dedicated folders
-                N_examples = pred_renorm.shape[0]
-                num_plot = min(cfg["infer_config"]["n_infer_plot_examples"], N_examples)
-                np.random.seed(42)
-                chosen_example_indices = np.random.choice(N_examples, size=num_plot, replace=False)
+                    model_info_str, data_info_str, train_info_str, sched_info_str = build_info_strings(
+                                                                                                        model_obj=trainer.model,
+                                                                                                        data_config=cfg["data_config"],
+                                                                                                        model_config=cfg["model_config"],
+                                                                                                        train_config=cfg["train_config"],
+                                                                                                        scheduler_config=cfg["scheduler_config"]
+                                                                                                    )
 
-                for example_idx in chosen_example_indices:
-                    ex_save_dir = os.path.join(plot_save_dir, f"example_{int(example_idx)}")
+                    # Create rollout sample plots, these plots start from the initial condition in the test dataset
 
                     layout_config = LayoutConfig(
                         base_visual_size=3.5,
@@ -421,12 +554,12 @@ def run(cfg):
                         conditioning_channel_names=cond_inp_channel_names,
                         checkpoint_step=None,
                         epoch=None,
-                        extra_info=cfg["data_config"].get("dataset_name")+"_Inference_plot_from_random_timestep",
+                        extra_info=cfg["data_config"].get("dataset_name")+"_Inference_plot_from_IC",
                         ndim=ndim,
                         slice_config=slice_config,
-                        num_examples=1,
+                        num_examples=cfg["infer_config"]["n_infer_plot_examples"],
                         stride=stride_val,
-                        save_dir=ex_save_dir,
+                        save_dir=plot_save_dir,
                         log_to_wandb=False,
                         best_plot_at_train_end=False,
                         layout_config=layout_config,
@@ -438,137 +571,7 @@ def run(cfg):
                     
                     plotter.plot()
 
-                
-
-            if cfg["infer_config"]["infer_from_ic"]:
-                print(" \n Running inference from IC...")
-                trainer.set_eval_or_test_rollout_steps(
-                    rollout_steps=cfg["infer_config"]["n_infer_rollouts"], output_all_steps=True
-                )
-                # ----------------------------------------------------------
-                # Prepare prediction, target and input arrays
-                # ----------------------------------------------------------
-                predictions_obj, inputs, conditioning_inputs = trainer.predict(infer_ds_from_ic, metric_key_prefix="")
-
-                print('Accumulated error for the whole test set (IC start):')
-                errors = {}
-                for key, value in predictions_obj.metrics.items():
-                    if "error" in key:
-                        print(f"{key}: {value}")
-                        errors["ic_start"+key] = value
-                save_errors_to_csv(errors, os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots"))
-
-                preds = predictions_obj.predictions
-                targets = predictions_obj.label_ids
-                inp_arr = inputs
-                cond_inp_arr = conditioning_inputs if conditioning_inputs is not None else None
-
-                # Determine outputs per rollout (T_out) before flattening, default to 1
-                if preds.ndim >= 5:
-                    n, n_rollouts, seq_len, c = preds.shape[:4]
-                    outputs_per_rollout = seq_len
-                    extra_dims = preds.shape[4:]
-                    preds = preds.reshape(n, n_rollouts * seq_len, c, *extra_dims)
-
-                # Compute per-rollout errors (mean across batch) before plotting
-                per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(
-                    preds, targets, outputs_per_rollout=outputs_per_rollout
-                )
-
-                errors = {}
-                for metric_name, values in per_rollout_step_metrics_ic.items():
-                    print(f"{metric_name} per-step (IC start): {values}")
-                    errors[metric_name] = values
-                save_errors_to_csv(errors, os.path.join(cfg["output_log_config"]["logging"]["output_dir"],"inference_plots"))
-
-                # ----------------------------------------------------------
-                # Renormalise data and reconstruct residuals for plotting
-                # ----------------------------------------------------------
-                (inp_renorm,
-                    tgt_renorm,
-                    pred_renorm,
-                    only_input_channel_names,
-                    output_channel_names,
-                    cond_inp_renorm,
-                    cond_inp_channel_names) = preprocess_for_plotting(
-                    inputs=inp_arr,
-                    labels=targets,
-                    predictions=preds,
-                    data_config=cfg["data_config"],
-                    dataset=infer_ds,
-                    residual_config=cfg["data_config"].get("residual_config", None),
-                    conditioning_inputs=cond_inp_arr,
-                )
-                
-                # Infer spatial dimensionality (1D / 2D / 3D)
-                ndim = pred_renorm.ndim - 3  # subtract batch, time, channel dims
-
-                # Use stride from the config if available
-                stride_val = cfg["data_config"].get("sequence_info", [1, 1, 1])[2]
-
-                # Directory for saving inference plots (IC start)
-                plot_save_dir = os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots/ic_start")
-
-                # Plot rollout metrics (per metric subplot)
-                plot_rollout_metrics(
-                    step_metrics=per_rollout_step_metrics_ic,
-                    output_channel_names=output_channel_names,
-                    save_dir=plot_save_dir,
-                    title=f"Per-rollout step metric(s) ({cfg['data_config'].get('dataset_name', 'dataset')} - IC start)",
-                    filename="rollout_metrics.png",
-                    sequence_info=seq_info,
-                )
-
-                model_info_str, data_info_str, train_info_str, sched_info_str = build_info_strings(
-                                                                                                    model_obj=trainer.model,
-                                                                                                    data_config=cfg["data_config"],
-                                                                                                    model_config=cfg["model_config"],
-                                                                                                    train_config=cfg["train_config"],
-                                                                                                    scheduler_config=cfg["scheduler_config"]
-                                                                                                )
-
-                # Create rollout sample plots, these plots start from the initial condition in the test dataset
-
-                layout_config = LayoutConfig(
-                    base_visual_size=3.5,
-                    margin_between_plots_h=0.65,
-                    margin_between_plots_v=0.65
-                )
-
-                slice_config = Slice3DConfig(
-                    slice_axis=0,
-                    num_slices=4
-                )
-
-                plotter = create_plotter(
-                    orientation='vertical',
-                    input_array=inp_renorm,
-                    prediction_array=pred_renorm,
-                    target_array=tgt_renorm,
-                    input_channel_names=only_input_channel_names,
-                    output_channel_names=output_channel_names,
-                    conditioning_input_array=cond_inp_renorm,
-                    conditioning_channel_names=cond_inp_channel_names,
-                    checkpoint_step=None,
-                    epoch=None,
-                    extra_info=cfg["data_config"].get("dataset_name")+"_Inference_plot_from_IC",
-                    ndim=ndim,
-                    slice_config=slice_config,
-                    num_examples=cfg["infer_config"]["n_infer_plot_examples"],
-                    stride=stride_val,
-                    save_dir=plot_save_dir,
-                    log_to_wandb=False,
-                    best_plot_at_train_end=False,
-                    layout_config=layout_config,
-                    include_relative_error=True,
-                    model_info=model_info_str,
-                    data_info=data_info_str,
-                    train_info=train_info_str
-                )
-                
-                plotter.plot()
-
-            print("Inference completed")
+                print("Inference completed")
             
     else:
         # get the sampler from the config, it could be GridSampler, RandomSampler, TPESampler etc.
@@ -592,25 +595,26 @@ def run(cfg):
         # --------------------------------------------------------------
         # Save HPO results to CSV
         # --------------------------------------------------------------
-        results_dir = cfg["output_log_config"]["logging"]["output_dir"]
-        os.makedirs(results_dir, exist_ok=True)
-        csv_path = os.path.join(results_dir, "hp_search_results.csv")
+        if IS_MAIN_PROCESS:
+            results_dir = cfg["output_log_config"]["logging"]["output_dir"]
+            os.makedirs(results_dir, exist_ok=True)
+            csv_path = os.path.join(results_dir, "hp_search_results.csv")
 
-        # Collect all parameter names across trials to build consistent header
-        param_keys = set()
-        for t in study.trials:
-            param_keys.update(t.params.keys())
-        fieldnames = ["trial_number", "value", "state"] + sorted(param_keys)
-
-        with open(csv_path, mode="w", newline="") as csv_file:
-            writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-            writer.writeheader()
+            # Collect all parameter names across trials to build consistent header
+            param_keys = set()
             for t in study.trials:
-                row = {
-                    "trial_number": t.number,
-                    "value": t.value,
-                    "state": t.state.name,
-                }
-                row.update(t.params)
-                writer.writerow(row)
-        print(f"Saved hyperparameter optimisation results to {csv_path}")
+                param_keys.update(t.params.keys())
+            fieldnames = ["trial_number", "value", "state"] + sorted(param_keys)
+
+            with open(csv_path, mode="w", newline="") as csv_file:
+                writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+                writer.writeheader()
+                for t in study.trials:
+                    row = {
+                        "trial_number": t.number,
+                        "value": t.value,
+                        "state": t.state.name,
+                    }
+                    row.update(t.params)
+                    writer.writerow(row)
+            print(f"Saved hyperparameter optimisation results to {csv_path}")
