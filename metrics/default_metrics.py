@@ -1,4 +1,9 @@
 import numpy as np
+import torch
+from typing import Iterable, Dict, Optional
+
+from metrics.training_metrics import LossComponent, WeightSchedule, CompositeLoss
+
 
 def l1_error(preds, targets):
     """
@@ -72,42 +77,17 @@ def l2_error(preds, targets):
     l2_error = np.mean((diff) ** 2) ** 0.5
     return l2_error
 
+def compute_metrics_for_n_rollouts(
+    preds,
+    targets,
+    outputs_per_rollout: int = 1,
+    metrics: Iterable[str] = ("l1", "l2"),
+    include_per_timestep: bool = False,
+    compute_metrics=None,            # kept for backwards compatibility
+    loss_metric: Optional[LossComponent] = None,
+) -> Dict[str, Dict[str, np.ndarray]]:
 
-def compute_metrics_for_n_rollouts(preds, targets, outputs_per_rollout=1, metrics=("l1", "l2"), include_per_timestep: bool = False):
-    """Compute specified error metrics per rollout step.
-
-    Parameters
-    ----------
-    preds, targets : np.ndarray
-        Either:
-        - Flattened arrays of identical shapes ``(B, R*T_out, C, *spatial)`` with
-          ``outputs_per_rollout=T_out``, or
-        - Grouped arrays of identical shapes ``(B, R, T_out, C, *spatial)``.
-    outputs_per_rollout : int, optional
-        Number of outputs produced per rollout step (``T_out``). Defaults to 1.
-        Used to regroup flattened inputs so that metrics are computed per rollout step (R),
-        aggregating across the ``T_out`` outputs of that step.
-    include_per_timestep : bool, optional
-        When True, also compute per-timestep metrics using the flattened arrays
-        of shape ``(B, R*T_out, C, *spatial)``: returns per-timestep mean/std for
-        per-channel and overall, stacked as ``(R*T_out, C+1)`` under keys
-        ``per_timestep_mean`` and ``per_timestep_std`` for each metric.
-    metrics : tuple | list
-        Iterable of metric identifiers to compute. Supported strings:
-        - "l1": mean absolute error (MAE)
-        - "l2": root-mean-squared error (RMSE)
-        Custom metrics can be added by extending the `_METRIC_IMPL` dict.
-
-    Returns
-    -------
-    dict[str, dict[str, np.ndarray]]
-        For each metric name, returns a dictionary with keys:
-        - "per_step_mean":   array of shape ``(R, C+1)`` (per-channel and overall)
-        - "per_step_std":    array of shape ``(R, C+1)`` (per-channel and overall)
-        - "cumulative_mean": array of shape ``(R, C+1)`` cumulative over rollout steps
-        - "cumulative_std":  array of shape ``(R, C+1)`` cumulative over rollout steps
-    """
-
+    # --- normalization & checks ---
     if isinstance(preds, np.ndarray):
         preds_arr = preds
     else:
@@ -128,13 +108,14 @@ def compute_metrics_for_n_rollouts(preds, targets, outputs_per_rollout=1, metric
         raise ValueError("Expected input of at least 3 dims when flattened (B, T, C, …).")
     if outputs_per_rollout is None or outputs_per_rollout < 1:
         raise ValueError("outputs_per_rollout must be a positive integer.")
+
     total_steps = preds_arr.shape[1]
     if total_steps % outputs_per_rollout != 0:
         raise ValueError(
             f"Time dimension (T={total_steps}) is not divisible by outputs_per_rollout={outputs_per_rollout}."
         )
     num_rollouts = total_steps // outputs_per_rollout
-    # Reshape to (B, R, T_out, C, *spatial)
+
     grouped_shape = (
         preds_arr.shape[0],
         num_rollouts,
@@ -145,10 +126,226 @@ def compute_metrics_for_n_rollouts(preds, targets, outputs_per_rollout=1, metric
     grouped_preds = preds_arr.reshape(grouped_shape)
     grouped_targets = targets_arr.reshape(grouped_shape)
 
-    difference = grouped_preds - grouped_targets  # (B, R, T_out, C, *spatial)
-    flat_difference = preds_arr - targets_arr      # (B, R*T_out, C, *spatial)
+    # --- legacy L1/L2 path (temporary) ---
+    if loss_metric is None:
+        return _compute_l1_l2_metrics_legacy(
+            preds_arr=preds_arr,
+            targets_arr=targets_arr,
+            grouped_preds=grouped_preds,
+            grouped_targets=grouped_targets,
+            outputs_per_rollout=outputs_per_rollout,
+            metrics=metrics,
+            include_per_timestep=include_per_timestep,
+        )
 
-    # Internal metric implementation
+    # ------------------------------------------------------------------
+    # Compute metrics using LossComponent / CompositeLoss
+    # ------------------------------------------------------------------
+    device = next(loss_metric.parameters(), torch.tensor(0.0)).device
+
+    preds_tensor = torch.as_tensor(preds_arr, dtype=torch.float32, device=device)
+    targets_tensor = torch.as_tensor(targets_arr, dtype=torch.float32, device=device)
+
+    B, T_flat, C = preds_tensor.shape[:3]
+
+    def _compute_for_single_component(comp: LossComponent) -> Dict[str, Dict[str, np.ndarray]]:
+        metric_key_name = comp.name if getattr(comp, "name", None) else "loss_error"
+        metric_name_to_values: Dict[str, Dict[str, np.ndarray]] = {
+            metric_key_name: {}
+        }
+        out = metric_name_to_values[metric_key_name]
+
+        # --------------------------------------------------
+        # Helper: true per-sample evaluation by sliding over B
+        # --------------------------------------------------
+        def eval_loss_batchwise(preds_slice: torch.Tensor, targets_slice: torch.Tensor):
+            """
+            Evaluate comp on each sample independently:
+
+            preds_slice:   (B, T', C, ...)
+            targets_slice: (B, T', C, ...)
+
+            Returns:
+              per_sample_channel: (B, C)  per-sample, per-channel scalar loss
+              per_sample_overall: (B,)    per-sample scalar loss
+            """
+            bsz = preds_slice.shape[0]
+
+            # Overall per-sample
+            per_sample_overall = torch.zeros(bsz, device=device)
+
+            # Per-channel via WeightSchedule, if available
+            ws: Optional[WeightSchedule] = getattr(comp, "weight_schedule", None)
+            original_channel_weights = getattr(ws, "channel_weights", None) if ws is not None else None
+
+            use_channel_weights = ws is not None and original_channel_weights is not None
+            if use_channel_weights:
+                per_sample_channel = torch.zeros(bsz, C, device=device)
+            else:
+                per_sample_channel = None  # we will fill with overall later
+
+            with torch.no_grad():
+                # loop over samples in batch
+                for b_idx in range(bsz):
+                    p_b = preds_slice[b_idx : b_idx + 1]     # (1, T', C, ...)
+                    t_b = targets_slice[b_idx : b_idx + 1]  # (1, T', C, ...)
+
+                    # overall scalar for this sample
+                    total_loss_b, _ = comp(
+                        model=None,
+                        predictions=p_b,
+                        labels=t_b,
+                        return_detailed=True,
+                    )
+                    # assume scalar
+                    per_sample_overall[b_idx] = (
+                        total_loss_b.detach()
+                        if torch.is_tensor(total_loss_b)
+                        else torch.tensor(total_loss_b, device=device)
+                    )
+
+                    # per-channel via one-hots, if possible
+                    if use_channel_weights:
+                        for ch in range(C):
+                            one_hot = torch.zeros_like(original_channel_weights)
+                            one_hot[..., ch] = 1.0
+                            ws.channel_weights = one_hot
+
+                            ch_loss_b, _ = comp(
+                                model=None,
+                                predictions=p_b,
+                                labels=t_b,
+                                return_detailed=True,
+                            )
+
+                            per_sample_channel[b_idx, ch] = (
+                                ch_loss_b.detach()
+                                if torch.is_tensor(ch_loss_b)
+                                else torch.tensor(ch_loss_b, device=device)
+                            )
+
+                # restore channel weights
+                if use_channel_weights:
+                    ws.channel_weights = original_channel_weights
+
+            # If we could not decompose channels, broadcast overall
+            if per_sample_channel is None:
+                per_sample_channel = per_sample_overall[:, None].expand(-1, C)
+
+            return per_sample_channel, per_sample_overall
+
+        # -----------------------------------------------------
+        # A) Per-rollout-step stats, shape -> (R, C+1)
+        # -----------------------------------------------------
+        per_sample_channel_metric = torch.zeros(B, num_rollouts, C, device=device)
+        per_sample_overall_metric = torch.zeros(B, num_rollouts, device=device)
+
+        for r in range(num_rollouts):
+            t_start = r * outputs_per_rollout
+            t_end = (r + 1) * outputs_per_rollout
+
+            step_preds = preds_tensor[:, t_start:t_end, ...]
+            step_targets = targets_tensor[:, t_start:t_end, ...]
+
+            ch_vals, overall_vals = eval_loss_batchwise(step_preds, step_targets)
+            # ch_vals: (B, C), overall_vals: (B,)
+            per_sample_channel_metric[:, r, :] = ch_vals
+            per_sample_overall_metric[:, r] = overall_vals
+
+        # std over batch, as in legacy implementation
+        per_step_channel_mean = per_sample_channel_metric.mean(dim=0)            # (R, C)
+        per_step_channel_std = per_sample_channel_metric.std(dim=0, unbiased=False)
+        per_step_overall_mean = per_sample_overall_metric.mean(dim=0)           # (R,)
+        per_step_overall_std = per_sample_overall_metric.std(dim=0, unbiased=False)
+
+        per_step_mean = torch.cat(
+            [per_step_channel_mean, per_step_overall_mean[:, None]], dim=-1
+        )
+        per_step_std = torch.cat(
+            [per_step_channel_std, per_step_overall_std[:, None]], dim=-1
+        )
+
+        out["per_rollout_step_mean"] = per_step_mean.cpu().numpy()
+        out["per_rollout_step_std"] = per_step_std.cpu().numpy()
+
+        # cumulative over rollout steps
+        cumulative_channel_per_sample = torch.cumsum(per_sample_channel_metric, dim=1)  # (B, R, C)
+        cumulative_overall_per_sample = torch.cumsum(per_sample_overall_metric, dim=1)  # (B, R)
+
+        cumulative_channel_mean = cumulative_channel_per_sample.mean(dim=0)             # (R, C)
+        cumulative_channel_std = cumulative_channel_per_sample.std(dim=0, unbiased=False)
+        cumulative_overall_mean = cumulative_overall_per_sample.mean(dim=0)             # (R,)
+        cumulative_overall_std = cumulative_overall_per_sample.std(dim=0, unbiased=False)
+
+        cumulative_mean = torch.cat(
+            [cumulative_channel_mean, cumulative_overall_mean[:, None]], dim=-1
+        )
+        cumulative_std = torch.cat(
+            [cumulative_channel_std, cumulative_overall_std[:, None]], dim=-1
+        )
+
+        out["cumulative_rollout_step_mean"] = cumulative_mean.cpu().numpy()
+        out["cumulative_rollout_step_std"] = cumulative_std.cpu().numpy()
+
+        # -----------------------------------------------------
+        # B) Optional per-timestep metrics, shape -> (T_flat, C+1)
+        # -----------------------------------------------------
+        if include_per_timestep:
+            per_sample_channel_t = torch.zeros(B, T_flat, C, device=device)
+            per_sample_overall_t = torch.zeros(B, T_flat, device=device)
+
+            for t in range(T_flat):
+                step_preds = preds_tensor[:, t : t + 1, ...]
+                step_targets = targets_tensor[:, t : t + 1, ...]
+
+                ch_vals, overall_vals = eval_loss_batchwise(step_preds, step_targets)
+                per_sample_channel_t[:, t, :] = ch_vals      # (B, C)
+                per_sample_overall_t[:, t] = overall_vals    # (B,)
+
+            per_t_channel_mean = per_sample_channel_t.mean(dim=0)             # (T_flat, C)
+            per_t_channel_std = per_sample_channel_t.std(dim=0, unbiased=False)
+            per_t_overall_mean = per_sample_overall_t.mean(dim=0)            # (T_flat,)
+            per_t_overall_std = per_sample_overall_t.std(dim=0, unbiased=False)
+
+            per_timestep_mean = torch.cat(
+                [per_t_channel_mean, per_t_overall_mean[:, None]], dim=-1
+            )
+            per_timestep_std = torch.cat(
+                [per_t_channel_std, per_t_overall_std[:, None]], dim=-1
+            )
+
+            cumulative_channel_per_sample_t = torch.cumsum(per_sample_channel_t, dim=1)  # (B, T_flat, C)
+            cumulative_overall_per_sample_t = torch.cumsum(per_sample_overall_t, dim=1)  # (B, T_flat)
+
+            cumulative_t_channel_mean = cumulative_channel_per_sample_t.mean(dim=0)      # (T_flat, C)
+            cumulative_t_channel_std = cumulative_channel_per_sample_t.std(dim=0, unbiased=False)
+            cumulative_t_overall_mean = cumulative_overall_per_sample_t.mean(dim=0)      # (T_flat,)
+            cumulative_t_overall_std = cumulative_overall_per_sample_t.std(dim=0, unbiased=False)
+
+            cumulative_timestep_mean = torch.cat(
+                [cumulative_t_channel_mean, cumulative_t_overall_mean[:, None]], dim=-1
+            )
+            cumulative_timestep_std = torch.cat(
+                [cumulative_t_channel_std, cumulative_t_overall_std[:, None]], dim=-1
+            )
+
+            out["per_timestep_mean"] = per_timestep_mean.cpu().numpy()
+            out["per_timestep_std"] = per_timestep_std.cpu().numpy()
+            out["cumulative_timestep_mean"] = cumulative_timestep_mean.cpu().numpy()
+            out["cumulative_timestep_std"] = cumulative_timestep_std.cpu().numpy()
+
+        return metric_name_to_values
+
+    # Decide LossComponent vs CompositeLoss
+    if isinstance(loss_metric, CompositeLoss):
+        all_metrics: Dict[str, Dict[str, np.ndarray]] = {}
+        for comp in loss_metric.loss_components:
+            comp_metrics = _compute_for_single_component(comp)
+            all_metrics.update(comp_metrics)
+        return all_metrics
+    else:
+        return _compute_for_single_component(loss_metric)
+
     def _mae(values):
         return np.abs(values)
 
@@ -156,24 +353,18 @@ def compute_metrics_for_n_rollouts(preds, targets, outputs_per_rollout=1, metric
         return values ** 2
 
     _METRIC_IMPL = {
-        "l1": ("l1_error", _mae, False),  # (public name, elementwise_transform, use_rmse)
-        "l2": ("l2_error", _mse, True),   # compute RMSE (sqrt(mean of squared error))
+        "l1": ("l1_error", _mae, False),
+        "l2": ("l2_error", _mse, True),
     }
 
     metric_name_to_values = {}
 
-    # Validate dims and prepare reduction axes
     if difference.ndim < 4:
         raise ValueError("Expected grouped input of at least 4 dims (B, R, T_out, C, …).")
 
-    # Axes:
-    # 0=batch, 1=rollout step (R), 2=outputs per rollout (T_out), 3=channel (C), 4+=spatial
     spatial_axes_start = 4
     spatial_reduction_axes = tuple(range(spatial_axes_start, difference.ndim))
-
-    # For per-channel metrics, reduce over T_out + spatial (keep channel)
     per_channel_reduction_axes = (2,) + spatial_reduction_axes
-    # For overall metrics, reduce over T_out + channel + spatial
     overall_reduction_axes = (2, 3) + spatial_reduction_axes
 
     for metric_key in metrics:
@@ -183,41 +374,28 @@ def compute_metrics_for_n_rollouts(preds, targets, outputs_per_rollout=1, metric
             )
         metric_key_name, elementwise_transform, use_rmse = _METRIC_IMPL[metric_key]
 
-        elementwise_error = elementwise_transform(difference)  # (B, R, T_out, C, *spatial)
+        elementwise_error = elementwise_transform(difference)
 
-        # ------------------------------
-        # Per-channel per-sample metric
-        # ------------------------------
-        # Mean over T_out and spatial -> (B, R, C)
+        # Per-channel per-sample
         per_sample_channel_mean = np.mean(elementwise_error, axis=per_channel_reduction_axes)
-        # For RMSE, take sqrt BEFORE batch aggregation to get per-sample RMSE
         if use_rmse:
             per_sample_channel_metric = np.sqrt(per_sample_channel_mean)
         else:
             per_sample_channel_metric = per_sample_channel_mean
 
-        # ------------------------------
-        # Overall per-sample metric
-        # ------------------------------
-        # Mean over T_out, channel and spatial -> (B, R)
+        # Overall per-sample
         per_sample_overall_mean = np.mean(elementwise_error, axis=overall_reduction_axes)
         if use_rmse:
             per_sample_overall_metric = np.sqrt(per_sample_overall_mean)
         else:
             per_sample_overall_metric = per_sample_overall_mean
 
-        # --------------------------------------
-        # Per-step mean and std across batch (R)
-        # --------------------------------------
-        # Channel-wise: (B, R, C) -> mean/std over B -> (R, C)
+        # Per-step
         per_step_channel_mean = per_sample_channel_metric.mean(axis=0)
         per_step_channel_std = per_sample_channel_metric.std(axis=0, ddof=0)
-
-        # Overall: (B, R) -> mean/std over B -> (R,)
         per_step_overall_mean = per_sample_overall_metric.mean(axis=0)
         per_step_overall_std = per_sample_overall_metric.std(axis=0, ddof=0)
 
-        # Stack channel-wise with overall -> (R, C+1)
         per_step_mean = np.concatenate(
             [per_step_channel_mean, per_step_overall_mean[:, None]], axis=-1
         )
@@ -225,18 +403,12 @@ def compute_metrics_for_n_rollouts(preds, targets, outputs_per_rollout=1, metric
             [per_step_channel_std, per_step_overall_std[:, None]], axis=-1
         )
 
-        # --------------------------------------
-        # Cumulative over rollout steps (axis=1 -> R)
-        # --------------------------------------
-        # Channel-wise cumulative per-sample: (B, R, C)
+        # Cumulative over rollout steps
         cumulative_channel_per_sample = np.cumsum(per_sample_channel_metric, axis=1)
-        # Overall cumulative per-sample: (B, R)
         cumulative_overall_per_sample = np.cumsum(per_sample_overall_metric, axis=1)
 
-        # Mean/std across batch -> (R, C) and (R,)
         cumulative_channel_mean = cumulative_channel_per_sample.mean(axis=0)
         cumulative_channel_std = cumulative_channel_per_sample.std(axis=0, ddof=0)
-
         cumulative_overall_mean = cumulative_overall_per_sample.mean(axis=0)
         cumulative_overall_std = cumulative_overall_per_sample.std(axis=0, ddof=0)
 
@@ -254,34 +426,31 @@ def compute_metrics_for_n_rollouts(preds, targets, outputs_per_rollout=1, metric
             "cumulative_rollout_step_std": cumulative_std,
         }
 
-        # ------------------------------------------------------------------
-        # Optional: Per-timestep metrics using flattened arrays (B, R*T_out, C,…)
-        # T_flat = R*T_out
-        # Here the output_sequence_length is always 1, only the stride shows the jump between timesteps
-        # ------------------------------------------------------------------
         if include_per_timestep:
-            elem_err_flat = elementwise_transform(flat_difference)  # (B, T_flat, C, *spatial)
+            elem_err_flat = elementwise_transform(flat_difference)
 
-            # Spatial axes start at dim=3 for flattened arrays
             spatial_axes_start_flat = 3
-            spatial_reduction_axes_flat = tuple(range(spatial_axes_start_flat, elem_err_flat.ndim))
+            spatial_reduction_axes_flat = tuple(
+                range(spatial_axes_start_flat, elem_err_flat.ndim)
+            )
 
-            # Per-sample per-timestep per-channel mean over spatial -> (B, T_flat, C)
-            per_sample_channel_mean_flat = np.mean(elem_err_flat, axis=spatial_reduction_axes_flat)
+            per_sample_channel_mean_flat = np.mean(
+                elem_err_flat, axis=spatial_reduction_axes_flat
+            )
             if use_rmse:
                 per_sample_channel_metric_flat = np.sqrt(per_sample_channel_mean_flat)
             else:
                 per_sample_channel_metric_flat = per_sample_channel_mean_flat
 
-            # Overall per-sample per-timestep mean over spatial+channel -> (B, T_flat)
             overall_reduction_axes_flat = (2,) + spatial_reduction_axes_flat
-            per_sample_overall_mean_flat = np.mean(elem_err_flat, axis=overall_reduction_axes_flat)
+            per_sample_overall_mean_flat = np.mean(
+                elem_err_flat, axis=overall_reduction_axes_flat
+            )
             if use_rmse:
                 per_sample_overall_metric_flat = np.sqrt(per_sample_overall_mean_flat)
             else:
                 per_sample_overall_metric_flat = per_sample_overall_mean_flat
 
-            # Aggregate across batch resulting in shapes -> (T_flat, C) and (T_flat,)
             per_timestep_channel_mean = per_sample_channel_metric_flat.mean(axis=0)
             per_timestep_channel_std = per_sample_channel_metric_flat.std(axis=0, ddof=0)
             per_timestep_overall_mean = per_sample_overall_metric_flat.mean(axis=0)
@@ -294,27 +463,42 @@ def compute_metrics_for_n_rollouts(preds, targets, outputs_per_rollout=1, metric
                 [per_timestep_channel_std, per_timestep_overall_std[:, None]], axis=-1
             )
 
-            # Cumulative over timesteps (time axis=1 -> T_flat)
-            cumulative_channel_per_sample_flat = np.cumsum(per_sample_channel_metric_flat, axis=1)  # (B, T_flat, C)
-            cumulative_overall_per_sample_flat = np.cumsum(per_sample_overall_metric_flat, axis=1)  # (B, T_flat)
+            cumulative_channel_per_sample_flat = np.cumsum(
+                per_sample_channel_metric_flat, axis=1
+            )
+            cumulative_overall_per_sample_flat = np.cumsum(
+                per_sample_overall_metric_flat, axis=1
+            )
 
-            cumulative_timestep_channel_mean = cumulative_channel_per_sample_flat.mean(axis=0)  # (T_flat, C)
-            cumulative_timestep_channel_std = cumulative_channel_per_sample_flat.std(axis=0, ddof=0)  # (T_flat, C)
-            cumulative_timestep_overall_mean = cumulative_overall_per_sample_flat.mean(axis=0)  # (T_flat,)
-            cumulative_timestep_overall_std = cumulative_overall_per_sample_flat.std(axis=0, ddof=0)  # (T_flat,)
+            cumulative_timestep_channel_mean = cumulative_channel_per_sample_flat.mean(
+                axis=0
+            )
+            cumulative_timestep_channel_std = cumulative_channel_per_sample_flat.std(
+                axis=0, ddof=0
+            )
+            cumulative_timestep_overall_mean = cumulative_overall_per_sample_flat.mean(
+                axis=0
+            )
+            cumulative_timestep_overall_std = cumulative_overall_per_sample_flat.std(
+                axis=0, ddof=0
+            )
 
             cumulative_timestep_mean = np.concatenate(
-                [cumulative_timestep_channel_mean, cumulative_timestep_overall_mean[:, None]], axis=-1
+                [cumulative_timestep_channel_mean, cumulative_timestep_overall_mean[:, None]],
+                axis=-1,
             )
             cumulative_timestep_std = np.concatenate(
-                [cumulative_timestep_channel_std, cumulative_timestep_overall_std[:, None]], axis=-1
+                [cumulative_timestep_channel_std, cumulative_timestep_overall_std[:, None]],
+                axis=-1,
             )
 
-            metric_name_to_values[metric_key_name].update({
-                "per_timestep_mean": per_timestep_mean,
-                "per_timestep_std": per_timestep_std,
-                "cumulative_timestep_mean": cumulative_timestep_mean,
-                "cumulative_timestep_std": cumulative_timestep_std,
-            })
+            metric_name_to_values[metric_key_name].update(
+                {
+                    "per_timestep_mean": per_timestep_mean,
+                    "per_timestep_std": per_timestep_std,
+                    "cumulative_timestep_mean": cumulative_timestep_mean,
+                    "cumulative_timestep_std": cumulative_timestep_std,
+                }
+            )
 
     return metric_name_to_values

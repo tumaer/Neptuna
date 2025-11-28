@@ -28,6 +28,7 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     3b. Compute parameter ranges for min-max normalization if not provided
     4. Validate normalization statistics against chosen strategy
     5. Filter and finalize channel lists based on configuration
+    6. Load loss component configurations and merge them
 
     Parameters
     ----------
@@ -282,5 +283,32 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
         except Exception as exc:
             # We do not want to fail the entire run due to logging issues; print a warning instead.
             print(f"[WARNING] Failed to write data_config to {json_path}: {exc}")
+
+    # ------------------------------------------------------------------
+    # 6) Load and merge the relevant loss component configs
+    # ------------------------------------------------------------------
+    if hasattr(cfg, 'loss_config') and cfg.loss_config is not None:
+        if hasattr(cfg.loss_config, 'loss') and hasattr(cfg.loss_config.loss, 'components'):
+            # Temporarily disable struct mode to allow adding new fields
+            OmegaConf.set_struct(cfg.loss_config, False)
+            
+            for component_cfg in cfg.loss_config.loss.components:
+                # Check if this component references an external config file
+                if 'config_file' in component_cfg and not hasattr(component_cfg, 'metric_params'):
+                    config_path = f"config/loss_config/{component_cfg.config_file}.yaml"
+                    
+                    if os.path.exists(config_path):
+                        try:
+                            # Load metric config and store it separately
+                            metric_config = OmegaConf.load(config_path)
+                            component_cfg.metric_params = metric_config
+                            
+                        except Exception as e:
+                            component_cfg.metric_params = {}
+                    else:
+                        component_cfg.metric_params = {}
+            
+            # Re-enable struct mode
+            OmegaConf.set_struct(cfg.loss_config, True)
 
     return cfg

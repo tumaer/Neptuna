@@ -1281,8 +1281,9 @@ class Trainer(Trainer_):
 
         # Prefix all keys with metric_key_prefix + '_'
         for key in list(metrics.keys()):
-            if not key.startswith(f"{metric_key_prefix}_"):
-                metrics[f"{metric_key_prefix}_{key}"] = metrics.pop(key)
+            if key.startswith(metric_key_prefix):
+                continue
+            metrics[f"{metric_key_prefix}_{key}"] = metrics.pop(key)
 
         return EvalLoopOutput(predictions=all_preds, label_ids=all_labels, metrics=metrics, num_samples=num_samples), all_inputs, all_conditioning_inputs
         ##NOTE: all_inputs is the additional return argument compared to the evaluation_loop() function in the base class.
@@ -1654,94 +1655,61 @@ class Trainer(Trainer_):
             Metrics dictionary (not used by parent class but kept for compatibility)
         """
         super()._save_checkpoint(model, trial)
+
+        # Helper to convert tensors to lists
+        def _tensorize_for_json(obj):
+            """Recursively convert tensors to lists for JSON serialization."""
+            if isinstance(obj, torch.Tensor):
+                return obj.cpu().tolist()
+            elif isinstance(obj, dict):
+                return {k: _tensorize_for_json(v) for k, v in obj.items()}
+            elif isinstance(obj, (list, tuple)):
+                return [_tensorize_for_json(item) for item in obj]
+            else:
+                return obj
         
-        # Save loss config if available
-        if self.loss_config is not None and self.loss_fn is not None:
-            try:                
-                # Get the checkpoint folder path
-                checkpoint_folder = (
-                    self.state.best_model_checkpoint 
-                    if self.state.best_model_checkpoint 
-                    else os.path.join(self.args.output_dir, f"checkpoint-{self.state.global_step}")
-                )
+        if self.loss_config is not None:
+            try:
+                # Get the output directory
+                output_dir = self.args.output_dir
+                
+                # Construct checkpoint folder name based on HF's logic
+                if self.args.save_strategy == "no":
+                    # No checkpoints saved
+                    return
+                elif self.args.save_strategy == "epoch":
+                    checkpoint_folder = os.path.join(
+                        output_dir, 
+                        f"{PREFIX_CHECKPOINT_DIR}-{int(self.state.epoch)}"
+                    )
+                else:  # "steps" (default)
+                    checkpoint_folder = os.path.join(
+                        output_dir, 
+                        f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}"
+                    )
                 
                 loss_config_path = os.path.join(checkpoint_folder, "loss_config.json")
                 
-                # ================================================================
-                # Build loss config: structure + current weights + metric params
-                # ================================================================
-                comprehensive_config = {"loss": {"components": []}}
+                # Convert to dict (keeps metric_params separate)
+                loss_config_dict = OmegaConf.to_container(self.loss_config, resolve=True)
                 
-                # Get current weights from the loss function
-                weight_dict = self.loss_fn.get_weight_dict()
+                # Add current weights to each component
+                if self.loss_fn is not None:
+                    weight_dict = self.loss_fn.get_weight_dict()
+                    
+                    for component in loss_config_dict['loss']['components']:
+                        comp_name = component.get('name', component['type'])
+                        if comp_name in weight_dict:
+                            component['current_weights'] = _tensorize_for_json(weight_dict[comp_name])
                 
-                # Helper to convert tensors to lists
-                def _tensorize_for_json(obj):
-                    """Recursively convert tensors to lists for JSON serialization."""
-                    if isinstance(obj, torch.Tensor):
-                        return obj.cpu().tolist()
-                    elif isinstance(obj, dict):
-                        return {k: _tensorize_for_json(v) for k, v in obj.items()}
-                    elif isinstance(obj, (list, tuple)):
-                        return [_tensorize_for_json(item) for item in obj]
-                    else:
-                        return obj
-                
-                # Iterate through components
-                for component_cfg in self.loss_config.loss.components:
-                    # Start with the base component config from the original config
-                    component_dict = (
-                        OmegaConf.to_container(component_cfg, resolve=True) 
-                        if OmegaConf.is_config(component_cfg) 
-                        else dict(component_cfg)
-                    )
-                    
-                    component_name = component_cfg.get('name', component_cfg.type)
-                    
-                    # ============================================================
-                    # Add current weights from get_weight_dict()
-                    # ============================================================
-                    if component_name in weight_dict:
-                        component_weights = weight_dict[component_name]
-                        component_dict['current_weights'] = _tensorize_for_json(component_weights)
-                    
-                    # ============================================================
-                    # Load and merge metric-specific config parameters
-                    # ============================================================
-                    if 'config_file' in component_cfg:
-                        config_file = component_cfg['config_file']
-                        config_path = f"config/loss_config/{config_file}.yaml"
-                        
-                        try:
-                            # Load the metric-specific config
-                            metric_config = OmegaConf.load(config_path)
-                            metric_config_dict = OmegaConf.to_container(metric_config, resolve=True)
-                            
-                            # Add metric-specific params
-                            component_dict['metric_params'] = metric_config_dict
-                            
-                            logger.debug(f"Loaded metric config from {config_path} for {component_name}")
-                        except FileNotFoundError:
-                            logger.warning(f"Metric config file not found: {config_path}")
-                            component_dict['metric_params'] = {}
-                        except Exception as e:
-                            logger.warning(f"Could not load metric config from {config_path}: {e}")
-                            component_dict['metric_params'] = {}
-                    else:
-                        component_dict['metric_params'] = {}
-                    
-                    comprehensive_config["loss"]["components"].append(component_dict)
-                
-                # Write comprehensive config to single file
+                # Save
                 with open(loss_config_path, 'w') as f:
-                    json.dump(comprehensive_config, f, indent=2)
+                    json.dump(loss_config_dict, f, indent=2)
                 
                 logger.info(f"Saved loss_config to {loss_config_path}")
                 
             except Exception as e:
-                logger.warning(f"Failed to save loss configuration: {e}")
-                import traceback
-                traceback.print_exc()
+                logger.warning(f"Failed to save loss_config: {e}")
     
     ### overrides the one in the base class from transformers library
     def _hp_search_setup(self, trial: Union["optuna.Trial", dict[str, Any]]):

@@ -229,13 +229,13 @@ def run(cfg):
                 metrics["composite_loss"] = composite_loss.item()
             
             except Exception as e:
-                logger.warning(f"Failed to compute training loss metric: {e}")
+                pass
         
         # 2. Evaluation loss metrics (for logging)
         try:
             # Fetch eval loss config
             full_eval_cfg = fetch_eval_loss_config(cfg)
-            
+
             # Create eval loss function
             eval_loss_fn = fetch_loss_metric(full_eval_cfg)
             eval_loss_fn = eval_loss_fn.to(device)
@@ -257,7 +257,8 @@ def run(cfg):
                 )
         
         except Exception as e:
-            logger.warning(f"Failed to compute evaluation loss metrics: {e}")
+            pass
+
         
         return metrics
 

@@ -8,6 +8,7 @@ from utils.plot_progress import preprocess_for_plotting, plot_rollout_metrics
 from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
 from utils.plot_progress import plot_rollout_metrics_bar_chart
 from utils.plot_progress import plot_multi_run_rollout_metrics
+from utils.loss_utils import fetch_loss_metric, fetch_eval_loss_config
 from metrics.default_metrics import l1_error, l2_error, compute_metrics_for_n_rollouts
 from transformers.trainer import EvalPrediction
 from transformers import TrainingArguments
@@ -69,6 +70,28 @@ def load_pretrained_model(model_config):
 
     return model
 
+def build_train_and_eval_loss(loss_config, data_config, device: torch.device):
+    """
+    Construct training and eval CompositeLoss from configs.
+    """
+    if loss_config is None:
+        return None, None
+
+    # Config object needed for loss construction
+    full_train_loss_cfg = OmegaConf.create({
+        "loss_config": loss_config,
+        "data_config": data_config,
+    })
+
+    # Training loss
+    train_loss_fn = fetch_loss_metric(full_train_loss_cfg).to(device)
+
+    # Eval loss
+    full_eval_cfg = fetch_eval_loss_config(full_train_loss_cfg)
+    eval_loss_fn = fetch_loss_metric(full_eval_cfg).to(device)
+
+    return train_loss_fn, eval_loss_fn
+
 def get_trainer(
     model_config,
     data_config,
@@ -76,7 +99,9 @@ def get_trainer(
     train_config=None,
     scheduler_config=None,
     infer_config=None,
-    output_log_config=None
+    output_log_config=None,
+    loss_config=None,
+    compute_metrics=None
 ):
     # Function to read train_batch_size from trainer_state.json
     def get_train_batch_size(checkpoint_path):
@@ -142,28 +167,6 @@ def get_trainer(
         bf16=mp_flags["bf16"],
         tf32=mp_flags["tf32"],
     )
-    
-    def compute_metrics(eval_pred: EvalPrediction):
-        preds = eval_pred.predictions
-        (
-            len_eval_dataloader,
-            num_eval_rollouts,
-            label_seq_length,
-            channel_dim,
-            *spatial,
-        ) = preds.shape
-        preds = preds.reshape(
-            len_eval_dataloader,
-            num_eval_rollouts * label_seq_length,
-            channel_dim,
-            *spatial,
-        )
-        targets = eval_pred.label_ids
-        # NOTE: more metrics to be added later here
-        return {
-            "l1_error": l1_error(preds, targets),
-            "l2_error": l2_error(preds, targets),
-        }
 
     # Load pretrained model using the generic factory function
     model = load_pretrained_model(model_config)
@@ -178,6 +181,7 @@ def get_trainer(
         scheduler_config=scheduler_config,
         infer_config=infer_config,
         output_log_config=output_log_config,
+        loss_config=loss_config,
     )
     return trainer
 
@@ -277,6 +281,124 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         except Exception:
             print(f" Parameter_min_max_stats not available, skipping...")
         model_config = OmegaConf.load(model_config_path)
+
+        # Load loss config from checkpoint
+        loss_config = None
+        loss_config_path = os.path.join(checkpoint_path, "loss_config.json")
+        
+        if os.path.exists(loss_config_path):
+            try:
+                with open(loss_config_path, 'r') as f:
+                    loss_config_data = json.load(f)
+                
+                # Convert to OmegaConf for compatibility
+                loss_config = OmegaConf.create(loss_config_data)
+                
+                # Replace configured weights with current_weights from checkpoint
+                # This uses the weights that were active when the model was saved
+                if 'loss' in loss_config and 'components' in loss_config.loss:
+                    for component in loss_config.loss.components:
+                        if 'current_weights' in component:
+                            # Extract current weights
+                            current_weights = component.current_weights
+                            
+                            # Update the component's weight configuration
+                            if 'base_weight' in current_weights:
+                                component.weight = current_weights.base_weight
+                            if 'timestep_weights' in current_weights:
+                                component.timestep_weights = current_weights.timestep_weights
+                            if 'channel_weights' in current_weights:
+                                component.channel_weights = current_weights.channel_weights
+                            if 'component_weights' in current_weights:
+                                component.component_weights = current_weights.component_weights
+                            
+                            print(f" Using checkpoint weights for '{component.get('name', component.type)}'")
+                         
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                loss_config = None
+        else:
+            print(f"No loss_config.json found in checkpoint: {loss_config_path}")
+            print("Inference will only compute legacy L1/L2 errors")
+
+        # Determine device once
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        # Build loss functions
+        train_loss_fn, eval_loss_fn = build_train_and_eval_loss(
+            loss_config=loss_config,
+            data_config=data_config,
+            device=device,
+        )
+
+        # Define metrics for trainer
+        def compute_metrics(eval_pred: EvalPrediction):
+            preds = eval_pred.predictions
+            (
+                len_eval_dataloader,
+                num_eval_rollouts,
+                label_seq_length,
+                channel_dim,
+                *spatial,
+            ) = preds.shape
+
+            preds = preds.reshape(
+                len_eval_dataloader,
+                num_eval_rollouts * label_seq_length,
+                channel_dim,
+                *spatial,
+            )
+            targets = eval_pred.label_ids
+
+            metrics = {}
+
+            # Convert to tensors on the same device as loss fns
+            if isinstance(preds, np.ndarray):
+                preds_tensor = torch.from_numpy(preds).float().to(device)
+            else:
+                preds_tensor = preds.to(device)
+
+            if isinstance(targets, np.ndarray):
+                targets_tensor = torch.from_numpy(targets).float().to(device)
+            else:
+                targets_tensor = targets.to(device)
+
+            # 1) Training (composite) loss for logging/checkpointing
+            if train_loss_fn is not None:
+                try:
+                    with torch.no_grad():
+                        composite_loss = train_loss_fn(
+                            model=None,
+                            predictions=preds_tensor,
+                            labels=targets_tensor,
+                            return_detailed=False,
+                        )
+                    metrics["eval_composite_loss"] = float(composite_loss.item())
+                except Exception as e:
+                    print(f"Failed to compute composite loss metrics: {e}")
+
+            # 2) Evaluation loss components for logging
+            if eval_loss_fn is not None:
+                try:
+                    with torch.no_grad():
+                        _, detailed = eval_loss_fn(
+                            model=None,
+                            predictions=preds_tensor,
+                            labels=targets_tensor,
+                            return_detailed=True,
+                        )
+                    for component_name, component_detailed in detailed.items():
+                        component_total = component_detailed["total"]
+                        metrics[f"eval_{component_name}"] = (
+                            component_total.item()
+                            if torch.is_tensor(component_total)
+                            else component_total
+                        )
+                except Exception as e:
+                    print(f"Failed to compute evaluation loss metrics: {e}")
+
+            return metrics
         
         # Set global seed from data_config (default 0)
         seed_value = int(data_config.get("seed", 0))
@@ -466,7 +588,9 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             train_config=train_config,
             scheduler_config=scheduler_config,
             infer_config=infer_config,
-            output_log_config=output_log_config
+            output_log_config=output_log_config,
+            loss_config=loss_config,
+            compute_metrics=compute_metrics,
         )
 
         if infer_config["infer_from_random_timestep"]:
@@ -486,7 +610,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             print('Accumulated error for the whole test set (random start):')
             errors = {} 
             for key, value in predictions_obj.metrics.items():
-                if "error" in key:
+                if ("error" in key) or ("eval" in key):
                     print(f"{key}: {value}")
                     errors["random_start"+key] = value
             save_errors_to_csv(errors, solo_inference_dir)
@@ -602,8 +726,9 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 # Create a rollout metrics plot for this example (no batch aggregation)
                 ex_preds = preds[example_idx:example_idx+1]      # shape (1, R*T, C, *spatial)
                 ex_targets = targets[example_idx:example_idx+1]
+                
                 per_rollout_metrics_ex = compute_metrics_for_n_rollouts(
-                    ex_preds, ex_targets, outputs_per_rollout=outputs_per_rollout
+                    ex_preds, ex_targets, outputs_per_rollout=outputs_per_rollout, loss_metric=eval_loss_fn
                 )
                 ex_title = f"Per-rollout metrics ({data_config.get('dataset_name', 'dataset')} - random start, example {int(example_idx)})"
                 plot_rollout_metrics(
@@ -628,7 +753,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             print('Accumulated error for the whole test set (IC start):')
             errors = {}
             for key, value in predictions_obj.metrics.items():
-                if "error" in key:
+                if ("error" in key) or ("eval" in key):
                     print(f"{key}: {value}")
                     errors["ic_start"+key] = value
             save_errors_to_csv(errors, solo_inference_dir)
@@ -645,9 +770,8 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 extra_dims = preds.shape[4:]
                 preds = preds.reshape(n, n_rollouts * seq_len, c, *extra_dims) # (N, R*T, C, *spatial)
 
-            # Compute per-rollout metrics; also compute per-timestep metrics for IC start
             per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(
-                preds, targets, outputs_per_rollout=outputs_per_rollout, include_per_timestep=True
+                preds, targets, outputs_per_rollout=outputs_per_rollout, include_per_timestep=True, loss_metric=eval_loss_fn
             )
             
             errors = {}
@@ -859,12 +983,14 @@ def main(cfg: DictConfig):
             runs_sequence_info=runs_sequence_info if len(runs_sequence_info) > 0 else None,
         )
 
+    '''
     plot_rollout_metrics_bar_chart(
         runs_step_metrics=runs_step_metrics,
         save_dir=inference_dir,
         run_configs=run_configs,
         filename="rollout_metrics_bar_chart.png"
     )
+    '''
 
     print(f"\n{'='*60}")
     print("All inference runs completed!")

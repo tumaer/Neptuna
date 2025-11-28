@@ -112,10 +112,17 @@ def fetch_loss_metric(cfg) -> CompositeLoss:
         
         # Load metric-specific config if provided
         metric_params = {}
-        if 'config_file' in component_cfg:
+        if hasattr(component_cfg, 'metric_params'):
+            # Already loaded by prepare_config or from checkpoint
+            metric_params = OmegaConf.to_container(component_cfg.metric_params, resolve=True)
+        elif 'config_file' in component_cfg:
+            # Fallback: load now (for inference from old checkpoints)
             config_path = f"config/loss_config/{component_cfg.config_file}.yaml"
-            metric_config = OmegaConf.load(config_path)
-            metric_params = OmegaConf.to_container(metric_config, resolve=True)
+            try:
+                metric_config = OmegaConf.load(config_path)
+                metric_params = OmegaConf.to_container(metric_config, resolve=True)
+            except Exception as e:
+                print(f"Warning: Could not load metric config from {config_path}: {e}")
         
         loss_class = loss_registry[loss_type]
         loss_instance = loss_class(
@@ -131,7 +138,7 @@ def fetch_loss_metric(cfg) -> CompositeLoss:
     return CompositeLoss(loss_components=loss_components)
 
 def fetch_eval_loss_config(cfg):
-    #TODO: Make this more robust by adapting eval_loss_cfg to the dataset
+    #TODO: Make this more robust/general by adapting eval_loss_cfg to the dataset
 
     eval_loss_config_path = "./config/loss_config/infer_loss.yaml"
     eval_loss_cfg = OmegaConf.load(eval_loss_config_path)

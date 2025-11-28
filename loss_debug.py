@@ -25,6 +25,7 @@ def main(cfg):
     print(f"Predictions shape: {predictions.shape}")
     print(f"Logits shape: {logits.shape}")
     print(loss_fn.get_weight_dict())
+    print(cfg)
     
 
 
