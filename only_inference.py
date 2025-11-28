@@ -20,6 +20,7 @@ from utils.seed_utils import set_global_seed
 import torch
 import numpy as np
 import csv
+import ast
 
 
 def load_pretrained_model(model_config):
@@ -209,7 +210,7 @@ def find_checkpoint_path(experiment_dir):
 
 def save_errors_to_csv(errors, output_dir):
     """
-    Save errors to a CSV file in the specified output directory.
+    Save errors to 2 CSV files in the specified output directory.
 
     Args:
         errors: Dictionary of errors to save.
@@ -225,6 +226,121 @@ def save_errors_to_csv(errors, output_dir):
             writer.writerow(["Metric", "Value"])
         for key, value in errors.items():
             writer.writerow([key, value])
+
+    # Structured CSV file
+    # --------------------------------------------------------------
+    # Collect data into a dict-of-dicts before writing
+    # rows[(index_type, index)][col_name] = value
+    rows: Dict[tuple, Dict[str, float]] = {}
+    all_col_names: set = set()
+
+    for metric_name, value in errors.items():
+        # Value can be:
+        #   - dict from compute_metrics_for_n_rollouts
+        #   - stringified dict as written earlier
+        metrics_dict = None
+
+        if isinstance(value, dict):
+            metrics_dict = value
+        elif isinstance(value, str):
+            # Quick filter to avoid parsing arbitrary strings
+            if "per_rollout_step_mean" not in value and "per_timestep_mean" not in value:
+                continue
+            try:
+                metrics_dict = ast.literal_eval(value)
+            except Exception:
+                continue
+        else:
+            continue  # scalar metric, skip
+
+        if not isinstance(metrics_dict, dict):
+            continue
+
+        for summary_kind, arr in metrics_dict.items():
+            try:
+                np_arr = np.asarray(arr)
+            except Exception:
+                continue
+
+            if np_arr.ndim != 2:
+                # expect (R, C+1) or (T, C+1)
+                continue
+
+            n_idx, n_channels = np_arr.shape  # last column == overall
+
+            # Decide index_type based on summary_kind
+            if "rollout_step" in summary_kind:
+                index_type = "rollout"
+            elif "timestep" in summary_kind:
+                index_type = "timestep"
+            else:
+                index_type = "index"
+
+            # ------------------------------------------------------------------
+            # Map summary_kind -> a more generic "stat" so rollout/timestep
+            # share the same columns:
+            #   per_rollout_step_mean, per_timestep_mean      -> "mean"
+            #   per_rollout_step_std,  per_timestep_std       -> "std"
+            #   cumulative_*_mean                             -> "cumulative_mean"
+            #   cumulative_*_std                              -> "cumulative_std"
+            # ------------------------------------------------------------------
+            if "mean" in summary_kind and "cumulative" not in summary_kind:
+                stat = "mean"
+            elif "std" in summary_kind and "cumulative" not in summary_kind:
+                stat = "std"
+            elif "cumulative" in summary_kind and "mean" in summary_kind:
+                stat = "cumulative_mean"
+            elif "cumulative" in summary_kind and "std" in summary_kind:
+                stat = "cumulative_std"
+            else:
+                # fallback: keep full summary_kind if it doesn't match patterns
+                stat = summary_kind
+
+            # Columns:
+            #   <metric>__<stat>__overall
+            #   <metric>__<stat>__ch0
+            #   <metric>__<stat>__ch1
+            base = f"{metric_name}__{stat}"
+
+            overall_col = f"{base}__overall"
+            all_col_names.add(overall_col)
+            for ch in range(n_channels - 1):
+                ch_col = f"{base}__ch{ch}"
+                all_col_names.add(ch_col)
+
+            for idx in range(n_idx):
+                row_key = (index_type, idx)
+                if row_key not in rows:
+                    rows[row_key] = {}
+
+                # overall column from last channel
+                rows[row_key][overall_col] = float(np_arr[idx, n_channels - 1])
+
+                # per-channel columns
+                for ch in range(n_channels - 1):
+                    ch_col = f"{base}__ch{ch}"
+                    rows[row_key][ch_col] = float(np_arr[idx, ch])
+
+    # If nothing to write, just ensure header exists
+    pretty_csv_file = os.path.join(output_dir, "results_structured.csv")
+
+    # Sort columns for deterministic order
+    all_col_names_sorted = sorted(all_col_names)
+
+    with open(pretty_csv_file, mode='w', newline='') as file:
+        writer = csv.writer(file)
+
+        # Header: no "channel" column, channels are in the metric column names
+        header = ["index_type", "index"] + all_col_names_sorted
+        writer.writerow(header)
+
+        # Sort rows: index_type, then index
+        for (index_type, idx) in sorted(rows.keys(), key=lambda k: (k[0], k[1])):
+            row_data = rows[(index_type, idx)]
+            row = [index_type, idx]
+            for col_name in all_col_names_sorted:
+                row.append(row_data.get(col_name, ""))  # empty if missing
+            writer.writerow(row)
 
 def run_inference_for_each_experiment(experiment_dir, infer_config):
     """
@@ -983,14 +1099,14 @@ def main(cfg: DictConfig):
             runs_sequence_info=runs_sequence_info if len(runs_sequence_info) > 0 else None,
         )
 
-    '''
+
     plot_rollout_metrics_bar_chart(
         runs_step_metrics=runs_step_metrics,
         save_dir=inference_dir,
         run_configs=run_configs,
         filename="rollout_metrics_bar_chart.png"
     )
-    '''
+
 
     print(f"\n{'='*60}")
     print("All inference runs completed!")

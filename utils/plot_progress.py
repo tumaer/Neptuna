@@ -2048,6 +2048,7 @@ def plot_multi_run_rollout_metrics(
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
+# Python
 def plot_rollout_metrics_bar_chart(
     runs_step_metrics: dict,
     save_dir: str,
@@ -2061,21 +2062,21 @@ def plot_rollout_metrics_bar_chart(
     runs_step_metrics : dict[str, dict]
         Mapping from run label to the per-run step_metrics dict returned by
         `compute_metrics_for_n_rollouts(..., include_per_timestep=True)`.
+        Expected structure per run:
+          {
+            "<metric_name>": {
+                "per_rollout_step_mean": (R, C+1),
+                "per_rollout_step_std":  (R, C+1),
+                ...
+            },
+            ...
+          }
     save_dir : str
-        Directory to save the figure.
+        Directory to save the figure(s).
     run_configs : dict[str, dict]
         Mapping from run label to the run configuration dictionary.
     filename : str
-        Output filename.
-
-    Plotting logic:
-     - Loads config for each run
-     - By comparing configs, divides runs into two groupings
-     - First grouping: runs that get plotted together in the same subplot
-     - Second grouping: runs that get the same bar color/style within a subplot
-     - The legend displays the parameters that differ between the runs in each grouping
-     - By default: first grouping is by architecture, second grouping is by conditioning/input data
-     - Can be customized by changing the conditioning_vars list in the code
+        Base output filename. The metric name will be appended before the extension.
     """
     # -------------------- Utility Functions --------------------
     def make_hashable(obj):
@@ -2110,35 +2111,49 @@ def plot_rollout_metrics_bar_chart(
 
         return run_architectures, run_conditioning_info, run_other_params
 
-    def calculate_results(runs_step_metrics):
-        """Calculate mean and pooled std for L1 and L2 errors."""
-        results = {}
+    def calculate_results_all_metrics(runs_step_metrics: dict) -> dict:
+        """
+        For each run and each metric, compute:
+          - mean over rollout steps of the overall (all-channel combined) metric
+          - pooled std over rollout steps
+        Returns:
+          results[run_name][metric_name] = {
+              "mean_avg": float,
+              "pooled_std": float,
+          }
+        Assumes legacy shape where last column (-1) is the overall metric.
+        """
+        results: dict = {}
         for run_name, metrics in runs_step_metrics.items():
-            l1_mean = metrics['l1_error']['per_rollout_step_mean'][:, -1]
-            l1_std = metrics['l1_error']['per_rollout_step_std'][:, -1]
-            l2_mean = metrics['l2_error']['per_rollout_step_mean'][:, -1]
-            l2_std = metrics['l2_error']['per_rollout_step_std'][:, -1]
+            run_res = {}
+            for metric_name, metric_vals in metrics.items():
+                means = metric_vals.get("per_rollout_step_mean", None)
+                stds = metric_vals.get("per_rollout_step_std", None)
+                if means is None or stds is None:
+                    continue
+                # overall (all-channel combined) is last column
+                overall_mean = means[:, -1]  # shape (R,)
+                overall_std = stds[:, -1]    # shape (R,)
 
-            l1_mean_avg = np.mean(l1_mean)
-            l2_mean_avg = np.mean(l2_mean)
-            l1_pooled_std = np.sqrt(np.sum(l1_std**2 + (l1_mean - l1_mean_avg)**2) / (len(l1_mean) + 1))
-            l2_pooled_std = np.sqrt(np.sum(l2_std**2 + (l2_mean - l2_mean_avg)**2) / (len(l2_mean) + 1))
-
-            results[run_name] = {
-                'l1_mean_avg': l1_mean_avg,
-                'l2_mean_avg': l2_mean_avg,
-                'l1_pooled_std': l1_pooled_std,
-                'l2_pooled_std': l2_pooled_std,
-            }
+                mean_avg = float(np.mean(overall_mean))
+                pooled_std = float(
+                    np.sqrt(
+                        np.sum(overall_std**2 + (overall_mean - mean_avg) ** 2)
+                        / (len(overall_mean) + 1)
+                    )
+                )
+                run_res[metric_name] = {
+                    "mean_avg": mean_avg,
+                    "pooled_std": pooled_std,
+                }
+            results[run_name] = run_res
         return results
 
     def group_runs_by_architecture(run_architectures):
         """Group runs by model architecture."""
         architecture_groups = {}
         for run_name, arch in run_architectures.items():
-            if arch not in architecture_groups:
-                architecture_groups[arch] = []
-            architecture_groups[arch].append(run_name)
+            architecture_groups.setdefault(arch, []).append(run_name)
         return architecture_groups
 
     def group_runs_by_parameters(architecture_groups, run_other_params):
@@ -2152,12 +2167,10 @@ def plot_rollout_metrics_bar_chart(
                     try:
                         hashable_value = make_hashable(value)
                         param_items.append((key, hashable_value))
-                    except:
+                    except Exception:
                         param_items.append((key, str(value)))
                 param_tuple = tuple(param_items)
-                if param_tuple not in param_subgroups:
-                    param_subgroups[param_tuple] = []
-                param_subgroups[param_tuple].append(run_name)
+                param_subgroups.setdefault(param_tuple, []).append(run_name)
             grouped_runs[arch] = param_subgroups
         return grouped_runs
 
@@ -2167,17 +2180,18 @@ def plot_rollout_metrics_bar_chart(
         for arch, subgroups in grouped_runs.items():
             simplified_groups[arch] = []
             if len(subgroups) <= 1:
-                for param_tuple, runs in subgroups.items():
+                for _, runs in subgroups.items():
                     simplified_groups[arch].append({'runs': runs, 'diff_params': {}})
                 continue
+
+            # find which params actually differ
             all_param_values = {}
             for param_tuple, _ in subgroups.items():
                 params_dict = dict(param_tuple)
                 for key, value in params_dict.items():
-                    if key not in all_param_values:
-                        all_param_values[key] = set()
-                    all_param_values[key].add(value)
+                    all_param_values.setdefault(key, set()).add(value)
             diff_param_keys = [k for k, v in all_param_values.items() if len(v) > 1]
+
             for param_tuple, runs in subgroups.items():
                 params_dict = dict(param_tuple)
                 diff_params = {k: params_dict[k] for k in diff_param_keys if k in params_dict}
@@ -2196,6 +2210,7 @@ def plot_rollout_metrics_bar_chart(
                 group_labels[hashable_cond] = f"G{group_counter}"
                 group_counter += 1
             conditioning_groups[hashable_cond].append(run_name)
+
         run_group_labels = {}
         for hashable_cond, runs in conditioning_groups.items():
             group_label = group_labels[hashable_cond]
@@ -2203,64 +2218,76 @@ def plot_rollout_metrics_bar_chart(
                 run_group_labels[run] = group_label
         return run_group_labels
 
-    # -------------------- Plotting Functions --------------------
+    # -------------------- Plotting Function (for a single metric) --------------------
 
-    def plot_grouped_l2_errors(simplified_groups, results, run_group_labels):
-        """Plot grouped L2 errors."""
-        total_subplots = sum(len(groups) for arch, groups in simplified_groups.items())
-        n_cols = min(3, total_subplots)
-        n_rows = math.ceil(total_subplots / n_cols)
-        
-        fig_width = 2.5 * n_cols
-        fig_height = 3.5 * n_rows
-        
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height))
-        if total_subplots == 1:
-            axes = np.array([axes])
-        axes = axes.flatten()
+    def plot_grouped_metric_errors_on_axes(
+        metric_name: str,
+        simplified_groups,
+        results_all_metrics,
+        run_group_labels,
+        run_conditioning_info,
+        axes,
+        row_idx: int,
+        n_rows: int,
+        n_cols: int,
+    ):
+        """Plot grouped errors for a single metric across runs onto given axes grid row."""
+        # Collect runs that actually have this metric
+        have_metric = set(
+            run_name
+            for run_name, m_res in results_all_metrics.items()
+            if metric_name in m_res
+        )
+        if not have_metric:
+            return
 
-        unique_groups = sorted(set(run_group_labels.values()))  # Sort for consistent order
-        group_colors = {}
+        import math
+        import matplotlib.pyplot as plt
+        from matplotlib import cm
+        from matplotlib.patches import Patch
+
+        # Condition-group colors
+        unique_groups = sorted(set(run_group_labels.values()))
         cmap = cm.get_cmap('tab10', len(unique_groups))
-        
-        for i, group in enumerate(unique_groups):
-            group_colors[group] = cmap(i)
-        
-        # Get min/max for consistent y-axis
-        all_l2_values = []
-        for arch, groups in simplified_groups.items():
-            for group in groups:
-                runs = group['runs']
-                for run in runs:
-                    if run in results:
-                        l2_error = results[run]['l2_mean_avg']
-                        l2_std = results[run]['l2_pooled_std']
-                        all_l2_values.append(l2_error + l2_std)
-                        all_l2_values.append(max(l2_error - l2_std, 0.001))
+        group_colors = {g: cmap(i) for i, g in enumerate(unique_groups)}
 
-        global_min = max(0.001, min(all_l2_values) / 1.5)
-        global_max = max(all_l2_values) * 1.1
-        
-        # Plot each subgroup in its own subplot
-        subplot_idx = 0
+        # Global y-limits (log scale) based on this metric only
+        all_vals = []
+        for run_name in have_metric:
+            val = results_all_metrics[run_name][metric_name]['mean_avg']
+            std = results_all_metrics[run_name][metric_name]['pooled_std']
+            all_vals.append(max(val - std, 0.0))
+            all_vals.append(val + std)
+        all_vals = [v for v in all_vals if v is not None]
+        if not all_vals:
+            return
+
+        global_min = max(1e-6, min(all_vals) / 1.5)
+        global_max = max(all_vals) * 1.1
+
+        subplot_idx_in_row = 0
         for arch, groups in simplified_groups.items():
             for subgroup_idx, group in enumerate(groups):
-                if subplot_idx >= len(axes):
+                runs = [r for r in group['runs'] if r in have_metric]
+                if not runs:
+                    continue
+
+                # compute global flat index for this metric-row + column
+                if subplot_idx_in_row >= n_cols:
                     break
-                    
-                ax = axes[subplot_idx]
+                ax = axes[row_idx, subplot_idx_in_row]
+
                 ax.set_yscale('log')
                 ax.set_ylim(global_min, global_max)
-                
-                # Set title with architecture name and subgroup index
-                ax.set_title(f"{arch} {subgroup_idx+1}", fontsize=10)
-                if subplot_idx % n_cols == 0:
-                    ax.set_ylabel("L2 Error", fontsize=10)
+
+                # Metric name on the leftmost subplot in this row
+                if subplot_idx_in_row == 0:
+                    ax.set_ylabel(metric_name, fontsize=10)
                 else:
                     ax.tick_params(axis='y', which='both', labelleft=False)
-                ax.set_yscale('log')
 
-                ax.set_ylim(global_min, global_max)
+                ax.set_title(f"{arch} {subgroup_idx+1}", fontsize=9)
+
                 log_min = np.floor(np.log10(global_min))
                 log_max = np.ceil(np.log10(global_max))
                 num_ticks = int(log_max - log_min + 1)
@@ -2268,66 +2295,70 @@ def plot_rollout_metrics_bar_chart(
                 ax.set_yticks(yticks)
                 ax.set_yticklabels([f"{tick:.1e}" for tick in yticks])
                 ax.grid(axis='y', linestyle='--', alpha=0.7)
-                
-                runs = group['runs']
+
                 diff_params = group['diff_params']
-                
-                # Sort runs by their group labels for consistent order
+
+                # Sort runs by conditioning group label for consistent coloring
                 runs = sorted(runs, key=lambda run: run_group_labels.get(run, "Unknown"))
-                
-                all_x_positions = []
-                all_labels = []
-                all_colors = []
-                
+
                 bar_width = 0.7
-                x_positions = [i for i in range(len(runs))]
-                all_x_positions.extend(x_positions)
-                
-                for run in runs:
-                    group_label = run_group_labels.get(run, "Unknown")
-                    all_labels.append(group_label)
-                    all_colors.append(group_colors[group_label])
-                
-                # Get L2 errors and standard deviations
-                l2_errors = [results[run]['l2_mean_avg'] if run in results else 0 for run in runs]
-                l2_stds = [results[run]['l2_pooled_std'] if run in results else 0 for run in runs]
-                
-                # Plot bars with colors based on conditioning group
-                for i, (x, val, std, color) in enumerate(zip(x_positions, l2_errors, l2_stds, all_colors)):
-                    bar = ax.bar(x, val, yerr=std, width=bar_width, alpha=0.7, 
+                x_positions = list(range(len(runs)))
+                all_colors = [
+                    group_colors[run_group_labels.get(run, "Unknown")]
+                    for run in runs
+                ]
+                values = [
+                    results_all_metrics[run][metric_name]['mean_avg'] for run in runs
+                ]
+                stds = [
+                    results_all_metrics[run][metric_name]['pooled_std'] for run in runs
+                ]
+
+                for x, val, std, color in zip(x_positions, values, stds, all_colors):
+                    ax.bar(x, val, yerr=std, width=bar_width, alpha=0.7,
                         color=color, capsize=3)
-                
-                # Set x-ticks and labels
-                ax.set_xticks(all_x_positions)
-                ax.set_xticklabels(all_labels, rotation=0, ha='center', fontsize=9)
-                
-                # Add parameter group legend if there are parameters
+
+                ax.set_xticks(x_positions)
+                # Only show x‑tick labels on bottom row
+                if row_idx == n_rows - 1:
+                    ax.set_xticklabels(
+                        [run_group_labels.get(run, "Unknown") for run in runs],
+                        rotation=0, ha='center', fontsize=8
+                    )
+                else:
+                    ax.set_xticklabels([])
+
                 if diff_params:
                     param_label = ", ".join([f"{k}={v}" for k, v in diff_params.items()])
-                    ax.text(0.5, 0.95, param_label, 
-                        transform=ax.transAxes, ha='center', 
-                        va='top', fontsize=7, bbox=dict(facecolor='white', alpha=0.7))
-                
-                subplot_idx += 1
-        
+                    ax.text(
+                        0.5, 0.95, param_label,
+                        transform=ax.transAxes, ha='center', va='top',
+                        fontsize=6, bbox=dict(facecolor='white', alpha=0.7)
+                    )
+
+                subplot_idx_in_row += 1
+        '''
         # Hide unused subplots
         for i in range(subplot_idx, len(axes)):
             axes[i].set_visible(False)
-        
+
+        # Conditioning groups legend
+        from matplotlib.patches import Patch
+        conditioning_varies = len(set(
+            cond_info.get('conditioning') for cond_info in run_conditioning_info.values()
+        )) > 1
+
         legend_elements = []
-        conditioning_varies = len(set(cond_info['conditioning'] for cond_info in run_conditioning_info.values())) > 1
-        
         for group_label in unique_groups:
             for run_name, label in run_group_labels.items():
                 if label == group_label and run_name in run_conditioning_info:
                     cond_info = run_conditioning_info[run_name]
-                    
-                    legend_text = f"{group_label}: seq_info={cond_info['sequence_info']}"
+                    legend_text = f"{group_label}: seq_info={cond_info.get('sequence_info')}"
                     if conditioning_varies:
-                        legend_text += f", cond={cond_info['conditioning']}"
-                        
-                    legend_elements.append(Patch(facecolor=group_colors[group_label], 
-                                                label=legend_text))
+                        legend_text += f", cond={cond_info.get('conditioning')}"
+                    legend_elements.append(
+                        Patch(facecolor=group_colors[group_label], label=legend_text)
+                    )
                     break
 
         param_legend_elements = []
@@ -2339,46 +2370,178 @@ def plot_rollout_metrics_bar_chart(
                     label = f"{arch} {subgroup_idx+1}: {param_str}"
                 else:
                     label = f"{arch} {subgroup_idx+1}: Default config"
-                
+
                 marker_style = 'o' if 'FNO' in arch else ('s' if 'CNO' in arch else '^')
-                
-                param_legend_elements.append(plt.Line2D([0], [0], marker=marker_style, 
-                                            color='w', markerfacecolor=f'C{subgroup_idx%10}', 
-                                            markersize=8, label=label))
 
-        num_param_legend_rows = (len(param_legend_elements) // 2) + 1 
+                param_legend_elements.append(
+                    plt.Line2D(
+                        [0], [0], marker=marker_style,
+                        color='w', markerfacecolor=f'C{subgroup_idx%10}',
+                        markersize=8, label=label
+                    )
+                )
+
+        num_param_legend_rows = (len(param_legend_elements) // 2) + 1
         extra_height = 0.6 + 0.2 * num_param_legend_rows
-
         fig.set_size_inches(fig.get_size_inches()[0], fig.get_size_inches()[1] + extra_height)
 
-        fig.legend(handles=legend_elements, loc='lower center', fontsize=8, 
-                bbox_to_anchor=(0.5, 0.2),
-                ncol=1, frameon=True, title="Conditioning Groups")
+        fig.legend(
+            handles=legend_elements, loc='lower center', fontsize=8,
+            bbox_to_anchor=(0.5, 0.2),
+            ncol=1, frameon=True, title="Conditioning Groups"
+        )
 
         if param_legend_elements:
-            fig.legend(handles=param_legend_elements, loc='lower center', 
-                    fontsize=7, bbox_to_anchor=(0.5, 0.05),
-                    ncol=min(2, len(param_legend_elements)), frameon=True, 
-                    title="Parameter Configurations")
-
+            fig.legend(
+                handles=param_legend_elements, loc='lower center',
+                fontsize=7, bbox_to_anchor=(0.5, 0.05),
+                ncol=min(2, len(param_legend_elements)), frameon=True,
+                title="Parameter Configurations"
+            )
             bottom_margin = 0.4
-            plt.subplots_adjust(bottom=bottom_margin)
+        else:
+            bottom_margin = 0.25
 
+        plt.subplots_adjust(bottom=bottom_margin)
         plt.tight_layout(rect=[0, bottom_margin, 1, 1])
-        out_path = os.path.join(save_dir, filename)
+
+        base, ext = os.path.splitext(filename_base)
+        out_name = f"{base}_{metric_name}{ext}"
+        out_path = os.path.join(save_dir, out_name)
         plt.savefig(out_path, dpi=300, bbox_inches='tight')
         plt.close()
+        '''
 
     # -------------------- Main Script --------------------
     conditioning_vars = ["conditioning", "sequence_info", "in_size", "out_size"]
 
-    # Process data
-    run_architectures, run_conditioning_info, run_other_params = process_run_configs(run_configs, conditioning_vars)
-    results = calculate_results(runs_step_metrics)
+    # Process configs
+    run_architectures, run_conditioning_info, run_other_params = process_run_configs(
+        run_configs, conditioning_vars
+    )
+    results_all_metrics = calculate_results_all_metrics(runs_step_metrics)
     architecture_groups = group_runs_by_architecture(run_architectures)
     grouped_runs = group_runs_by_parameters(architecture_groups, run_other_params)
     simplified_groups = simplify_groups(grouped_runs)
     run_group_labels = group_runs_by_conditioning(run_conditioning_info)
 
-    # Plot results
-    plot_grouped_l2_errors(simplified_groups, results, run_group_labels)
+    # Determine all metric names available across runs
+    all_metric_names = sorted({
+        metric_name
+        for run_name, m_res in results_all_metrics.items()
+        for metric_name in m_res.keys()
+    })
+    if not all_metric_names:
+        return
+
+    import math
+    import os
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Patch
+
+    # Number of rows = number of metrics
+    n_rows = len(all_metric_names)
+    # Number of columns = max number of subgroups across architectures
+    max_subplots = 0
+    for arch, groups in simplified_groups.items():
+        max_subplots = max(max_subplots, len(groups))
+    n_cols = max(1, max_subplots)
+
+    fig_width = 2.5 * n_cols
+    fig_height = 2.8 * n_rows
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height), squeeze=False)
+
+    # Plot each metric in its own row
+    for row_idx, metric_name in enumerate(all_metric_names):
+        plot_grouped_metric_errors_on_axes(
+            metric_name=metric_name,
+            simplified_groups=simplified_groups,
+            results_all_metrics=results_all_metrics,
+            run_group_labels=run_group_labels,
+            run_conditioning_info=run_conditioning_info,
+            axes=axes,
+            row_idx=row_idx,
+            n_rows=n_rows,
+            n_cols=n_cols,
+        )
+
+    # Hide unused axes
+    for r in range(n_rows):
+        for c in range(n_cols):
+            ax = axes[r, c]
+            if not ax.has_data():
+                ax.set_visible(False)
+
+    # Build legends (reusing logic from before)
+    # Condition-group colors (again)
+    unique_groups = sorted(set(run_group_labels.values()))
+    cmap = plt.cm.get_cmap('tab10', len(unique_groups))
+    group_colors = {g: cmap(i) for i, g in enumerate(unique_groups)}
+
+    conditioning_varies = len(set(
+        cond_info.get('conditioning') for cond_info in run_conditioning_info.values()
+    )) > 1
+
+    legend_elements = []
+    for group_label in unique_groups:
+        for run_name, label in run_group_labels.items():
+            if label == group_label and run_name in run_conditioning_info:
+                cond_info = run_conditioning_info[run_name]
+                legend_text = f"{group_label}: seq_info={cond_info.get('sequence_info')}"
+                if conditioning_varies:
+                    legend_text += f", cond={cond_info.get('conditioning')}"
+                legend_elements.append(
+                    Patch(facecolor=group_colors[group_label], label=legend_text)
+                )
+                break
+
+    param_legend_elements = []
+    for arch, groups in simplified_groups.items():
+        for subgroup_idx, group in enumerate(groups):
+            diff_params = group['diff_params']
+            if diff_params:
+                param_str = ", ".join([f"{k}={v}" for k, v in diff_params.items()])
+                label = f"{arch} {subgroup_idx+1}: {param_str}"
+            else:
+                label = f"{arch} {subgroup_idx+1}: Default config"
+
+            marker_style = 'o' if 'FNO' in arch else ('s' if 'CNO' in arch else '^')
+
+            param_legend_elements.append(
+                plt.Line2D(
+                    [0], [0], marker=marker_style,
+                    color='w', markerfacecolor=f'C{subgroup_idx%10}',
+                    markersize=8, label=label
+                )
+            )
+
+    num_param_legend_rows = (len(param_legend_elements) // 2) + 1
+    extra_height = 0.6 + 0.2 * num_param_legend_rows
+    fig.set_size_inches(fig.get_size_inches()[0], fig.get_size_inches()[1] + extra_height)
+
+    if legend_elements:
+        fig.legend(
+            handles=legend_elements, loc='lower center', fontsize=8,
+            bbox_to_anchor=(0.5, 0.2),
+            ncol=1, frameon=True, title="Conditioning Groups"
+        )
+
+    bottom_margin = 0.25
+    if param_legend_elements:
+        fig.legend(
+            handles=param_legend_elements, loc='lower center',
+            fontsize=7, bbox_to_anchor=(0.5, 0.05),
+            ncol=min(2, len(param_legend_elements)), frameon=True,
+            title="Parameter Configurations"
+        )
+        bottom_margin = 0.4
+
+    plt.subplots_adjust(bottom=bottom_margin)
+    plt.tight_layout(rect=[0, bottom_margin, 1, 1])
+
+    base, ext = os.path.splitext(filename)
+    out_name = f"{base}_all_metrics{ext}"
+    out_path = os.path.join(save_dir, out_name)
+    plt.savefig(out_path, dpi=300, bbox_inches='tight')
+    plt.close()
