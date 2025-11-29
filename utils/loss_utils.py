@@ -12,7 +12,10 @@ from metrics.losses import (
     H2SemiNorm,
     MultilevelWaveletLoss,
     WaveletBinnedRMSE,
-    IntegralConservationRMSE
+    IntegralConservationRMSE,
+    RMSE,
+    VRMSE,
+    NRMSE
 )
 from typing import Union
 
@@ -91,7 +94,10 @@ def fetch_loss_metric(cfg) -> CompositeLoss:
         'H2SemiNorm': H2SemiNorm,
         'MultilevelWaveletLoss': MultilevelWaveletLoss,
         'WaveletBinnedRMSE': WaveletBinnedRMSE,
-        'IntegralConservationRMSE': IntegralConservationRMSE
+        'IntegralConservationRMSE': IntegralConservationRMSE,
+        'RMSE': RMSE,
+        'VRMSE': VRMSE,
+        'NRMSE': NRMSE
     }
     
     loss_components = []

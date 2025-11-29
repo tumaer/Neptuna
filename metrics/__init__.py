@@ -13,7 +13,10 @@ from .losses import (
     H2SemiNorm,
     MultilevelWaveletLoss,
     WaveletBinnedRMSE,
-    IntegralConservationRMSE
+    IntegralConservationRMSE,
+    RMSE,
+    VRMSE,
+    NRMSE,
 )
 
 __all__ = [
@@ -30,4 +33,7 @@ __all__ = [
     'MultilevelWaveletLoss',
     'WaveletBinnedRMSE',
     'IntegralConservationRMSE',
+    'RMSE',
+    'VRMSE',
+    'NRMSE'
 ]
