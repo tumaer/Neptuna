@@ -114,7 +114,7 @@ class H2SemiNorm(LossComponent):
         unweighted = unweighted.mean(dim=spatial_dims)
         
         # Get weight tensor with proper broadcasting
-        weight_tensor = self.weight_schedule.get_weight(unweighted.shape)
+        weight_tensor = self.weight_schedule.get_weight(unweighted.shape).to(predictions.device)
         
         # Apply weights element-wise
         weighted = unweighted * weight_tensor

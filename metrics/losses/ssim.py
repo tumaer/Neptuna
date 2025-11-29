@@ -89,7 +89,7 @@ class SSIM(LossComponent):
         spatial_dims = predictions.shape[3:]
         
         # Get weight tensor with proper broadcasting
-        weight_tensor = self.weight_schedule.get_weight(original_shape)
+        weight_tensor = self.weight_schedule.get_weight(original_shape).to(predictions.device)
         
         # Apply weights to inputs (scale by sqrt to preserve SSIM properties)
         # Since SSIM involves squared terms, scaling inputs by sqrt(w) gives

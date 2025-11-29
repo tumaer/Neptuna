@@ -194,7 +194,7 @@ class IntegralConservationRMSE(LossComponent):
         total = torch.zeros((), device=predictions.device, dtype=predictions.dtype)
         for name, value in all_components.items():
             # Use WeightSchedule's component weights
-            q_weight = self.weight_schedule.get_component_weight(name)
+            q_weight = self.weight_schedule.get_component_weight(name).to(predictions.device)
             total = total + q_weight * value
 
         # Apply base weight

@@ -77,7 +77,7 @@ class WaveletBinnedRMSE(LossComponent):
             raise ValueError(f"Expected 1D, 2D or 3D spatial data, got {D}D.")
 
         # Get weight tensor with proper broadcasting
-        weight_tensor = self.weight_schedule.get_weight(original_shape)
+        weight_tensor = self.weight_schedule.get_weight(original_shape).to(predictions.device)
         
         # Apply weights to inputs (scale by sqrt to preserve RMSE properties)
         weight_sqrt = torch.sqrt(weight_tensor)

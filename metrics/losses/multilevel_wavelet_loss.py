@@ -64,7 +64,7 @@ class MultilevelWaveletLoss(LossComponent):
         original_shape = predictions.shape
         
         # Get weight tensor with proper broadcasting
-        weight_tensor = self.weight_schedule.get_weight(original_shape)
+        weight_tensor = self.weight_schedule.get_weight(original_shape).to(predictions.device)
         
         # Apply weights to inputs (scale by sqrt to preserve wavelet properties)
         weight_sqrt = torch.sqrt(weight_tensor)

@@ -59,7 +59,7 @@ class PearsonCorrelationLoss(LossComponent):
 
         unweighted = 1.0 - correlation
 
-        weight_tensor = self.weight_schedule.get_weight(unweighted.shape)
+        weight_tensor = self.weight_schedule.get_weight(unweighted.shape).to(predictions.device)
         weighted = unweighted * weight_tensor
         
         # Reduce to scalar

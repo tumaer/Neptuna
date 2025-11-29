@@ -192,6 +192,8 @@ def run(cfg):
             channel_dim,
             *spatial,
         ) = preds.shape
+
+        # Flatten rollouts into time dimension
         preds = preds.reshape(
             len_eval_dataloader,
             num_eval_rollouts * label_seq_length,
@@ -199,68 +201,76 @@ def run(cfg):
             *spatial,
         )
         targets = eval_pred.label_ids
-        
-        metrics = {}
-    
-        # Determine device
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
-        # Convert to tensors (shared by both loss functions)
+
+        metrics: dict[str, float] = {}
+
+        # Always compute metrics on CPU to save GPU memory
+        device = getattr(trainer, "metric_device", torch.device("cpu"))
+
+        # Convert to CPU tensors
         if isinstance(preds, np.ndarray):
-            preds_tensor = torch.from_numpy(preds).float().to(device)
+            preds_tensor = torch.from_numpy(preds).float()
         else:
-            preds_tensor = preds.to(device)
-        
+            preds_tensor = (
+                preds.detach().cpu()
+                if torch.is_tensor(preds)
+                else torch.tensor(preds, dtype=torch.float32)
+            )
+
         if isinstance(targets, np.ndarray):
-            targets_tensor = torch.from_numpy(targets).float().to(device)
+            targets_tensor = torch.from_numpy(targets).float()
         else:
-            targets_tensor = targets.to(device)
-        
+            targets_tensor = (
+                targets.detach().cpu()
+                if torch.is_tensor(targets)
+                else torch.tensor(targets, dtype=torch.float32)
+            )
+
         # 1. Training loss metric (composite_loss for checkpointing)
-        if hasattr(trainer, 'loss_fn') and trainer.loss_fn is not None:
+        if getattr(trainer, "loss_fn", None) is not None:
             try:
                 with torch.no_grad():
-                    composite_loss = trainer.loss_fn(
+                    loss_fn = trainer.loss_fn.to(device)
+                    composite_loss = loss_fn(
                         model=None,
-                        predictions=preds_tensor,
-                        labels=targets_tensor,
-                        return_detailed=False
+                        predictions=preds_tensor.to(device),
+                        labels=targets_tensor.to(device),
+                        return_detailed=False,  # scalar only
                     )
-                
-                metrics["composite_loss"] = composite_loss.item()
-            
+
+                if torch.is_tensor(composite_loss):
+                    metrics["composite_loss"] = composite_loss.item()
+                else:
+                    metrics["composite_loss"] = float(composite_loss)
+
             except Exception as e:
-                pass
-        
-        # 2. Evaluation loss metrics (for logging)
-        try:
-            # Fetch eval loss config
-            full_eval_cfg = fetch_eval_loss_config(cfg)
+                print("[compute_metrics] composite_loss failed:", repr(e))
 
-            # Create eval loss function
-            eval_loss_fn = fetch_loss_metric(full_eval_cfg)
-            eval_loss_fn = eval_loss_fn.to(device)
-            
-            # Compute with detailed breakdown
-            with torch.no_grad():
-                _, detailed = eval_loss_fn(
-                    model=None,
-                    predictions=preds_tensor,
-                    labels=targets_tensor,
-                    return_detailed=True
-                )
-            
-            # Add each component to metrics
-            for component_name, component_detailed in detailed.items():
-                component_total = component_detailed['total']
-                metrics[f"{component_name}"] = (
-                    component_total.item() if torch.is_tensor(component_total) else component_total
-                )
-        
-        except Exception as e:
-            pass
+        # 2. Evaluation loss metrics (for logging), cached on trainer
+        eval_loss_fn = getattr(trainer, "eval_loss_fn", None)
+        if eval_loss_fn is not None:
+            try:
+                with torch.no_grad():
+                    eval_loss_fn = eval_loss_fn.to(device)
+                    # If you only need per-component totals, this is fine;
+                    # ensure detailed only contains small tensors.
+                    _, detailed = eval_loss_fn(
+                        model=None,
+                        predictions=preds_tensor.to(device),
+                        labels=targets_tensor.to(device),
+                        return_detailed=True,
+                    )
 
-        
+                for component_name, component_detailed in detailed.items():
+                    component_total = component_detailed["total"]
+                    if torch.is_tensor(component_total):
+                        metrics[component_name] = component_total.item()
+                    else:
+                        metrics[component_name] = float(component_total)
+
+            except Exception as e:
+                print("[compute_metrics] eval_loss_fn failed:", repr(e))
+
         return metrics
 
     # Build the callbacks list
@@ -294,6 +304,19 @@ def run(cfg):
     trainer.set_eval_or_test_rollout_steps(
         rollout_steps=cfg["train_config"]["n_eval_rollouts"], output_all_steps=True
     )
+
+    metric_device = torch.device("cpu")
+    try:
+        full_eval_cfg = fetch_eval_loss_config(cfg)
+        eval_loss_fn = fetch_loss_metric(full_eval_cfg)
+        trainer.eval_loss_fn = eval_loss_fn.to(metric_device)
+    except Exception as e:
+        print("[run] Failed to initialize eval_loss_fn:", repr(e))
+        trainer.eval_loss_fn = None
+
+    trainer.metric_device = metric_device
+
+    
 
     # ------------------------------------------------------------------
     # Train vs HP-search

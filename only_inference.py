@@ -74,22 +74,23 @@ def load_pretrained_model(model_config):
 def build_train_and_eval_loss(loss_config, data_config, device: torch.device):
     """
     Construct training and eval CompositeLoss from configs.
+    For inference, both are used as metrics -> keep them on CPU.
     """
     if loss_config is None:
         return None, None
 
-    # Config object needed for loss construction
     full_train_loss_cfg = OmegaConf.create({
         "loss_config": loss_config,
         "data_config": data_config,
     })
 
-    # Training loss
-    train_loss_fn = fetch_loss_metric(full_train_loss_cfg).to(device)
+    # Always put metric losses on CPU
+    metric_device = torch.device("cpu")
 
-    # Eval loss
+    train_loss_fn = fetch_loss_metric(full_train_loss_cfg).to(metric_device)
+
     full_eval_cfg = fetch_eval_loss_config(full_train_loss_cfg)
-    eval_loss_fn = fetch_loss_metric(full_eval_cfg).to(device)
+    eval_loss_fn = fetch_loss_metric(full_eval_cfg).to(metric_device)
 
     return train_loss_fn, eval_loss_fn
 
@@ -439,13 +440,13 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             print("Inference will only compute legacy L1/L2 errors")
 
         # Determine device once
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        metric_device = torch.device("cpu")
 
         # Build loss functions
         train_loss_fn, eval_loss_fn = build_train_and_eval_loss(
             loss_config=loss_config,
             data_config=data_config,
-            device=device,
+            device=metric_device,
         )
 
         # Define metrics for trainer
@@ -469,16 +470,23 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
 
             metrics = {}
 
-            # Convert to tensors on the same device as loss fns
             if isinstance(preds, np.ndarray):
-                preds_tensor = torch.from_numpy(preds).float().to(device)
+                preds_tensor = torch.from_numpy(preds).float()
             else:
-                preds_tensor = preds.to(device)
+                preds_tensor = (
+                    preds.detach().cpu()
+                    if torch.is_tensor(preds)
+                    else torch.tensor(preds, dtype=torch.float32)
+                )
 
             if isinstance(targets, np.ndarray):
-                targets_tensor = torch.from_numpy(targets).float().to(device)
+                targets_tensor = torch.from_numpy(targets).float()
             else:
-                targets_tensor = targets.to(device)
+                targets_tensor = (
+                    targets.detach().cpu()
+                    if torch.is_tensor(targets)
+                    else torch.tensor(targets, dtype=torch.float32)
+                )
 
             # 1) Training (composite) loss for logging/checkpointing
             if train_loss_fn is not None:
@@ -486,11 +494,15 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                     with torch.no_grad():
                         composite_loss = train_loss_fn(
                             model=None,
-                            predictions=preds_tensor,
-                            labels=targets_tensor,
+                            predictions=preds_tensor.to(metric_device),
+                            labels=targets_tensor.to(metric_device),
                             return_detailed=False,
                         )
-                    metrics["eval_composite_loss"] = float(composite_loss.item())
+                    metrics["eval_composite_loss"] = float(
+                        composite_loss.item()
+                        if torch.is_tensor(composite_loss)
+                        else composite_loss
+                    )
                 except Exception as e:
                     print(f"Failed to compute composite loss metrics: {e}")
 
@@ -500,8 +512,8 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                     with torch.no_grad():
                         _, detailed = eval_loss_fn(
                             model=None,
-                            predictions=preds_tensor,
-                            labels=targets_tensor,
+                            predictions=preds_tensor.to(metric_device),
+                            labels=targets_tensor.to(metric_device),
                             return_detailed=True,
                         )
                     for component_name, component_detailed in detailed.items():

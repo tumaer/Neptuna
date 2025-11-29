@@ -141,7 +141,9 @@ def compute_metrics_for_n_rollouts(
     # ------------------------------------------------------------------
     # Compute metrics using LossComponent / CompositeLoss
     # ------------------------------------------------------------------
-    device = next(loss_metric.parameters(), torch.tensor(0.0)).device
+    device = torch.device("cpu")
+
+    loss_metric = loss_metric.to(device)
 
     preds_tensor = torch.as_tensor(preds_arr, dtype=torch.float32, device=device)
     targets_tensor = torch.as_tensor(targets_arr, dtype=torch.float32, device=device)

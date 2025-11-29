@@ -35,7 +35,7 @@ class L1Loss(LossComponent):
         unweighted = torch.abs(predictions - labels)
         
         # Get weight tensor with proper broadcasting
-        weight_tensor = self.weight_schedule.get_weight(unweighted.shape)
+        weight_tensor = self.weight_schedule.get_weight(unweighted.shape).to(predictions.device)
         
         # Apply weights element-wise
         weighted = unweighted * weight_tensor
