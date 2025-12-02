@@ -8,8 +8,25 @@ from ..training_metrics import LossComponent, WeightSchedule
 
 class L1Loss(LossComponent):
     """
-    L1 (Mean Absolute Error) loss between predictions and labels.
-    Supports per-timestep and per-channel weighting.
+    L1 (mean absolute error) loss between predictions and labels.
+
+    Features:
+      * Optional scalar, per-timestep, and per-channel weighting through
+        `WeightSchedule`.
+      * Optional per-timestep and per-channel breakdowns for analysis.
+
+    Design notes
+    ------------
+    * Fast path:
+        - When `weight_schedule.is_scalar_only()` is True, this reduces
+          to a plain `abs(pred - label)` followed by `.mean()` and a
+          single scalar multiply.
+    * General path:
+        - Uses a broadcasted weight tensor from `WeightSchedule.get_weight`.
+        - Adds one elementwise multiply over the loss tensor.
+    * Detailed metrics:
+        - Only computed when `return_detailed=True`.
+        - Training loops should disable them in the hot path.
     """
     def __init__(
         self, 
@@ -31,39 +48,70 @@ class L1Loss(LossComponent):
         labels: torch.Tensor,
         return_detailed: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
+
+        # ------------------------------------------------------------------
+        # Fast path: scalar-only schedule (no timestep/channel/component)
+        # ------------------------------------------------------------------
+        if isinstance(self.weight_schedule, WeightSchedule) and self.weight_schedule.is_scalar_only():
+            base = float(self.weight_schedule.base_weight)
+
+            # Clean L1
+            abs_err = torch.abs(predictions - labels)
+            total_loss = abs_err.mean()
+
+            if base != 1.0:
+                total_loss = total_loss * base
+
+            if not return_detailed:
+                return total_loss
+
+            detailed: Dict[str, torch.Tensor] = {}
+
+            # Per-timestep: average over batch, channels, spatial dims
+            if abs_err.ndim >= 2:
+                dims_to_reduce = [0] + list(range(2, abs_err.ndim))
+                per_timestep = abs_err.mean(dim=dims_to_reduce)
+                if base != 1.0:
+                    per_timestep = per_timestep * base
+                detailed['per_timestep'] = per_timestep.detach()
+
+            # Per-channel: average over batch, timesteps, spatial dims
+            if abs_err.ndim >= 3:
+                dims_to_reduce = [0, 1] + list(range(3, abs_err.ndim))
+                per_channel = abs_err.mean(dim=dims_to_reduce)
+                if base != 1.0:
+                    per_channel = per_channel * base
+                detailed['per_channel'] = per_channel.detach()
+
+            return total_loss, detailed
+
+        # ------------------------------------------------------------------
+        # General path: some schedule active (timestep and/or channel)
+        # ------------------------------------------------------------------
         # Compute element-wise absolute error
         unweighted = torch.abs(predictions - labels)
         
-        # Get weight tensor with proper broadcasting
+        # Get broadcastable weight tensor on correct device
         weight_tensor = self.weight_schedule.get_weight(unweighted.shape).to(predictions.device)
         
-        # Apply weights element-wise
         weighted = unweighted * weight_tensor
         
-        # Apply reduction
-        if self.reduction == 'mean':
-            total_loss = weighted.mean()
-        elif self.reduction == 'sum':
-            total_loss = weighted.sum()
-        elif self.reduction == 'none':
-            total_loss = weighted
-        else:
-            raise ValueError(f"Unknown reduction: {self.reduction}")
+        total_loss = weighted.mean()
         
         if not return_detailed:
             return total_loss
         
-        # Build detailed breakdown
-        detailed = {}
+        # Build detailed breakdown (aggregated diagnostics)
+        detailed: Dict[str, torch.Tensor] = {}
         
         # Per-timestep
-        if len(weighted.shape) >= 2:
-            dims_to_reduce = [0] + list(range(2, len(weighted.shape)))
+        if weighted.ndim >= 2:
+            dims_to_reduce = [0] + list(range(2, weighted.ndim))
             detailed['per_timestep'] = weighted.mean(dim=dims_to_reduce).detach()
         
         # Per-channel
-        if len(weighted.shape) >= 3:
-            dims_to_reduce = [0, 1] + list(range(3, len(weighted.shape)))
+        if weighted.ndim >= 3:
+            dims_to_reduce = [0, 1] + list(range(3, weighted.ndim))
             detailed['per_channel'] = weighted.mean(dim=dims_to_reduce).detach()
         
         return total_loss, detailed

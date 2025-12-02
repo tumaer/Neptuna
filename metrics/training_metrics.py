@@ -6,59 +6,142 @@ import torch.nn as nn
 
 class WeightSchedule(nn.Module):
     """
-    Handles per-timestep, per-channel, and per-component weighting for loss components.
+    Configurable weighting for loss components.
+
+    Supports:
+      * A scalar base weight (always applied).
+      * Optional per-timestep weights: shape (T,).
+      * Optional per-channel weights: shape (C,).
+      * Optional per-component scalar overrides (for composite losses).
+
+    Lightweight implementation:
+      * Stores only 1D buffers for timesteps and channels.
+      * `get_weight()` returns a small broadcastable tensor
+         of shape at most (1, T, C, 1, ..., 1).
+      * Elementwise weighting is a single multiply over the loss
+        tensor.
+      * `is_scalar_only()` enables "fast paths" in loss functions when
+        no per-timestep/channel/component weights are configured.
     """
     def __init__(
         self,
         base_weight: float = 1.0,
         timestep_weights: Optional[torch.Tensor] = None,
         channel_weights: Optional[torch.Tensor] = None,
-        component_weights: Optional[Dict[str, float]] = None,  # NEW
+        component_weights: Optional[Dict[str, float]] = None,
     ):
         super().__init__()
-        self.base_weight = base_weight
+        self.base_weight = float(base_weight)
         
-        # Register as buffers so they move with the model
+        # Optional per-timestep weights (shape: T)
         if timestep_weights is not None:
             self.register_buffer('timestep_weights', timestep_weights)
         else:
             self.timestep_weights = None
-            
+        
+        # Optional per-channel weights (shape: C)
         if channel_weights is not None:
             self.register_buffer('channel_weights', channel_weights)
         else:
             self.channel_weights = None
         
-        # Component weights (for losses with multiple sub-components)
+        # Optional per-component scalar weights (used by composite losses)
         self.component_weights = component_weights or {}
-    
+
+        # Cached flag for fast-path checks in losses
+        self._is_scalar_only = (
+            self.timestep_weights is None and
+            self.channel_weights is None and
+            not self.component_weights
+        )
+
+    # ------- fast-path helpers -------
+    def is_scalar_only(self) -> bool:
+        """
+        Returns True if this schedule reduces to a single scalar weight.
+
+        Conditions:
+          - No per-timestep weights.
+          - No per-channel weights.
+          - No component-specific weights.
+
+        When True, loss implementations can skip calling `get_weight()`
+        and behave like a plain scalar-weighted reduction.
+        """
+        return self._is_scalar_only
+
+    def has_timestep_weights(self) -> bool:
+        """Returns True if per-timestep weighting is configured."""
+        return self.timestep_weights is not None
+
+    def has_channel_weights(self) -> bool:
+        """Returns True if per-channel weighting is configured."""
+        return self.channel_weights is not None
+
+    # ------- main API -------
     def get_weight(self, shape: Optional[torch.Size] = None) -> torch.Tensor:
         """
-        Returns the weight tensor, broadcasting appropriately.
-        
+        Construct a broadcastable weight tensor for a given loss tensor shape.
+
         Args:
-            shape: Expected shape (batch, timesteps, channels, ...) for broadcasting
+            shape:
+                Expected loss tensor shape, typically
+                (batch, timesteps, channels, ...).
+
+        Returns:
+            A tensor suitable for elementwise multiplication with the
+            loss tensor. The returned tensor:
+              * Lives on the same device as stored buffers.
+              * Has shape at most (1, T, C, 1, ..., 1).
+              * Does NOT materialize a full (B, T, C, ...) tensor.
         """
         device = self.get_device()
-        weight = torch.tensor(self.base_weight, device=device)
-        
-        if self.timestep_weights is not None and shape is not None:
-            t_weights = self.timestep_weights.to(device)
-            t_weights = t_weights.view(1, -1, *([1] * (len(shape) - 2)))
-            weight = weight * t_weights
-            
-        if self.channel_weights is not None and shape is not None:
-            c_weights = self.channel_weights.to(device)
-            c_weights = c_weights.view(1, 1, -1, *([1] * (len(shape) - 3)))
-            weight = weight * c_weights
-            
+        base = float(self.base_weight)
+
+        if shape is None:
+            # Scalar tensor, used rarely
+            return torch.tensor(base, device=device)
+
+        dims = len(shape)
+
+        # Start from scalar tensor and fold in optional 1D weights
+        weight = torch.tensor(base, device=device)
+
+        if self.timestep_weights is not None:
+            # (T,) -> (1, T, 1, 1, ...)
+            t = self.timestep_weights.to(device)
+            t = t.view(1, -1, *([1] * (dims - 2)))
+            weight = weight * t
+
+        if self.channel_weights is not None:
+            # (C,) -> (1, 1, C, 1, 1, ...)
+            c = self.channel_weights.to(device)
+            c = c.view(1, 1, -1, *([1] * (dims - 3)))
+            weight = weight * c
+
         return weight
     
     def get_component_weight(self, component_name: str) -> float:
-        """Get weight for a specific sub-component."""
+        """
+        Return a scalar override for a named sub-component, if present.
+
+        Used by composite losses that internally split into multiple
+        named terms. Defaults to 1.0 for unknown names.
+        """
         return self.component_weights.get(component_name, 1.0)
     
     def get_device(self) -> torch.device:
+        """
+        Infer the device where weights live.
+
+        Preference order:
+          1. timestep_weights device
+          2. channel_weights device
+          3. CPU (no weights registered)
+
+        Loss functions typically call `.to(predictions.device)` on
+        the result of `get_weight()`, so device mismatches are avoided.
+        """
         if self.timestep_weights is not None:
             return self.timestep_weights.device
         if self.channel_weights is not None:
@@ -66,7 +149,17 @@ class WeightSchedule(nn.Module):
         return torch.device('cpu')
     
     def to_dict(self) -> Dict[str, Union[float, torch.Tensor, Dict[str, float]]]:
-        """Returns a dictionary representation of the weights."""
+        """
+        Serialize this schedule to a simple dictionary.
+
+        Contains:
+          - 'base_weight': float
+          - optional 'timestep_weights': Tensor
+          - optional 'channel_weights': Tensor
+          - optional 'component_weights': Dict[str, float]
+
+        Used for logging, checkpointing, or external schedule updates.
+        """
         result = {'base_weight': self.base_weight}
         if self.timestep_weights is not None:
             result['timestep_weights'] = self.timestep_weights
@@ -78,8 +171,24 @@ class WeightSchedule(nn.Module):
 
 class LossComponent(nn.Module, ABC):
     """
-    A single loss term. Must return a scalar loss tensor.
-    Can optionally return detailed breakdown of loss components.
+    Base class for a single loss term.
+
+    Responsibilities:
+      * Store a `WeightSchedule` describing how this loss is weighted.
+      * Implement a `forward` that returns a scalar loss tensor.
+      * Optionally provide a "detailed" breakdown of per-timestep/channel stats.
+
+    Design and performance notes
+    ----------------------------
+    * Each subclass should implement a fast path when
+      `self.weight_schedule.is_scalar_only()` is True:
+        - Compute the unweighted loss.
+        - Apply a single scalar factor.
+        - This is as close to native PyTorch MSE/MAE as possible.
+    * Detailed breakdowns (per-timestep/per-channel) are optional
+      and guarded by `return_detailed`. The training loop should
+      typically set `return_detailed=False` for the hot path and
+      enable it only for periodic logging / validation.
     """
     def __init__(
         self,
@@ -91,7 +200,7 @@ class LossComponent(nn.Module, ABC):
     ):
         super().__init__()
         
-        # Handle both scalar weights and WeightSchedule
+        # Normalize scalar weights to a WeightSchedule for a unified API
         if isinstance(weight, (int, float)):
             self.weight_schedule = WeightSchedule(base_weight=float(weight))
         else:
@@ -117,27 +226,49 @@ class LossComponent(nn.Module, ABC):
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         Compute the loss.
-        
+
         Args:
-            model: The model being trained
-            predictions: Model predictions
-            labels: Ground truth labels
-            return_detailed: If True, return (total_loss, detailed_dict)
-        
+            model:
+                The model being trained. Included for losses that
+                may inspect parameters or intermediate states.
+            predictions:
+                Model outputs.
+            labels:
+                Ground truth targets.
+            return_detailed:
+                If False:
+                    Return a single scalar loss tensor.
+                If True:
+                    Return (total_loss, detailed_dict), where
+                    detailed_dict MAY contain keys such as:
+                      * 'per_timestep': 1D tensor [T]
+                      * 'per_channel': 1D tensor [C]
+                    (Exact contents depend on the subclass.)
+
         Returns:
-            If return_detailed is False: scalar total loss
-            If return_detailed is True: (total_loss, detailed_dict) where detailed_dict contains:
-                - 'per_timestep': loss per timestep (if applicable)
-                - 'per_channel': loss per channel (if applicable)
-                - 'unweighted': element-wise unweighted loss
-                - 'weighted': element-wise weighted loss
+            If return_detailed is False:
+                A scalar loss tensor suitable for backprop.
+            If return_detailed is True:
+                A tuple (loss, detailed_dict).
+
+        Performance contract:
+            * The main training loop should call with
+              `return_detailed=False` for maximum throughput.
+            * Implementations should keep the `return_detailed=False`
+              path as lean as possible (ideally a small number of
+              tensor ops and a single reduction).
         """
         ...
 
 
 class CompositeLoss(LossComponent):
     """
-    Combines multiple loss components into a single weighted loss.
+    Combine multiple `LossComponent` instances into a single scalar loss.
+
+    Behavior:
+      * Forwards predictions/labels to each sub-component.
+      * Sums their scalar losses into a single total loss.
+      * Optionally aggregates each component's detailed breakdown.
     """
     def __init__(
         self, 
@@ -153,46 +284,86 @@ class CompositeLoss(LossComponent):
         predictions: torch.Tensor,
         labels: torch.Tensor,
         return_detailed: bool = True
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, Union[torch.Tensor, Dict[str, torch.Tensor]]]]]:
+    ) -> Union[
+        torch.Tensor,
+        Tuple[torch.Tensor, Dict[str, Union[torch.Tensor, Dict[str, torch.Tensor]]]]
+    ]:
         """
-        Compute composite loss.
-        
+        Compute the composite loss over all configured components.
+
         Args:
-            model: The model being trained
-            predictions: Model predictions
-            labels: Ground truth labels
-            return_detailed: If True, return detailed breakdown of all components
-        
-        Returns:
-            If return_detailed is False: scalar total loss
-            If return_detailed is True: (total_loss, detailed_dict) where detailed_dict is:
-                {component_name: scalar_loss} if component doesn't support detailed
-                {component_name: detailed_breakdown_dict} if component supports detailed
+            model:       The model being trained.
+            predictions: Model outputs.
+            labels:      Ground truth targets.
+            return_detailed:
+                If False:
+                    Return a single scalar loss = sum of component losses.
+                If True:
+                    Return (total_loss, detailed_dict) where
+                    detailed_dict[component_name] is a dict with:
+                        - 'total': scalar loss for that component
+                        - any additional keys returned by the component
+                          (e.g. 'per_timestep', 'per_channel').
+
+        Notes:
+            * The hot training path should typically set
+              `return_detailed=False`.
+            * Detailed stats are forwarded from components as-is;
+              this class does not perform extra reductions.
         """
-        total_loss = 0.0
+        total_loss: Optional[torch.Tensor] = None
         detailed_dict = {} if return_detailed else None
         
         for loss_component in self.loss_components:
-            result = loss_component(model, predictions, labels, return_detailed=return_detailed)
-            
             if return_detailed:
-                component_loss, component_detailed = result
-                total_loss = total_loss + component_loss
-                detailed_dict[loss_component.name] = {
-                    'total': component_loss.detach() if isinstance(component_loss, torch.Tensor) else component_loss,
-                    **component_detailed  # Spread any additional detailed breakdowns
-                }
+                component_loss, component_detailed = loss_component(
+                    model, predictions, labels, return_detailed=True
+                )
             else:
-                total_loss = total_loss + result
-        
+                component_loss = loss_component(
+                    model, predictions, labels, return_detailed=False
+                )
+                component_detailed = None  # type: ignore[assignment]
+
+            # Initialize accumulator on first component to avoid float promotion
+            if total_loss is None:
+                total_loss = component_loss
+            else:
+                total_loss = total_loss + component_loss
+
+            if return_detailed:
+                detailed_dict[loss_component.name] = {
+                    'total': component_loss.detach(),
+                    **component_detailed
+                }
+
+        # If there were no components, total_loss will still be None
+        if total_loss is None:
+            # Fallback: zero scalar on the same device as predictions
+            total_loss = predictions.new_tensor(0.0)
+
         if return_detailed:
-            return total_loss, detailed_dict
+            return total_loss, detailed_dict  # type: ignore[arg-type]
         return total_loss
     
     def get_weight_dict(self) -> Dict[str, Dict[str, Union[float, torch.Tensor, Dict[str, float]]]]:
         """
-        Returns a dictionary of all loss component weights.
-        Includes nested component_weights for losses with sub-components.
+        Return a nested dictionary of weight schedules for all components.
+
+        Structure:
+            {
+              component_name: {
+                'base_weight': float,
+                optional 'timestep_weights': Tensor,
+                optional 'channel_weights': Tensor,
+                optional 'component_weights': Dict[str, float],
+              },
+              ...
+            }
+
+        Intended for:
+          * Inspecting or logging current weights.
+          * Exporting schedules for external tuning.
         """
         weight_dict = {}
         for loss_component in self.loss_components:
@@ -201,8 +372,18 @@ class CompositeLoss(LossComponent):
     
     def update_weights(self, weight_dict: Dict[str, Dict[str, Union[float, torch.Tensor, Dict[str, float]]]]):
         """
-        Update weights from a dictionary.
-        Supports nested component_weights for losses with sub-components.
+        Update weight schedules of sub-components from a nested dictionary.
+
+        Args:
+            weight_dict:
+                Dictionary in the format produced by `get_weight_dict()`.
+
+        Notes:
+            * This can be used to dynamically adjust base/timestep/channel
+              weights without reconstructing the loss objects.
+            * If you modify timestep/channel/component weights here and
+              you rely on `is_scalar_only()`, ensure that the schedule's
+              internal flags stay consistent with your updates.
         """
         for loss_component in self.loss_components:
             if loss_component.name in weight_dict:

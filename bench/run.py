@@ -204,10 +204,8 @@ def run(cfg):
 
         metrics: dict[str, float] = {}
 
-        # Always compute metrics on CPU to save GPU memory
         device = getattr(trainer, "metric_device", torch.device("cpu"))
 
-        # Convert to CPU tensors
         if isinstance(preds, np.ndarray):
             preds_tensor = torch.from_numpy(preds).float()
         else:
@@ -252,8 +250,6 @@ def run(cfg):
             try:
                 with torch.no_grad():
                     eval_loss_fn = eval_loss_fn.to(device)
-                    # If you only need per-component totals, this is fine;
-                    # ensure detailed only contains small tensors.
                     _, detailed = eval_loss_fn(
                         model=None,
                         predictions=preds_tensor.to(device),
@@ -305,6 +301,7 @@ def run(cfg):
         rollout_steps=cfg["train_config"]["n_eval_rollouts"], output_all_steps=True
     )
 
+    # Initialize eval_loss_fn
     metric_device = torch.device("cpu")
     try:
         full_eval_cfg = fetch_eval_loss_config(cfg)
