@@ -11,6 +11,7 @@ import time
 from omegaconf import OmegaConf
 from utils.grid_utils import get_grid_resolution
 from utils.compute_stats import compute_statistics_parallel, compute_parameter_statistics
+from metrics.loss_registry import get_loss_entry
 
 __all__ = ["prepare_config"]
 
@@ -289,26 +290,32 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     # ------------------------------------------------------------------
     if hasattr(cfg, 'loss_config') and cfg.loss_config is not None:
         if hasattr(cfg.loss_config, 'loss') and hasattr(cfg.loss_config.loss, 'components'):
-            # Temporarily disable struct mode to allow adding new fields
             OmegaConf.set_struct(cfg.loss_config, False)
             
             for component_cfg in cfg.loss_config.loss.components:
-                # Check if this component references an external config file
-                if 'config_file' in component_cfg and not hasattr(component_cfg, 'metric_params'):
-                    config_path = f"config/loss_config/{component_cfg.config_file}.yaml"
+                # Get registry entry
+                loss_type = component_cfg.type
+                registry_entry = get_loss_entry(loss_type)
+                default_config = registry_entry["default_config"]
+
+                # Decide which config_file to use:
+                #  - explicit in YAML has priority
+                #  - fallback to registry default
+                config_file = component_cfg.get("config_file", default_config)
+                
+                # Only load if we don't already have metric_params
+                if config_file is not None and not hasattr(component_cfg, 'metric_params'):
+                    config_path = f"config/loss_config/{config_file}.yaml"
                     
                     if os.path.exists(config_path):
                         try:
-                            # Load metric config and store it separately
                             metric_config = OmegaConf.load(config_path)
                             component_cfg.metric_params = metric_config
-                            
-                        except Exception as e:
+                        except Exception:
                             component_cfg.metric_params = {}
                     else:
                         component_cfg.metric_params = {}
             
-            # Re-enable struct mode
             OmegaConf.set_struct(cfg.loss_config, True)
 
     return cfg

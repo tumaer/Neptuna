@@ -1,22 +1,7 @@
 from omegaconf import DictConfig, OmegaConf
 import torch
 from metrics.training_metrics import CompositeLoss, WeightSchedule
-from metrics.losses import (
-    L1Loss,
-    L2Loss,
-    SSIM,
-    MSSSIM,
-    PearsonCorrelationLoss,
-    SinkhornDivergence,
-    H1SemiNorm,
-    H2SemiNorm,
-    MultilevelWaveletLoss,
-    WaveletBinnedRMSE,
-    IntegralConservationRMSE,
-    RMSE,
-    VRMSE,
-    NRMSE
-)
+from metrics.loss_registry import get_loss_entry
 from typing import Union
 
 def create_weight_schedule(component_cfg) -> Union[float, WeightSchedule]:
@@ -76,30 +61,7 @@ def create_weight_schedule(component_cfg) -> Union[float, WeightSchedule]:
 def fetch_loss_metric(cfg) -> CompositeLoss:
     """
     Creates a CompositeLoss instance from hydra config.
-    
-    Args:
-        cfg: Hydra config object containing loss configuration
-        
-    Returns:
-        CompositeLoss instance with configured components
     """
-    loss_registry = {
-        'L2Loss': L2Loss,
-        'L1Loss': L1Loss,
-        'SSIM': SSIM,
-        'MSSSIM': MSSSIM,
-        'PearsonCorrelationLoss': PearsonCorrelationLoss,
-        'SinkhornDivergence': SinkhornDivergence,
-        'H1SemiNorm': H1SemiNorm,
-        'H2SemiNorm': H2SemiNorm,
-        'MultilevelWaveletLoss': MultilevelWaveletLoss,
-        'WaveletBinnedRMSE': WaveletBinnedRMSE,
-        'IntegralConservationRMSE': IntegralConservationRMSE,
-        'RMSE': RMSE,
-        'VRMSE': VRMSE,
-        'NRMSE': NRMSE
-    }
-    
     loss_components = []
 
     data_dim = cfg.data_config.dimension
@@ -108,36 +70,47 @@ def fetch_loss_metric(cfg) -> CompositeLoss:
     
     for component_cfg in cfg.loss_config.loss.components:
         loss_type = component_cfg.type
-        name = component_cfg.get('name', None)
-        
-        if loss_type not in loss_registry:
-            raise ValueError(f"Unknown loss type: {loss_type}")
-        
-        # Create weight or weight schedule from config
+
+        # Pull metadata from registry
+        registry_entry = get_loss_entry(loss_type)
+        loss_class = registry_entry["class"]
+        default_name = registry_entry["default_name"]
+        default_config = registry_entry["default_config"]
+
+        # 1) Derive name if missing (use default_name, typically == type)
+        name = component_cfg.get("name", default_name)
+
+        # 2) Create weight or weight schedule
         weight = create_weight_schedule(component_cfg)
-        
-        # Load metric-specific config if provided
+
+        # 3) Load metric-specific config
         metric_params = {}
-        if hasattr(component_cfg, 'metric_params'):
-            # Already loaded by prepare_config or from checkpoint
-            metric_params = OmegaConf.to_container(component_cfg.metric_params, resolve=True)
-        elif 'config_file' in component_cfg:
-            # Fallback: load now (for inference from old checkpoints)
-            config_path = f"config/loss_config/{component_cfg.config_file}.yaml"
-            try:
-                metric_config = OmegaConf.load(config_path)
-                metric_params = OmegaConf.to_container(metric_config, resolve=True)
-            except Exception as e:
-                print(f"Warning: Could not load metric config from {config_path}: {e}")
-        
-        loss_class = loss_registry[loss_type]
+        if hasattr(component_cfg, "metric_params"):
+            # Already populated by prepare_config or checkpoint
+            metric_params = OmegaConf.to_container(
+                component_cfg.metric_params, resolve=True
+            )
+        else:
+            # Determine config_file: explicit in YAML or from registry default
+            config_file = component_cfg.get("config_file", default_config)
+            if config_file is not None:
+                config_path = f"config/loss_config/{config_file}.yaml"
+                try:
+                    metric_config = OmegaConf.load(config_path)
+                    metric_params = OmegaConf.to_container(metric_config, resolve=True)
+                except Exception as e:
+                    print(f"Warning: Could not load metric config from {config_path}: {e}")
+            else:
+                # No config_file and no metric_params – OK if class uses only defaults
+                metric_params = {}
+
         loss_instance = loss_class(
-            weight=weight, 
-            name=name, 
-            data_dim=data_dim, 
+            weight=weight,
+            name=name,
+            data_dim=data_dim,
             field_names=field_names,
             norm_stats=norm_stats,
-            **metric_params
+            **metric_params,
         )
         loss_components.append(loss_instance)
     

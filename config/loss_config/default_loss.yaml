@@ -1,14 +1,10 @@
 loss:
   components:
-    - type: L2Loss
+    - type: NRMSE
       weight: 0.5
       timestep_weights: [1.0]
       channel_weights: [1.0]
-      name: mse
-      config_file: L2_Loss/l2_loss_default
     - type: L1Loss
       weight: 1.0
       timestep_weights: [1.0]
       channel_weights: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
-      name: "l1_error"
-      config_file: "L1_Loss/l1_loss_default"
