@@ -1,9 +1,9 @@
-from typing import Optional, List, Dict, Union, Tuple
+from typing import Literal, Optional, List, Dict, Union, Tuple
 
 import torch
 import torch.nn as nn
 
-from ..training_metrics import LossComponent, WeightSchedule
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization
 
 
 class L1Loss(LossComponent):
@@ -35,11 +35,15 @@ class L1Loss(LossComponent):
         data_dim: int = None,
         field_names: List[str] = None,
         norm_stats: Dict[str, Dict[str, float]] = None,
-        reduction: str = 'mean'
+        reduction: str = 'mean',
+        normalization: Literal['none', 'magnitude', 'variance'] = 'none',
+        epsilon: float = 1e-8
     ):
         super().__init__(weight=weight, name=name, data_dim=data_dim, 
                          field_names=field_names, norm_stats=norm_stats)
         self.reduction = reduction
+        self.normalization = normalization
+        self.epsilon = epsilon
     
     def forward(
         self,
@@ -61,6 +65,13 @@ class L1Loss(LossComponent):
 
             if base != 1.0:
                 total_loss = total_loss * base
+
+            total_loss = apply_batch_normalization(
+                total_loss,
+                labels,
+                self.normalization,
+                self.epsilon
+            )
 
             if not return_detailed:
                 return total_loss

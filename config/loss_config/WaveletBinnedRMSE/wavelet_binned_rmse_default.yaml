@@ -7,3 +7,5 @@ level_weights:          # highest freq bin first
   - 0.3                 # level 1
   - 0.2                 # level 2
 normalize_weights: true
+normalization: none
+epsilon: 1e-8

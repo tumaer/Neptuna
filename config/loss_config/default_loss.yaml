@@ -1,10 +1,17 @@
 loss:
   components:
-    - type: RMSE
+    - type: L2Loss
       weight: 0.5
-      timestep_weights: [1.0]
-      channel_weights: [1.0]
     - type: L1Loss
       weight: 1.0
-      timestep_weights: [1.0]
-      channel_weights: [1.0]
+
+# Each component is a dictionary with the following fields:
+# - type: Loss class name
+# - weight: Base scalar weight (default: 1.0)
+# - timestep_weights: List of per-timestep weights, length T (optional)
+# - channel_weights: List of per-channel weights, length C (optional)
+
+# Example: RMSE with per-channel weighting
+# - type: RMSE
+#   weight: 1.0
+#   channel_weights: [1.0, 1.0, 0.5]  

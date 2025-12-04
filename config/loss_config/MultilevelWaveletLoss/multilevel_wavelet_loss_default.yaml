@@ -7,3 +7,4 @@ temporal_level: null
 mode_spatial: reflect
 mode_temporal: reflect
 reduction: mean
+normalization: none

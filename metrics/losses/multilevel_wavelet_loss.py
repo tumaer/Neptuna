@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 import ptwt
 
-from typing import Optional, List, Dict, Union, Tuple
-from ..training_metrics import LossComponent, WeightSchedule
+from typing import Literal, Optional, List, Dict, Union, Tuple
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization
 
 # Based on paper by L. Prandtl et al.,
 # 'Wavelet-Based Loss for High-Frequency Interface Dynamics',
@@ -34,6 +34,7 @@ class MultilevelWaveletLoss(LossComponent):
         mode_spatial: str = "reflect",
         mode_temporal: str = "reflect",
         reduction: str = "mean",
+        normalization: Literal['none', 'magnitude', 'variance'] = 'none',
     ):
         super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_stats=norm_stats)
         assert reduction in ("mean", "sum")
@@ -46,6 +47,7 @@ class MultilevelWaveletLoss(LossComponent):
         self.mode_spatial = mode_spatial
         self.mode_temporal = mode_temporal
         self.reduction = reduction
+        self.normalization = normalization
 
     def forward(
         self,
@@ -79,6 +81,13 @@ class MultilevelWaveletLoss(LossComponent):
 
         # total (unweighted)
         total = Lws + self.beta * Lwt
+
+        total = apply_batch_normalization(
+            total,
+            labels,
+            self.normalization,
+            self.eps
+        )
         
         if not return_detailed:
             return total

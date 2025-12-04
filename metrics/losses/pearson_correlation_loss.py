@@ -1,9 +1,9 @@
-from typing import Optional, List, Dict, Union, Tuple
+from typing import Literal, Optional, List, Dict, Union, Tuple
 
 import torch
 import torch.nn as nn
 
-from ..training_metrics import LossComponent, WeightSchedule
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization
 
 
 class PearsonCorrelationLoss(LossComponent):
@@ -18,11 +18,13 @@ class PearsonCorrelationLoss(LossComponent):
         data_dim: int = None,
         field_names: List[str] = None,
         norm_stats: Dict[str, Dict[str, float]] = None,
+        normalization: Literal['none', 'magnitude', 'variance'] = 'none',
         epsilon: float = 1e-8
     ):
         super().__init__(weight=weight, name=name, data_dim=data_dim, 
                          field_names=field_names, norm_stats=norm_stats)
         self.epsilon = epsilon
+        self.normalization = normalization
     
     def forward(
         self,
@@ -64,7 +66,14 @@ class PearsonCorrelationLoss(LossComponent):
         
         # Reduce to scalar
         total_loss = weighted.mean()
-        
+
+        total_loss = apply_batch_normalization(
+            total_loss,
+            labels,
+            self.normalization,
+            self.epsilon
+        )
+
         if not return_detailed:
             return total_loss
         

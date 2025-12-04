@@ -2,8 +2,8 @@ import math
 import torch
 import torch.nn as nn
 import ptwt  # pip install ptwt
-from ..training_metrics import LossComponent, WeightSchedule
-from typing import Optional, List, Sequence, Dict, Union, Tuple
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization
+from typing import Literal, Optional, List, Sequence, Dict, Union, Tuple
 
 # Inspired by fRMSE from the paper by Takamoto et al.,
 # 'PDEBENCH: An Extensive Benchmark for Scientific Machine Learning'
@@ -42,6 +42,8 @@ class WaveletBinnedRMSE(LossComponent):
         level_weights: Optional[Sequence[float]] = None,
         normalize_weights: bool = True,
         return_per_level: bool = False,
+        normalization: Literal['none', 'magnitude', 'variance'] = 'none',
+        epsilon: float = 1e-8
     ):
         super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_stats=norm_stats)
         assert aggregate in ("mean", "sum", "weighted")
@@ -51,6 +53,8 @@ class WaveletBinnedRMSE(LossComponent):
         self.aggregate = aggregate
         self.normalize_weights = normalize_weights
         self.return_per_level = return_per_level
+        self.normalization = normalization
+        self.epsilon = epsilon
 
         self._raw_level_weights = (
             list(level_weights) if level_weights is not None else None
@@ -110,6 +114,13 @@ class WaveletBinnedRMSE(LossComponent):
             loss = (weights * per_level_rmse).sum()
         else:
             raise RuntimeError(f"Unknown aggregate mode: {self.aggregate}")
+
+        loss = apply_batch_normalization(
+            loss,
+            labels,
+            self.normalization,
+            self.epsilon
+        )
 
         if not return_detailed:
             return loss

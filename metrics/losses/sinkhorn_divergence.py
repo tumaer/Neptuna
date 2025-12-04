@@ -1,11 +1,11 @@
 import numpy as np
 from functools import partial
 from abc import ABC, abstractmethod
-from typing import List, Optional, Dict, Union, Tuple
+from typing import Literal, List, Optional, Dict, Union, Tuple
 import torch
 import torch.nn as nn
 from torch.nn.functional import conv1d, avg_pool1d, avg_pool2d, avg_pool3d, interpolate
-from ..training_metrics import LossComponent, WeightSchedule
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization
 
 try:  # Import the keops library, www.kernel-operations.io
     from pykeops.torch import generic_logsumexp, LazyTensor
@@ -42,6 +42,8 @@ class SinkhornDivergence(LossComponent):
         scaling: float = 0.5,
         cost=None,
         debias: bool = True,
+        normalization: Literal['none', 'magnitude', 'variance'] = 'none',
+        epsilon: float = 1e-8,
 
         **kwargs,
     ):
@@ -57,6 +59,8 @@ class SinkhornDivergence(LossComponent):
         self.cost = cost
         self.debias = debias
         self.kwargs = kwargs
+        self.normalization = normalization
+        self.epsilon = epsilon
 
     def forward(
         self,
@@ -109,6 +113,13 @@ class SinkhornDivergence(LossComponent):
         )
         
         loss = divergence.mean()
+
+        loss = apply_batch_normalization(
+            loss,
+            labels,
+            self.normalization,
+            self.epsilon
+        )
         
         if not return_detailed:
             return loss

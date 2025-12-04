@@ -404,3 +404,50 @@ class CompositeLoss(LossComponent):
                 
                 if 'component_weights' in updates:
                     loss_component.weight_schedule.component_weights = updates['component_weights']
+
+
+def apply_batch_normalization(
+    unweighted: torch.Tensor,
+    labels: torch.Tensor,
+    normalization: str,
+    epsilon: float = 1e-8
+) -> torch.Tensor:
+    """
+    Apply batch-wise normalization to a loss tensor.
+    
+    Args:
+        unweighted: Unnormalized loss tensor
+        labels: Label tensor for computing normalization statistics
+        normalization: Type of normalization to apply
+            - 'none': No normalization
+            - 'nrmse': Normalize by <|u|^2>
+            - 'vrmse': Normalize by <|u - u_bar|^2> (variance)
+        epsilon: Small constant for numerical stability
+        
+    Returns:
+        Normalized loss tensor, same shape as unweighted
+    """
+    if normalization == 'none':
+        return unweighted
+    
+    elif normalization == 'magnitude':
+        # Normalize by <|u|^2>
+        sq_labels = labels ** 2
+        denom = sq_labels.mean()
+        return unweighted / (denom + epsilon)
+    
+    elif normalization == 'variance':
+        # Normalize by <|u - u_bar|^2> (variance)
+        # Mean over batch and spatial dims (keep time/channel structure)
+        if labels.ndim >= 2:
+            dims_for_mean = [0] + list(range(2, labels.ndim))
+        else:
+            dims_for_mean = [0]
+        
+        u_bar = labels.mean(dim=dims_for_mean, keepdim=True)
+        sq_dev = (labels - u_bar) ** 2
+        denom = sq_dev.mean()
+        return unweighted / (denom + epsilon)
+    
+    else:
+        raise ValueError(f"Unknown normalization type: {normalization}")

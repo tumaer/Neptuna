@@ -1,2 +1,4 @@
 mode: diff
 reduction: mean
+normalization: none
+epsilon: 1e-8

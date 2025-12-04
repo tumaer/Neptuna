@@ -1,9 +1,9 @@
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Literal, Dict, List, Optional, Sequence, Tuple, Union
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 import torch
 from torch import nn
-from ..training_metrics import LossComponent, WeightSchedule
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization
 
 # Inspired by cRMSE and bRMSE from the paper by Takamoto et al.,
 # 'PDEBENCH: An Extensive Benchmark for Scientific Machine Learning'
@@ -101,6 +101,7 @@ class IntegralConservationRMSE(LossComponent):
         boundary_keys: Optional[Sequence[str]] = None,
         use_boundary_fluxes: bool = False,
         quantity_weights: Optional[Dict[str, float]] = None,
+        normalization: Literal['none', 'magnitude', 'variance'] = 'none',
         eps: float = 1e-8,
     ):
         # Convert quantity_weights to WeightSchedule format
@@ -126,6 +127,7 @@ class IntegralConservationRMSE(LossComponent):
         self.use_boundary_fluxes = use_boundary_fluxes
         self.eps = eps
         self.last_components: Dict[str, torch.Tensor] = {}
+        self.normalization = normalization
 
         # Build registries (same as before)
         self._domain_quantity_registry: Dict[str, DomainQuantity] = (
@@ -194,9 +196,16 @@ class IntegralConservationRMSE(LossComponent):
         total = torch.zeros((), device=predictions.device, dtype=predictions.dtype)
         for name, value in all_components.items():
             # Use WeightSchedule's component weights
-            q_weight = self.weight_schedule.get_component_weight(name).to(predictions.device)
+            q_weight = self.weight_schedule.get_component_weight(name)
             total = total + q_weight * value
 
+        total = apply_batch_normalization(
+            total,
+            labels,
+            self.normalization,
+            self.eps
+        )
+        
         # Apply base weight
         weighted_total = self.weight_schedule.base_weight * total
 

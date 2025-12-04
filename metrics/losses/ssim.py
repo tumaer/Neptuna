@@ -4,8 +4,8 @@ import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from ..training_metrics import LossComponent, WeightSchedule
-from typing import Optional, List, Dict, Union, Tuple
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization
+from typing import Literal, Optional, List, Dict, Union, Tuple
 
 # Adapted from mssim.pytorch:
 # https://github.com/lartpang/mssim.pytorch
@@ -27,6 +27,8 @@ class SSIM(LossComponent):
         keep_batch_dim=False,
         padding=None,
         ensemble_kernel=True,
+        normalization: Literal['none', 'magnitude', 'variance'] = 'none',
+        epsilon: float = 1e-8
     ):
         """Calculate the mean SSIM (MSSIM) between two 4D tensors.
 
@@ -56,6 +58,8 @@ class SSIM(LossComponent):
         self.C1 = (K1 * L) ** 2  # equ 7 in ref1
         self.C2 = (K2 * L) ** 2  # equ 7 in ref1
         self.keep_batch_dim = keep_batch_dim
+        self.normalization = normalization
+        self.epsilon = epsilon
 
         self.gaussian_filter = GaussianFilter(
             data_dim=self.data_dim,
@@ -110,6 +114,13 @@ class SSIM(LossComponent):
         ssim_value = self.ssim(predictions_weighted, labels_weighted)
         loss = (1.0 - ssim_value) * self.weight
         
+        loss = apply_batch_normalization(
+            loss,
+            labels,
+            self.normalization,
+            self.epsilon
+        )
+
         if not return_detailed:
             return loss
         

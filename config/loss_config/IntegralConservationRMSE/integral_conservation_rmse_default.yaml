@@ -6,6 +6,7 @@ conserved_keys:
 
 # Whether to include boundary flux metrics
 use_boundary_fluxes: true
+normalization: none
 
 boundary_keys:
   - mass
