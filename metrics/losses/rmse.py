@@ -9,8 +9,26 @@ from ..training_metrics import LossComponent, WeightSchedule
 class RMSE(LossComponent):
     """
     Root Mean Squared Error (RMSE) loss between predictions and labels.
-    Supports per-timestep and per-channel weighting.
+
+    Features:
+      * Optional scalar, per-timestep, and per-channel weighting through
+        `WeightSchedule`.
+      * Optional per-timestep and per-channel breakdowns for analysis.
+
+    Design notes
+    ------------
+    * Fast path:
+        - When `weight_schedule.is_scalar_only()` is True, this reduces
+          to a plain `(pred - label)**2` followed by `.mean()`, `sqrt()`,
+          and a single scalar multiply.
+    * General path:
+        - Uses a broadcasted weight tensor from `WeightSchedule.get_weight`.
+        - Adds one elementwise multiply over the squared error tensor.
+    * Detailed metrics:
+        - Only computed when `return_detailed=True`.
+        - Training loops should disable them in the hot path.
     """
+
     def __init__(
         self, 
         weight: Union[float, WeightSchedule] = 1.0, 
@@ -38,45 +56,73 @@ class RMSE(LossComponent):
         labels: torch.Tensor,
         return_detailed: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
-        # Element-wise squared error
+
+        # ------------------------------------------------------------------
+        # Fast path: scalar-only schedule (no timestep/channel/component)
+        # ------------------------------------------------------------------
+        if isinstance(self.weight_schedule, WeightSchedule) and self.weight_schedule.is_scalar_only():
+            base = float(self.weight_schedule.base_weight)
+
+            # Clean RMSE
+            sq_error = (predictions - labels) ** 2
+            mse = sq_error.mean()
+            total_loss = torch.sqrt(mse + self.epsilon)
+
+            if base != 1.0:
+                total_loss = total_loss * base
+
+            if not return_detailed:
+                return total_loss
+
+            detailed: Dict[str, torch.Tensor] = {}
+
+            # Per-timestep: average over batch, channels, spatial dims
+            if sq_error.ndim >= 2:
+                dims_to_reduce = [0] + list(range(2, sq_error.ndim))
+                per_timestep_mse = sq_error.mean(dim=dims_to_reduce)
+                per_timestep = torch.sqrt(per_timestep_mse + self.epsilon)
+                if base != 1.0:
+                    per_timestep = per_timestep * base
+                detailed['per_timestep'] = per_timestep.detach()
+
+            # Per-channel: average over batch, timesteps, spatial dims
+            if sq_error.ndim >= 3:
+                dims_to_reduce = [0, 1] + list(range(3, sq_error.ndim))
+                per_channel_mse = sq_error.mean(dim=dims_to_reduce)
+                per_channel = torch.sqrt(per_channel_mse + self.epsilon)
+                if base != 1.0:
+                    per_channel = per_channel * base
+                detailed['per_channel'] = per_channel.detach()
+
+            return total_loss, detailed
+
+        # ------------------------------------------------------------------
+        # General path: some schedule active (timestep and/or channel)
+        # ------------------------------------------------------------------
         sq_error = (predictions - labels) ** 2
 
-        # Get weight tensor with proper broadcasting
+        # Broadcastable weights (at most (1, T, C, 1, ...)), on correct device
         weight_tensor = self.weight_schedule.get_weight(sq_error.shape).to(predictions.device)
-
-        # Apply weights element-wise
         weighted_sq = sq_error * weight_tensor
 
-        # First compute (weighted) MSE with the requested reduction
-        if self.reduction == 'mean':
-            mse = weighted_sq.mean()
-        elif self.reduction == 'sum':
-            mse = weighted_sq.sum()
-        elif self.reduction == 'none':
-            mse = weighted_sq
-        else:
-            raise ValueError(f"Unknown reduction: {self.reduction}")
-
-        # Then take sqrt to get RMSE
-        rmse = torch.sqrt(mse + self.epsilon)
+        # Compute weighted MSE then RMSE
+        mse = weighted_sq.mean()
+        total_loss = torch.sqrt(mse + self.epsilon)
 
         if not return_detailed:
-            return rmse
+            return total_loss
 
         detailed: Dict[str, torch.Tensor] = {}
 
-        # For detailed stats, we also report per-timestep and per-channel RMSE
-        # Per-timestep: average squared error over batch, channels, and spatial dims
-        # Assumes shape: (batch, timesteps, channels, ...)
-        if len(weighted_sq.shape) >= 2:
-            dims_to_reduce = [0] + list(range(2, len(weighted_sq.shape)))
+        # Aggregated diagnostics (reductions over the weighted squared error)
+        if weighted_sq.ndim >= 2:
+            dims_to_reduce = [0] + list(range(2, weighted_sq.ndim))
             per_timestep_mse = weighted_sq.mean(dim=dims_to_reduce)
             detailed['per_timestep'] = torch.sqrt(per_timestep_mse + self.epsilon).detach()
 
-        # Per-channel: average squared error over batch, timesteps, and spatial dims
-        if len(weighted_sq.shape) >= 3:
-            dims_to_reduce = [0, 1] + list(range(3, len(weighted_sq.shape)))
+        if weighted_sq.ndim >= 3:
+            dims_to_reduce = [0, 1] + list(range(3, weighted_sq.ndim))
             per_channel_mse = weighted_sq.mean(dim=dims_to_reduce)
             detailed['per_channel'] = torch.sqrt(per_channel_mse + self.epsilon).detach()
 
-        return rmse, detailed
+        return total_loss, detailed

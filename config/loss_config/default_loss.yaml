@@ -1,6 +1,6 @@
 loss:
   components:
-    - type: NRMSE
+    - type: RMSE
       weight: 0.5
       timestep_weights: [1.0]
       channel_weights: [1.0]
