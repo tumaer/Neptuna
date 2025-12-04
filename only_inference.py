@@ -9,7 +9,7 @@ from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
 from utils.plot_progress import plot_rollout_metrics_bar_chart
 from utils.plot_progress import plot_multi_run_rollout_metrics
 from utils.loss_utils import fetch_loss_metric, fetch_eval_loss_config
-from metrics.default_metrics import l1_error, l2_error, compute_metrics_for_n_rollouts
+from metrics.default_metrics import compute_metrics_for_n_rollouts
 from transformers.trainer import EvalPrediction
 from transformers import TrainingArguments
 from train.trainer import Trainer

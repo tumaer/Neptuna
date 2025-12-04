@@ -117,10 +117,20 @@ def fetch_loss_metric(cfg) -> CompositeLoss:
     return CompositeLoss(loss_components=loss_components)
 
 def fetch_eval_loss_config(cfg):
-    #TODO: Make this more robust/general by adapting eval_loss_cfg to the dataset
-
+    """
+    Loads evaluation loss config and overrides timestep_weights and channel_weights
+    to ensure uniform weighting across all timesteps and channels.
+    """
     eval_loss_config_path = "./config/loss_config/infer_loss.yaml"
     eval_loss_cfg = OmegaConf.load(eval_loss_config_path)
+    
+    # Get number of channels from data config
+    num_channels = len(cfg.data_config.filter_features.filter_out_channels)
+    
+    # Override weights for each component
+    for component in eval_loss_cfg.loss.components:
+        component.timestep_weights = [1.0]
+        component.channel_weights = [1.0] * num_channels
     
     full_eval_cfg = OmegaConf.create({
         "loss_config": eval_loss_cfg,

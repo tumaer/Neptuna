@@ -7,4 +7,4 @@ loss:
     - type: L1Loss
       weight: 1.0
       timestep_weights: [1.0]
-      channel_weights: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+      channel_weights: [1.0]

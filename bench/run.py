@@ -2,7 +2,7 @@ import time
 import os
 from transformers import TrainingArguments
 from train.trainer import Trainer
-from metrics.default_metrics import l1_error, l2_error, compute_metrics_for_n_rollouts
+from metrics.default_metrics import compute_metrics_for_n_rollouts
 from transformers.trainer import EvalPrediction
 from utils.load_model import fetch_model
 from utils.dataset_utils import make_datasets
@@ -495,7 +495,7 @@ def run(cfg):
 
                     # Compute per-rollout errors (mean across batch) before plotting
                     per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(
-                        preds, targets, outputs_per_rollout=outputs_per_rollout
+                        preds, targets, outputs_per_rollout=outputs_per_rollout, loss_metric=eval_loss_fn
                     )
 
                     errors = {}
