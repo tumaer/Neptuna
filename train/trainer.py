@@ -1684,11 +1684,6 @@ class Trainer(Trainer_):
                 if self.args.save_strategy == "no":
                     # No checkpoints saved
                     return
-                elif self.args.save_strategy == "epoch":
-                    checkpoint_folder = os.path.join(
-                        output_dir, 
-                        f"{PREFIX_CHECKPOINT_DIR}-{int(self.state.epoch)}"
-                    )
                 else:  # "steps" (default)
                     checkpoint_folder = os.path.join(
                         output_dir, 
