@@ -73,7 +73,7 @@ class MSSSIM(LossComponent):
             ensemble_kernel=ensemble_kernel,
         )
 
-    @torch.cuda.amp.autocast(enabled=False)
+    @torch.amp.autocast('cuda', enabled=False)
     def forward(
         self,
         model: nn.Module,
