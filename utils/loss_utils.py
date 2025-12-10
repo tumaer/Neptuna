@@ -3,8 +3,8 @@ import torch
 from metrics.training_metrics import CompositeLoss, WeightSchedule
 from metrics.loss_registry import get_loss_entry
 from typing import Union, Optional
-from metrics.weight_schedulers import WeightSchedulerBase
-from metrics.weight_scheduler_registry import get_weight_scheduler_entry
+from metrics.loss_weighting_strategies import LossWeightingStrategyBase
+from metrics.loss_weighting_strategy_registry import get_loss_weighting_strategy_entry
 
 def create_weight_schedule(component_cfg) -> Union[float, WeightSchedule]:
     """
@@ -119,24 +119,24 @@ def fetch_loss_metric(cfg) -> CompositeLoss:
     return CompositeLoss(loss_components=loss_components)
 
 
-def create_weight_scheduler(cfg) -> Optional[WeightSchedulerBase]:
+def create_loss_weighting_strategy(cfg) -> Optional[LossWeightingStrategyBase]:
     """
-    Creates a WeightSchedulerBase instance from hydra config.
+    Creates a LossWeightingStrategyBase instance from hydra config.
     
     Args:
-        cfg: Hydra config containing loss_config.weight_scheduler
+        cfg: Hydra config containing loss_config.loss_weighting_strategy
         
     Returns:
-        WeightSchedulerBase instance or None if not configured
+        LossWeightingStrategyBase instance or None if not configured
     """
     # Check if weight scheduling is enabled
     if not hasattr(cfg, 'loss_config'):
         return None
     
-    if not hasattr(cfg.loss_config, 'weight_scheduler'):
+    if not hasattr(cfg.loss_config, 'loss_weighting_strategy'):
         return None
     
-    scheduler_cfg = cfg.loss_config.weight_scheduler
+    scheduler_cfg = cfg.loss_config.loss_weighting_strategy
     
     if not scheduler_cfg.get('enabled', False):
         return None
@@ -144,7 +144,7 @@ def create_weight_scheduler(cfg) -> Optional[WeightSchedulerBase]:
     scheduler_type = scheduler_cfg.type
     
     # Pull metadata from registry
-    registry_entry = get_weight_scheduler_entry(scheduler_type)
+    registry_entry = get_loss_weighting_strategy_entry(scheduler_type)
     scheduler_class = registry_entry["class"]
     default_config = registry_entry["default_config"]
     

@@ -1,9 +1,9 @@
-from metrics.weight_schedulers import UncertaintyWeighting
+from metrics.loss_weighting_strategies import UncertaintyWeighting
 
 # Weight scheduler registry with metadata:
 #  - class: the scheduler class
 #  - default_name: fallback name if not provided in YAML
-#  - default_config: fallback config_file (relative path under config/weight_scheduler_config)
+#  - default_config: fallback config_file (relative path under config/loss_weighting_strategy_config)
 WEIGHT_SCHEDULER_REGISTRY = {
     "UncertaintyWeighting": {
         "class": UncertaintyWeighting,
@@ -12,7 +12,7 @@ WEIGHT_SCHEDULER_REGISTRY = {
     },
 }
 
-def get_weight_scheduler_entry(scheduler_type: str):
+def get_loss_weighting_strategy_entry(scheduler_type: str):
     """
     Retrieve registry entry for a weight scheduler type.
     

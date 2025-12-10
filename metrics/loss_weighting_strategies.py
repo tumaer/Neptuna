@@ -1,9 +1,9 @@
-# metrics/weight_schedulers.py
+# metrics/loss_weighting_strategies.py
 from abc import ABC, abstractmethod
 from typing import Dict, Optional, List
 import torch
 
-class WeightSchedulerBase(ABC):
+class LossWeightingStrategyBase(ABC):
     """
     Base class for adaptive loss weight scheduling strategies.
     
@@ -72,7 +72,7 @@ class WeightSchedulerBase(ABC):
         return None
 
 
-class UncertaintyWeighting(WeightSchedulerBase):
+class UncertaintyWeighting(LossWeightingStrategyBase):
     """
     Weight components inversely proportional to their uncertainty (variance).
     

@@ -79,7 +79,7 @@ from PIL import Image
 from pathlib import Path
 from typing import Dict, List
 import torch
-from metrics.weight_schedulers import WeightSchedulerBase
+from metrics.loss_weighting_strategies import LossWeightingStrategyBase
 import torch.distributed as dist
 
 class CallbackHandler(CallbackHandler_):
@@ -1028,19 +1028,19 @@ class AdaptiveWeightCallback(TrainerCallback):
     
     def __init__(
         self,
-        weight_scheduler: WeightSchedulerBase,
+        loss_weighting_strategy: LossWeightingStrategyBase,
         stats_callback: LossStatisticsCallback,
         trainer=None,
         loss_source: str = 'train',  # 'train', 'eval', or 'both'
     ):
         """
         Args:
-            weight_scheduler: Scheduler to compute new weights
+            loss_weighting_strategy: Scheduler to compute new weights
             stats_callback: Callback collecting loss statistics
             trainer: Reference to trainer (set after trainer creation)
             loss_source: Which losses to use for weight updates ('train', 'eval', or 'both')
         """
-        self.weight_scheduler = weight_scheduler
+        self.loss_weighting_strategy = loss_weighting_strategy
         self.stats_callback = stats_callback
         self.trainer = trainer
         self.last_update_epoch = -1
@@ -1075,7 +1075,7 @@ class AdaptiveWeightCallback(TrainerCallback):
             return False
         
         # Compute new weights
-        new_weights = self.weight_scheduler.step(
+        new_weights = self.loss_weighting_strategy.step(
             epoch=current_epoch,
             loss_history=filtered_history,
             current_weights=current_weights

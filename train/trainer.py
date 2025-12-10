@@ -532,15 +532,21 @@ class Trainer(Trainer_):
             (self.data_config.sequence_info[1]*(pushforward_unroll_steps+1))
         ]
         
-        loss, detailed = self.loss_fn(
-            model=model,
-            predictions=prediction,
-            labels=labels,
-            return_detailed=self._collect_detailed_losses
-        )
+        if not self._collect_detailed_losses:
+            loss = self.loss_fn(
+                model=model,
+                predictions=prediction,
+                labels=labels,
+                return_detailed=False
+            )
+        else:
+            loss, detailed = self.loss_fn(
+                model=model,
+                predictions=prediction,
+                labels=labels,
+                return_detailed=True
+            )
 
-        # Store detailed losses if needed
-        if self._collect_detailed_losses and detailed is not None:
             if not hasattr(self, '_detailed_loss_accumulator'):
                 self._detailed_loss_accumulator = {}
             

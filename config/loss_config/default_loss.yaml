@@ -5,7 +5,7 @@ loss:
     - type: L1Loss
       weight: 1.0
 
-weight_scheduler:
+loss_weighting_strategy:
   enabled: true  # Set to true to enable
   type: UncertaintyWeighting
   loss_source: 'train' # 'train', 'eval' or 'both'

@@ -15,7 +15,7 @@ from optuna.pruners import NopPruner
 from utils.custom_callbacks import PlotOnEvalAndSaveCallback, NaNCallback, LossStatisticsCallback, AdaptiveWeightCallback
 import csv
 from utils.hp_optimization import trial_name_factory
-from utils.loss_utils import fetch_eval_loss_config, fetch_loss_metric, create_weight_scheduler
+from utils.loss_utils import fetch_eval_loss_config, fetch_loss_metric, create_loss_weighting_strategy
 from utils.plot_progress import preprocess_for_plotting, plot_rollout_metrics
 from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
 from utils.plot_progress import build_info_strings
@@ -275,20 +275,22 @@ def run(cfg):
     callbacks.append(PlotOnEvalAndSaveCallback)
     callbacks.append(NaNCallback)
 
-    weight_scheduler = create_weight_scheduler(cfg)
-    if weight_scheduler is not None:
+    loss_weighting_strategy = create_loss_weighting_strategy(cfg)
+    if loss_weighting_strategy is not None:
         # Create statistics collector
         stats_callback = LossStatisticsCallback(collect_train_losses=True)
         callbacks.append(stats_callback)
         
         # Create adaptive weight callback
-        loss_source = cfg.loss_config.weight_scheduler.get('loss_source', 'train')
+        loss_source = cfg.loss_config.loss_weighting_strategy.get('loss_source', 'train')
         weight_callback = AdaptiveWeightCallback(
-            weight_scheduler, 
+            loss_weighting_strategy, 
             stats_callback,
             loss_source = loss_source,
         )
         callbacks.append(weight_callback)
+    else:
+        weight_callback = None
 
     loss_config = None
     if hasattr(cfg, 'loss_config'):
@@ -332,7 +334,7 @@ def run(cfg):
         weight_callback.trainer = trainer
         stats_callback.trainer = trainer
         # Enable detailed loss collection in trainer
-        trainer._collect_detailed_losses = cfg.loss_config.weight_scheduler.get(
+        trainer._collect_detailed_losses = cfg.loss_config.loss_weighting_strategy.get(
             'collect_detailed_losses', True,
         )
         trainer._last_detailed_losses = {}
