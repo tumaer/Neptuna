@@ -77,6 +77,10 @@ from transformers.trainer_callback import TrainerState
 import os
 from PIL import Image
 from pathlib import Path
+from typing import Dict, List
+import torch
+from metrics.weight_schedulers import WeightSchedulerBase
+import torch.distributed as dist
 
 class CallbackHandler(CallbackHandler_):
     """
@@ -872,6 +876,261 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
         # Reset local state
         self._plotted_thresholds = set()
         self._should_plot = False
+
+class LossStatisticsCallback(TrainerCallback):
+    """
+    Callback to accumulate loss values during training and evaluation.
+    
+    Efficiently handles distributed training by accumulating losses on GPU
+    during training and only transferring/aggregating at epoch end.
+    """
+    
+    def __init__(self, collect_train_losses: bool = True):
+        self.collect_train_losses = collect_train_losses
+        self.train_losses: Dict[str, List[float]] = {}
+        self.eval_losses: Dict[str, List[float]] = {}
+        self.current_epoch = -1
+        self.trainer = None
+    
+    def on_epoch_begin(self, args, state, control, **kwargs):
+        """Initialize loss accumulator at start of epoch."""
+        self.train_losses = {}
+        self.eval_losses = {}
+        self.current_epoch = state.epoch
+        
+        # Initialize fresh accumulator for this epoch
+        if self.trainer is not None:
+            self.trainer._detailed_loss_accumulator = {}
+    
+    def on_epoch_end(self, args, state, control, **kwargs):
+        """Transfer and aggregate losses at end of epoch."""
+        if not self.collect_train_losses or self.trainer is None:
+            return
+        
+        if not hasattr(self.trainer, '_detailed_loss_accumulator'):
+            return
+        
+        accumulator = self.trainer._detailed_loss_accumulator
+        
+        if not accumulator:
+            return
+        
+        # Transfer from GPU to CPU and convert to Python floats
+        # This happens only once per epoch
+        for component_name, loss_tensors in accumulator.items():
+            if component_name not in self.train_losses:
+                self.train_losses[component_name] = []
+            
+            # Stack tensors and transfer to CPU in one operation
+            if loss_tensors:
+                stacked = torch.stack(loss_tensors)  # [num_steps]
+                cpu_values = stacked.cpu().tolist()  # Single transfer to CPU
+                self.train_losses[component_name].extend(cpu_values)
+        
+        # Clear accumulator to free GPU memory
+        self.trainer._detailed_loss_accumulator = {}
+    
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        """Accumulate loss values from evaluation metrics."""
+        if metrics is None:
+            return
+        
+        for key, value in metrics.items():
+            clean_key = key.replace('eval_', '') if key.startswith('eval_') else key
+            
+            if clean_key in ['loss', 'runtime', 'samples_per_second', 
+                            'steps_per_second', 'epoch', 'step', 'loop_time']:
+                continue
+            
+            if not isinstance(value, (int, float)):
+                continue
+            
+            if clean_key not in self.eval_losses:
+                self.eval_losses[clean_key] = []
+            self.eval_losses[clean_key].append(float(value))
+    
+    def _aggregate_distributed_losses(self, losses: Dict[str, List[float]]) -> Dict[str, List[float]]:
+        """
+        Aggregate losses across all distributed processes.
+        
+        Called at epoch end, after GPU->CPU transfer.
+        
+        Args:
+            losses: Dictionary of component names to loss lists
+            
+        Returns:
+            Aggregated losses from all ranks (only on rank 0, empty dict on others)
+        """
+        if not dist.is_initialized():
+            return losses
+        
+        world_size = dist.get_world_size()
+        rank = dist.get_rank()
+        
+        # Gather all losses on rank 0
+        gathered = [None] * world_size
+        dist.gather_object(losses, gathered if rank == 0 else None, dst=0)
+        
+        if rank == 0:
+            # Combine losses from all processes
+            combined_losses = {}
+            for process_losses in gathered:
+                if process_losses is None:
+                    continue
+                for component_name, loss_list in process_losses.items():
+                    if component_name not in combined_losses:
+                        combined_losses[component_name] = []
+                    combined_losses[component_name].extend(loss_list)
+            return combined_losses
+        else:
+            # Non-rank-0 returns empty dict
+            return {}
+    
+    def get_loss_history(self, source: str = 'train', aggregate_distributed: bool = True) -> Dict[str, List[float]]:
+        """
+        Get raw loss history for the current epoch.
+        
+        Args:
+            source: Either 'train', 'eval', or 'both'
+            aggregate_distributed: Whether to aggregate across distributed processes
+            
+        Returns:
+            Dictionary mapping component names to lists of loss values
+        """
+        if source == 'train':
+            losses = self.train_losses.copy()
+        elif source == 'eval':
+            losses = self.eval_losses.copy()
+        elif source == 'both':
+            combined = self.train_losses.copy()
+            for key, values in self.eval_losses.items():
+                if key in combined:
+                    combined[key].extend(values)
+                else:
+                    combined[key] = values
+            losses = combined
+        else:
+            raise ValueError(f"Invalid source: {source}")
+        
+        # Aggregate across distributed processes if needed
+        if aggregate_distributed and dist.is_initialized():
+            losses = self._aggregate_distributed_losses(losses)
+        
+        return losses
+
+
+class AdaptiveWeightCallback(TrainerCallback):
+    """
+    Callback to update loss weights using a weight scheduler.
+    
+    Can use training losses, evaluation losses, or both for weight updates.
+    """
+    
+    def __init__(
+        self,
+        weight_scheduler: WeightSchedulerBase,
+        stats_callback: LossStatisticsCallback,
+        trainer=None,
+        loss_source: str = 'train',  # 'train', 'eval', or 'both'
+    ):
+        """
+        Args:
+            weight_scheduler: Scheduler to compute new weights
+            stats_callback: Callback collecting loss statistics
+            trainer: Reference to trainer (set after trainer creation)
+            loss_source: Which losses to use for weight updates ('train', 'eval', or 'both')
+        """
+        self.weight_scheduler = weight_scheduler
+        self.stats_callback = stats_callback
+        self.trainer = trainer
+        self.last_update_epoch = -1
+        self.loss_source = loss_source
+        
+        if loss_source not in ['train', 'eval', 'both']:
+            raise ValueError(f"loss_source must be 'train', 'eval', or 'both', got {loss_source}")
+    
+    def _update_weights(self, current_epoch: int, loss_history: Dict[str, List[float]], source_label: str):
+        """Helper method to perform weight update."""
+        if not loss_history:
+            logger.warning(f"[AdaptiveWeightCallback] No {source_label} loss history for epoch {current_epoch}")
+            return False
+        
+        # Get current weights
+        current_weights = self.trainer.loss_fn.get_weight_dict()
+        training_component_names = set(current_weights.keys())
+        
+        # Filter to training components only
+        filtered_history = {
+            name: losses 
+            for name, losses in loss_history.items() 
+            if name in training_component_names
+        }
+        
+        if not filtered_history:
+            logger.warning(
+                f"[AdaptiveWeightCallback] No matching training components in {source_label} loss history\n"
+                f"  Training components: {training_component_names}\n"
+                f"  Available in {source_label}: {set(loss_history.keys())}"
+            )
+            return False
+        
+        # Compute new weights
+        new_weights = self.weight_scheduler.step(
+            epoch=current_epoch,
+            loss_history=filtered_history,
+            current_weights=current_weights
+        )
+        
+        # Apply new weights if scheduler returned them
+        if new_weights is None:
+            return False
+        
+        self.trainer.loss_fn.update_weights(new_weights)
+        self.last_update_epoch = current_epoch
+        
+        logger.info(f"Epoch {current_epoch}: Updated loss weights (from {source_label})")
+        
+        for component_name, weight_dict in new_weights.items():
+            if component_name in filtered_history:
+                losses_tensor = torch.tensor(filtered_history[component_name])
+                mean_loss = float(losses_tensor.mean())
+                std_loss = float(losses_tensor.std())
+                num_samples = len(filtered_history[component_name])
+                
+                logger.info(f"  {component_name}:")
+                logger.info(f"    new weight: {weight_dict['base_weight']:.4f}")
+                logger.info(f"    statistics: mean={mean_loss:.4e}, std={std_loss:.4e}, n={num_samples}")
+            else:
+                logger.info(f"  {component_name}: weight={weight_dict['base_weight']:.4f} (no history)")
+        
+        return True
+        
+
+    def on_epoch_end(self, args, state, control, **kwargs):
+        """Update weights at end of epoch using training losses."""
+        if self.loss_source == 'train':
+            current_epoch = int(state.epoch) if state.epoch is not None else -1
+            if current_epoch != self.last_update_epoch and self.trainer is not None:
+                train_losses = self.stats_callback.get_loss_history(source='train')
+                self._update_weights(current_epoch, train_losses, source_label='training')
+    
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        """Update weights after evaluation, optionally combining with training losses."""
+        if self.trainer is None:
+            return
+        
+        current_epoch = int(state.epoch) if state.epoch is not None else -1
+        
+        # Skip if already updated this epoch
+        if current_epoch == self.last_update_epoch:
+            return
+        
+        # Get appropriate loss history based on configuration
+        loss_history = self.stats_callback.get_loss_history(source=self.loss_source)
+        
+        # Update weights
+        if self.loss_source in ['eval', 'both']:
+            self._update_weights(current_epoch, loss_history, source_label=self.loss_source)
 
 
 # ------------------------------------------------------------------

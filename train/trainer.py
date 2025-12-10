@@ -177,6 +177,9 @@ class Trainer(Trainer_):
             self.loss_fn = None
             logger.warning("No loss_config provided, using default MSE loss")
 
+        # Flag to indicate if detailed losses should be collected for adaptive weighting
+        self._collect_detailed_losses = getattr(self, '_collect_detailed_losses', False)
+
         # Inject a reference to this Trainer into all registered callbacks so they can
         # access training context (datasets, model, args, etc.).
         try:
@@ -529,19 +532,30 @@ class Trainer(Trainer_):
             (self.data_config.sequence_info[1]*(pushforward_unroll_steps+1))
         ]
         
-        # Compute loss using composite loss function
-        if self.loss_fn is not None:
-            # Use new composite loss framework
-            loss = self.loss_fn(
-                model=model,
-                predictions=prediction,
-                labels=labels,
-                return_detailed=False  # Don't need detailed breakdown during training
-            )
-        else:
-            # Fallback to MSE
-            loss_fn = nn.functional.mse_loss
-            loss = loss_fn(prediction, labels)  
+        loss, detailed = self.loss_fn(
+            model=model,
+            predictions=prediction,
+            labels=labels,
+            return_detailed=self._collect_detailed_losses
+        )
+
+        # Store detailed losses if needed
+        if self._collect_detailed_losses and detailed is not None:
+            if not hasattr(self, '_detailed_loss_accumulator'):
+                self._detailed_loss_accumulator = {}
+            
+            for component_name, component_detailed in detailed.items():
+                # Extract loss value
+                loss_value = component_detailed.get('total', component_detailed) if isinstance(component_detailed, dict) else component_detailed
+                
+                # Convert to detached GPU tensor
+                loss_scalar = loss_value.detach() if torch.is_tensor(loss_value) else torch.tensor(float(loss_value), device=loss.device)
+                
+                # Accumulate
+                if component_name not in self._detailed_loss_accumulator:
+                    self._detailed_loss_accumulator[component_name] = []
+                self._detailed_loss_accumulator[component_name].append(loss_scalar)
+            
         return (loss, prediction) if return_outputs else loss
 
     ##custom function, not inside transformers library

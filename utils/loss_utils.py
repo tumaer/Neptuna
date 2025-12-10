@@ -2,7 +2,9 @@ from omegaconf import DictConfig, OmegaConf
 import torch
 from metrics.training_metrics import CompositeLoss, WeightSchedule
 from metrics.loss_registry import get_loss_entry
-from typing import Union
+from typing import Union, Optional
+from metrics.weight_schedulers import WeightSchedulerBase
+from metrics.weight_scheduler_registry import get_weight_scheduler_entry
 
 def create_weight_schedule(component_cfg) -> Union[float, WeightSchedule]:
     """
@@ -115,6 +117,63 @@ def fetch_loss_metric(cfg) -> CompositeLoss:
         loss_components.append(loss_instance)
     
     return CompositeLoss(loss_components=loss_components)
+
+
+def create_weight_scheduler(cfg) -> Optional[WeightSchedulerBase]:
+    """
+    Creates a WeightSchedulerBase instance from hydra config.
+    
+    Args:
+        cfg: Hydra config containing loss_config.weight_scheduler
+        
+    Returns:
+        WeightSchedulerBase instance or None if not configured
+    """
+    # Check if weight scheduling is enabled
+    if not hasattr(cfg, 'loss_config'):
+        return None
+    
+    if not hasattr(cfg.loss_config, 'weight_scheduler'):
+        return None
+    
+    scheduler_cfg = cfg.loss_config.weight_scheduler
+    
+    if not scheduler_cfg.get('enabled', False):
+        return None
+    
+    scheduler_type = scheduler_cfg.type
+    
+    # Pull metadata from registry
+    registry_entry = get_weight_scheduler_entry(scheduler_type)
+    scheduler_class = registry_entry["class"]
+    default_config = registry_entry["default_config"]
+    
+    # Load scheduler-specific config
+    scheduler_params = {}
+    if hasattr(scheduler_cfg, "scheduler_params"):
+        # Already populated by prepare_config or checkpoint
+        scheduler_params = OmegaConf.to_container(
+            scheduler_cfg.scheduler_params, resolve=True
+        )
+    else:
+        # Determine config_file: explicit in YAML or from registry default
+        config_file = scheduler_cfg.get("config_file", default_config)
+        if config_file is not None:
+            config_path = f"config/loss_config/{config_file}.yaml"
+            try:
+                scheduler_config = OmegaConf.load(config_path)
+                scheduler_params = OmegaConf.to_container(scheduler_config, resolve=True)
+            except Exception as e:
+                print(f"Warning: Could not load scheduler config from {config_path}: {e}")
+        else:
+            # No config_file and no scheduler_params – use defaults
+            scheduler_params = {}
+    
+    # Create scheduler instance
+    scheduler_instance = scheduler_class(**scheduler_params)
+    
+    return scheduler_instance
+
 
 def fetch_eval_loss_config(cfg):
     """

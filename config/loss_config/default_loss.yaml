@@ -5,6 +5,12 @@ loss:
     - type: L1Loss
       weight: 1.0
 
+weight_scheduler:
+  enabled: true  # Set to true to enable
+  type: UncertaintyWeighting
+  loss_source: 'train' # 'train', 'eval' or 'both'
+  log_detailed_losses: true # must be true to use training loss for weight updates
+
 # Each component is a dictionary with the following fields:
 # - type: Loss class name
 # - weight: Base scalar weight (default: 1.0)
@@ -14,4 +20,5 @@ loss:
 # Example: RMSE with per-channel weighting
 # - type: RMSE
 #   weight: 1.0
-#   channel_weights: [1.0, 1.0, 0.5]  
+#   channel_weights: [1.0, 1.0, 0.5]
+
