@@ -1,14 +1,16 @@
-from metrics.loss_weighting_strategies import UncertaintyWeighting
+from metrics.weighting_strategies import (
+    GaussianLikelihood,
+)
 
 # Weight scheduler registry with metadata:
 #  - class: the scheduler class
 #  - default_name: fallback name if not provided in YAML
 #  - default_config: fallback config_file (relative path under config/loss_weighting_strategy_config)
 WEIGHT_SCHEDULER_REGISTRY = {
-    "UncertaintyWeighting": {
-        "class": UncertaintyWeighting,
-        "default_name": "UncertaintyWeighting",
-        "default_config": "test_loss_weight/uncertainty_weighting_default",
+    "GaussianLikelihood": {
+        "class": GaussianLikelihood,
+        "default_name": "GaussianLikelihood",
+        "default_config": "weighting_strategies/GaussianLikelihood/gaussian_likelihood_default",
     },
 }
 

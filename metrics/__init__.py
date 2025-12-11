@@ -19,6 +19,10 @@ from .losses import (
     NRMSE,
 )
 
+from .weighting_strategies import (
+    GaussianLikelihood,
+)
+
 __all__ = [
     'LossComponent',
     'CompositeLoss',
@@ -35,5 +39,6 @@ __all__ = [
     'IntegralConservationRMSE',
     'RMSE',
     'VRMSE',
-    'NRMSE'
+    'NRMSE',
+    'GaussianLikelihood',
 ]

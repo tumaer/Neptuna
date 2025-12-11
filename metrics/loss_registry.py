@@ -24,72 +24,72 @@ LOSS_REGISTRY = {
     "L2Loss": {
         "class": L2Loss,
         "default_name": "L2Loss",
-        "default_config": "L2_Loss/l2_loss_default",
+        "default_config": "loss_metrics/L2_Loss/l2_loss_default",
     },
     "L1Loss": {
         "class": L1Loss,
         "default_name": "L1Loss",
-        "default_config": "L1_Loss/l1_loss_default",
+        "default_config": "loss_metrics/L1_Loss/l1_loss_default",
     },
     "SSIM": {
         "class": SSIM,
         "default_name": "SSIM",
-        "default_config": "SSIM/ssim_default",
+        "default_config": "loss_metrics/SSIM/ssim_default",
     },
     "MSSSIM": {
         "class": MSSSIM,
         "default_name": "MSSSIM",
-        "default_config": "MSSSIM/msssim_default",
+        "default_config": "loss_metrics/MSSSIM/msssim_default",
     },
     "PearsonCorrelationLoss": {
         "class": PearsonCorrelationLoss,
         "default_name": "PearsonCorrelationLoss",
-        "default_config": "PearsonCorrelationLoss/pearson_correlation_loss_default",
+        "default_config": "loss_metrics/PearsonCorrelationLoss/pearson_correlation_loss_default",
     },
     "SinkhornDivergence": {
         "class": SinkhornDivergence,
         "default_name": "SinkhornDivergence",
-        "default_config": "SinkhornDivergence/sinkhorn_divergence_default",
+        "default_config": "loss_metrics/SinkhornDivergence/sinkhorn_divergence_default",
     },
     "H1SemiNorm": {
         "class": H1SemiNorm,
         "default_name": "H1SemiNorm",
-        "default_config": "H1SemiNorm/h1_semi_norm_default",
+        "default_config": "loss_metrics/H1SemiNorm/h1_semi_norm_default",
     },
     "H2SemiNorm": {
         "class": H2SemiNorm,
         "default_name": "H2SemiNorm",
-        "default_config": "H2SemiNorm/h2_semi_norm_default",
+        "default_config": "loss_metrics/H2SemiNorm/h2_semi_norm_default",
     },
     "MultilevelWaveletLoss": {
         "class": MultilevelWaveletLoss,
         "default_name": "MultilevelWaveletLoss",
-        "default_config": "MultilevelWaveletLoss/multilevel_wavelet_loss_default",
+        "default_config": "loss_metrics/MultilevelWaveletLoss/multilevel_wavelet_loss_default",
     },
     "WaveletBinnedRMSE": {
         "class": WaveletBinnedRMSE,
         "default_name": "WaveletBinnedRMSE",
-        "default_config": "WaveletBinnedRMSE/wavelet_binned_rmse_default",
+        "default_config": "loss_metrics/WaveletBinnedRMSE/wavelet_binned_rmse_default",
     },
     "IntegralConservationRMSE": {
         "class": IntegralConservationRMSE,
         "default_name": "IntegralConservationRMSE",
-        "default_config": "IntegralConservationRMSE/integral_conservation_rmse_default",
+        "default_config": "loss_metrics/IntegralConservationRMSE/integral_conservation_rmse_default",
     },
     "RMSE": {
         "class": RMSE,
         "default_name": "RMSE",
-        "default_config": "RMSE/rmse_default",
+        "default_config": "loss_metrics/RMSE/rmse_default",
     },
     "VRMSE": {
         "class": VRMSE,
         "default_name": "VRMSE",
-        "default_config": "VRMSE/vrmse_default",
+        "default_config": "loss_metrics/VRMSE/vrmse_default",
     },
     "NRMSE": {
         "class": NRMSE,
         "default_name": "NRMSE",
-        "default_config": "NRMSE/nrmse_default",
+        "default_config": "loss_metrics/NRMSE/nrmse_default",
     },
 }
 
