@@ -1,5 +1,8 @@
 from metrics.weighting_strategies import (
-    GaussianLikelihood,
+    ReLoBRaLo,
+    ResidualBasedAttention,
+    SoftAdapt,
+    BalancedResidualDecayRate,
 )
 
 # Weight scheduler registry with metadata:
@@ -7,10 +10,25 @@ from metrics.weighting_strategies import (
 #  - default_name: fallback name if not provided in YAML
 #  - default_config: fallback config_file (relative path under config/loss_weighting_strategy_config)
 WEIGHT_SCHEDULER_REGISTRY = {
-    "GaussianLikelihood": {
-        "class": GaussianLikelihood,
-        "default_name": "GaussianLikelihood",
-        "default_config": "weighting_strategies/GaussianLikelihood/gaussian_likelihood_default",
+    "ReLoBRaLo": {
+        "class": ReLoBRaLo,
+        "default_name": "ReLoBRaLo",
+        "default_config": "weighting_strategies/ReLoBRaLo/relobralo_default",
+    },
+    "ResidualBasedAttention": {
+        "class": ResidualBasedAttention,
+        "default_name": "ResidualBasedAttention",
+        "default_config": "weighting_strategies/ResidualBasedAttention/residual_based_attention_default",
+    },
+    "SoftAdapt": {
+        "class": SoftAdapt,
+        "default_name": "SoftAdapt",
+        "default_config": "weighting_strategies/SoftAdapt/soft_adapt_default",
+    },
+    "BalancedResidualDecayRate": {
+        "class": BalancedResidualDecayRate,
+        "default_name": "BalancedResidualDecayRate",
+        "default_config": "weighting_strategies/BalancedResidualDecayRate/balanced_residual_decay_rate_default",
     },
 }
 

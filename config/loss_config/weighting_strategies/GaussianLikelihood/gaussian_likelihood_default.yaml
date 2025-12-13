@@ -1,4 +1,0 @@
-update_frequency: 1  # Update every N epochs
-momentum: 0.9        # Smoothing factor for running variance
-min_weight: 0.1      # Minimum allowed weight
-max_weight: 10.0     # Maximum allowed weight

@@ -20,7 +20,10 @@ from .losses import (
 )
 
 from .weighting_strategies import (
-    GaussianLikelihood,
+    ReLoBRaLo,
+    ResidualBasedAttention,
+    SoftAdapt,
+    BalancedResidualDecayRate,
 )
 
 __all__ = [
@@ -40,5 +43,8 @@ __all__ = [
     'RMSE',
     'VRMSE',
     'NRMSE',
-    'GaussianLikelihood',
+    'ReLoBRaLo',
+    'ResidualBasedAttention',
+    'SoftAdapt',
+    'BalancedResidualDecayRate',
 ]
