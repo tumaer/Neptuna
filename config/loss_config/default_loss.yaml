@@ -2,11 +2,11 @@ loss:
   components:
     - type: L2Loss
       weight: 0.5
-    - type: L1Loss
+    - type: InterfaceRMSE
       weight: 1.0
 
 loss_weighting_strategy:
-  enabled: true  # Set to true to enable
+  enabled: false  # Set to true to enable
   type: BalancedResidualDecayRate
   loss_source: 'train' # 'train', 'eval' or 'both'
   log_detailed_losses: true # must be true to use training loss for weight updates

@@ -14,6 +14,7 @@ from metrics.losses import (
     RMSE,
     VRMSE,
     NRMSE,
+    InterfaceRMSE,
 )
 
 # Loss registry with metadata:
@@ -90,6 +91,11 @@ LOSS_REGISTRY = {
         "class": NRMSE,
         "default_name": "NRMSE",
         "default_config": "loss_metrics/NRMSE/nrmse_default",
+    },
+    "InterfaceRMSE": {
+        "class": InterfaceRMSE,
+        "default_name": "InterfaceRMSE",
+        "default_config": "loss_metrics/InterfaceRMSE/interface_rmse_default",
     },
 }
 

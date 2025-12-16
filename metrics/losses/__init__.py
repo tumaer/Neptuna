@@ -12,6 +12,7 @@ from .integral_conservation_rmse import IntegralConservationRMSE
 from .rmse import RMSE
 from .vrmse import VRMSE
 from .nrmse import NRMSE
+from .interface_rmse import InterfaceRMSE
 
 __all__ = [
     'L1Loss',
@@ -27,5 +28,6 @@ __all__ = [
     'IntegralConservationRMSE',
     'RMSE',
     'VRMSE',
-    'NRMSE'
+    'NRMSE',
+    "InterfaceRMSE",
 ]

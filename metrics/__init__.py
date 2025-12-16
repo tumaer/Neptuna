@@ -17,6 +17,7 @@ from .losses import (
     RMSE,
     VRMSE,
     NRMSE,
+    InterfaceRMSE,
 )
 
 from .weighting_strategies import (
@@ -47,4 +48,5 @@ __all__ = [
     'ResidualBasedAttention',
     'SoftAdapt',
     'BalancedResidualDecayRate',
+    'InterfaceRMSE',
 ]
