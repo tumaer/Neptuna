@@ -26,12 +26,6 @@ residual_config: null
   # add_predicted_value_with_diff_loss: True
   # add_predicted_value_with_raw_loss: False
 coord_features: True
+log_transform_channels: []
 data_normalization_strategy: z_normalization
-data_normalization_stats:
-  velocity:
-    mean: 1.4921739360114074e-07
-    std: 0.33965544523545554
-    min: -0.9674431085586548
-    max: 1.3724584579467773
-    median: -0.013500070665031672
-    iqr: 0.47064224630594254
+data_normalization_stats: null

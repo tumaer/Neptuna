@@ -999,6 +999,7 @@ class TransientDataset(Dataset):
         self.input_channels = filter_in_channels
         self.conditioning_in_channels = conditioning_in_channels
         self.output_channels = filter_out_channels
+        self.log_transform_channels = kwargs["log_transform_channels"]
         _inc_params = kwargs.get("include_conditioning_parameters", False)
         if not isinstance(_inc_params, bool):
             raise TypeError(
@@ -1135,6 +1136,11 @@ class TransientDataset(Dataset):
                     # Extract the specific component and keep a singleton channel dim for consistency
                     input_seq_per_channel = np.stack([group[channel_name][i][component_idx:component_idx + 1] for i in input_indices], axis=0)
 
+                if channel in self.log_transform_channels:
+                    # Add small epsilon to avoid log(0)
+                    epsilon = 1e-10
+                    input_seq_per_channel = np.log(np.maximum(input_seq_per_channel, epsilon))
+                
                 # Skip normalization for mask channels
                 if "mask" not in channel.lower():
                     input_seq_per_channel = normalize_data(
@@ -1191,6 +1197,11 @@ class TransientDataset(Dataset):
                             label_seq_per_channel = np.stack([group[channel_name][label_indices[i]][component_idx:component_idx + 1] for i in range(1, len(label_indices))], axis=0)
                         else: #add_base_value_with_raw_loss
                             label_seq_per_channel = np.stack([group[channel_name][label_indices[i]][component_idx:component_idx + 1] for i in range(1, len(label_indices))], axis=0)
+
+                if channel in self.log_transform_channels:
+                    # Add small epsilon to avoid log(0)
+                    epsilon = 1e-10
+                    label_seq_per_channel = np.log(np.maximum(label_seq_per_channel, epsilon))
 
                 # Select appropriate normalisation stats depending on residual mode
                 norm_key = channel if ((self.residual_config is None) or (self.residual_config["add_base_value_with_raw_loss"]) or (self.residual_config["add_predicted_value_with_raw_loss"])) else f"{channel}_residual"

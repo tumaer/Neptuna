@@ -71,6 +71,30 @@ def load_pretrained_model(model_config):
 
     return model
 
+def inverse_log_transform_channels(data_array, channel_names, log_transform_channels):
+    """
+    Apply inverse log transform (exp) to specified channels.
+    
+    Args:
+        data_array: numpy array with shape (N, T, C, *spatial)
+        channel_names: list of channel names corresponding to C dimension
+        log_transform_channels: list of channel names that were log-transformed
+    
+    Returns:
+        Modified array with inverse log transform applied
+    """
+    if not log_transform_channels:
+        return data_array
+    
+    data_array = data_array.copy()  # Avoid modifying original
+    
+    for c_idx, ch_name in enumerate(channel_names):
+        if ch_name in log_transform_channels:
+            # Apply exp to invert log transform
+            data_array[:, :, c_idx] = np.exp(data_array[:, :, c_idx])
+    
+    return data_array
+
 def build_train_and_eval_loss(loss_config, data_config, device: torch.device):
     """
     Construct training and eval CompositeLoss from configs.
@@ -209,7 +233,7 @@ def find_checkpoint_path(experiment_dir):
     checkpoint_dirs.sort(key=lambda x: int(x.split('-')[-1]))
     return checkpoint_dirs[-1]
 
-def save_errors_to_csv(errors, output_dir):
+def save_errors_to_csv(errors, output_dir, file_name):
     """
     Save errors to 2 CSV files in the specified output directory.
 
@@ -217,7 +241,7 @@ def save_errors_to_csv(errors, output_dir):
         errors: Dictionary of errors to save.
         output_dir: Directory where the CSV file will be saved.
     """
-    csv_file = os.path.join(output_dir, "results.csv")
+    csv_file = os.path.join(output_dir, file_name)
     file_is_empty = not os.path.exists(csv_file) or os.stat(csv_file).st_size == 0
 
     with open(csv_file, mode='a', newline='') as file:
@@ -707,6 +731,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                                                 n_infer_rollouts=infer_config["n_infer_rollouts"],
                                                 infer_from_random_timestep=infer_config["infer_from_random_timestep"],
                                                 infer_from_ic=infer_config["infer_from_ic"],
+                                                log_transform_channels=data_config["log_transform_channels"],
                                                 )
         
         trainer = get_trainer(
@@ -741,7 +766,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 if ("error" in key) or ("eval" in key):
                     print(f"{key}: {value}")
                     errors["random_start"+key] = value
-            save_errors_to_csv(errors, solo_inference_dir)
+            save_errors_to_csv(errors, solo_inference_dir, "results.csv")
             # ----------------------------------------------------------
             # Prepare prediction, target and input arrays
             # ----------------------------------------------------------
@@ -781,6 +806,20 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 dataset=infer_ds,
                 residual_config=data_config.get("residual_config", None),
                 conditioning_inputs=cond_inp_arr,
+            )
+
+            log_transform_channels = data_config["log_transform_channels"]
+
+            inp_renorm = inverse_log_transform_channels(
+                inp_renorm, only_input_channel_names, log_transform_channels
+            )
+
+            tgt_renorm = inverse_log_transform_channels(
+                tgt_renorm, output_channel_names, log_transform_channels
+            )
+
+            pred_renorm = inverse_log_transform_channels(
+                pred_renorm, output_channel_names, log_transform_channels
             )
 
             # Infer spatial dimensionality (1D / 2D / 3D)
@@ -884,7 +923,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 if ("error" in key) or ("eval" in key):
                     print(f"{key}: {value}")
                     errors["ic_start"+key] = value
-            save_errors_to_csv(errors, solo_inference_dir)
+            save_errors_to_csv(errors, solo_inference_dir, "results.csv")
 
             preds = predictions_obj.predictions
             targets = predictions_obj.label_ids
@@ -906,7 +945,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             for metric_name, values in per_rollout_step_metrics_ic.items():
                 print(f"{metric_name} per-step (IC start): {values}")
                 errors[metric_name] = values
-            save_errors_to_csv(errors, solo_inference_dir)
+            save_errors_to_csv(errors, solo_inference_dir, "results.csv")
 
             # ----------------------------------------------------------
             # Renormalise data and reconstruct residuals for plotting
@@ -926,7 +965,33 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 residual_config=data_config.get("residual_config", None),
                 conditioning_inputs=cond_inp_arr,
             )
+
+            log_transform_channels = data_config["log_transform_channels"]
+
+            inp_renorm = inverse_log_transform_channels(
+                inp_renorm, only_input_channel_names, log_transform_channels
+            )
+
+            tgt_renorm = inverse_log_transform_channels(
+                tgt_renorm, output_channel_names, log_transform_channels
+            )
+
+            pred_renorm = inverse_log_transform_channels(
+                pred_renorm, output_channel_names, log_transform_channels
+            )
             
+
+            # Compute renormalized metrics: necessary for comparing performance between runs with different data preprocessing
+            per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(
+                pred_renorm, tgt_renorm, outputs_per_rollout=outputs_per_rollout, include_per_timestep=True, loss_metric=eval_loss_fn
+            )
+            
+            errors = {}
+            for metric_name, values in per_rollout_step_metrics_ic.items():
+                print(f"{metric_name} per-step (IC start, renorm): {values}")
+                errors[metric_name] = values
+            save_errors_to_csv(errors, solo_inference_dir, "results_renorm.csv")
+
             # Infer spatial dimensionality (1D / 2D / 3D)
             ndim = pred_renorm.ndim - 3  # subtract batch, time, channel dims
 

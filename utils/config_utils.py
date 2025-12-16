@@ -119,7 +119,8 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
             filter_frames=cfg["data_config"]["filter_features"]["train_filter_frames"],
             frame_stride=cfg["data_config"]["sequence_info"][2],
             on_fly_stats=True,
-            num_workers=4
+            num_workers=4,
+            log_transform_channels=cfg["data_config"]["log_transform_channels"],
         )
         print(f"compute_statistics took {time.perf_counter() - _t_start:.2f} seconds")
         cfg["data_config"]["data_normalization_stats"] = stats

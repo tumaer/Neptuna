@@ -694,8 +694,11 @@ def _process_single_file(
     filter_frames: List[int] | None,
     frame_stride: int,
     on_fly_stats: bool,
+    log_transform_channels: List[str] | None = None,
 ) -> Dict[str, _StatsAggregator]:
     """Compute per-channel aggregators for *one* HDF5 file (worker)."""
+
+    log_channels_set = set(log_transform_channels or [])
 
     # Discover metadata for this file (may raise if filter_groups missing)
     try:
@@ -708,6 +711,8 @@ def _process_single_file(
     residual_aggs: Dict[str, _StatsAggregator] | None = None
     if residual_config is not None:
         residual_aggs = {f"{n}_residual": _StatsAggregator() for n in channel_names}
+
+    epsilon = 1e-10
 
     with h5py.File(path, "r") as f:
         for grp_name in f:
@@ -734,13 +739,39 @@ def _process_single_file(
                     frame_slice = slice(None, None, frame_stride if frame_stride != 1 else None)
 
                 data = field[frame_slice]
-                res_data = np.diff(data, axis=0) if residual_aggs is not None and data.shape[0] > 1 else None
-
+                
                 for ch in range(ch_dim):
                     key = field_name if ch_dim == 1 else f"{field_name}_{ch}"
-                    aggs[key].add(data[:, ch])
-                    if res_data is not None:
-                        residual_aggs[f"{key}_residual"].add(res_data[:, ch])
+                    
+                    # Extract channel data
+                    channel_data = data[:, ch]
+                    
+                    # ============================================================
+                    # Apply log transform BEFORE computing statistics
+                    # ============================================================
+                    if key in log_channels_set:
+                        channel_data = np.log(np.maximum(channel_data, epsilon))
+                    
+                    # Add to aggregator
+                    aggs[key].add(channel_data)
+                    
+                    # ============================================================
+                    # Handle residuals
+                    # ============================================================
+                    if residual_aggs is not None and data.shape[0] > 1:
+                        res_key = f"{key}_residual"
+                        
+                        if key in log_channels_set:
+                            # For log-transformed channels:
+                            # Compute residuals in log space as log(x[t]) - log(x[t-1])
+                            # This is NOT the same as log(x[t] - x[t-1])
+                            log_original = np.log(np.maximum(data[:, ch], epsilon))
+                            res_data = np.diff(log_original, axis=0)
+                        else:
+                            # For normal channels: standard temporal difference
+                            res_data = np.diff(data[:, ch], axis=0)
+                        
+                        residual_aggs[res_key].add(res_data)
 
     # merge residuals into main dict (if any)
     if residual_aggs is not None:
@@ -767,6 +798,7 @@ def compute_statistics_parallel(
     frame_stride: int = 1,
     on_fly_stats: bool = False,
     num_workers: int | None = None,
+    log_transform_channels: List[str] | None = None,
 ) -> Tuple[Dict[str, Dict[str, float]], List[str], int]:
     """Parallel CPU implementation of :func:`compute_statistics`.
 
@@ -777,6 +809,8 @@ def compute_statistics_parallel(
 
     if len(h5_paths) == 0:
         raise ValueError("h5_paths list is empty.")
+
+    log_channels_set = set(log_transform_channels or [])
 
     # ------------------------------------------------------------------
     # Discover metadata once (first file that fits the filters)
@@ -813,6 +847,7 @@ def compute_statistics_parallel(
                 _it.repeat(filter_frames),
                 _it.repeat(frame_stride),
                 _it.repeat(on_fly_stats),
+                _it.repeat(log_transform_channels),
             )
         )
 

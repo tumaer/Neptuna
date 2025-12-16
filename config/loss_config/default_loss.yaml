@@ -2,7 +2,7 @@ loss:
   components:
     - type: L2Loss
       weight: 0.5
-    - type: InterfaceRMSE
+    - type: L2Loss
       weight: 1.0
 
 loss_weighting_strategy:
