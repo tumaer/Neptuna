@@ -5,5 +5,3 @@ loss:
       weight: 1.0
     - type: PearsonCorrelationLoss
       weight: 1.0
-    - type: L1Loss
-      weight: 1.0

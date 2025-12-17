@@ -189,6 +189,7 @@ def fetch_eval_loss_config(cfg):
     """
     Loads evaluation loss config and overrides timestep_weights and channel_weights
     to ensure uniform weighting across all timesteps and channels.
+    Also includes all training loss components for evaluation.
     """
     eval_loss_config_path = "./config/loss_config/infer_loss.yaml"
     eval_loss_cfg = OmegaConf.load(eval_loss_config_path)
@@ -196,10 +197,33 @@ def fetch_eval_loss_config(cfg):
     # Get number of channels from data config
     num_channels = len(cfg.data_config.filter_features.filter_out_channels)
     
-    # Override weights for each component
+    # Override weights for evaluation components
     for component in eval_loss_cfg.loss.components:
         component.timestep_weights = [1.0]
         component.channel_weights = [1.0] * num_channels
+    
+    # Add training loss components if they exist and aren't already included
+    if hasattr(cfg, 'loss_config') and hasattr(cfg.loss_config, 'loss') and hasattr(cfg.loss_config.loss, 'components'):
+        # Get types of existing eval components
+        eval_component_types = {comp.get('type', comp.get('_target_', '').split('.')[-1]) 
+                                for comp in eval_loss_cfg.loss.components}
+        
+        # Add training components that aren't already in eval config
+        for train_component in cfg.loss_config.loss.components:
+            train_comp_type = train_component.get('type', train_component.get('_target_', '').split('.')[-1])
+            
+            if train_comp_type not in eval_component_types:
+                # Create a copy of the training component
+                eval_component = OmegaConf.to_container(train_component, resolve=True)
+                eval_component = OmegaConf.create(eval_component)
+                
+                # Override weights for uniform evaluation
+                eval_component.weight = 1.0
+                eval_component.timestep_weights = [1.0]
+                eval_component.channel_weights = [1.0] * num_channels
+                
+                # Add to eval config
+                eval_loss_cfg.loss.components.append(eval_component)
     
     full_eval_cfg = OmegaConf.create({
         "loss_config": eval_loss_cfg,
