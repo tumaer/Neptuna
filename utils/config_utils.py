@@ -294,28 +294,32 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
             OmegaConf.set_struct(cfg.loss_config, False)
             
             for component_cfg in cfg.loss_config.loss.components:
-                # Get registry entry
                 loss_type = component_cfg.type
                 registry_entry = get_loss_entry(loss_type)
                 default_config = registry_entry["default_config"]
 
-                # Decide which config_file to use:
-                #  - explicit in YAML has priority
-                #  - fallback to registry default
                 config_file = component_cfg.get("config_file", default_config)
-                
-                # Only load if we don't already have metric_params
-                if config_file is not None and not hasattr(component_cfg, 'metric_params'):
+
+                # Ensure metric_params exists (as a DictConfig) so merges behave nicely
+                existing_metric = component_cfg.get("metric_params", None)
+                if existing_metric is None:
+                    existing_metric = OmegaConf.create({})
+
+                # Load defaults (if available)
+                defaults_metric = OmegaConf.create({})
+                if config_file is not None:
                     config_path = f"config/loss_config/{config_file}.yaml"
-                    
                     if os.path.exists(config_path):
                         try:
-                            metric_config = OmegaConf.load(config_path)
-                            component_cfg.metric_params = metric_config
+                            defaults_metric = OmegaConf.load(config_path)
                         except Exception:
-                            component_cfg.metric_params = {}
-                    else:
-                        component_cfg.metric_params = {}
+                            defaults_metric = OmegaConf.create({})
+
+                # Merge so that existing/user-provided keys WIN over defaults
+                # (OmegaConf.merge: later arguments take precedence)
+                merged_metric = OmegaConf.merge(defaults_metric, existing_metric)
+
+                component_cfg.metric_params = merged_metric
             
             OmegaConf.set_struct(cfg.loss_config, True)
 
