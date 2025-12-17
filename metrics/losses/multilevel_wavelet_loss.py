@@ -60,6 +60,8 @@ class MultilevelWaveletLoss(LossComponent):
         predictions, labels: (B, T, C, *spatial)
         Returns weighted total loss.
         """
+        base = float(self.weight_schedule.base_weight)
+
         if predictions.shape != labels.shape:
             raise ValueError(f"predictions and labels must have same shape, got {predictions.shape} vs {labels.shape}")
 
@@ -79,8 +81,8 @@ class MultilevelWaveletLoss(LossComponent):
         # temporal wavelet loss (over time dimension only)
         Lwt = self._wavelet_loss_temporal(predictions_weighted, labels_weighted)
 
-        # total (unweighted)
-        total = Lws + self.beta * Lwt
+        # total (weighted)
+        total = (Lws + self.beta * Lwt) * base
 
         total = apply_batch_normalization(
             total,

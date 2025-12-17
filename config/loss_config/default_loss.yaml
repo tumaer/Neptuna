@@ -2,8 +2,8 @@ loss:
   components:
     - type: L2Loss
       weight: 0.5
-    - type: L1Loss
-      weight: 1.0
+    - type: MultilevelWaveletLoss
+      weight: 0.01
 
 loss_weighting_strategy:
   enabled: false  # Set to true to enable
