@@ -102,6 +102,7 @@ class IntegralConservationRMSE(LossComponent):
         use_boundary_fluxes: bool = False,
         quantity_weights: Optional[Dict[str, float]] = None,
         normalization: Literal['none', 'magnitude', 'variance'] = 'none',
+        reference_quantities: Optional[Dict[str, float]] = None,
         eps: float = 1e-8,
     ):
         # Convert quantity_weights to WeightSchedule format
@@ -129,7 +130,17 @@ class IntegralConservationRMSE(LossComponent):
         self.last_components: Dict[str, torch.Tensor] = {}
         self.normalization = normalization
 
-        # Build registries (same as before)
+        ref_quantities = reference_quantities or {}
+        self.ref_rho = ref_quantities.get('density', 1.0)
+        self.ref_u = ref_quantities.get('velocity', 1.0)
+        self.ref_p = ref_quantities.get('pressure', 1.0)
+        self.ref_L = ref_quantities.get('length', 1.0)
+        self.ref_T = ref_quantities.get('temperature', 1.0)
+        self.ref_E = ref_quantities.get('energy', self.ref_p)
+
+        self.characteristic_scales = self._build_characteristic_scales()
+
+        # Build registries
         self._domain_quantity_registry: Dict[str, DomainQuantity] = (
             self._build_domain_quantity_registry()
         )
@@ -137,7 +148,7 @@ class IntegralConservationRMSE(LossComponent):
             self._build_boundary_flux_registry()
         )
 
-        # Resolve quantities (same as before)
+        # Resolve quantities
         self.domain_quantities: List[DomainQuantity] = []
         for key in self.conserved_keys:
             if key not in self._domain_quantity_registry:
@@ -157,6 +168,55 @@ class IntegralConservationRMSE(LossComponent):
                     )
                 self.boundary_flux_quantities.append(self._boundary_flux_registry[key])
 
+    def _build_characteristic_scales(self) -> Dict[str, float]:
+        """
+        Build characteristic scales for each conserved quantity type.
+        
+        Based on dimensional analysis:
+        - mass: ρ * L^d (where d is spatial dimension)
+        - momentum: ρ * u * L^d
+        - kinetic_energy: ρ * u^2 * L^d
+        - energy: E * L^d (or p * L^d)
+        - enstrophy: (u/L)^2 * L^d = u^2 / L^(2-d)
+        - divergence: (u/L)^2 * L^d = u^2 / L^(2-d)
+        
+        For boundary fluxes (per unit time):
+        - mass flux: ρ * u * L^(d-1)
+        - momentum flux: ρ * u^2 * L^(d-1)  or  p * L^(d-1)
+        - energy flux: E * u * L^(d-1)  or  p * u * L^(d-1)
+        """
+        scales = {}
+        
+        # Get spatial dimension
+        d = self.data_dim if self.data_dim is not None else 2
+        L_d = self.ref_L ** d
+        L_d_minus_1 = self.ref_L ** (d - 1)
+        
+        # Domain quantities
+        scales["mass"] = self.ref_rho * L_d
+        scales["Px"] = self.ref_rho * self.ref_u * L_d
+        scales["Py"] = self.ref_rho * self.ref_u * L_d
+        scales["Pz"] = self.ref_rho * self.ref_u * L_d
+        scales["kinetic_energy"] = self.ref_rho * (self.ref_u ** 2) * L_d
+        scales["energy"] = self.ref_E * L_d
+        scales["enstrophy"] = (self.ref_u ** 2) / (self.ref_L ** (2 - d))
+        scales["divergence"] = (self.ref_u ** 2) / (self.ref_L ** (2 - d))
+        
+        # Boundary fluxes
+        scales["mass_flux"] = self.ref_rho * self.ref_u * L_d_minus_1
+        scales["Px_flux"] = max(
+            self.ref_rho * (self.ref_u ** 2) * L_d_minus_1,
+            self.ref_p * L_d_minus_1
+        )
+        scales["Py_flux"] = scales["Px_flux"]
+        scales["Pz_flux"] = scales["Px_flux"]
+        scales["energy_flux"] = max(
+            self.ref_E * self.ref_u * L_d_minus_1,
+            self.ref_p * self.ref_u * L_d_minus_1
+        )
+        
+        return scales
+
     def forward(
         self,
         model: nn.Module,
@@ -172,7 +232,7 @@ class IntegralConservationRMSE(LossComponent):
         domain_pred = self._compute_domain_conserved(pred_fields)
         domain_true = self._compute_domain_conserved(true_fields)
 
-        # Compute cRMSE for domain quantities
+        # Compute normalized errors for domain quantities (raw differences)
         domain_loss_dict = self._compute_cRMSE_dict(
             domain_pred,
             domain_true,
@@ -189,15 +249,20 @@ class IntegralConservationRMSE(LossComponent):
                 flux_true,
             )
 
-        # Aggregate with component weights from WeightSchedule
+        # All components contain raw normalized differences
         all_components = {**domain_loss_dict, **boundary_loss_dict}
-        self.last_components = all_components
+        
+        # Store detailed components (raw differences)
+        self.last_components = {k: v.detach() for k, v in all_components.items()}
 
-        total = torch.zeros((), device=predictions.device, dtype=predictions.dtype)
+        # Aggregate: compute MSE = mean(weighted_components^2)
+        total_squared = torch.zeros((), device=predictions.device, dtype=predictions.dtype)
         for name, value in all_components.items():
-            # Use WeightSchedule's component weights
             q_weight = self.weight_schedule.get_component_weight(name)
-            total = total + q_weight * value
+            total_squared = total_squared + q_weight * (value ** 2)
+
+        # Take square root to get RMSE
+        total = torch.sqrt(total_squared + self.eps)
 
         total = apply_batch_normalization(
             total,
@@ -212,10 +277,8 @@ class IntegralConservationRMSE(LossComponent):
         if not return_detailed:
             return weighted_total
 
-        # Build detailed breakdown
-        detailed = {}
-        for name, value in all_components.items():
-            detailed[name] = value.detach()
+        # Build detailed breakdown (raw differences)
+        detailed = {name: value.detach() for name, value in all_components.items()}
 
         return weighted_total, detailed
 
@@ -400,31 +463,6 @@ class IntegralConservationRMSE(LossComponent):
 
         return out
 
-    def _get_reference_scales(
-        self,
-        series_true: Dict[str, torch.Tensor],
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Compute reference scales for normalization.
-
-        Uses RMS over batch and time: S_Q = √⟨Q²⟩
-
-        Parameters
-        ----------
-        series_true : dict of str -> Tensor
-            True series, each of shape (B, T, ...).
-
-        Returns
-        -------
-        dict of str -> Tensor
-            Maps key to scalar reference scale.
-        """
-        ref_scales: Dict[str, torch.Tensor] = {}
-        for key, x in series_true.items():
-            ref = torch.sqrt(torch.mean(x**2))
-            ref_scales[key] = ref
-        return ref_scales
-
     def _compute_cRMSE_dict(
         self,
         series_pred: Dict[str, torch.Tensor],
@@ -432,9 +470,9 @@ class IntegralConservationRMSE(LossComponent):
         prefix: str = "",
     ) -> Dict[str, torch.Tensor]:
         """
-        Compute normalized cRMSE for each quantity.
+        Compute dimensionless normalized raw difference for each quantity.
 
-        cRMSE_normalized = RMSE(pred, true) / (reference_scale + eps)
+        error_normalized = (pred - true) / characteristic_scale
 
         Parameters
         ----------
@@ -448,12 +486,11 @@ class IntegralConservationRMSE(LossComponent):
         Returns
         -------
         dict of str -> Tensor
-            Maps f"{prefix}/{key}" to scalar loss.
+            Maps f"{prefix}/{key}" to scalar dimensionless difference.
         """
         if not series_true:
             return {}
 
-        ref_scales = self._get_reference_scales(series_true)
         loss_dict: Dict[str, torch.Tensor] = {}
         
         for key in self.conserved_keys:
@@ -463,9 +500,18 @@ class IntegralConservationRMSE(LossComponent):
             pred = series_pred[key]
             true = series_true[key]
 
-            c_rmse = self._rmse(pred, true)
-            ref = ref_scales.get(key, torch.tensor(1.0, device=pred.device, dtype=pred.dtype))
-            scaled = c_rmse / (ref + self.eps)
+            diff = self._mean_diff(pred, true)
+            
+            # Get characteristic scale for this quantity
+            char_scale = self.characteristic_scales.get(key, 1.0)
+            char_scale_tensor = torch.tensor(
+                char_scale,
+                device=pred.device,
+                dtype=pred.dtype
+            )
+            
+            # Nondimensionalize
+            scaled = diff / (char_scale_tensor + self.eps)
 
             name = f"{prefix}/{key}" if prefix else key
             loss_dict[name] = scaled
@@ -478,7 +524,7 @@ class IntegralConservationRMSE(LossComponent):
         flux_true: Dict[str, Dict[str, torch.Tensor]],
     ) -> Dict[str, torch.Tensor]:
         """
-        Compute normalized cRMSE for boundary fluxes.
+        Compute dimensionless normalized raw difference for boundary fluxes.
 
         Parameters
         ----------
@@ -490,35 +536,38 @@ class IntegralConservationRMSE(LossComponent):
         Returns
         -------
         dict of str -> Tensor
-            Maps "boundary/{quantity}/{patch}" to scalar loss.
+            Maps "boundary/{quantity}/{patch}" to scalar dimensionless difference.
         """
-        # Flatten for reference scale computation
-        true_flat: Dict[str, torch.Tensor] = {}
-        for q_key, patch_dict in flux_true.items():
-            for p_name, series in patch_dict.items():
-                name = f"{q_key}:{p_name}"
-                true_flat[name] = series
-
-        ref_scales = self._get_reference_scales(true_flat) if true_flat else {}
         loss_dict: Dict[str, torch.Tensor] = {}
 
         for q_key in self.boundary_keys:
             if q_key not in flux_pred or q_key not in flux_true:
                 continue
 
+            # Get characteristic scale for this flux quantity
+            flux_scale_key = f"{q_key}_flux"
+            char_scale = self.characteristic_scales.get(
+                flux_scale_key,
+                self.characteristic_scales.get(q_key, 1.0)
+            )
+
             for patch_name, true_series in flux_true[q_key].items():
                 if patch_name not in flux_pred[q_key]:
                     continue
 
                 pred_series = flux_pred[q_key][patch_name]
-                c_rmse = self._rmse(pred_series, true_series)
-
-                ref_key = f"{q_key}:{patch_name}"
-                ref = ref_scales.get(
-                    ref_key,
-                    torch.tensor(1.0, device=pred_series.device, dtype=pred_series.dtype),
+                
+                diff = self._mean_diff(pred_series, true_series)
+                
+                # Convert scale to tensor
+                char_scale_tensor = torch.tensor(
+                    char_scale,
+                    device=pred_series.device,
+                    dtype=pred_series.dtype
                 )
-                scaled = c_rmse / (ref + self.eps)
+                
+                # Nondimensionalize
+                scaled = diff / (char_scale_tensor + self.eps)
 
                 name = f"boundary/{q_key}/{patch_name}"
                 loss_dict[name] = scaled
@@ -526,13 +575,13 @@ class IntegralConservationRMSE(LossComponent):
         return loss_dict
 
     @staticmethod
-    def _rmse(
+    def _mean_diff(
         pred: torch.Tensor,
         true: torch.Tensor,
     ) -> torch.Tensor:
-        """Compute MSE over all dimensions."""
+        """Compute mean difference over all dimensions."""
         diff = pred - true
-        return torch.mean(diff**2)
+        return torch.mean(torch.abs(diff))
 
 
 # ------------------------------------------------------------------
