@@ -4,7 +4,7 @@ import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization, NormalizationHelper
 from typing import Literal, Optional, List, Dict, Union, Tuple
 
 # Adapted from mssim.pytorch:
@@ -13,11 +13,11 @@ from typing import Literal, Optional, List, Dict, Union, Tuple
 class MSSSIM(LossComponent):
     def __init__(
         self,
+        norm_helper: NormalizationHelper,
         weight: float = 1.0,
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
-        norm_stats: Dict[str, Dict[str, float]] = None,
         window_size=11,
         sigma=1.5,
         *,
@@ -51,7 +51,7 @@ class MSSSIM(LossComponent):
         [1] Wang, Zhou et al. “Image quality assessment: from error visibility to structural similarity.” IEEE Transactions on Image Processing 13 (2004): 600-612.
         [2] Wang, Zhou et al. “Multi-scale structural similarity for image quality assessment.” (2003).
         """
-        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_stats=norm_stats)
+        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_helper=norm_helper)
         
         self.data_dim = data_dim
         self.window_size = window_size

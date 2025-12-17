@@ -5,7 +5,7 @@ from typing import Literal, List, Optional, Dict, Union, Tuple
 import torch
 import torch.nn as nn
 from torch.nn.functional import conv1d, avg_pool1d, avg_pool2d, avg_pool3d, interpolate
-from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization, NormalizationHelper
 
 try:  # Import the keops library, www.kernel-operations.io
     from pykeops.torch import generic_logsumexp, LazyTensor
@@ -30,11 +30,11 @@ class SinkhornDivergence(LossComponent):
     """
     def __init__(
         self,
+        norm_helper: NormalizationHelper,
         weight: float = 1.0,
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
-        norm_stats: Dict[str, Dict[str, float]] = None,
         p: int = 2,
         blur: float = None,
         reach: float = None,
@@ -48,7 +48,7 @@ class SinkhornDivergence(LossComponent):
         **kwargs,
     ):
 
-        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_stats=norm_stats)
+        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_helper=norm_helper)
         
         # Sinkhorn-specific parameters
         self.p = p

@@ -1,6 +1,6 @@
 from omegaconf import DictConfig, OmegaConf
 import torch
-from metrics.training_metrics import CompositeLoss, WeightSchedule
+from metrics.training_metrics import CompositeLoss, WeightSchedule, NormalizationHelper
 from metrics.loss_registry import get_loss_entry
 from typing import Union, Optional
 from metrics.loss_weighting_strategies import LossWeightingStrategyBase
@@ -69,6 +69,8 @@ def fetch_loss_metric(cfg) -> CompositeLoss:
     data_dim = cfg.data_config.dimension
     field_names = cfg.data_config.filter_features.filter_out_channels
     norm_stats = cfg.data_config.data_normalization_stats
+    norm_strategy = cfg.data_config.data_normalization_strategy
+    is_residual = False
     
     for component_cfg in cfg.loss_config.loss.components:
         loss_type = component_cfg.type
@@ -85,7 +87,15 @@ def fetch_loss_metric(cfg) -> CompositeLoss:
         # 2) Create weight or weight schedule
         weight = create_weight_schedule(component_cfg)
 
-        # 3) Load metric-specific config
+        # 3) Create normalization helper
+        norm_helper = NormalizationHelper(
+            norm_stats=norm_stats,
+            norm_strategy=norm_strategy,
+            channel_names=field_names,
+            is_residual=is_residual,
+        )
+
+        # 4) Load metric-specific config
         metric_params = {}
         if hasattr(component_cfg, "metric_params"):
             # Already populated by prepare_config or checkpoint
@@ -111,7 +121,7 @@ def fetch_loss_metric(cfg) -> CompositeLoss:
             name=name,
             data_dim=data_dim,
             field_names=field_names,
-            norm_stats=norm_stats,
+            norm_helper=norm_helper,
             **metric_params,
         )
         loss_components.append(loss_instance)

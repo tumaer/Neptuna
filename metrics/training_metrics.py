@@ -169,6 +169,251 @@ class WeightSchedule(nn.Module):
             result['component_weights'] = self.component_weights
         return result
 
+class NormalizationHelper(nn.Module):
+    """
+    Helper for converting between normalized and physical quantities in losses.
+    
+    Some loss components need to:
+      * Denormalize predictions/labels to physical space for computing metrics
+      * Normalize physical thresholds/constants to model space for comparisons
+    
+    This class encapsulates the normalization statistics and strategy,
+    providing tensor operations for both directions.
+    """
+    
+    def __init__(
+        self,
+        norm_stats: Dict[str, Dict[str, float]],
+        norm_strategy: str,
+        channel_names: List[str],
+        is_residual: bool = False,
+        residual_suffix: str = "_residual"
+    ):
+        """
+        Args:
+            norm_stats: 
+                Dictionary mapping channel names to statistics dicts.
+                Each stats dict should contain keys appropriate for the
+                normalization strategy (e.g., 'mean', 'std' for z-score).
+            norm_strategy:
+                Normalization method, e.g., 'z-score', 'min-max', 'none'.
+            channel_names:
+                List of channel names in order, matching the channel dimension
+                of tensors that will be passed to normalize/denormalize.
+            is_residual:
+                If True, append residual_suffix to channel names when looking
+                up statistics (for residual learning workflows).
+            residual_suffix:
+                Suffix appended to channel names when is_residual=True.
+        """
+        super().__init__()
+    
+        self.norm_stats = norm_stats
+        self.norm_strategy = norm_strategy
+        self.channel_names = channel_names
+        self.is_residual = is_residual
+        self.residual_suffix = residual_suffix
+        
+        # Build lookup keys (with residual suffix if needed)
+        self.stat_keys = [
+            f"{name}{residual_suffix}" if is_residual else name
+            for name in channel_names
+        ]
+
+    def denormalize(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.norm_strategy == 'no_normalization':
+            return tensor
+        
+        result = tensor.clone()
+        channel_axis = 2 if tensor.ndim > 3 else 1
+        eps = 1e-12
+        
+        for c_idx, ch_name in enumerate(self.channel_names):
+            # Skip mask channels
+            if "mask" in ch_name.lower():
+                continue
+                
+            stat_key = self.stat_keys[c_idx]
+            if stat_key not in self.norm_stats:
+                raise ValueError(f"Missing normalization stats for channel: {stat_key}")
+            
+            stats = self.norm_stats[stat_key]
+            
+            if self.norm_strategy == 'z_normalization':
+                mean = stats.get('mean', 0.0)
+                std = stats.get('std', 1.0)
+                if channel_axis == 2:
+                    result[:, :, c_idx] = tensor[:, :, c_idx] * (std + eps) + mean
+                else:
+                    result[:, c_idx] = tensor[:, c_idx] * (std + eps) + mean
+                    
+            elif self.norm_strategy == 'min_max_normalization':
+                min_val = stats.get('min', 0.0)
+                max_val = stats.get('max', 1.0)
+                range_val = max_val - min_val
+                if channel_axis == 2:
+                    result[:, :, c_idx] = tensor[:, :, c_idx] * (range_val + eps) + min_val
+                else:
+                    result[:, c_idx] = tensor[:, c_idx] * (range_val + eps) + min_val
+                    
+            elif self.norm_strategy == 'robust_normalization':
+                median = stats.get('median', 0.0)
+                iqr = stats.get('iqr', 1.0)
+                if channel_axis == 2:
+                    result[:, :, c_idx] = tensor[:, :, c_idx] * (iqr + eps) + median
+                else:
+                    result[:, c_idx] = tensor[:, c_idx] * (iqr + eps) + median
+        
+        return result
+
+    def normalize(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.norm_strategy == 'no_normalization':
+            return tensor
+        
+        result = tensor.clone()
+        
+        channel_axis = 2 if tensor.ndim > 3 else 1
+        eps = 1e-12
+        
+        for c_idx, ch_name in enumerate(self.channel_names):
+            if "mask" in ch_name.lower():
+                continue
+                
+            stat_key = self.stat_keys[c_idx]
+            if stat_key not in self.norm_stats:
+                raise ValueError(f"Missing normalization stats for channel: {stat_key}")
+            
+            stats = self.norm_stats[stat_key]
+            
+            if self.norm_strategy == 'z_normalization':
+                mean = stats.get('mean', 0.0)
+                std = stats.get('std', 1.0)
+                if channel_axis == 2:
+                    result[:, :, c_idx] = (tensor[:, :, c_idx] - mean) / (std + eps)
+                else:
+                    result[:, c_idx] = (tensor[:, c_idx] - mean) / (std + eps)
+                    
+            elif self.norm_strategy == 'min_max_normalization':
+                min_val = stats.get('min', 0.0)
+                max_val = stats.get('max', 1.0)
+                range_val = max_val - min_val
+                if channel_axis == 2:
+                    result[:, :, c_idx] = (tensor[:, :, c_idx] - min_val) / (range_val + eps)
+                else:
+                    result[:, c_idx] = (tensor[:, c_idx] - min_val) / (range_val + eps)
+                    
+            elif self.norm_strategy == 'robust_normalization':
+                median = stats.get('median', 0.0)
+                iqr = stats.get('iqr', 1.0)
+                if channel_axis == 2:
+                    result[:, :, c_idx] = (tensor[:, :, c_idx] - median) / (iqr + eps)
+                else:
+                    result[:, c_idx] = (tensor[:, c_idx] - median) / (iqr + eps)
+        
+        return result
+
+    def denormalize_to_fields(self, tensor: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        Denormalize tensor and return as dictionary of individual field tensors.
+    
+        Returns:
+            Dictionary mapping channel_names[i] to denormalized tensor[:, :, i, ...]
+            Each field has shape (B, T, *spatial).
+        """
+        if tensor.shape[2] != len(self.channel_names):
+            raise ValueError(
+                f"Tensor has {tensor.shape[2]} channels but expected "
+                f"{len(self.channel_names)}: {self.channel_names}"
+            )
+        
+        denormed = self.denormalize(tensor)
+        
+        fields = {}
+        for i, name in enumerate(self.channel_names):
+            fields[name] = denormed[:, :, i, ...]
+        
+        return fields
+
+    def denormalize_scalar(self, value: float, channel_name: str) -> float:
+        """
+        Denormalize a single scalar value for a specific channel.
+        """
+        if self.norm_strategy == 'no_normalization':
+            return value
+        
+        try:
+            idx = self.channel_names.index(channel_name)
+        except ValueError:
+            raise ValueError(f"Channel {channel_name} not found in {self.channel_names}")
+        
+        if "mask" in channel_name.lower():
+            return value
+        
+        stat_key = self.stat_keys[idx]
+        if stat_key not in self.norm_stats:
+            raise ValueError(f"Missing normalization stats for channel: {stat_key}")
+        
+        stats = self.norm_stats[stat_key]
+        eps = 1e-12
+        
+        if self.norm_strategy == 'z_normalization':
+            mean = stats.get('mean', 0.0)
+            std = stats.get('std', 1.0)
+            return value * (std + eps) + mean
+            
+        elif self.norm_strategy == 'min_max_normalization':
+            min_val = stats.get('min', 0.0)
+            max_val = stats.get('max', 1.0)
+            range_val = max_val - min_val
+            return value * (range_val + eps) + min_val
+            
+        elif self.norm_strategy == 'robust_normalization':
+            median = stats.get('median', 0.0)
+            iqr = stats.get('iqr', 1.0)
+            return value * (iqr + eps) + median
+        
+        return value
+
+    def normalize_scalar(self, value: float, channel_name: str) -> float:
+        """
+        Normalize a single scalar value for a specific channel.
+        """
+        if self.norm_strategy == 'no_normalization':
+            return value
+        
+        try:
+            idx = self.channel_names.index(channel_name)
+        except ValueError:
+            raise ValueError(f"Channel {channel_name} not found in {self.channel_names}")
+        
+        if "mask" in channel_name.lower():
+            return value
+        
+        stat_key = self.stat_keys[idx]
+        if stat_key not in self.norm_stats:
+            raise ValueError(f"Missing normalization stats for channel: {stat_key}")
+        
+        stats = self.norm_stats[stat_key]
+        eps = 1e-12
+        
+        if self.norm_strategy == 'z_normalization':
+            mean = stats.get('mean', 0.0)
+            std = stats.get('std', 1.0)
+            return (value - mean) / (std + eps)
+            
+        elif self.norm_strategy == 'min_max_normalization':
+            min_val = stats.get('min', 0.0)
+            max_val = stats.get('max', 1.0)
+            range_val = max_val - min_val
+            return (value - min_val) / (range_val + eps)
+            
+        elif self.norm_strategy == 'robust_normalization':
+            median = stats.get('median', 0.0)
+            iqr = stats.get('iqr', 1.0)
+            return (value - median) / (iqr + eps)
+        
+        return value
+
 class LossComponent(nn.Module, ABC):
     """
     Base class for a single loss term.
@@ -192,11 +437,11 @@ class LossComponent(nn.Module, ABC):
     """
     def __init__(
         self,
+        norm_helper: Optional[NormalizationHelper] = None,
         weight: Union[float, WeightSchedule] = 1.0,
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
-        norm_stats: Dict[str, Dict[str, float]] = None,
     ):
         super().__init__()
         
@@ -209,7 +454,7 @@ class LossComponent(nn.Module, ABC):
         self.name = name or self.__class__.__name__
         self.data_dim = data_dim
         self.field_names = field_names
-        self.norm_stats = norm_stats
+        self.norm_helper = norm_helper
     
     @property
     def weight(self) -> float:
@@ -275,7 +520,7 @@ class CompositeLoss(LossComponent):
         loss_components: List[LossComponent],
         name: Optional[str] = None
     ):
-        super().__init__(weight=1.0, name=name)
+        super().__init__(weight=1.0, name=name, norm_helper=None)
         self.loss_components = nn.ModuleList(loss_components)
     
     def forward(

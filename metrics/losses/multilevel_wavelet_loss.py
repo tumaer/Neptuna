@@ -3,7 +3,7 @@ import torch.nn as nn
 import ptwt
 
 from typing import Literal, Optional, List, Dict, Union, Tuple
-from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization, NormalizationHelper
 
 # Based on paper by L. Prandtl et al.,
 # 'Wavelet-Based Loss for High-Frequency Interface Dynamics',
@@ -20,11 +20,11 @@ class MultilevelWaveletLoss(LossComponent):
 
     def __init__(
         self,
+        norm_helper: NormalizationHelper,
         weight: float = 1.0,
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
-        norm_stats: Dict[str, Dict[str, float]] = None,
         wavelet: str = "db2",
         alpha: float = 100.0,
         beta: float = 10.0,
@@ -36,7 +36,7 @@ class MultilevelWaveletLoss(LossComponent):
         reduction: str = "mean",
         normalization: Literal['none', 'magnitude', 'variance'] = 'none',
     ):
-        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_stats=norm_stats)
+        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_helper=norm_helper)
         assert reduction in ("mean", "sum")
         self.wavelet = wavelet
         self.alpha = alpha

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from abc import ABC, abstractmethod
 import torch
 from torch import nn
-from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization, NormalizationHelper
 
 # Inspired by cRMSE and bRMSE from the paper by Takamoto et al.,
 # 'PDEBENCH: An Extensive Benchmark for Scientific Machine Learning'
@@ -92,11 +92,11 @@ class BoundaryFluxQuantity(ABC):
 class IntegralConservationRMSE(LossComponent):
     def __init__(
         self,
+        norm_helper: NormalizationHelper,
         weight: Union[float, WeightSchedule] = 1.0,
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
-        norm_stats: Dict[str, Dict[str, float]] = None,
         conserved_keys: Optional[Sequence[str]] = None,
         boundary_keys: Optional[Sequence[str]] = None,
         use_boundary_fluxes: bool = False,
@@ -119,7 +119,7 @@ class IntegralConservationRMSE(LossComponent):
             name=name,
             data_dim=data_dim,
             field_names=field_names,
-            norm_stats=norm_stats,
+            norm_helper=norm_helper,
         )
 
         self.conserved_keys: Tuple[str, ...] = tuple(conserved_keys or ())
@@ -165,8 +165,8 @@ class IntegralConservationRMSE(LossComponent):
         return_detailed: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         # Denormalize fields
-        pred_fields = self._denormalize_fields(predictions, is_pred=True)
-        true_fields = self._denormalize_fields(labels, is_pred=False)
+        pred_fields = self.norm_helper.denormalize_to_fields(predictions)
+        true_fields = self.norm_helper.denormalize_to_fields(labels)
 
         # Compute domain-integrated quantities
         domain_pred = self._compute_domain_conserved(pred_fields)
@@ -314,74 +314,6 @@ class IntegralConservationRMSE(LossComponent):
 
         return registry
     
-    def _denormalize_fields(
-        self,
-        tensor: torch.Tensor,
-        is_pred: bool,
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Split channel dimension and denormalize fields using z-score.
-
-        Parameters
-        ----------
-        tensor : Tensor
-            Normalized data, shape (B, T, C, *spatial).
-        is_pred : bool
-            Whether this is prediction or ground truth.
-
-        Returns
-        -------
-        dict of str -> Tensor
-            Maps field_name to denormalized tensor of shape (B, T, *spatial).
-
-        Notes
-        -----
-        Denormalization: f = f_normalized * std + mean
-        """
-        if self.field_names is None:
-            raise ValueError(
-                "cRMSELoss._denormalize_fields requires `field_names` to be set."
-            )
-        if self.norm_stats is None:
-            raise ValueError(
-                "cRMSELoss._denormalize_fields requires `norm_stats` with mean/std entries."
-            )
-
-        if tensor.ndim < 4:
-            raise ValueError(
-                f"Expected tensor with shape (B, T, C, ...), got {tensor.shape}"
-            )
-
-        channel_dim = 2
-
-        fields: Dict[str, torch.Tensor] = {}
-
-        for ci, field_name in enumerate(self.field_names):
-            f_norm = tensor.select(dim=channel_dim, index=ci)  # (B, T, *spatial)
-
-            if field_name not in self.norm_stats:
-                raise KeyError(
-                    f"Field '{field_name}' appears in field_names but not in norm_stats."
-                )
-
-            stats = self.norm_stats[field_name]
-            mean = stats.get("mean", None)
-            std = stats.get("std", None)
-
-            if mean is None or std is None:
-                raise KeyError(
-                    f"norm_stats['{field_name}'] must contain 'mean' and 'std'. "
-                    f"Got {stats}"
-                )
-
-            mean_t = torch.as_tensor(mean, dtype=f_norm.dtype, device=f_norm.device)
-            std_t = torch.as_tensor(std, dtype=f_norm.dtype, device=f_norm.device)
-
-            # Denormalize: f = f_norm * std + mean
-            f_phys = f_norm * std_t + mean_t
-            fields[field_name] = f_phys
-        return fields
-
     def _compute_domain_conserved(
         self,
         fields: Dict[str, torch.Tensor],

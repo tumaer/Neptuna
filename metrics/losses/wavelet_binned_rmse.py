@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import ptwt  # pip install ptwt
-from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization, NormalizationHelper
 from typing import Literal, Optional, List, Sequence, Dict, Union, Tuple
 
 # Inspired by fRMSE from the paper by Takamoto et al.,
@@ -30,11 +30,11 @@ class WaveletBinnedRMSE(LossComponent):
 
     def __init__(
         self,
+        norm_helper: NormalizationHelper,
         weight: float = 1.0,
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
-        norm_stats: Dict[str, Dict[str, float]] = None,
         wavelet: str = "db2",
         spatial_level: Optional[int] = None,
         mode_spatial: str = "reflect",
@@ -45,7 +45,7 @@ class WaveletBinnedRMSE(LossComponent):
         normalization: Literal['none', 'magnitude', 'variance'] = 'none',
         epsilon: float = 1e-8
     ):
-        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_stats=norm_stats)
+        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_helper=norm_helper)
         assert aggregate in ("mean", "sum", "weighted")
         self.wavelet = wavelet
         self.spatial_level = spatial_level

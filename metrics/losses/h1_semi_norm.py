@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Literal, Optional, List, Any, Union, Dict, Tuple
-from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization, NormalizationHelper
 import matplotlib.pyplot as plt
 
 # Filter kernels adapted from Kornia
@@ -26,17 +26,17 @@ class H1SemiNorm(LossComponent):
     
     def __init__(
         self,
+        norm_helper: NormalizationHelper,
         weight: float = 1.0,
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
-        norm_stats: Dict[str, Dict[str, float]] = None,
         mode: Literal['sobel', 'diff'] = 'diff',
         reduction: str = 'mean',
         normalization: Literal['none', 'magnitude', 'variance'] = 'none',
         epsilon: float = 1e-8
     ):
-        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_stats=norm_stats)
+        super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_helper=norm_helper)
         self.mode = mode
         self.reduction = reduction
         self.normalization = normalization

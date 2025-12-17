@@ -2,6 +2,8 @@ loss:
   components:
     - type: L2Loss
       weight: 0.5
+    - type: IntegralConservationRMSE
+      weight: 1.0
     - type: InterfaceRMSE
       weight: 1.0
 

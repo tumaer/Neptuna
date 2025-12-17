@@ -3,7 +3,7 @@ from typing import Optional, List, Dict, Union, Tuple
 import torch
 import torch.nn as nn
 
-from ..training_metrics import LossComponent, WeightSchedule
+from ..training_metrics import LossComponent, WeightSchedule, NormalizationHelper
 
 
 class NRMSE(LossComponent):
@@ -31,11 +31,11 @@ class NRMSE(LossComponent):
     """
     def __init__(
         self,
+        norm_helper: NormalizationHelper,
         weight: Union[float, WeightSchedule] = 1.0,
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
-        norm_stats: Dict[str, Dict[str, float]] = None,
         reduction: str = 'mean',
         epsilon: float = 1e-8
     ):
@@ -44,7 +44,7 @@ class NRMSE(LossComponent):
             name=name,
             data_dim=data_dim,
             field_names=field_names,
-            norm_stats=norm_stats
+            norm_helper=norm_helper,
         )
         self.reduction = reduction
         self.epsilon = epsilon

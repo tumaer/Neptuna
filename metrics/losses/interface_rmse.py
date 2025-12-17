@@ -1,7 +1,7 @@
 from typing import Dict, List, Optional, Tuple, Union
 import torch
 from torch import nn
-from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization, NormalizationHelper
 
 
 class InterfaceRMSE(LossComponent):
@@ -19,11 +19,11 @@ class InterfaceRMSE(LossComponent):
     
     def __init__(
         self,
+        norm_helper: NormalizationHelper,
         weight: Union[float, WeightSchedule] = 1.0,
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
-        norm_stats: Dict[str, Dict[str, float]] = None,
         density_key: str = "Density",
         density_range: Tuple[float, float] = (0.4, 0.6),
         range_softness: float = 0.05,
@@ -52,7 +52,7 @@ class InterfaceRMSE(LossComponent):
             name=name or "interface_rmse",
             data_dim=data_dim,
             field_names=field_names,
-            norm_stats=norm_stats,
+            norm_helper=norm_helper,
         )
         
         self.density_key = density_key
@@ -80,18 +80,15 @@ class InterfaceRMSE(LossComponent):
         
         # Normalize density range to match input data normalization
         self.density_range_norm = None
-        if norm_stats is not None and density_key in norm_stats:
-            self._compute_normalized_density_range()
+
+        self._compute_normalized_density_range()
 
     def _compute_normalized_density_range(self):
         """Convert physical density range to normalized space."""
-        stats = self.norm_stats[self.density_key]
-        mean = float(stats['mean'])
-        std = float(stats['std'])
         
         rho_min, rho_max = self.density_range
-        rho_min_norm = (rho_min - mean) / std
-        rho_max_norm = (rho_max - mean) / std
+        rho_min_norm = self.norm_helper.normalize_scalar(rho_min, self.density_key)
+        rho_max_norm = self.norm_helper.normalize_scalar(rho_max, self.density_key)
         
         self.density_range_norm = (rho_min_norm, rho_max_norm)
 
