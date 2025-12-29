@@ -43,7 +43,7 @@ from utils.custom_callbacks import WandbCallback #custom callbacks
 from utils.custom_callbacks import CallbackHandler 
 from transformers.integrations.integration_utils import WandbCallback as WandbCallback_
 from utils.trainer_utils import EvalPrediction
-from utils.loss_utils import fetch_loss_metric
+from utils.loss_utils import fetch_loss_metric, fetch_train_loss_dict
 from omegaconf import OmegaConf
 from collections.abc import Mapping  # locally import to avoid top-of-file change
 import json
@@ -166,7 +166,8 @@ class Trainer(Trainer_):
                 "loss_config": self.loss_config,
                 "data_config": self.data_config
             })
-            self.loss_fn = fetch_loss_metric(full_cfg)
+            train_loss_dict = fetch_train_loss_dict(full_cfg)
+            self.loss_fn = fetch_loss_metric(self.data_config, train_loss_dict)
             logger.info("Initialized composite loss function from config")
 
             # Move loss function to appropriate device
@@ -1718,8 +1719,15 @@ class Trainer(Trainer_):
                 # Add current weights to each component
                 if self.loss_fn is not None:
                     weight_dict = self.loss_fn.get_weight_dict()
+
+                    full_cfg = OmegaConf.create({
+                        "loss_config": self.loss_config,
+                        "data_config": self.data_config
+                    })
+
+                    train_loss_dict = fetch_train_loss_dict(full_cfg)
                     
-                    for component in loss_config_dict['loss']['components']:
+                    for component in train_loss_dict['components']:
                         comp_name = component.get('name', component['type'])
                         if comp_name in weight_dict:
                             component['current_weights'] = _tensorize_for_json(weight_dict[comp_name])

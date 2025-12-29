@@ -1,15 +1,21 @@
-loss:
+train_loss:
   components:
     - type: L2Loss
       weight: 0.5
-    - type: MultilevelWaveletLoss
-      weight: 0.01
+    - type: SSIM
+      weight: 0.5
+  train_loss_weighting_strategy:
+    enabled: true  # Set to true to enable
+    type: BalancedResidualDecayRate
+    loss_source: 'train' # 'train', 'eval' or 'both'
+    log_detailed_losses: true # must be true to use training loss for weight updates
+  
+validation_loss:
+  components:
+    - type: L1Loss
+      weight: 1.0
 
-loss_weighting_strategy:
-  enabled: false  # Set to true to enable
-  type: BalancedResidualDecayRate
-  loss_source: 'train' # 'train', 'eval' or 'both'
-  log_detailed_losses: true # must be true to use training loss for weight updates
+
 
 # Each component is a dictionary with the following fields:
 # - type: Loss class name

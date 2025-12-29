@@ -290,6 +290,8 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     # 6) Load and merge the relevant loss component configs
     # ------------------------------------------------------------------
     if hasattr(cfg, 'loss_config') and cfg.loss_config is not None:
+        # TODO: review once loss config format has been finalized (per-epoch scheduling)
+
         if hasattr(cfg.loss_config, 'loss') and hasattr(cfg.loss_config.loss, 'components'):
             OmegaConf.set_struct(cfg.loss_config, False)
             

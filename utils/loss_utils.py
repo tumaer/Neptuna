@@ -60,19 +60,19 @@ def create_weight_schedule(component_cfg) -> Union[float, WeightSchedule]:
         component_weights=component_weights
     )
 
-def fetch_loss_metric(cfg) -> CompositeLoss:
+def fetch_loss_metric(data_config, loss_dict) -> CompositeLoss:
     """
     Creates a CompositeLoss instance from hydra config.
     """
     loss_components = []
 
-    data_dim = cfg.data_config.dimension
-    field_names = cfg.data_config.filter_features.filter_out_channels
-    norm_stats = cfg.data_config.data_normalization_stats
-    norm_strategy = cfg.data_config.data_normalization_strategy
+    data_dim = data_config.dimension
+    field_names = data_config.filter_features.filter_out_channels
+    norm_stats = data_config.data_normalization_stats
+    norm_strategy = data_config.data_normalization_strategy
     is_residual = False
     
-    for component_cfg in cfg.loss_config.loss.components:
+    for component_cfg in loss_dict.components:
         loss_type = component_cfg.type
 
         # Pull metadata from registry
@@ -129,7 +129,7 @@ def fetch_loss_metric(cfg) -> CompositeLoss:
     return CompositeLoss(loss_components=loss_components)
 
 
-def create_loss_weighting_strategy(cfg) -> Optional[LossWeightingStrategyBase]:
+def create_loss_weighting_strategy(train_loss_dict) -> Optional[LossWeightingStrategyBase]:
     """
     Creates a LossWeightingStrategyBase instance from hydra config.
     
@@ -139,14 +139,11 @@ def create_loss_weighting_strategy(cfg) -> Optional[LossWeightingStrategyBase]:
     Returns:
         LossWeightingStrategyBase instance or None if not configured
     """
-    # Check if weight scheduling is enabled
-    if not hasattr(cfg, 'loss_config'):
+
+    if not hasattr(train_loss_dict, 'train_loss_weighting_strategy'):
         return None
     
-    if not hasattr(cfg.loss_config, 'loss_weighting_strategy'):
-        return None
-    
-    scheduler_cfg = cfg.loss_config.loss_weighting_strategy
+    scheduler_cfg = train_loss_dict.train_loss_weighting_strategy
     
     if not scheduler_cfg.get('enabled', False):
         return None
@@ -185,9 +182,9 @@ def create_loss_weighting_strategy(cfg) -> Optional[LossWeightingStrategyBase]:
     return scheduler_instance
 
 
-def fetch_eval_loss_config(cfg):
+def fetch_infer_loss_dict(cfg):
     """
-    Loads evaluation loss config and overrides timestep_weights and channel_weights
+    Loads infer loss config and overrides timestep_weights and channel_weights
     to ensure uniform weighting across all timesteps and channels.
     Also includes all training loss components for evaluation.
     """
@@ -224,10 +221,12 @@ def fetch_eval_loss_config(cfg):
                 
                 # Add to eval config
                 eval_loss_cfg.loss.components.append(eval_component)
-    
-    full_eval_cfg = OmegaConf.create({
-        "loss_config": eval_loss_cfg,
-        "data_config": cfg.data_config
-    })
 
-    return full_eval_cfg
+    return eval_loss_cfg.loss
+
+
+def fetch_train_loss_dict(cfg):
+    return cfg.loss_config.train_loss
+
+def fetch_eval_loss_dict(cfg):
+    return cfg.loss_config.validation_loss

@@ -15,7 +15,7 @@ from optuna.pruners import NopPruner
 from utils.custom_callbacks import PlotOnEvalAndSaveCallback, NaNCallback, LossStatisticsCallback, AdaptiveWeightCallback
 import csv
 from utils.hp_optimization import trial_name_factory
-from utils.loss_utils import fetch_eval_loss_config, fetch_loss_metric, create_loss_weighting_strategy
+from utils.loss_utils import fetch_eval_loss_dict, fetch_train_loss_dict, fetch_loss_metric, create_loss_weighting_strategy
 from utils.plot_progress import preprocess_for_plotting, plot_rollout_metrics
 from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
 from utils.plot_progress import build_info_strings
@@ -275,14 +275,15 @@ def run(cfg):
     callbacks.append(PlotOnEvalAndSaveCallback)
     callbacks.append(NaNCallback)
 
-    loss_weighting_strategy = create_loss_weighting_strategy(cfg)
+    train_loss_dict = fetch_train_loss_dict(cfg)
+    loss_weighting_strategy = create_loss_weighting_strategy(train_loss_dict)
     if loss_weighting_strategy is not None:
         # Create statistics collector
         stats_callback = LossStatisticsCallback(collect_train_losses=True)
         callbacks.append(stats_callback)
         
         # Create adaptive weight callback
-        loss_source = cfg.loss_config.loss_weighting_strategy.get('loss_source', 'train')
+        loss_source = train_loss_dict.train_loss_weighting_strategy.get('loss_source', 'train')
         weight_callback = AdaptiveWeightCallback(
             loss_weighting_strategy, 
             stats_callback,
@@ -321,8 +322,8 @@ def run(cfg):
     # Initialize eval_loss_fn
     metric_device = torch.device("cpu")
     try:
-        full_eval_cfg = fetch_eval_loss_config(cfg)
-        eval_loss_fn = fetch_loss_metric(full_eval_cfg)
+        eval_loss_dict = fetch_eval_loss_dict(cfg)
+        eval_loss_fn = fetch_loss_metric(cfg["data_config"], eval_loss_dict)
         trainer.eval_loss_fn = eval_loss_fn.to(metric_device)
     except Exception as e:
         print("[run] Failed to initialize eval_loss_fn:", repr(e))
@@ -334,7 +335,7 @@ def run(cfg):
         weight_callback.trainer = trainer
         stats_callback.trainer = trainer
         # Enable detailed loss collection in trainer
-        trainer._collect_detailed_losses = cfg.loss_config.loss_weighting_strategy.get(
+        trainer._collect_detailed_losses = train_loss_dict.train_loss_weighting_strategy.get(
             'collect_detailed_losses', True,
         )
         trainer._last_detailed_losses = {}

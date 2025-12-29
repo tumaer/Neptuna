@@ -1,5 +1,5 @@
 do_infer: True
-inference_directory: ./sample_inference/log_test_2
+inference_directory: ./sample_inference/infer_loss_test
 dataset_directory_path: ./data/fluids/KS/1D  # if null, will use the dataset_directory_path from data_config.json inside the experiment directory.
 filter_features:
   infer_filter_frames: [null, null]

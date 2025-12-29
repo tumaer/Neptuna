@@ -8,7 +8,7 @@ from utils.plot_progress import preprocess_for_plotting, plot_rollout_metrics
 from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
 from utils.plot_progress import plot_rollout_metrics_bar_chart
 from utils.plot_progress import plot_multi_run_rollout_metrics
-from utils.loss_utils import fetch_loss_metric, fetch_eval_loss_config
+from utils.loss_utils import fetch_loss_metric, fetch_infer_loss_dict, fetch_train_loss_dict
 from metrics.default_metrics import compute_metrics_for_n_rollouts
 from transformers.trainer import EvalPrediction
 from transformers import TrainingArguments
@@ -103,7 +103,7 @@ def build_train_and_eval_loss(loss_config, data_config, device: torch.device):
     if loss_config is None:
         return None, None
 
-    full_train_loss_cfg = OmegaConf.create({
+    full_train_cfg = OmegaConf.create({
         "loss_config": loss_config,
         "data_config": data_config,
     })
@@ -111,10 +111,11 @@ def build_train_and_eval_loss(loss_config, data_config, device: torch.device):
     # Always put metric losses on CPU
     metric_device = torch.device("cpu")
 
-    train_loss_fn = fetch_loss_metric(full_train_loss_cfg).to(metric_device)
+    train_loss_dict = fetch_train_loss_dict(full_train_cfg)
+    train_loss_fn = fetch_loss_metric(data_config, train_loss_dict).to(metric_device)
 
-    full_eval_cfg = fetch_eval_loss_config(full_train_loss_cfg)
-    eval_loss_fn = fetch_loss_metric(full_eval_cfg).to(metric_device)
+    eval_loss_dict = fetch_infer_loss_dict(full_train_cfg)
+    eval_loss_fn = fetch_loss_metric(data_config, eval_loss_dict).to(metric_device)
 
     return train_loss_fn, eval_loss_fn
 
