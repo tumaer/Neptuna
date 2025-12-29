@@ -1,7 +1,7 @@
 from typing import Dict, List, Optional, Tuple, Union
 import torch
 from torch import nn
-from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization, NormalizationHelper
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
 
 
 class InterfaceRMSE(LossComponent):
@@ -135,7 +135,7 @@ class InterfaceRMSE(LossComponent):
             unweighted_rmse_norm = torch.zeros((), device=predictions.device, dtype=predictions.dtype)
         
         # Apply per-batch normalization if requested
-        normalized_rmse = apply_batch_normalization(
+        normalized_rmse = apply_batch_wise_normalization(
             unweighted_rmse_norm,
             labels,
             self.normalization,

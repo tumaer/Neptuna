@@ -1718,7 +1718,7 @@ class Trainer(Trainer_):
                 
                 # Add current weights to each component
                 if self.loss_fn is not None:
-                    weight_dict = self.loss_fn.get_weight_dict()
+                    weight_dict = self.loss_fn.get_loss_weight_dict()
 
                     full_cfg = OmegaConf.create({
                         "loss_config": self.loss_config,

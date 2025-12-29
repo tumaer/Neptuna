@@ -3,7 +3,7 @@ from typing import Literal, Optional, List, Dict, Union, Tuple
 import torch
 import torch.nn as nn
 
-from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization, NormalizationHelper
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
 
 
 class L1Loss(LossComponent):
@@ -66,7 +66,7 @@ class L1Loss(LossComponent):
             if base != 1.0:
                 total_loss = total_loss * base
 
-            total_loss = apply_batch_normalization(
+            total_loss = apply_batch_wise_normalization(
                 total_loss,
                 labels,
                 self.normalization,
@@ -103,7 +103,7 @@ class L1Loss(LossComponent):
         unweighted = torch.abs(predictions - labels)
         
         # Get broadcastable weight tensor on correct device
-        weight_tensor = self.weight_schedule.get_weight(unweighted.shape).to(predictions.device)
+        weight_tensor = self.weight_schedule.get_loss_weight(unweighted.shape).to(predictions.device)
         
         weighted = unweighted * weight_tensor
         

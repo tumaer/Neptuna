@@ -6,9 +6,9 @@ from typing import Union, Optional, List, Dict
 from metrics.loss_weighting_strategies import LossWeightingStrategyBase
 from metrics.loss_weighting_strategy_registry import get_loss_weighting_strategy_entry
 
-def create_weight_schedule(component_cfg) -> Union[float, WeightSchedule]:
+def create_loss_weight_schedule(component_cfg) -> Union[float, WeightSchedule]:
     """
-    Creates a weight or WeightSchedule from config.
+    Creates a loss weighting schedule (WeightSchedule) from config.
     
     Args:
         component_cfg: Configuration for a single loss component
@@ -103,7 +103,7 @@ def _create_loss_component(
     # Handle nested composite
     if loss_type == "CompositeLoss":
         name = component_cfg.get("name", "NestedComposite")
-        weight = create_weight_schedule(component_cfg)
+        weight = create_loss_weight_schedule(component_cfg)
         
         # Recursively create sub-components
         sub_components = []
@@ -142,7 +142,7 @@ def _create_loss_component(
     default_config = registry_entry["default_config"]
     
     name = component_cfg.get("name", default_name)
-    weight = create_weight_schedule(component_cfg)
+    weight = create_loss_weight_schedule(component_cfg)
     
     norm_helper = NormalizationHelper(
         norm_stats=norm_stats,
@@ -230,7 +230,7 @@ def create_loss_weighting_strategy(train_loss_dict) -> Optional[LossWeightingStr
     return scheduler_instance
 
 
-def _override_weights_recursively(component_cfg, num_channels: int):
+def _override_loss_weights_recursively(component_cfg, num_channels: int):
     """
     Recursively override timestep and channel weights for a component config.
     Handles both regular components and nested composites.
@@ -246,24 +246,22 @@ def _override_weights_recursively(component_cfg, num_channels: int):
     # If this is a composite, recursively process sub-components
     if hasattr(component_cfg, 'sub_components'):
         for sub_component in component_cfg.sub_components:
-            _override_weights_recursively(sub_component, num_channels)
+            _override_loss_weights_recursively(sub_component, num_channels)
 
 
 def fetch_infer_loss_dict(cfg):
     """
-    Loads infer loss config and overrides timestep_weights and channel_weights
-    to ensure uniform weighting across all timesteps and channels.
-    Also includes all training loss components for evaluation.
+    Loads infer loss config and overrides timestep_weights and channel_weights.
+    Inference requires the loss object to be initialized with per-channel and timestep
+    weighting in order to compute rollout metrics (compute_metrics_for_n_rollouts)
     """
     eval_loss_config_path = "./config/loss_config/infer_loss.yaml"
     eval_loss_cfg = OmegaConf.load(eval_loss_config_path)
 
-    # Get number of channels from data config
     num_channels = len(cfg.data_config.filter_features.filter_out_channels)
     
-    # Override weights for all evaluation components (including nested ones)
     for component in eval_loss_cfg.loss.components:
-        _override_weights_recursively(component, num_channels)
+        _override_loss_weights_recursively(component, num_channels)
     
     return eval_loss_cfg.loss
 

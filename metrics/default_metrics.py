@@ -10,7 +10,7 @@ def compute_metrics_for_n_rollouts(
     outputs_per_rollout: int = 1,
     metrics: Iterable[str] = ("l1", "l2"),
     include_per_timestep: bool = False,
-    compute_metrics=None,            # kept for backwards compatibility
+    compute_metrics=None,
     loss_metric: Optional[LossComponent] = None,
 ) -> Dict[str, Dict[str, np.ndarray]]:
 

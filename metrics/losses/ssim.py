@@ -4,7 +4,7 @@ import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization, NormalizationHelper
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
 from typing import Literal, Optional, List, Dict, Union, Tuple
 
 # Adapted from mssim.pytorch:
@@ -93,7 +93,7 @@ class SSIM(LossComponent):
         spatial_dims = predictions.shape[3:]
         
         # Get weight tensor with proper broadcasting
-        weight_tensor = self.weight_schedule.get_weight(original_shape).to(predictions.device)
+        weight_tensor = self.weight_schedule.get_loss_weight(original_shape).to(predictions.device)
         
         # Apply weights to inputs (scale by sqrt to preserve SSIM properties)
         # Since SSIM involves squared terms, scaling inputs by sqrt(w) gives
@@ -114,7 +114,7 @@ class SSIM(LossComponent):
         ssim_value = self.ssim(predictions_weighted, labels_weighted)
         loss = (1.0 - ssim_value) * self.weight
         
-        loss = apply_batch_normalization(
+        loss = apply_batch_wise_normalization(
             loss,
             labels,
             self.normalization,

@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Literal, Optional, List, Any, Union, Dict, Tuple
-from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization, NormalizationHelper
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
 
 # Filter kernels adapted from Kornia
 # https://github.com/kornia/kornia
@@ -118,9 +118,9 @@ class H2SemiNorm(LossComponent):
         unweighted = unweighted.mean(dim=spatial_dims)
         
         # Get weight tensor with proper broadcasting
-        weight_tensor = self.weight_schedule.get_weight(unweighted.shape).to(predictions.device)
+        weight_tensor = self.weight_schedule.get_loss_weight(unweighted.shape).to(predictions.device)
         
-        unweighted = apply_batch_normalization(
+        unweighted = apply_batch_wise_normalization(
             unweighted,
             labels,
             self.normalization,

@@ -27,14 +27,14 @@ class LossWeightingStrategyBase(ABC):
         current_weights: Dict[str, Dict]
     ) -> Dict[str, Dict]:
         """
-        Compute new weight schedules based on loss history.
+        Compute new loss weight schedules based on loss history.
         
         Args:
             loss_history: Dictionary mapping component names to their loss values:
                 {
                   'component_name': [loss1, loss2, loss3, ...],
                 }
-            current_weights: Current weight schedules from CompositeLoss.get_weight_dict()
+            current_weights: Current weight schedules from CompositeLoss.get_loss_weight_dict()
             
         Returns:
             Updated weight dictionary in same format as current_weights
@@ -42,7 +42,7 @@ class LossWeightingStrategyBase(ABC):
         pass
     
     def should_update(self, epoch: int) -> bool:
-        """Check if weights should be updated at this epoch."""
+        """Check if loss weights should be updated at this epoch."""
         return epoch > 0 and epoch % self.update_frequency == 0
     
     def step(
@@ -52,7 +52,7 @@ class LossWeightingStrategyBase(ABC):
         current_weights: Dict[str, Dict]
     ) -> Optional[Dict[str, Dict]]:
         """
-        Step the scheduler. Returns new weights if update is due, else None.
+        Step the scheduler. Returns new loss weights if update is due, else None.
         
         Args:
             epoch: Current epoch number

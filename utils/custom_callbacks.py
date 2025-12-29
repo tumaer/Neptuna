@@ -1049,14 +1049,14 @@ class AdaptiveWeightCallback(TrainerCallback):
         if loss_source not in ['train', 'eval', 'both']:
             raise ValueError(f"loss_source must be 'train', 'eval', or 'both', got {loss_source}")
     
-    def _update_weights(self, current_epoch: int, loss_history: Dict[str, List[float]], source_label: str):
+    def _update_loss_weights(self, current_epoch: int, loss_history: Dict[str, List[float]], source_label: str):
         """Helper method to perform weight update."""
         if not loss_history:
             logger.warning(f"[AdaptiveWeightCallback] No {source_label} loss history for epoch {current_epoch}")
             return False
         
-        # Get current weights
-        current_weights = self.trainer.loss_fn.get_weight_dict()
+        # Get current loss weights
+        current_weights = self.trainer.loss_fn.get_loss_weight_dict()
         training_component_names = set(current_weights.keys())
         
         # Filter to training components only
@@ -1074,18 +1074,18 @@ class AdaptiveWeightCallback(TrainerCallback):
             )
             return False
         
-        # Compute new weights
+        # Compute new loss weights
         new_weights = self.loss_weighting_strategy.step(
             epoch=current_epoch,
             loss_history=filtered_history,
             current_weights=current_weights
         )
         
-        # Apply new weights if scheduler returned them
+        # Apply new loss weights if scheduler returned them
         if new_weights is None:
             return False
         
-        self.trainer.loss_fn.update_weights(new_weights)
+        self.trainer.loss_fn.update_loss_weights(new_weights)
         self.last_update_epoch = current_epoch
         
         logger.info(f"Epoch {current_epoch}: Updated loss weights (from {source_label})")
@@ -1112,7 +1112,7 @@ class AdaptiveWeightCallback(TrainerCallback):
             current_epoch = int(state.epoch) if state.epoch is not None else -1
             if current_epoch != self.last_update_epoch and self.trainer is not None:
                 train_losses = self.stats_callback.get_loss_history(source='train')
-                self._update_weights(current_epoch, train_losses, source_label='training')
+                self._update_loss_weights(current_epoch, train_losses, source_label='training')
     
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
         """Update weights after evaluation, optionally combining with training losses."""
@@ -1128,9 +1128,9 @@ class AdaptiveWeightCallback(TrainerCallback):
         # Get appropriate loss history based on configuration
         loss_history = self.stats_callback.get_loss_history(source=self.loss_source)
         
-        # Update weights
+        # Update loss weights
         if self.loss_source in ['eval', 'both']:
-            self._update_weights(current_epoch, loss_history, source_label=self.loss_source)
+            self._update_loss_weights(current_epoch, loss_history, source_label=self.loss_source)
 
 
 # ------------------------------------------------------------------

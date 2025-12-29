@@ -6,7 +6,7 @@ import torch.nn as nn
 
 class WeightSchedule(nn.Module):
     """
-    Configurable weighting for loss components.
+    Manages weighting for loss components.
 
     Supports:
       * A scalar base weight (always applied).
@@ -16,7 +16,7 @@ class WeightSchedule(nn.Module):
 
     Lightweight implementation:
       * Stores only 1D buffers for timesteps and channels.
-      * `get_weight()` returns a small broadcastable tensor
+      * `get_loss_weight()` returns a small broadcastable tensor
          of shape at most (1, T, C, 1, ..., 1).
       * Elementwise weighting is a single multiply over the loss
         tensor.
@@ -33,19 +33,19 @@ class WeightSchedule(nn.Module):
         super().__init__()
         self.base_weight = float(base_weight)
         
-        # Optional per-timestep weights (shape: T)
+        # Optional per-timestep loss weights (shape: T)
         if timestep_weights is not None:
             self.register_buffer('timestep_weights', timestep_weights)
         else:
             self.timestep_weights = None
         
-        # Optional per-channel weights (shape: C)
+        # Optional per-channel loss weights (shape: C)
         if channel_weights is not None:
             self.register_buffer('channel_weights', channel_weights)
         else:
             self.channel_weights = None
         
-        # Optional per-component scalar weights (used by composite losses)
+        # Optional per-component scalar loss weights (used by composite losses)
         self.component_weights = component_weights or {}
 
         # Cached flag for fast-path checks in losses
@@ -61,27 +61,27 @@ class WeightSchedule(nn.Module):
         Returns True if this schedule reduces to a single scalar weight.
 
         Conditions:
-          - No per-timestep weights.
-          - No per-channel weights.
-          - No component-specific weights.
+          - No per-timestep loss weights.
+          - No per-channel loss weights.
+          - No component-specific loss weights.
 
-        When True, loss implementations can skip calling `get_weight()`
+        When True, loss implementations can skip calling `get_loss_weight()`
         and behave like a plain scalar-weighted reduction.
         """
         return self._is_scalar_only
 
-    def has_timestep_weights(self) -> bool:
-        """Returns True if per-timestep weighting is configured."""
+    def has_timestep_loss_weights(self) -> bool:
+        """Returns True if per-timestep loss weighting is configured."""
         return self.timestep_weights is not None
 
-    def has_channel_weights(self) -> bool:
-        """Returns True if per-channel weighting is configured."""
+    def has_channel_loss_weights(self) -> bool:
+        """Returns True if per-channel loss weighting is configured."""
         return self.channel_weights is not None
 
     # ------- main API -------
-    def get_weight(self, shape: Optional[torch.Size] = None) -> torch.Tensor:
+    def get_loss_weight(self, shape: Optional[torch.Size] = None) -> torch.Tensor:
         """
-        Construct a broadcastable weight tensor for a given loss tensor shape.
+        Construct a broadcastable loss  weight tensor for a given loss tensor shape.
 
         Args:
             shape:
@@ -104,7 +104,7 @@ class WeightSchedule(nn.Module):
 
         dims = len(shape)
 
-        # Start from scalar tensor and fold in optional 1D weights
+        # Start from scalar tensor and fold in optional 1D loss weights
         weight = torch.tensor(base, device=device)
 
         if self.timestep_weights is not None:
@@ -121,7 +121,7 @@ class WeightSchedule(nn.Module):
 
         return weight
     
-    def get_component_weight(self, component_name: str) -> float:
+    def get_loss_component_weight(self, component_name: str) -> float:
         """
         Return a scalar override for a named sub-component, if present.
 
@@ -140,7 +140,7 @@ class WeightSchedule(nn.Module):
           3. CPU (no weights registered)
 
         Loss functions typically call `.to(predictions.device)` on
-        the result of `get_weight()`, so device mismatches are avoided.
+        the result of `get_loss_weight()`, so device mismatches are avoided.
         """
         if self.timestep_weights is not None:
             return self.timestep_weights.device
@@ -591,7 +591,7 @@ class CompositeLoss(LossComponent):
             return total_loss, detailed_dict  # type: ignore[arg-type]
         return total_loss
     
-    def get_weight_dict(self) -> Dict[str, Dict[str, Union[float, torch.Tensor, Dict[str, float]]]]:
+    def get_loss_weight_dict(self) -> Dict[str, Dict[str, Union[float, torch.Tensor, Dict[str, float]]]]:
         """
         Return a nested dictionary of weight schedules for all components.
 
@@ -615,13 +615,13 @@ class CompositeLoss(LossComponent):
             weight_dict[loss_component.name] = loss_component.weight_schedule.to_dict()
         return weight_dict
     
-    def update_weights(self, weight_dict: Dict[str, Dict[str, Union[float, torch.Tensor, Dict[str, float]]]]):
+    def update_loss_weights(self, weight_dict: Dict[str, Dict[str, Union[float, torch.Tensor, Dict[str, float]]]]):
         """
-        Update weight schedules of sub-components from a nested dictionary.
+        Update weight schedules of loss sub-components from a nested dictionary.
 
         Args:
             weight_dict:
-                Dictionary in the format produced by `get_weight_dict()`.
+                Dictionary in the format produced by `get_loss_weight_dict()`.
 
         Notes:
             * This can be used to dynamically adjust base/timestep/channel
@@ -724,7 +724,6 @@ class NestedCompositeLoss(LossComponent):
                 )
                 comp_detail = None
             
-            # Accumulate
             if sub_total is None:
                 sub_total = comp_loss
             else:
@@ -746,10 +745,8 @@ class NestedCompositeLoss(LossComponent):
             weighted_total = sub_total * self.weight_schedule.base_weight
         else:
             # Full schedule path
-            weight = self.weight_schedule.get_weight(predictions.shape)
+            weight = self.weight_schedule.get_loss_weight(predictions.shape)
             weight = weight.to(predictions.device)
-            # For composite, we apply weight to the total, not element-wise
-            # So just use base_weight here (timestep/channel weights don't make sense for aggregated loss)
             weighted_total = sub_total * self.weight_schedule.base_weight
         
         if return_detailed:
@@ -762,7 +759,7 @@ class NestedCompositeLoss(LossComponent):
         return weighted_total
 
 
-def apply_batch_normalization(
+def apply_batch_wise_normalization(
     unweighted: torch.Tensor,
     labels: torch.Tensor,
     normalization: str,

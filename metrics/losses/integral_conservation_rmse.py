@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from abc import ABC, abstractmethod
 import torch
 from torch import nn
-from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization, NormalizationHelper
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
 
 # Inspired by cRMSE and bRMSE from the paper by Takamoto et al.,
 # 'PDEBENCH: An Extensive Benchmark for Scientific Machine Learning'
@@ -258,13 +258,13 @@ class IntegralConservationRMSE(LossComponent):
         # Aggregate: compute MSE = mean(weighted_components^2)
         total_squared = torch.zeros((), device=predictions.device, dtype=predictions.dtype)
         for name, value in all_components.items():
-            q_weight = self.weight_schedule.get_component_weight(name)
+            q_weight = self.weight_schedule.get_loss_component_weight(name)
             total_squared = total_squared + q_weight * (value ** 2)
 
         # Take square root to get RMSE
         total = torch.sqrt(total_squared + self.eps)
 
-        total = apply_batch_normalization(
+        total = apply_batch_wise_normalization(
             total,
             labels,
             self.normalization,

@@ -5,7 +5,7 @@ from typing import Literal, List, Optional, Dict, Union, Tuple
 import torch
 import torch.nn as nn
 from torch.nn.functional import conv1d, avg_pool1d, avg_pool2d, avg_pool3d, interpolate
-from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization, NormalizationHelper
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
 
 try:  # Import the keops library, www.kernel-operations.io
     from pykeops.torch import generic_logsumexp, LazyTensor
@@ -84,7 +84,7 @@ class SinkhornDivergence(LossComponent):
         original_shape = predictions.shape
         
         # Get weight tensor with proper broadcasting
-        weight_tensor = self.weight_schedule.get_weight(original_shape).to(predictions.device)
+        weight_tensor = self.weight_schedule.get_loss_weight(original_shape).to(predictions.device)
         
         # Apply weights to inputs (scale by sqrt to preserve Sinkhorn properties)
         weight_sqrt = torch.sqrt(weight_tensor)
@@ -114,7 +114,7 @@ class SinkhornDivergence(LossComponent):
         
         loss = divergence.mean()
 
-        loss = apply_batch_normalization(
+        loss = apply_batch_wise_normalization(
             loss,
             labels,
             self.normalization,

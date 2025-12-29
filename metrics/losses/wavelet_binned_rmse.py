@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import ptwt  # pip install ptwt
-from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization, NormalizationHelper
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
 from typing import Literal, Optional, List, Sequence, Dict, Union, Tuple
 
 # Inspired by fRMSE from the paper by Takamoto et al.,
@@ -81,7 +81,7 @@ class WaveletBinnedRMSE(LossComponent):
             raise ValueError(f"Expected 1D, 2D or 3D spatial data, got {D}D.")
 
         # Get weight tensor with proper broadcasting
-        weight_tensor = self.weight_schedule.get_weight(original_shape).to(predictions.device)
+        weight_tensor = self.weight_schedule.get_loss_weight(original_shape).to(predictions.device)
         
         # Apply weights to inputs (scale by sqrt to preserve RMSE properties)
         weight_sqrt = torch.sqrt(weight_tensor)
@@ -115,7 +115,7 @@ class WaveletBinnedRMSE(LossComponent):
         else:
             raise RuntimeError(f"Unknown aggregate mode: {self.aggregate}")
 
-        loss = apply_batch_normalization(
+        loss = apply_batch_wise_normalization(
             loss,
             labels,
             self.normalization,

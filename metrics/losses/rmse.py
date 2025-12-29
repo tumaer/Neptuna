@@ -102,7 +102,7 @@ class RMSE(LossComponent):
         sq_error = (predictions - labels) ** 2
 
         # Broadcastable weights (at most (1, T, C, 1, ...)), on correct device
-        weight_tensor = self.weight_schedule.get_weight(sq_error.shape).to(predictions.device)
+        weight_tensor = self.weight_schedule.get_loss_weight(sq_error.shape).to(predictions.device)
         weighted_sq = sq_error * weight_tensor
 
         # Compute weighted MSE then RMSE

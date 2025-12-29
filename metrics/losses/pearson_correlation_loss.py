@@ -3,7 +3,7 @@ from typing import Literal, Optional, List, Dict, Union, Tuple
 import torch
 import torch.nn as nn
 
-from ..training_metrics import LossComponent, WeightSchedule, apply_batch_normalization, NormalizationHelper
+from ..training_metrics import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
 
 
 class PearsonCorrelationLoss(LossComponent):
@@ -61,13 +61,13 @@ class PearsonCorrelationLoss(LossComponent):
 
         unweighted = 1.0 - correlation
 
-        weight_tensor = self.weight_schedule.get_weight(unweighted.shape).to(predictions.device)
+        weight_tensor = self.weight_schedule.get_loss_weight(unweighted.shape).to(predictions.device)
         weighted = unweighted * weight_tensor
         
         # Reduce to scalar
         total_loss = weighted.mean()
 
-        total_loss = apply_batch_normalization(
+        total_loss = apply_batch_wise_normalization(
             total_loss,
             labels,
             self.normalization,
