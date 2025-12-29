@@ -2,7 +2,7 @@ import numpy as np
 import torch
 from typing import Iterable, Dict, Optional
 
-from metrics.training_metrics import LossComponent, WeightSchedule, CompositeLoss
+from metrics.loss_framework import LossComponent, WeightSchedule, CompositeLoss
 
 def compute_metrics_for_n_rollouts(
     preds,

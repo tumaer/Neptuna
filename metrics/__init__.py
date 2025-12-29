@@ -1,4 +1,4 @@
-from .training_metrics import (
+from .loss_framework import (
     LossComponent,
     CompositeLoss,
 )

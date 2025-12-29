@@ -2,7 +2,7 @@ import time
 import os
 from transformers import TrainingArguments
 from train.trainer import Trainer
-from metrics.default_metrics import compute_metrics_for_n_rollouts
+from metrics.inference_metrics import compute_metrics_for_n_rollouts
 from transformers.trainer import EvalPrediction
 from utils.load_model import fetch_model
 from utils.dataset_utils import make_datasets

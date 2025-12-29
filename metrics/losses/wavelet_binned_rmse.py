@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import ptwt  # pip install ptwt
-from ..training_metrics import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
 from typing import Literal, Optional, List, Sequence, Dict, Union, Tuple
 
 # Inspired by fRMSE from the paper by Takamoto et al.,

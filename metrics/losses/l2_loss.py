@@ -3,7 +3,7 @@ from typing import Literal, Optional, List, Dict, Union, Tuple
 import torch
 import torch.nn as nn
 
-from ..training_metrics import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
 
 
 class L2Loss(LossComponent):

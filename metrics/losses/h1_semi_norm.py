@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Literal, Optional, List, Any, Union, Dict, Tuple
-from ..training_metrics import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
 import matplotlib.pyplot as plt
 
 # Filter kernels adapted from Kornia

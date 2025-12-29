@@ -5,7 +5,7 @@ from typing import Literal, List, Optional, Dict, Union, Tuple
 import torch
 import torch.nn as nn
 from torch.nn.functional import conv1d, avg_pool1d, avg_pool2d, avg_pool3d, interpolate
-from ..training_metrics import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
 
 try:  # Import the keops library, www.kernel-operations.io
     from pykeops.torch import generic_logsumexp, LazyTensor

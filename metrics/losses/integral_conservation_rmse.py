@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from abc import ABC, abstractmethod
 import torch
 from torch import nn
-from ..training_metrics import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
 
 # Inspired by cRMSE and bRMSE from the paper by Takamoto et al.,
 # 'PDEBENCH: An Extensive Benchmark for Scientific Machine Learning'

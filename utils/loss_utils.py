@@ -1,6 +1,6 @@
 from omegaconf import DictConfig, OmegaConf
 import torch
-from metrics.training_metrics import CompositeLoss, NestedCompositeLoss, WeightSchedule, NormalizationHelper, LossComponent
+from metrics.loss_framework import CompositeLoss, NestedCompositeLoss, WeightSchedule, NormalizationHelper, LossComponent
 from metrics.loss_registry import get_loss_entry
 from typing import Union, Optional, List, Dict
 from metrics.loss_weighting_strategies import LossWeightingStrategyBase

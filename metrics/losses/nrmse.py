@@ -3,7 +3,7 @@ from typing import Optional, List, Dict, Union, Tuple
 import torch
 import torch.nn as nn
 
-from ..training_metrics import LossComponent, WeightSchedule, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 
 
 class NRMSE(LossComponent):
