@@ -651,6 +651,117 @@ class CompositeLoss(LossComponent):
                     loss_component.weight_schedule.component_weights = updates['component_weights']
 
 
+class NestedCompositeLoss(LossComponent):
+    """
+    A composite loss that can contain other loss components, including other composites.
+    
+    Unlike CompositeLoss which aggregates all components at the top level,
+    NestedCompositeLoss represents a single named group of sub-components
+    that can be weighted and composed hierarchically.
+    
+    Example use case:
+        A "physics_composite" metric that combines SSIM (0.7) + L2 (0.3),
+        which itself gets weighted and combined with other top-level metrics.
+    """
+    
+    def __init__(
+        self,
+        sub_components: List[LossComponent],
+        weight: Union[float, WeightSchedule] = 1.0,
+        name: Optional[str] = None,
+        norm_helper: Optional[NormalizationHelper] = None,
+        data_dim: Optional[int] = None,
+        field_names: Optional[List[str]] = None,
+    ):
+        """
+        Args:
+            sub_components: List of LossComponent instances to aggregate
+            weight: Weight schedule for this composite as a whole
+            name: Name for this composite metric
+            norm_helper: Optional normalization helper
+            data_dim: Data dimensionality
+            field_names: List of field names
+        """
+        super().__init__(
+            weight=weight,
+            name=name or "NestedComposite",
+            norm_helper=norm_helper,
+            data_dim=data_dim,
+            field_names=field_names,
+        )
+        self.sub_components = nn.ModuleList(sub_components)
+    
+    def forward(
+        self,
+        model: nn.Module,
+        predictions: torch.Tensor,
+        labels: torch.Tensor,
+        return_detailed: bool = True
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
+        """
+        Compute the nested composite loss.
+        
+        Returns:
+            If return_detailed=False:
+                Weighted scalar sum of all sub-component losses
+            If return_detailed=True:
+                (weighted_total, detailed_dict) where detailed_dict contains:
+                    - 'unweighted': Sum of sub-components before applying this composite's weight
+                    - 'sub_components': Dict mapping sub-component names to their outputs
+        """
+        # Accumulate sub-component losses
+        sub_total: Optional[torch.Tensor] = None
+        sub_detailed = {} if return_detailed else None
+        
+        for sub_comp in self.sub_components:
+            if return_detailed:
+                comp_loss, comp_detail = sub_comp(
+                    model, predictions, labels, return_detailed=True
+                )
+            else:
+                comp_loss = sub_comp(
+                    model, predictions, labels, return_detailed=False
+                )
+                comp_detail = None
+            
+            # Accumulate
+            if sub_total is None:
+                sub_total = comp_loss
+            else:
+                sub_total = sub_total + comp_loss
+            
+            if return_detailed:
+                sub_detailed[sub_comp.name] = {
+                    'total': comp_loss.detach(),
+                    **comp_detail
+                }
+        
+        # Handle empty sub_components
+        if sub_total is None:
+            sub_total = predictions.new_tensor(0.0)
+        
+        # Apply this composite's own weight schedule
+        if self.weight_schedule.is_scalar_only():
+            # Fast path: scalar weight
+            weighted_total = sub_total * self.weight_schedule.base_weight
+        else:
+            # Full schedule path
+            weight = self.weight_schedule.get_weight(predictions.shape)
+            weight = weight.to(predictions.device)
+            # For composite, we apply weight to the total, not element-wise
+            # So just use base_weight here (timestep/channel weights don't make sense for aggregated loss)
+            weighted_total = sub_total * self.weight_schedule.base_weight
+        
+        if return_detailed:
+            detailed = {
+                'unweighted': sub_total.detach(),
+                'sub_components': sub_detailed
+            }
+            return weighted_total, detailed
+        
+        return weighted_total
+
+
 def apply_batch_normalization(
     unweighted: torch.Tensor,
     labels: torch.Tensor,

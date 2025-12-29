@@ -1,8 +1,8 @@
 from omegaconf import DictConfig, OmegaConf
 import torch
-from metrics.training_metrics import CompositeLoss, WeightSchedule, NormalizationHelper
+from metrics.training_metrics import CompositeLoss, NestedCompositeLoss, WeightSchedule, NormalizationHelper, LossComponent
 from metrics.loss_registry import get_loss_entry
-from typing import Union, Optional
+from typing import Union, Optional, List, Dict
 from metrics.loss_weighting_strategies import LossWeightingStrategyBase
 from metrics.loss_weighting_strategy_registry import get_loss_weighting_strategy_entry
 
@@ -63,6 +63,7 @@ def create_weight_schedule(component_cfg) -> Union[float, WeightSchedule]:
 def fetch_loss_metric(data_config, loss_dict) -> CompositeLoss:
     """
     Creates a CompositeLoss instance from hydra config.
+    Supports nested composite components.
     """
     loss_components = []
 
@@ -73,60 +74,107 @@ def fetch_loss_metric(data_config, loss_dict) -> CompositeLoss:
     is_residual = False
     
     for component_cfg in loss_dict.components:
-        loss_type = component_cfg.type
+        loss_component = _create_loss_component(
+            component_cfg,
+            data_dim,
+            field_names,
+            norm_stats,
+            norm_strategy,
+            is_residual
+        )
+        loss_components.append(loss_component)
+    
+    return CompositeLoss(loss_components=loss_components)
 
-        # Pull metadata from registry
-        registry_entry = get_loss_entry(loss_type)
-        loss_class = registry_entry["class"]
-        default_name = registry_entry["default_name"]
-        default_config = registry_entry["default_config"]
 
-        # 1) Derive name if missing (use default_name, typically == type)
-        name = component_cfg.get("name", default_name)
-
-        # 2) Create weight or weight schedule
+def _create_loss_component(
+    component_cfg,
+    data_dim: int,
+    field_names: List[str],
+    norm_stats: Dict,
+    norm_strategy: str,
+    is_residual: bool
+) -> LossComponent:
+    """
+    Recursively create a loss component, handling nested composites.
+    """
+    loss_type = component_cfg.type
+    
+    # Handle nested composite
+    if loss_type == "CompositeLoss":
+        name = component_cfg.get("name", "NestedComposite")
         weight = create_weight_schedule(component_cfg)
-
-        # 3) Create normalization helper
+        
+        # Recursively create sub-components
+        sub_components = []
+        if hasattr(component_cfg, "sub_components"):
+            for sub_cfg in component_cfg.sub_components:
+                sub_comp = _create_loss_component(
+                    sub_cfg,
+                    data_dim,
+                    field_names,
+                    norm_stats,
+                    norm_strategy,
+                    is_residual
+                )
+                sub_components.append(sub_comp)
+        
         norm_helper = NormalizationHelper(
             norm_stats=norm_stats,
             norm_strategy=norm_strategy,
             channel_names=field_names,
             is_residual=is_residual,
         )
-
-        # 4) Load metric-specific config
-        metric_params = {}
-        if hasattr(component_cfg, "metric_params"):
-            # Already populated by prepare_config or checkpoint
-            metric_params = OmegaConf.to_container(
-                component_cfg.metric_params, resolve=True
-            )
-        else:
-            # Determine config_file: explicit in YAML or from registry default
-            config_file = component_cfg.get("config_file", default_config)
-            if config_file is not None:
-                config_path = f"config/loss_config/{config_file}.yaml"
-                try:
-                    metric_config = OmegaConf.load(config_path)
-                    metric_params = OmegaConf.to_container(metric_config, resolve=True)
-                except Exception as e:
-                    print(f"Warning: Could not load metric config from {config_path}: {e}")
-            else:
-                # No config_file and no metric_params – OK if class uses only defaults
-                metric_params = {}
-
-        loss_instance = loss_class(
+        
+        return NestedCompositeLoss(
+            sub_components=sub_components,
             weight=weight,
             name=name,
+            norm_helper=norm_helper,
             data_dim=data_dim,
             field_names=field_names,
-            norm_helper=norm_helper,
-            **metric_params,
         )
-        loss_components.append(loss_instance)
     
-    return CompositeLoss(loss_components=loss_components)
+    # Handle regular loss component (existing code)
+    registry_entry = get_loss_entry(loss_type)
+    loss_class = registry_entry["class"]
+    default_name = registry_entry["default_name"]
+    default_config = registry_entry["default_config"]
+    
+    name = component_cfg.get("name", default_name)
+    weight = create_weight_schedule(component_cfg)
+    
+    norm_helper = NormalizationHelper(
+        norm_stats=norm_stats,
+        norm_strategy=norm_strategy,
+        channel_names=field_names,
+        is_residual=is_residual,
+    )
+    
+    # Load metric-specific config
+    metric_params = {}
+    if hasattr(component_cfg, "metric_params"):
+        metric_params = OmegaConf.to_container(
+            component_cfg.metric_params, resolve=True
+        )
+    else:
+        config_file = component_cfg.get("config_file", default_config)
+        if config_file is not None:
+            config_path = f"config/loss_config/{config_file}.yaml"
+            try:
+                metric_config = OmegaConf.load(config_path)
+                metric_params = OmegaConf.to_container(metric_config, resolve=True)
+            except Exception as e:
+                print(f"Warning: Could not load metric config from {config_path}: {e}")
+    
+    return loss_class(
+        weight=weight,
+        name=name,
+        data_dim=data_dim,
+        field_names=field_names,
+        norm_helper=norm_helper,
+        **metric_params,
+    )
 
 
 def create_loss_weighting_strategy(train_loss_dict) -> Optional[LossWeightingStrategyBase]:
@@ -182,6 +230,25 @@ def create_loss_weighting_strategy(train_loss_dict) -> Optional[LossWeightingStr
     return scheduler_instance
 
 
+def _override_weights_recursively(component_cfg, num_channels: int):
+    """
+    Recursively override timestep and channel weights for a component config.
+    Handles both regular components and nested composites.
+    
+    Args:
+        component_cfg: OmegaConf component configuration
+        num_channels: Number of channels for channel_weights
+    """
+    # Override weights at this level
+    component_cfg.timestep_weights = [1.0]
+    component_cfg.channel_weights = [1.0] * num_channels
+    
+    # If this is a composite, recursively process sub-components
+    if hasattr(component_cfg, 'sub_components'):
+        for sub_component in component_cfg.sub_components:
+            _override_weights_recursively(sub_component, num_channels)
+
+
 def fetch_infer_loss_dict(cfg):
     """
     Loads infer loss config and overrides timestep_weights and channel_weights
@@ -190,38 +257,14 @@ def fetch_infer_loss_dict(cfg):
     """
     eval_loss_config_path = "./config/loss_config/infer_loss.yaml"
     eval_loss_cfg = OmegaConf.load(eval_loss_config_path)
-    
+
     # Get number of channels from data config
     num_channels = len(cfg.data_config.filter_features.filter_out_channels)
     
-    # Override weights for evaluation components
+    # Override weights for all evaluation components (including nested ones)
     for component in eval_loss_cfg.loss.components:
-        component.timestep_weights = [1.0]
-        component.channel_weights = [1.0] * num_channels
+        _override_weights_recursively(component, num_channels)
     
-    # Add training loss components if they exist and aren't already included
-    if hasattr(cfg, 'loss_config') and hasattr(cfg.loss_config, 'loss') and hasattr(cfg.loss_config.loss, 'components'):
-        # Get types of existing eval components
-        eval_component_types = {comp.get('type', comp.get('_target_', '').split('.')[-1]) 
-                                for comp in eval_loss_cfg.loss.components}
-        
-        # Add training components that aren't already in eval config
-        for train_component in cfg.loss_config.loss.components:
-            train_comp_type = train_component.get('type', train_component.get('_target_', '').split('.')[-1])
-            
-            if train_comp_type not in eval_component_types:
-                # Create a copy of the training component
-                eval_component = OmegaConf.to_container(train_component, resolve=True)
-                eval_component = OmegaConf.create(eval_component)
-                
-                # Override weights for uniform evaluation
-                eval_component.weight = 1.0
-                eval_component.timestep_weights = [1.0]
-                eval_component.channel_weights = [1.0] * num_channels
-                
-                # Add to eval config
-                eval_loss_cfg.loss.components.append(eval_component)
-
     return eval_loss_cfg.loss
 
 
