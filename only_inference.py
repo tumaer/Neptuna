@@ -114,10 +114,10 @@ def build_train_and_eval_loss(loss_config, data_config, device: torch.device):
     train_loss_dict = fetch_train_loss_dict(full_train_cfg)
     train_loss_fn = fetch_loss_metric(data_config, train_loss_dict).to(metric_device)
 
-    eval_loss_dict = fetch_infer_loss_dict(full_train_cfg)
-    eval_loss_fn = fetch_loss_metric(data_config, eval_loss_dict).to(metric_device)
+    infer_loss_dict = fetch_infer_loss_dict(full_train_cfg)
+    infer_loss_fn = fetch_loss_metric(data_config, infer_loss_dict).to(metric_device)
 
-    return train_loss_fn, eval_loss_fn
+    return train_loss_fn, infer_loss_fn
 
 def get_trainer(
     model_config,
