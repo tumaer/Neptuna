@@ -56,6 +56,8 @@ def run(cfg):
         os.environ["WANDB_PROJECT"] = wandb_project
         print(f"Setting WANDB_PROJECT to: {wandb_project}")
         os.environ['WANDB_API_KEY'] = cfg["output_log_config"]["logging"]["wandb_api_key"]
+        if cfg["output_log_config"]["logging"]["wandb_offline"]:
+            os.environ["WANDB_MODE"] = "offline"
 
     # ------------------------------------------------------------------
     # Build TrainingArguments
