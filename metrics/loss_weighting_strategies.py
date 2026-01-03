@@ -11,20 +11,23 @@ class LossWeightingStrategyBase(ABC):
     collected over an epoch.
     """
     
-    def __init__(self, update_frequency: int = 1):
+    def __init__(self, update_frequency: int = 1, use_gradients: bool = False):
         """
         Args:
             update_frequency: Update weights every N epochs
         """
         self.update_frequency = update_frequency
+        self.use_gradients = use_gradients
         self.current_epoch = 0
         self.history: Dict[str, List[List[float]]] = {}  # component -> [epoch_losses_list]
+        self.grad_norm_history: Dict[str, List[List[float]]] = {} # component -> [epoch_grad_norms_list]
     
     @abstractmethod
     def compute_new_weights(
         self,
         loss_history: Dict[str, List[float]],
-        current_weights: Dict[str, Dict]
+        current_weights: Dict[str, Dict],
+        grad_norm_history: Optional[Dict[str, List[float]]] = None
     ) -> Dict[str, Dict]:
         """
         Compute new loss weight schedules based on loss history.
@@ -49,7 +52,8 @@ class LossWeightingStrategyBase(ABC):
         self,
         epoch: int,
         loss_history: Dict[str, List[float]],
-        current_weights: Dict[str, Dict]
+        current_weights: Dict[str, Dict],
+        grad_norm_history: Optional[Dict[str, List[float]]] = None
     ) -> Optional[Dict[str, Dict]]:
         """
         Step the scheduler. Returns new loss weights if update is due, else None.
@@ -61,12 +65,19 @@ class LossWeightingStrategyBase(ABC):
         """
         self.current_epoch = epoch
         
-        # Store history for analysis
+        # Store loss history for analysis
         for component_name, losses in loss_history.items():
             if component_name not in self.history:
                 self.history[component_name] = []
             self.history[component_name].append(losses.copy())
         
+        # Store gradient norm history
+        if grad_norm_history is not None:
+            for component_name, grad_norms in grad_norm_history.items():
+                if component_name not in self.grad_norm_history:
+                    self.grad_norm_history[component_name] = []
+                self.grad_norm_history[component_name].append(grad_norms.copy())
+
         if self.should_update(epoch):
             return self.compute_new_weights(loss_history, current_weights)
         return None

@@ -20,6 +20,7 @@ class SoftAdapt(LossWeightingStrategyBase):
     def __init__(
         self,
         update_frequency: int = 1,
+        use_gradients: bool = False,
         lookback_window: int = 5,
         temperature: float = 1.0,
         epsilon: float = 1e-8,
@@ -39,7 +40,7 @@ class SoftAdapt(LossWeightingStrategyBase):
             normalize_weights: Whether to normalize weights to sum to num_components
             use_exponential: If True, use exponential weighting instead of softmax
         """
-        super().__init__(update_frequency)
+        super().__init__(update_frequency, use_gradients)
         self.lookback_window = lookback_window
         self.temperature = temperature
         self.epsilon = epsilon

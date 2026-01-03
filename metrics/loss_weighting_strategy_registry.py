@@ -29,6 +29,7 @@ WEIGHT_SCHEDULER_REGISTRY = {
         "class": BalancedResidualDecayRate,
         "default_name": "BalancedResidualDecayRate",
         "default_config": "weighting_strategies/BalancedResidualDecayRate/balanced_residual_decay_rate_default",
+        "use_gradients": False,
     },
 }
 

@@ -8,7 +8,6 @@ train_loss:
     enabled: false  # Set to true to enable
     type: BalancedResidualDecayRate
     loss_source: 'train' # 'train', 'eval' or 'both'
-    log_detailed_losses: true # must be true to use training loss for weight updates
   
 validation_loss:
   components:

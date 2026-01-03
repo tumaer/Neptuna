@@ -202,6 +202,7 @@ def create_loss_weighting_strategy(train_loss_dict) -> Optional[LossWeightingStr
     registry_entry = get_loss_weighting_strategy_entry(scheduler_type)
     scheduler_class = registry_entry["class"]
     default_config = registry_entry["default_config"]
+    use_gradients = registry_entry.get("use_gradients", False)
     
     # Load scheduler-specific config
     scheduler_params = {}
@@ -224,6 +225,8 @@ def create_loss_weighting_strategy(train_loss_dict) -> Optional[LossWeightingStr
             # No config_file and no scheduler_params – use defaults
             scheduler_params = {}
     
+    scheduler_params['use_gradients'] = use_gradients
+
     # Create scheduler instance
     scheduler_instance = scheduler_class(**scheduler_params)
     

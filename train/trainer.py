@@ -181,6 +181,9 @@ class Trainer(Trainer_):
         # Flag to indicate if detailed losses should be collected for adaptive weighting
         self._collect_detailed_losses = getattr(self, '_collect_detailed_losses', False)
 
+        # Flag to indicate if component-wise gradient norms should be collected for adaptive weighting
+        self._collect_gradients = getattr(self, '_collect_gradients', False)
+
         # Inject a reference to this Trainer into all registered callbacks so they can
         # access training context (datasets, model, args, etc.).
         try:
@@ -545,25 +548,182 @@ class Trainer(Trainer_):
                 model=model,
                 predictions=prediction,
                 labels=labels,
-                return_detailed=True
+                return_detailed=True,
+                preserve_component_grads=self._collect_gradients
             )
 
             if not hasattr(self, '_detailed_loss_accumulator'):
                 self._detailed_loss_accumulator = {}
+
+            if self._collect_gradients and not hasattr(self, '_gradient_accumulator'):
+                self._gradient_accumulator = {}
             
             for component_name, component_detailed in detailed.items():
                 # Extract loss value
                 loss_value = component_detailed.get('total', component_detailed) if isinstance(component_detailed, dict) else component_detailed
                 
+                # Register gradient hooks if needed
+                if self._collect_gradients and torch.is_tensor(loss_value) and loss_value.requires_grad:
+                    loss_value.retain_grad()
+                    self._register_gradient_hook(component_name, loss_value)
+
                 # Convert to detached GPU tensor
                 loss_scalar = loss_value.detach() if torch.is_tensor(loss_value) else torch.tensor(float(loss_value), device=loss.device)
                 
-                # Accumulate
+                # Accumulate training loss
                 if component_name not in self._detailed_loss_accumulator:
                     self._detailed_loss_accumulator[component_name] = []
                 self._detailed_loss_accumulator[component_name].append(loss_scalar)
+                
             
         return (loss, prediction) if return_outputs else loss
+
+
+    def _register_gradient_hook(self, component_name: str, component_loss: torch.Tensor):
+        """
+        Store component loss for later gradient computation w.r.t. model parameters.
+        """
+        # Store the component loss (don't hook it yet)
+        if not hasattr(self, '_component_losses_for_grad'):
+            self._component_losses_for_grad = {}
+        self._component_losses_for_grad[component_name] = component_loss
+
+    def _compute_component_gradient_norms(self):
+        """
+        Compute gradient norms of each component w.r.t. model parameters.
+        """
+        if not hasattr(self, '_component_losses_for_grad'):
+            return
+        
+        if not hasattr(self, '_gradient_accumulator'):
+            self._gradient_accumulator = {}
+        
+        model = self.model
+        
+        # Store current gradients if any exist
+        saved_grads = {}
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                saved_grads[name] = param.grad.clone()
+        
+        for component_name, component_loss in self._component_losses_for_grad.items():
+            # Zero gradients
+            model.zero_grad(set_to_none=True)
+            
+            # Compute gradient of this component w.r.t. parameters
+            component_loss.backward(retain_graph=True)
+            
+            # Compute total gradient norm across parameters
+            total_norm_sq = 0.0
+            for param in model.parameters():
+                if param.grad is not None:
+                    total_norm_sq += param.grad.norm(2).item() ** 2
+            
+            grad_norm = total_norm_sq ** 0.5
+            
+            # Store as GPU tensor (consistent with loss handling)
+            if component_name not in self._gradient_accumulator:
+                self._gradient_accumulator[component_name] = []
+            
+            # Convert to tensor on same device as component_loss
+            grad_norm_tensor = torch.tensor(grad_norm, device=component_loss.device)
+            self._gradient_accumulator[component_name].append(grad_norm_tensor)
+        
+        # Restore previous gradients
+        model.zero_grad(set_to_none=True)
+        for name, param in model.named_parameters():
+            if name in saved_grads:
+                param.grad = saved_grads[name]
+        
+        # Clear stored component losses
+        self._component_losses_for_grad = {}
+
+
+    # Overriden from the base class in transformers library
+    def training_step(
+        self, model: nn.Module, inputs: dict[str, Union[torch.Tensor, Any]], num_items_in_batch=None
+    ) -> torch.Tensor:
+        """
+        Perform a training step on a batch of inputs.
+
+        Subclass and override to inject custom behavior.
+
+        Args:
+            model (`nn.Module`):
+                The model to train.
+            inputs (`Dict[str, Union[torch.Tensor, Any]]`):
+                The inputs and targets of the model.
+
+                The dictionary will be unpacked before being fed to the model. Most models expect the targets under the
+                argument `labels`. Check your model's documentation for all accepted arguments.
+
+        Return:
+            `torch.Tensor`: The tensor with training loss on this batch.
+        """
+        model.train()
+        if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
+            self.optimizer.train()
+
+        inputs = self._prepare_inputs(inputs)
+        if is_sagemaker_mp_enabled():
+            loss_mb = smp_forward_backward(model, inputs, self.args.gradient_accumulation_steps)
+            return loss_mb.reduce_mean().detach().to(self.args.device)
+
+        with self.compute_loss_context_manager():
+            loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+
+        # Added: compute component gradient norms if needed
+        if self._collect_gradients:
+            self._compute_component_gradient_norms()
+
+        del inputs
+        if (
+            self.args.torch_empty_cache_steps is not None
+            and self.state.global_step % self.args.torch_empty_cache_steps == 0
+        ):
+            if is_torch_xpu_available():
+                torch.xpu.empty_cache()
+            elif is_torch_mlu_available():
+                torch.mlu.empty_cache()
+            elif is_torch_musa_available():
+                torch.musa.empty_cache()
+            elif is_torch_npu_available():
+                torch.npu.empty_cache()
+            elif is_torch_mps_available(min_version="2.0"):
+                torch.mps.empty_cache()
+            elif is_torch_hpu_available():
+                logger.warning(
+                    "`torch_empty_cache_steps` is set but HPU device/backend does not support empty_cache()."
+                )
+            else:
+                torch.cuda.empty_cache()
+
+        kwargs = {}
+
+        # For LOMO optimizers you need to explicitly use the learnign rate
+        if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
+            kwargs["learning_rate"] = self._get_learning_rate()
+
+        if self.args.n_gpu > 1:
+            loss = loss.mean()  # mean() to average on multi-gpu parallel training
+
+        if self.use_apex:
+            with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            # Finally we need to normalize the loss for reporting
+            if not self.model_accepts_loss_kwargs and self.compute_loss_func is None:
+                loss = loss / self.args.gradient_accumulation_steps
+
+            # Turning off loss scaling w.r.t. gradient accumulation when DeepSpeed is enabled
+            # https://github.com/huggingface/transformers/pull/35808
+            if self.accelerator.distributed_type == DistributedType.DEEPSPEED:
+                kwargs["scale_wrt_gas"] = False
+
+            self.accelerator.backward(loss, **kwargs)
+
+            return loss.detach()
+
 
     ##custom function, not inside transformers library
     def _forward_model_eval_or_test(self, model, inputs):

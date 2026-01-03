@@ -77,7 +77,7 @@ from transformers.trainer_callback import TrainerState
 import os
 from PIL import Image
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 import torch
 from metrics.loss_weighting_strategies import LossWeightingStrategyBase
 import torch.distributed as dist
@@ -885,10 +885,12 @@ class LossStatisticsCallback(TrainerCallback):
     during training and only transferring/aggregating at epoch end.
     """
     
-    def __init__(self, collect_train_losses: bool = True):
+    def __init__(self, collect_train_losses: bool = True, collect_gradients: bool = False):
         self.collect_train_losses = collect_train_losses
+        self.collect_gradients = collect_gradients
         self.train_losses: Dict[str, List[float]] = {}
         self.eval_losses: Dict[str, List[float]] = {}
+        self.grad_norms: Dict[str, List[float]] = {}
         self.current_epoch = -1
         self.trainer = None
     
@@ -896,17 +898,39 @@ class LossStatisticsCallback(TrainerCallback):
         """Initialize loss accumulator at start of epoch."""
         self.train_losses = {}
         self.eval_losses = {}
+        self.grad_norms = {}
         self.current_epoch = state.epoch
         
         # Initialize fresh accumulator for this epoch
         if self.trainer is not None:
-            self.trainer._detailed_loss_accumulator = {}
+            self.trainer._detailed_loss_accumulator = {} 
+            if self.collect_gradients:
+                self.trainer._gradient_accumulator = {}
+                self.trainer._collect_gradients = True
+            else:
+                self.trainer._collect_gradients = False
     
     def on_epoch_end(self, args, state, control, **kwargs):
-        """Transfer and aggregate losses at end of epoch."""
-        if not self.collect_train_losses or self.trainer is None:
+        """Transfer and aggregate losses and gradient norms at end of epoch."""
+        if self.trainer is None:
             return
         
+        # Transfer losses
+        if self.collect_train_losses:
+            self._transfer_losses()
+        
+        # Transfer gradient norms
+        if self.collect_gradients:
+            self._transfer_gradient_norms()
+        
+        # Clear accumulators to free GPU memory
+        if hasattr(self.trainer, '_detailed_loss_accumulator'):
+            self.trainer._detailed_loss_accumulator = {}
+        if hasattr(self.trainer, '_gradient_accumulator'):
+            self.trainer._gradient_accumulator = {}
+    
+    def _transfer_losses(self):
+        """Transfer loss values from GPU to CPU."""
         if not hasattr(self.trainer, '_detailed_loss_accumulator'):
             return
         
@@ -916,7 +940,6 @@ class LossStatisticsCallback(TrainerCallback):
             return
         
         # Transfer from GPU to CPU and convert to Python floats
-        # This happens only once per epoch
         for component_name, loss_tensors in accumulator.items():
             if component_name not in self.train_losses:
                 self.train_losses[component_name] = []
@@ -926,9 +949,27 @@ class LossStatisticsCallback(TrainerCallback):
                 stacked = torch.stack(loss_tensors)  # [num_steps]
                 cpu_values = stacked.cpu().tolist()  # Single transfer to CPU
                 self.train_losses[component_name].extend(cpu_values)
+    
+    def _transfer_gradient_norms(self):
+        """Transfer gradient norms from GPU to CPU (parallel to loss transfer)."""
+        if not hasattr(self.trainer, '_gradient_accumulator'):
+            return
         
-        # Clear accumulator to free GPU memory
-        self.trainer._detailed_loss_accumulator = {}
+        accumulator = self.trainer._gradient_accumulator
+        
+        if not accumulator:
+            return
+        
+        # Transfer from GPU to CPU and convert to Python floats
+        for component_name, grad_norm_tensors in accumulator.items():
+            if component_name not in self.grad_norms:
+                self.grad_norms[component_name] = []
+            
+            # Stack tensors and transfer to CPU in one operation
+            if grad_norm_tensors:
+                stacked = torch.stack(grad_norm_tensors)  # [num_steps]
+                cpu_values = stacked.cpu().tolist()  # Single transfer to CPU
+                self.grad_norms[component_name].extend(cpu_values)
     
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
         """Accumulate loss values from evaluation metrics."""
@@ -986,6 +1027,25 @@ class LossStatisticsCallback(TrainerCallback):
             # Non-rank-0 returns empty dict
             return {}
     
+    def get_gradient_norm_history(self, aggregate_distributed: bool = True) -> Dict[str, List[float]]:
+        """
+        Get accumulated gradient norm history.
+        
+        Parameters
+        ----------
+        aggregate_distributed : bool
+            Whether to aggregate across distributed processes
+            
+        Returns
+        -------
+        Dict[str, List[float]]
+            Dictionary mapping component names to lists of gradient norms
+        """
+        if aggregate_distributed and dist.is_initialized():
+            return self._aggregate_distributed_losses(self.grad_norms)
+        
+        return self.grad_norms.copy()
+
     def get_loss_history(self, source: str = 'train', aggregate_distributed: bool = True) -> Dict[str, List[float]]:
         """
         Get raw loss history for the current epoch.
@@ -1032,6 +1092,7 @@ class AdaptiveWeightCallback(TrainerCallback):
         stats_callback: LossStatisticsCallback,
         trainer=None,
         loss_source: str = 'train',  # 'train', 'eval', or 'both'
+        use_gradients: bool = False,
     ):
         """
         Args:
@@ -1045,11 +1106,18 @@ class AdaptiveWeightCallback(TrainerCallback):
         self.trainer = trainer
         self.last_update_epoch = -1
         self.loss_source = loss_source
+        self.use_gradients = use_gradients
         
         if loss_source not in ['train', 'eval', 'both']:
             raise ValueError(f"loss_source must be 'train', 'eval', or 'both', got {loss_source}")
     
-    def _update_loss_weights(self, current_epoch: int, loss_history: Dict[str, List[float]], source_label: str):
+    def _update_loss_weights(
+        self, 
+        current_epoch: int, 
+        loss_history: Dict[str, List[float]],
+        grad_norm_history: Optional[Dict[str, List[float]]] = None,
+        source_label: str = 'train'
+    ):
         """Helper method to perform weight update."""
         if not loss_history:
             logger.warning(f"[AdaptiveWeightCallback] No {source_label} loss history for epoch {current_epoch}")
@@ -1060,25 +1128,34 @@ class AdaptiveWeightCallback(TrainerCallback):
         training_component_names = set(current_weights.keys())
         
         # Filter to training components only
-        filtered_history = {
+        filtered_loss_history = {
             name: losses 
             for name, losses in loss_history.items() 
             if name in training_component_names
         }
         
-        if not filtered_history:
+        if not filtered_loss_history:
             logger.warning(
                 f"[AdaptiveWeightCallback] No matching training components in {source_label} loss history\n"
                 f"  Training components: {training_component_names}\n"
                 f"  Available in {source_label}: {set(loss_history.keys())}"
             )
             return False
+
+        filtered_grad_norm_history = None
+        if grad_norm_history is not None:
+            filtered_grad_norm_history = {
+                name: grad_norms
+                for name, grad_norms in grad_norm_history.items()
+                if name in training_component_names
+            }
         
         # Compute new loss weights
         new_weights = self.loss_weighting_strategy.step(
             epoch=current_epoch,
-            loss_history=filtered_history,
-            current_weights=current_weights
+            loss_history=filtered_loss_history,
+            current_weights=current_weights,
+            grad_norm_history=filtered_grad_norm_history  # NEW
         )
         
         # Apply new loss weights if scheduler returned them
@@ -1091,11 +1168,11 @@ class AdaptiveWeightCallback(TrainerCallback):
         logger.info(f"Epoch {current_epoch}: Updated loss weights (from {source_label})")
         
         for component_name, weight_dict in new_weights.items():
-            if component_name in filtered_history:
-                losses_tensor = torch.tensor(filtered_history[component_name])
+            if component_name in filtered_loss_history:
+                losses_tensor = torch.tensor(filtered_loss_history[component_name])
                 mean_loss = float(losses_tensor.mean())
                 std_loss = float(losses_tensor.std())
-                num_samples = len(filtered_history[component_name])
+                num_samples = len(filtered_loss_history[component_name])
                 
                 logger.info(f"  {component_name}:")
                 logger.info(f"    new weight: {weight_dict['base_weight']:.4f}")
@@ -1112,7 +1189,17 @@ class AdaptiveWeightCallback(TrainerCallback):
             current_epoch = int(state.epoch) if state.epoch is not None else -1
             if current_epoch != self.last_update_epoch and self.trainer is not None:
                 train_losses = self.stats_callback.get_loss_history(source='train')
-                self._update_loss_weights(current_epoch, train_losses, source_label='training')
+                
+                grad_norm_history = None
+                if self.use_gradients:
+                    grad_norm_history = self.stats_callback.get_gradient_norm_history()
+
+                self._update_loss_weights(
+                    current_epoch, 
+                    train_losses, 
+                    grad_norm_history=grad_norm_history,
+                    source_label='training'
+                )
     
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
         """Update weights after evaluation, optionally combining with training losses."""

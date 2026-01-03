@@ -15,6 +15,7 @@ class BalancedResidualDecayRate(LossWeightingStrategyBase):
     def __init__(
         self,
         update_frequency: int = 1,
+        use_gradients: bool = False,
         alpha: float = 0.9,
         min_weight: float = 0.01,
         max_weight: float = 100.0,
@@ -30,7 +31,7 @@ class BalancedResidualDecayRate(LossWeightingStrategyBase):
             temperature: Unused (kept to preserve constructor compatibility)
             epsilon: Numerical stability
         """
-        super().__init__(update_frequency)
+        super().__init__(update_frequency, use_gradients)
         self.alpha = float(alpha)
         self.min_weight = float(min_weight)
         self.max_weight = float(max_weight)

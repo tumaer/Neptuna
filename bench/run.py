@@ -3,6 +3,7 @@ import os
 from transformers import TrainingArguments
 from train.trainer import Trainer
 from metrics.inference_metrics import compute_metrics_for_n_rollouts
+from metrics.loss_weighting_strategy_registry import get_loss_weighting_strategy_entry
 from transformers.trainer import EvalPrediction
 from utils.load_model import fetch_model
 from utils.dataset_utils import make_datasets
@@ -280,8 +281,10 @@ def run(cfg):
     train_loss_dict = fetch_train_loss_dict(cfg)
     loss_weighting_strategy = create_loss_weighting_strategy(train_loss_dict)
     if loss_weighting_strategy is not None:
+        
+        use_gradients = get_loss_weighting_strategy_entry(train_loss_dict.train_loss_weighting_strategy.type).get("use_gradients", False)
         # Create statistics collector
-        stats_callback = LossStatisticsCallback(collect_train_losses=True)
+        stats_callback = LossStatisticsCallback(collect_train_losses=True, collect_gradients=use_gradients)
         callbacks.append(stats_callback)
         
         # Create adaptive weight callback
@@ -290,6 +293,7 @@ def run(cfg):
             loss_weighting_strategy, 
             stats_callback,
             loss_source = loss_source,
+            use_gradients = use_gradients
         )
         callbacks.append(weight_callback)
     else:
@@ -338,7 +342,7 @@ def run(cfg):
         stats_callback.trainer = trainer
         # Enable detailed loss collection in trainer
         trainer._collect_detailed_losses = train_loss_dict.train_loss_weighting_strategy.get(
-            'collect_detailed_losses', True,
+            'enabled', False,
         )
         trainer._last_detailed_losses = {}
 

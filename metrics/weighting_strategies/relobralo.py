@@ -18,6 +18,7 @@ class ReLoBRaLo(LossWeightingStrategyBase):
     def __init__(
         self,
         update_frequency: int = 1,
+        use_gradients: bool = False,
         alpha: float = 0.9,            # EMA factor in Eq. (11)
         tau: float = 1.0,              # temperature τ in λ_bal
         rho_prob: float = 0.999,       # P(ρ=1) (Bernoulli); "random lookback" switch
@@ -26,7 +27,7 @@ class ReLoBRaLo(LossWeightingStrategyBase):
         min_weight: Optional[float] = None, # not in paper; set to None to be strictly paper-faithful
         max_weight: Optional[float] = None  # not in paper; set to None to be strictly paper-faithful
     ):
-        super().__init__(update_frequency)
+        super().__init__(update_frequency, use_gradients)
         if not (0.0 <= alpha <= 1.0):
             raise ValueError("alpha must be in [0, 1].")
         if tau <= 0.0:

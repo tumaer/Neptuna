@@ -528,7 +528,8 @@ class CompositeLoss(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-        return_detailed: bool = True
+        return_detailed: bool = True,
+        preserve_component_grads: bool = False
     ) -> Union[
         torch.Tensor,
         Tuple[torch.Tensor, Dict[str, Union[torch.Tensor, Dict[str, torch.Tensor]]]]
@@ -577,8 +578,13 @@ class CompositeLoss(LossComponent):
                 total_loss = total_loss + component_loss
 
             if return_detailed:
+                if preserve_component_grads:
+                    component_loss_stored = component_loss
+                else:
+                    component_loss_stored = component_loss.detach()
+                
                 detailed_dict[loss_component.name] = {
-                    'total': component_loss.detach(),
+                    'total': component_loss_stored,
                     **component_detailed
                 }
 

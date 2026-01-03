@@ -15,6 +15,7 @@ class ResidualBasedAttention(LossWeightingStrategyBase):
     def __init__(
         self,
         update_frequency: int = 1,
+        use_gradients: bool = False,
         gamma: float = 0.9,                # decay factor (paper's gamma)
         eta_star: float = 1.0,             # update step size (paper's eta*)
         residual_mode: str = "mean",       # 'mean', 'max', 'std'
@@ -24,7 +25,7 @@ class ResidualBasedAttention(LossWeightingStrategyBase):
         max_weight: float = 100.0,
         normalize_weights: bool = True,    # normalize sum to num_components (optional, not in paper)
     ):
-        super().__init__(update_frequency)
+        super().__init__(update_frequency, use_gradients)
 
         if not (0.0 <= gamma < 1.0):
             raise ValueError("gamma should be in [0, 1).")
