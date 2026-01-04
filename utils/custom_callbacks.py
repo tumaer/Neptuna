@@ -782,96 +782,59 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
         # regardless of W&B being on or off and happens before W&B is
         # finished by its own callback.
         # --------------------------------------------------------------
-        
-        RANK = int(os.environ.get("LOCAL_RANK", -1))
-        IS_MAIN_PROCESS = RANK in [-1, 0]
-        
-        if not IS_MAIN_PROCESS:
-            return
+        logger.info("\n One last validation with the best model to save the plot with _best.png suffix.")
+        trainer = getattr(self, "trainer", None)
 
-        try:
-            logger.info("\n One last validation with the best model to save the plot with _best.png suffix.")
-            trainer = getattr(self, "trainer", None)
-            try:
-                # Temporarily suppress metric logging to W&B so we don't overwrite
-                # the final-epoch metrics with this last validation pass.
-                callbacks = []
-                try:
-                    callbacks = list(getattr(trainer.callback_handler, "callbacks", []) or [])
-                except Exception:
-                    callbacks = []
-                wandb_callbacks = [cb for cb in callbacks if isinstance(cb, WandbCallback)]
-                # Enable suppression for the duration of this evaluate + plotting sequence
-                for cb in wandb_callbacks:
-                    try:
-                        cb.suppress_metrics_logging = True
-                    except Exception:
-                        pass
+        # Temporarily suppress metric logging to W&B so we don't overwrite
+        # the final-epoch metrics with this last validation pass.
+        callbacks = list(getattr(getattr(trainer, "callback_handler", None), "callbacks", []) or [])
+        wandb_callbacks = [cb for cb in callbacks if isinstance(cb, WandbCallback)]
+        for cb in wandb_callbacks:
+            if hasattr(cb, "suppress_metrics_logging"):
+                cb.suppress_metrics_logging = True
 
-                try:
-                    # Force logging with the best epoch during this final evaluate
-                    setattr(trainer, "_force_best_epoch_for_logging", True)
-                    _ = trainer.evaluate()
-                finally:
-                    # Always restore suppression flag
-                    try:
-                        setattr(trainer, "_force_best_epoch_for_logging", False)
-                    except Exception:
-                        pass
-                    for cb in wandb_callbacks:
-                        try:
-                            cb.suppress_metrics_logging = False
-                        except Exception:
-                            pass
-                # ----------------------------------------------------------
-                # After evaluation, reload TrainerState from the best/latest
-                # checkpoint-# directory inside the run directory.
-                # ----------------------------------------------------------
-                try:
-                    # Build run directory (may be nested by trial name during HPO)
-                    run_dir = os.path.join(
-                        trainer.args.output_dir,
-                        trainer.state.trial_name,
-                    ) if getattr(trainer.state, "trial_name", None) else trainer.args.output_dir
+        # Force logging with the best epoch during this final evaluate
+        ################################
+        trainer.last_evaluate()
+        ################################
+        setattr(trainer, "_force_best_epoch_for_logging", False)
+        for cb in wandb_callbacks:
+            if hasattr(cb, "suppress_metrics_logging"):
+                cb.suppress_metrics_logging = False
 
-                    # Prefer the best checkpoint path recorded by TrainerState
-                    ckpt_path = getattr(trainer.state, "best_model_checkpoint", None)
+        # ----------------------------------------------------------
+        # After evaluation, reload TrainerState from the best/latest
+        # checkpoint-# directory inside the run directory.
+        # ----------------------------------------------------------
+        run_dir = os.path.join(
+            trainer.args.output_dir,
+            trainer.state.trial_name,
+        ) if getattr(trainer.state, "trial_name", None) else trainer.args.output_dir
 
-                    if ckpt_path and os.path.isdir(ckpt_path):
-                        state_path = os.path.join(ckpt_path, "trainer_state.json")
-                        if os.path.isfile(state_path):
-                            trainer.state = TrainerState.load_from_json(state_path)
-                except Exception as ie:
-                    logger.warning(f"Could not reload TrainerState from checkpoint: {ie}")
-                # Flag a plot pass and enforce best-suffix saving. We suppress metric
-                # logging again during the plot logging, since trainer.log will invoke
-                # callback on_log; we only want plot_* entries to go through.
-                for cb in wandb_callbacks:
-                    try:
-                        cb.suppress_metrics_logging = True
-                    except Exception:
-                        pass
-                try:
-                    # Ensure that the epoch we log corresponds to the best checkpoint's epoch
-                    setattr(trainer, "_force_best_epoch_for_logging", True)
-                    trainer.control.should_plot = True
-                    self.on_plot(
-                        trainer.args, trainer.state, trainer.control, is_new_best_metric=True, model=trainer.model, best_plot_at_train_end=True
-                    )
-                finally:
-                    try:
-                        setattr(trainer, "_force_best_epoch_for_logging", False)
-                    except Exception:
-                        pass
-                    for cb in wandb_callbacks:
-                        try:
-                            cb.suppress_metrics_logging = False
-                        except Exception:
-                            pass
-            except Exception as e:
-                logger.warning(f"Final validation/plotting failed: {e}")
-        except Exception as e:
-            logger.warning(f"Final validation block failed: {e}")
+        # Prefer the best checkpoint path recorded by TrainerState
+        ckpt_path = getattr(trainer.state, "best_model_checkpoint", None)
+        if ckpt_path and os.path.isdir(ckpt_path):
+            state_path = os.path.join(ckpt_path, "trainer_state.json")
+            if os.path.isfile(state_path):
+                trainer.state = TrainerState.load_from_json(state_path)
+
+        # Flag a plot pass and enforce best-suffix saving. We suppress metric
+        # logging again during the plot logging, since trainer.log will invoke
+        # callback on_log; we only want plot_* entries to go through.
+        for cb in wandb_callbacks:
+            if hasattr(cb, "suppress_metrics_logging"):
+                cb.suppress_metrics_logging = True
+
+        # Ensure that the epoch we log corresponds to the best checkpoint's epoch
+        setattr(trainer, "_force_best_epoch_for_logging", True)
+        trainer.control.should_plot = True
+        self.on_plot(
+            trainer.args, trainer.state, trainer.control, is_new_best_metric=True, model=trainer.model, best_plot_at_train_end=True
+        )
+        setattr(trainer, "_force_best_epoch_for_logging", False)
+        for cb in wandb_callbacks:
+            if hasattr(cb, "suppress_metrics_logging"):
+                cb.suppress_metrics_logging = False
 
         # Reset local state
         self._plotted_thresholds = set()

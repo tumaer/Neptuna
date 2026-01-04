@@ -1,5 +1,6 @@
 import time
 import os
+import atexit
 from transformers import TrainingArguments
 from train.trainer import Trainer
 from metrics.inference_metrics import compute_metrics_for_n_rollouts
@@ -25,14 +26,69 @@ import psutil
 from only_inference import save_errors_to_csv
 import numpy as np
 import torch
+import torch.distributed as dist
 
 __all__ = ["run"]
+
+_CLEANUP_DONE = False
+
+def get_device_string() -> str:
+    """Return a human-readable device identifier for logging."""
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        try:
+            idx = torch.xpu.current_device()
+            name = torch.xpu.get_device_name(idx)
+            return f"xpu:{idx} ({name})"
+        except Exception:
+            return "xpu"
+    if torch.cuda.is_available():
+        idx = torch.cuda.current_device()
+        name = torch.cuda.get_device_name(idx)
+        return f"cuda:{idx} ({name})"
+    return "cpu"
+
+def cleanup_distributed(rank: int) -> None:
+    """Best-effort teardown so distributed/XPU jobs exit cleanly."""
+    global _CLEANUP_DONE
+    if _CLEANUP_DONE:
+        return
+    _CLEANUP_DONE = True
+    try:
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            torch.xpu.synchronize()
+    except Exception as exc:
+        print(f"[rank {rank}] torch.xpu.synchronize() failed: {exc}", flush=True)
+
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+    except Exception as exc:
+        print(f"[rank {rank}] torch.cuda.synchronize() failed: {exc}", flush=True)
+
+    if dist.is_available() and dist.is_initialized():
+        try:
+            dist.destroy_process_group()
+        except Exception as exc:
+            print(f"[rank {rank}] dist.destroy_process_group() failed: {exc}", flush=True)
+
+    try:
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            torch.xpu.empty_cache()
+    except Exception as exc:
+        print(f"[rank {rank}] torch.xpu.empty_cache() failed: {exc}", flush=True)
+
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception as exc:
+        print(f"[rank {rank}] torch.cuda.empty_cache() failed: {exc}", flush=True)
 
 def run(cfg):
     """Entry-point called by main.py after Hydra config is prepared."""
     RANK = int(os.environ.get("LOCAL_RANK", -1))
     IS_MAIN_PROCESS = RANK in [-1, 0]
     print(f"RANK: {RANK}")
+    atexit.register(cleanup_distributed, rank=RANK)
     try:
         affinity = psutil.Process().cpu_affinity()
         CPU_CORES = len(affinity) if affinity else (psutil.cpu_count())
@@ -148,7 +204,7 @@ def run(cfg):
         torch_compile=False,
         use_cpu=cfg["train_config"]["use_cpu"],  # use_cpu even if other devices are present
         label_names=["label_including_rollouts"],
-        disable_tqdm=True if cfg["output_log_config"]["logging"]["wandb"] else False,
+        disable_tqdm=True,
         # ------------------------------------------------------------------
         # Reporting 
         # ------------------------------------------------------------------
@@ -351,9 +407,13 @@ def run(cfg):
     # ------------------------------------------------------------------
     if cfg["hyperparam_opt_config"]["optimize"] is False:
         start = time.time()
+        device_str = get_device_string()
+        print(f"Training on device {device_str} \n", flush=True)
         # trainer.train(resume_from_checkpoint=f"./checkpoints/KuramotoSivashinsky_2D_ScOT_09072025_074058/checkpoint-15")
         trainer.train(resume_from_checkpoint=False)
         print(f"Total train time: {time.time() - start:.2f} s")
+
+        print(f"All done with training, rank: {RANK} \n", flush=True)
         if training_args.push_to_hub and IS_MAIN_PROCESS:
             print("Pushing model to Hugging Face Hub...")
             trainer.push_to_hub()
