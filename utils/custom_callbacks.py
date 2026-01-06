@@ -860,7 +860,6 @@ class LossStatisticsCallback(TrainerCallback):
     def on_epoch_begin(self, args, state, control, **kwargs):
         """Initialize loss accumulator at start of epoch."""
         self.train_losses = {}
-        self.eval_losses = {}
         self.grad_norms = {}
         self.current_epoch = state.epoch
         
