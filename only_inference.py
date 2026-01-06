@@ -1059,6 +1059,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             # Prepare return payload for top-level multi-run plotting
             ic_return = {
                 "metrics": per_rollout_step_metrics_ic,
+                "metrics_renorm": per_rollout_step_metrics_ic_renorm,
                 "sequence_info": list(data_config.get("sequence_info", [1, 1, 1])),
                 "output_channel_names": output_channel_names,
             }
@@ -1139,6 +1140,7 @@ def main(cfg: DictConfig):
     
     # Process each experiment directory and collect IC-start metrics for multi-run overlay (no aggregation)
     runs_step_metrics = {}
+    runs_step_metrics_renorm = {}
     runs_sequence_info = {}
     run_configs = {}
     sequence_info_ref = None
@@ -1149,6 +1151,8 @@ def main(cfg: DictConfig):
         if isinstance(res, dict) and res.get("metrics") is not None:
             run_label = os.path.basename(experiment_dir)
             runs_step_metrics[run_label] = res["metrics"]
+            if res.get("metrics_renorm") is not None:
+                runs_step_metrics_renorm[run_label] = res["metrics_renorm"]
             if sequence_info_ref is None and res.get("sequence_info") is not None:
                 sequence_info_ref = res.get("sequence_info")
             # Keep per-run sequence info for correct timestep x-axis
@@ -1196,6 +1200,12 @@ def main(cfg: DictConfig):
         filename="rollout_metrics_tabulated.csv"
     )
 
+    calculate_and_save_results_all_channels(
+        runs_step_metrics=runs_step_metrics_renorm,
+        save_dir=inference_dir,
+        output_channel_names=output_channel_names_ref,
+        filename="rollout_metrics_tabulated_renorm.csv"
+    )
 
     print(f"\n{'='*60}")
     print("All inference runs completed!")
