@@ -1,0 +1,3 @@
+reduction: mean
+epsilon: 1e-8
+normalization: none

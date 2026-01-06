@@ -18,6 +18,9 @@ from .losses import (
     VRMSE,
     NRMSE,
     InterfaceRMSE,
+    MeanRelativeError,
+    NegativityLoss,
+    ShockRMSE,
 )
 
 from .weighting_strategies import (
@@ -49,4 +52,7 @@ __all__ = [
     'SoftAdapt',
     'BalancedResidualDecayRate',
     'InterfaceRMSE',
+    'MeanRelativeError',
+    'NegativityLoss',
+    'ShockRMSE',
 ]

@@ -13,6 +13,9 @@ from .rmse import RMSE
 from .vrmse import VRMSE
 from .nrmse import NRMSE
 from .interface_rmse import InterfaceRMSE
+from .mean_relative_error import MeanRelativeError
+from .negativity_loss import NegativityLoss
+from .shock_rmse import ShockRMSE
 
 __all__ = [
     'L1Loss',
@@ -29,5 +32,8 @@ __all__ = [
     'RMSE',
     'VRMSE',
     'NRMSE',
-    "InterfaceRMSE",
+    'InterfaceRMSE',
+    'MeanRelativeError',
+    'NegativityLoss',
+    'ShockRMSE',
 ]

@@ -15,6 +15,9 @@ from metrics.losses import (
     VRMSE,
     NRMSE,
     InterfaceRMSE,
+    MeanRelativeError,
+    NegativityLoss,
+    ShockRMSE,
 )
 
 # Loss registry with metadata:
@@ -96,6 +99,21 @@ LOSS_REGISTRY = {
         "class": InterfaceRMSE,
         "default_name": "InterfaceRMSE",
         "default_config": "loss_metrics/InterfaceRMSE/interface_rmse_default",
+    },
+    "MeanRelativeError": {
+        "class": MeanRelativeError,
+        "default_name": "MeanRelativeError",
+        "default_config": "loss_metrics/MeanRelativeError/mean_relative_error_default",
+    },
+    "NegativityLoss": {
+        "class": NegativityLoss,
+        "default_name": "NegativityLoss",
+        "default_config": "loss_metrics/NegativityLoss/negativity_loss_default",
+    },
+    "ShockRMSE": {
+        "class": ShockRMSE,
+        "default_name": "ShockRMSE",
+        "default_config": "loss_metrics/ShockRMSE/shock_rmse_default",
     },
 }
 
