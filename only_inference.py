@@ -983,12 +983,12 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             
 
             # Compute renormalized metrics: necessary for comparing performance between runs with different data preprocessing
-            per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(
+            per_rollout_step_metrics_ic_renorm = compute_metrics_for_n_rollouts(
                 pred_renorm, tgt_renorm, outputs_per_rollout=outputs_per_rollout, include_per_timestep=True, loss_metric=eval_loss_fn
             )
             
             errors = {}
-            for metric_name, values in per_rollout_step_metrics_ic.items():
+            for metric_name, values in per_rollout_step_metrics_ic_renorm.items():
                 print(f"{metric_name} per-step (IC start, renorm): {values}")
                 errors[metric_name] = values
             save_errors_to_csv(errors, solo_inference_dir, "results_renorm.csv")
