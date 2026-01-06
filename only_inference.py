@@ -6,7 +6,7 @@ from utils.load_data import fetch_dataset
 from utils.plot_progress import build_info_strings
 from utils.plot_progress import preprocess_for_plotting, plot_rollout_metrics
 from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
-from utils.plot_progress import plot_rollout_metrics_bar_chart
+from utils.plot_progress import plot_rollout_metrics_bar_chart, calculate_and_save_results_all_channels
 from utils.plot_progress import plot_multi_run_rollout_metrics
 from utils.loss_utils import fetch_loss_metric, fetch_infer_loss_dict, fetch_train_loss_dict
 from metrics.inference_metrics import compute_metrics_for_n_rollouts
@@ -1060,6 +1060,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             ic_return = {
                 "metrics": per_rollout_step_metrics_ic,
                 "sequence_info": list(data_config.get("sequence_info", [1, 1, 1])),
+                "output_channel_names": output_channel_names,
             }
 
         print(f"Inference completed for {os.path.basename(experiment_dir)}")
@@ -1141,6 +1142,7 @@ def main(cfg: DictConfig):
     runs_sequence_info = {}
     run_configs = {}
     sequence_info_ref = None
+    output_channel_names_ref = None
     
     for experiment_dir in experiment_dirs:
         res = run_inference_for_each_experiment(experiment_dir, infer_config)
@@ -1152,6 +1154,8 @@ def main(cfg: DictConfig):
             # Keep per-run sequence info for correct timestep x-axis
             if res.get("sequence_info") is not None:
                 runs_sequence_info[run_label] = res.get("sequence_info")
+            if output_channel_names_ref is None and res.get("output_channel_names") is not None:
+                output_channel_names_ref = res.get("output_channel_names")
         try:
             checkpoint_path = find_checkpoint_path(experiment_dir)
             if checkpoint_path:
@@ -1183,6 +1187,13 @@ def main(cfg: DictConfig):
         save_dir=inference_dir,
         run_configs=run_configs,
         filename="rollout_metrics_bar_chart.png"
+    )
+
+    calculate_and_save_results_all_channels(
+        runs_step_metrics=runs_step_metrics,
+        save_dir=inference_dir,
+        output_channel_names=output_channel_names_ref,
+        filename="rollout_metrics_tabulated.csv"
     )
 
 

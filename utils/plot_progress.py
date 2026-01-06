@@ -2545,3 +2545,139 @@ def plot_rollout_metrics_bar_chart(
     out_path = os.path.join(save_dir, out_name)
     plt.savefig(out_path, dpi=300, bbox_inches='tight')
     plt.close()
+
+def calculate_and_save_results_all_channels(
+    runs_step_metrics: dict,
+    save_dir: str,
+    output_channel_names: list[str],
+    filename: str = "rollout_metrics_all_channels.csv",
+) -> None:
+    """
+    For each run and each metric, compute mean and std over rollout steps
+    for all channels (including per-channel and overall metrics).
+    Save results to CSV with runs as rows and computed quantities as columns.
+
+    Parameters
+    ----------
+    runs_step_metrics : dict[str, dict]
+        Mapping from run label to the per-run step_metrics dict.
+        Expected structure per run:
+          {
+            "<metric_name>": {
+                "per_rollout_step_mean": (R, C+1),
+                "per_rollout_step_std":  (R, C+1),
+                ...
+            },
+            ...
+          }
+    save_dir : str
+        Directory to save the CSV file.
+    output_channel_names : list[str]
+        Names of the C output channels.
+    filename : str
+        Output CSV filename.
+    """
+    import csv
+    import os
+    
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Collect all metric names across all runs
+    all_metric_names = sorted({
+        metric_name
+        for run_metrics in runs_step_metrics.values()
+        for metric_name in run_metrics.keys()
+    })
+    
+    if not all_metric_names:
+        return
+    
+    # Build column headers
+    # For each metric and each channel (+ overall), we have mean and std
+    column_headers = ["run_name"]
+    for metric_name in all_metric_names:
+        # Per-channel columns
+        for ch_name in output_channel_names:
+            column_headers.append(f"{metric_name}_{ch_name}_mean")
+            column_headers.append(f"{metric_name}_{ch_name}_std")
+        # Overall column
+        column_headers.append(f"{metric_name}_overall_mean")
+        column_headers.append(f"{metric_name}_overall_std")
+    
+    # Collect data for each run
+    rows = []
+    for run_name, run_metrics in runs_step_metrics.items():
+        row = {"run_name": run_name}
+        
+        for metric_name in all_metric_names:
+            if metric_name not in run_metrics:
+                # Fill with None/empty if metric not present
+                for ch_name in output_channel_names:
+                    row[f"{metric_name}_{ch_name}_mean"] = None
+                    row[f"{metric_name}_{ch_name}_std"] = None
+                row[f"{metric_name}_overall_mean"] = None
+                row[f"{metric_name}_overall_std"] = None
+                continue
+            
+            stats = run_metrics[metric_name]
+            means = stats.get("per_rollout_step_mean", None)
+            stds = stats.get("per_rollout_step_std", None)
+            
+            if means is None or stds is None:
+                for ch_name in output_channel_names:
+                    row[f"{metric_name}_{ch_name}_mean"] = None
+                    row[f"{metric_name}_{ch_name}_std"] = None
+                row[f"{metric_name}_overall_mean"] = None
+                row[f"{metric_name}_overall_std"] = None
+                continue
+            
+            # means and stds have shape (R, C+1)
+            # Columns 0..C-1 are per-channel, column -1 is overall
+            R, total_cols = means.shape
+            num_channels = total_cols - 1
+            
+            # Per-channel statistics
+            for c_idx in range(min(num_channels, len(output_channel_names))):
+                ch_name = output_channel_names[c_idx]
+                channel_means = means[:, c_idx]  # shape (R,)
+                channel_stds = stds[:, c_idx]    # shape (R,)
+                
+                # Mean of means
+                mean_avg = float(np.mean(channel_means))
+                
+                # Pooled std
+                pooled_std = float(
+                    np.sqrt(
+                        np.sum(channel_stds**2 + (channel_means - mean_avg)**2)
+                        / (len(channel_means) + 1)
+                    )
+                )
+                
+                row[f"{metric_name}_{ch_name}_mean"] = mean_avg
+                row[f"{metric_name}_{ch_name}_std"] = pooled_std
+            
+            # Overall statistics (last column)
+            overall_means = means[:, -1]
+            overall_stds = stds[:, -1]
+            
+            overall_mean_avg = float(np.mean(overall_means))
+            overall_pooled_std = float(
+                np.sqrt(
+                    np.sum(overall_stds**2 + (overall_means - overall_mean_avg)**2)
+                    / (len(overall_means) + 1)
+                )
+            )
+            
+            row[f"{metric_name}_overall_mean"] = overall_mean_avg
+            row[f"{metric_name}_overall_std"] = overall_pooled_std
+        
+        rows.append(row)
+    
+    # Write to CSV
+    out_path = os.path.join(save_dir, filename)
+    with open(out_path, 'w', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=column_headers)
+        writer.writeheader()
+        writer.writerows(rows)
+    
+    print(f"Saved rollout metrics to {out_path}")
