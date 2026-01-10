@@ -292,37 +292,67 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     if hasattr(cfg, 'loss_config') and cfg.loss_config is not None:
         # TODO: review once loss config format has been finalized (per-epoch scheduling)
 
-        if hasattr(cfg.loss_config, 'loss') and hasattr(cfg.loss_config.loss, 'components'):
-            OmegaConf.set_struct(cfg.loss_config, False)
-            
-            for component_cfg in cfg.loss_config.loss.components:
-                loss_type = component_cfg.type
-                registry_entry = get_loss_entry(loss_type)
-                default_config = registry_entry["default_config"]
+        OmegaConf.set_struct(cfg.loss_config, False)
+        
+        # Process both train_loss and validation_loss
+        for loss_key in ['train_loss', 'validation_loss']:
+            if hasattr(cfg.loss_config, loss_key):
+                loss_section = getattr(cfg.loss_config, loss_key)
+                
+                if hasattr(loss_section, 'components'):
+                    for component_cfg in loss_section.components:
+                        loss_type = component_cfg.type
+                        registry_entry = get_loss_entry(loss_type)
+                        default_config = registry_entry["default_config"]
 
-                config_file = component_cfg.get("config_file", default_config)
+                        config_file = component_cfg.get("config_file", default_config)
 
-                # Ensure metric_params exists (as a DictConfig) so merges behave nicely
-                existing_metric = component_cfg.get("metric_params", None)
-                if existing_metric is None:
-                    existing_metric = OmegaConf.create({})
+                        # Ensure metric_params exists (as a DictConfig) so merges behave nicely
+                        existing_metric = component_cfg.get("metric_params", None)
+                        if existing_metric is None:
+                            existing_metric = OmegaConf.create({})
 
-                # Load defaults (if available)
-                defaults_metric = OmegaConf.create({})
-                if config_file is not None:
-                    config_path = f"config/loss_config/{config_file}.yaml"
-                    if os.path.exists(config_path):
-                        try:
-                            defaults_metric = OmegaConf.load(config_path)
-                        except Exception:
-                            defaults_metric = OmegaConf.create({})
+                        # Load defaults (if available)
+                        defaults_metric = OmegaConf.create({})
+                        if config_file is not None:
+                            config_path = f"config/loss_config/{config_file}.yaml"
+                            if os.path.exists(config_path):
+                                try:
+                                    defaults_metric = OmegaConf.load(config_path)
+                                except Exception:
+                                    defaults_metric = OmegaConf.create({})
 
-                # Merge so that existing/user-provided keys WIN over defaults
-                # (OmegaConf.merge: later arguments take precedence)
-                merged_metric = OmegaConf.merge(defaults_metric, existing_metric)
+                        # Merge so that existing/user-provided keys WIN over defaults
+                        # (OmegaConf.merge: later arguments take precedence)
+                        merged_metric = OmegaConf.merge(defaults_metric, existing_metric)
 
-                component_cfg.metric_params = merged_metric
-            
-            OmegaConf.set_struct(cfg.loss_config, True)
+                        component_cfg.metric_params = merged_metric
+                        
+                        # Also process sub_components for CompositeLoss
+                        if hasattr(component_cfg, 'sub_components'):
+                            for sub_component_cfg in component_cfg.sub_components:
+                                sub_loss_type = sub_component_cfg.type
+                                sub_registry_entry = get_loss_entry(sub_loss_type)
+                                sub_default_config = sub_registry_entry["default_config"]
+                                
+                                sub_config_file = sub_component_cfg.get("config_file", sub_default_config)
+                                
+                                existing_sub_metric = sub_component_cfg.get("metric_params", None)
+                                if existing_sub_metric is None:
+                                    existing_sub_metric = OmegaConf.create({})
+                                
+                                defaults_sub_metric = OmegaConf.create({})
+                                if sub_config_file is not None:
+                                    sub_config_path = f"config/loss_config/{sub_config_file}.yaml"
+                                    if os.path.exists(sub_config_path):
+                                        try:
+                                            defaults_sub_metric = OmegaConf.load(sub_config_path)
+                                        except Exception:
+                                            defaults_sub_metric = OmegaConf.create({})
+                                
+                                merged_sub_metric = OmegaConf.merge(defaults_sub_metric, existing_sub_metric)
+                                sub_component_cfg.metric_params = merged_sub_metric
+        
+        OmegaConf.set_struct(cfg.loss_config, True)
 
     return cfg
