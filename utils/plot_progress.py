@@ -764,23 +764,22 @@ class GridStructureBuilder:
             titles.append("Conditioning")
             is_timestamp.append(False)
         
-        # Output sections with timestamps after targets
+        # Output sections with timestamps before predictions
         cols_per_field = 4 if self.include_relative_error else 3
         error_labels = (["Prediction", "Target", "Abs Error", "Rel Error"] 
                     if self.include_relative_error 
                     else ["Prediction", "Target", "Abs Error"])
         
         for ch_name in self.output_channels:
+            # Add timestamp column before predictions
+            widths.append(1)
+            titles.append("Time")
+            is_timestamp.append(True)
+            
             for i, label in enumerate(error_labels):
                 widths.append(1)
                 titles.append(f"{ch_name}\n{label}")
                 is_timestamp.append(False)
-                
-                # Add timestamp column after Target
-                if label == "Target":
-                    widths.append(1)
-                    titles.append("Time")
-                    is_timestamp.append(True)
         
         return widths, titles, is_timestamp
     
@@ -815,22 +814,21 @@ class GridStructureBuilder:
                 titles.append(f"Conditioning\n{ch_name}")
                 is_timestamp.append(False)
         
-        # Output rows with timestamps after targets
+        # Output rows with timestamps before predictions
         error_labels = (["Prediction", "Target", "Abs Error", "Rel Error"] 
                        if self.include_relative_error 
                        else ["Prediction", "Target", "Abs Error"])
         
         for ch_name in self.output_channels:
+            # Add timestamp row before predictions
+            heights.append(1)
+            titles.append("Time")
+            is_timestamp.append(True)
+            
             for label in error_labels:
                 heights.append(1)
                 titles.append(f"{ch_name}\n{label}")
                 is_timestamp.append(False)
-                
-                # Add timestamp row after Target
-                if label == "Target":
-                    heights.append(1)
-                    titles.append("Time")
-                    is_timestamp.append(True)
         
         return heights, titles, is_timestamp
 
@@ -1249,12 +1247,21 @@ class VerticalPlotter(BasePlotter):
     def _plot_predictions_vertical(self, fig, gs, row_idx, col_gs_indices, col_widths,
                                 start_col_idx, pred, tgt, abs_err, rel_err, 
                                 vmins, vmaxs, layout_params, current_time_step, T_in):
-        """Plot prediction/target/error columns with timestamps after targets."""
+        """Plot prediction/target/error columns with timestamps before predictions."""
         col_idx = start_col_idx
         is_timestamp = fig.is_timestamp
         
         if self.ndim == 2:
             for c_idx, ch_name in enumerate(self.output_channel_names):
+                # Timestamp before prediction
+                if col_idx < len(is_timestamp) and is_timestamp[col_idx]:
+                    gs_col = col_gs_indices[col_idx]
+                    time_ax = fig.add_subplot(gs[row_idx, gs_col])
+                    time_ax.axis('off')
+                    time_ax.text(0.5, 0.5, self._get_time_label(current_time_step, T_in),
+                                ha='center', va='center', fontsize=12, weight='bold')
+                    col_idx += 1
+                
                 # Prediction
                 gs_col = col_gs_indices[col_idx]
                 self._plot_cell(fig, gs, row_idx, gs_col, 1,
@@ -1268,15 +1275,6 @@ class VerticalPlotter(BasePlotter):
                             tgt[c_idx:c_idx+1], [ch_name],
                             vmins[c_idx:c_idx+1], vmaxs[c_idx:c_idx+1], layout_params)
                 col_idx += 1
-                
-                # Timestamp after target
-                if col_idx < len(is_timestamp) and is_timestamp[col_idx]:
-                    gs_col = col_gs_indices[col_idx]
-                    time_ax = fig.add_subplot(gs[row_idx, gs_col])
-                    time_ax.axis('off')
-                    time_ax.text(0.5, 0.5, self._get_time_label(current_time_step, T_in),
-                                ha='center', va='center', fontsize=12, weight='bold')
-                    col_idx += 1
                 
                 # Absolute error
                 gs_col = col_gs_indices[col_idx]
@@ -1293,21 +1291,21 @@ class VerticalPlotter(BasePlotter):
                                 None, None, layout_params)
                     col_idx += 1
         else:  # 1D
+            # Timestamp before prediction
+            if col_idx < len(is_timestamp) and is_timestamp[col_idx]:
+                gs_col = col_gs_indices[col_idx]
+                time_ax = fig.add_subplot(gs[row_idx, gs_col])
+                time_ax.axis('off')
+                time_ax.text(0.5, 0.5, self._get_time_label(current_time_step, T_in),
+                            ha='center', va='center', fontsize=12, weight='bold')
+                col_idx += 1
+            
             for i, data in enumerate([pred, tgt, abs_err] + ([rel_err] if self.include_relative_error else [])):
                 gs_col = col_gs_indices[col_idx]
                 self._plot_cell(fig, gs, row_idx, gs_col, 1,
                             data, self.output_channel_names,
                             None, None, layout_params)
                 col_idx += 1
-                
-                # Add timestamp after target (i == 1)
-                if i == 1 and col_idx < len(is_timestamp) and is_timestamp[col_idx]:
-                    gs_col = col_gs_indices[col_idx]
-                    time_ax = fig.add_subplot(gs[row_idx, gs_col])
-                    time_ax.axis('off')
-                    time_ax.text(0.5, 0.5, self._get_time_label(current_time_step, T_in),
-                                ha='center', va='center', fontsize=12, weight='bold')
-                    col_idx += 1
         
         return col_idx
 
@@ -1399,21 +1397,20 @@ class HorizontalPlotter(BasePlotter):
             titles.append("Conditioning")
             is_timestamp.append(False)
         
-        # Output rows with timestamps after targets
+        # Output rows with timestamps before predictions
         error_labels = (["Prediction", "Target", "Abs Error", "Rel Error"] 
                     if self.include_relative_error 
                     else ["Prediction", "Target", "Abs Error"])
+        
+        # Add timestamp row before predictions
+        heights.append(1)
+        titles.append("Time")
+        is_timestamp.append(True)
         
         for label in error_labels:
             heights.append(1)
             titles.append(label)
             is_timestamp.append(False)
-            
-            # Add timestamp row after Target
-            if label == "Target":
-                heights.append(1)
-                titles.append("Time")
-                is_timestamp.append(True)
         
         return heights, titles, is_timestamp
     
@@ -1585,12 +1582,21 @@ class HorizontalPlotter(BasePlotter):
     def _plot_predictions_horizontal(self, fig, gs, row_gs_indices, start_row_idx,
                                     col_gs_idx, pred, tgt, abs_err, rel_err,
                                     vmins, vmaxs, layout_params, current_time_step, T_in):
-        """Plot prediction/target/error rows with timestamps after targets."""
+        """Plot prediction/target/error rows with timestamps before predictions."""
         row_idx = start_row_idx
         is_timestamp = fig.is_timestamp
         
         if self.ndim == 2:
             for c_idx, ch_name in enumerate(self.output_channel_names):
+                # Timestamp before prediction
+                if row_idx < len(is_timestamp) and is_timestamp[row_idx]:
+                    gs_row = row_gs_indices[row_idx]
+                    time_ax = fig.add_subplot(gs[gs_row, col_gs_idx])
+                    time_ax.axis('off')
+                    time_ax.text(0.5, 0.5, self._get_time_label(current_time_step, T_in),
+                                ha='center', va='center', fontsize=12, weight='bold')
+                    row_idx += 1
+                
                 # Prediction
                 gs_row = row_gs_indices[row_idx]
                 self._plot_cell(fig, gs, gs_row, col_gs_idx, 1,
@@ -1604,15 +1610,6 @@ class HorizontalPlotter(BasePlotter):
                             tgt[c_idx:c_idx+1], [ch_name],
                             vmins[c_idx:c_idx+1], vmaxs[c_idx:c_idx+1], layout_params)
                 row_idx += 1
-                
-                # Timestamp after target
-                if row_idx < len(is_timestamp) and is_timestamp[row_idx]:
-                    gs_row = row_gs_indices[row_idx]
-                    time_ax = fig.add_subplot(gs[gs_row, col_gs_idx])
-                    time_ax.axis('off')
-                    time_ax.text(0.5, 0.5, self._get_time_label(current_time_step, T_in),
-                                ha='center', va='center', fontsize=12, weight='bold')
-                    row_idx += 1
                 
                 # Absolute error
                 gs_row = row_gs_indices[row_idx]
@@ -1629,6 +1626,15 @@ class HorizontalPlotter(BasePlotter):
                                 None, None, layout_params)
                     row_idx += 1
         else:  # 1D
+            # Timestamp before prediction
+            if row_idx < len(is_timestamp) and is_timestamp[row_idx]:
+                gs_row = row_gs_indices[row_idx]
+                time_ax = fig.add_subplot(gs[gs_row, col_gs_idx])
+                time_ax.axis('off')
+                time_ax.text(0.5, 0.5, self._get_time_label(current_time_step, T_in),
+                            ha='center', va='center', fontsize=12, weight='bold')
+                row_idx += 1
+            
             data_list = [pred, tgt, abs_err]
             if self.include_relative_error:
                 data_list.append(rel_err)
@@ -1639,15 +1645,6 @@ class HorizontalPlotter(BasePlotter):
                             data, self.output_channel_names,
                             None, None, layout_params)
                 row_idx += 1
-                
-                # Add timestamp after target (i == 1)
-                if i == 1 and row_idx < len(is_timestamp) and is_timestamp[row_idx]:
-                    gs_row = row_gs_indices[row_idx]
-                    time_ax = fig.add_subplot(gs[gs_row, col_gs_idx])
-                    time_ax.axis('off')
-                    time_ax.text(0.5, 0.5, self._get_time_label(current_time_step, T_in),
-                                ha='center', va='center', fontsize=12, weight='bold')
-                    row_idx += 1
         
         return row_idx
     
