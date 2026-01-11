@@ -1,0 +1,36 @@
+conserved_keys:
+  - mass
+  - Px
+  - Py
+  - kinetic_energy
+
+# Whether to include boundary flux metrics
+use_boundary_fluxes: true
+normalization: none
+
+boundary_keys:
+  - mass
+  - Px
+  - Py
+  - energy
+
+# Optional: weight different terms relative to each other
+quantity_weights:
+  domain/mass: 1.0
+  domain/Px: 1.0
+  domain/Py: 1.0
+  domain/kinetic_energy: 1.0
+  boundary/mass: 1.0
+  boundary/Px: 1.0
+  boundary/Py: 1.0
+  boundary/energy: 1.0
+
+# We nondimensionalize the computed metrics to ensure components are O(1).
+# Suitable choices would be maximum or average field values.
+# For length, one unit is the size of one pixel.
+reference_quantities:
+  density: 1000.0
+  velocity: 1000.0
+  pressure: 1000000.0
+  length: 40
+  temperature: 100.0

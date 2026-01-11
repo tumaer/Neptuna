@@ -1,0 +1,7 @@
+loss:
+  components:
+    # Same components as training but with weight=1.0 for unweighted comparison
+    - type: L2Loss
+      weight: 1.0
+    - type: PearsonCorrelationLoss
+      weight: 1.0
