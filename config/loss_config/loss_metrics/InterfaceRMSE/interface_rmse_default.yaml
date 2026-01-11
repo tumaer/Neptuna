@@ -1,5 +1,0 @@
-density_key: Density
-density_range: [200, 800]
-blur_sigma: 0.0
-normalization: none
-eps: 1e-8
