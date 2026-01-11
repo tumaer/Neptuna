@@ -3,7 +3,7 @@ from __future__ import annotations
 """Utility functions to enrich and finalise the Hydra DictConfig before training."""
 
 from datetime import datetime
-from omegaconf import DictConfig
+from omegaconf import DictConfig, ListConfig
 import os
 import json
 import time
@@ -287,42 +287,203 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
             print(f"[WARNING] Failed to write data_config to {json_path}: {exc}")
 
     # ------------------------------------------------------------------
-    # 6) Load and merge the relevant loss component configs
+    # 6) Update the validation_loss components in the train_strategy_config block
+    # by appending the metric_for_best_model to the validation_loss components of each curriculum block.
     # ------------------------------------------------------------------
-    if hasattr(cfg, 'loss_config') and cfg.loss_config is not None:
-        # TODO: review once loss config format has been finalized (per-epoch scheduling)
+    train_strategy_cfg = cfg.get("train_strategy_config", None)
+    if train_strategy_cfg is not None:
+        # Allow inserting fields into the strategy config when struct is enabled
+        try:
+            OmegaConf.set_struct(train_strategy_cfg, False)
+        except Exception:
+            pass
+        metric_for_best_model_cfg = train_strategy_cfg.get("metric_for_best_model", None)
 
-        if hasattr(cfg.loss_config, 'loss') and hasattr(cfg.loss_config.loss, 'components'):
-            OmegaConf.set_struct(cfg.loss_config, False)
+        def _normalize_metric_entry(entry):
+            """Return a dict with keys: type, name, weight, sub_components (optional)."""
+            metric_type = None
+            metric_name = None
+            weight = 1.0
+            sub_components = None
+
+            if hasattr(entry, "get"):
+                metric_type = entry.get("type", None) or entry.get("name", None)
+                metric_name = entry.get("name", None)
+                weight = entry.get("weight", 1.0)
+                sub_components = entry.get("sub_components", None) or entry.get("components", None)
+            elif isinstance(entry, dict):
+                metric_type = entry.get("type", None) or entry.get("name", None)
+                metric_name = entry.get("name", None)
+                weight = entry.get("weight", 1.0)
+                sub_components = entry.get("sub_components", None) or entry.get("components", None)
+            else:
+                metric_type = entry
+
+            return {
+                "type": metric_type,
+                "name": metric_name,
+                "weight": weight,
+                "sub_components": sub_components,
+            }
+
+        # Support list / single entries for metric_for_best_model
+        metric_entries = []
+        if metric_for_best_model_cfg is not None:
+            if isinstance(metric_for_best_model_cfg, (list, ListConfig, tuple)):
+                metric_entries = [_normalize_metric_entry(e) for e in metric_for_best_model_cfg]
+            else:
+                metric_entries = [_normalize_metric_entry(metric_for_best_model_cfg)]
+
+        curriculum_blocks = train_strategy_cfg.get("curriculum", [])
+
+        if metric_entries and curriculum_blocks:
+            for block in curriculum_blocks:
+                if block is None or "validation_loss" not in block:
+                    continue
+
+                validation_loss_cfg = block["validation_loss"]
+                if validation_loss_cfg is None:
+                    continue
+
+                # Temporarily disable struct to allow insertions, then restore
+                #prev_struct = OmegaConf.get_struct(validation_loss_cfg)
+                OmegaConf.set_struct(validation_loss_cfg, False)
+
+
+                for metric_entry in metric_entries:
+                    metric_type = metric_entry.get("type", None)
+                    metric_name = metric_entry.get("name", None)
+                    metric_weight = metric_entry.get("weight", 1.0)
+                    metric_sub_components = metric_entry.get("sub_components", None)
+
+                    if metric_type is None:
+                        continue
+
+                    # Ensure the best-model metric is present in validation_loss components
+                    components = validation_loss_cfg.get("components", [])
+                    if components is None:
+                        components = []
+
+                    def _extract_type(obj):
+                        if hasattr(obj, "get"):
+                            return obj.get("type", None)
+                        if isinstance(obj, dict):
+                            return obj.get("type", None)
+                        return None
+
+                    def _extract_sub_components(obj):
+                        if hasattr(obj, "get"):
+                            return obj.get("sub_components", None) or obj.get("components", None)
+                        if isinstance(obj, dict):
+                            return obj.get("sub_components", None) or obj.get("components", None)
+                        return None
+
+                    def _extract_name(obj):
+                        if hasattr(obj, "get"):
+                            return obj.get("name", None)
+                        if isinstance(obj, dict):
+                            return obj.get("name", None)
+                        return None
+
+                    def _extract_weight(obj):
+                        if hasattr(obj, "get"):
+                            return obj.get("weight", 1.0)
+                        if isinstance(obj, dict):
+                            return obj.get("weight", 1.0)
+                        return 1.0
+
+                    def _sub_components_match(target_sub, existing_sub):
+                        target_list = target_sub or []
+                        existing_list = existing_sub or []
+                        if len(target_list) != len(existing_list):
+                            return False
+                        for t_item, e_item in zip(target_list, existing_list):
+                            t_type = _extract_type(t_item)
+                            e_type = _extract_type(e_item)
+                            if t_type != e_type:
+                                return False
+                            t_w = _extract_weight(t_item)
+                            e_w = _extract_weight(e_item)
+                            if t_w != e_w:
+                                return False
+                        return True
+
+                    # Skip append if a component with the same type (and for composite, matching sub-components) exists
+                    metric_exists = False
+                    for comp in components:
+                        comp_type = _extract_type(comp)
+                        if comp_type != metric_type:
+                            continue
+
+                        if metric_type == "CompositeLoss":
+                            comp_sub = _extract_sub_components(comp)
+                            if _sub_components_match(metric_sub_components, comp_sub):
+                                comp_name = _extract_name(comp)
+                                # If sub-components match but names differ, raise to avoid ambiguous configs
+                                if (metric_name or comp_name) and (metric_name != comp_name):
+                                    block_name = block.get("name", "<unknown>")
+                                    raise ValueError(
+                                        f"CompositeLoss name mismatch in validation_loss of block '{block_name}': "
+                                        f"metric_for_best_model name='{metric_name}' vs existing name='{comp_name}' "
+                                        "with identical sub_components."
+                                    )
+                                metric_exists = True
+                                break
+                        else:
+                            metric_exists = True
+                            break
+
+                    if not metric_exists:
+                        new_comp = {"type": metric_type, "weight": metric_weight}
+                        if metric_name is not None:
+                            new_comp["name"] = metric_name
+                        if metric_type == "CompositeLoss" and metric_sub_components is not None:
+                            new_comp["sub_components"] = metric_sub_components
+                        components.append(new_comp)
+                        validation_loss_cfg["components"] = components
+                # Restore original struct setting
+                OmegaConf.set_struct(validation_loss_cfg, True)
+
+
+
+    # ------------------------------------------------------------------
+    # 7) Load and merge the relevant loss component configs
+    # ------------------------------------------------------------------
+    #TODO: To be revised 
+    # if hasattr(cfg, 'loss_config') and cfg.loss_config is not None:
+    #     # TODO: review once loss config format has been finalized (per-epoch scheduling)
+
+    #     if hasattr(cfg.loss_config, 'loss') and hasattr(cfg.loss_config.loss, 'components'):
+    #         OmegaConf.set_struct(cfg.loss_config, False)
             
-            for component_cfg in cfg.loss_config.loss.components:
-                loss_type = component_cfg.type
-                registry_entry = get_loss_entry(loss_type)
-                default_config = registry_entry["default_config"]
+    #         for component_cfg in cfg.loss_config.loss.components:
+    #             loss_type = component_cfg.type
+    #             registry_entry = get_loss_entry(loss_type)
+    #             default_config = registry_entry["default_config"]
 
-                config_file = component_cfg.get("config_file", default_config)
+    #             config_file = component_cfg.get("config_file", default_config)
 
-                # Ensure metric_params exists (as a DictConfig) so merges behave nicely
-                existing_metric = component_cfg.get("metric_params", None)
-                if existing_metric is None:
-                    existing_metric = OmegaConf.create({})
+    #             # Ensure metric_params exists (as a DictConfig) so merges behave nicely
+    #             existing_metric = component_cfg.get("metric_params", None)
+    #             if existing_metric is None:
+    #                 existing_metric = OmegaConf.create({})
 
-                # Load defaults (if available)
-                defaults_metric = OmegaConf.create({})
-                if config_file is not None:
-                    config_path = f"config/loss_config/{config_file}.yaml"
-                    if os.path.exists(config_path):
-                        try:
-                            defaults_metric = OmegaConf.load(config_path)
-                        except Exception:
-                            defaults_metric = OmegaConf.create({})
+    #             # Load defaults (if available)
+    #             defaults_metric = OmegaConf.create({})
+    #             if config_file is not None:
+    #                 config_path = f"config/loss_config/{config_file}.yaml"
+    #                 if os.path.exists(config_path):
+    #                     try:
+    #                         defaults_metric = OmegaConf.load(config_path)
+    #                     except Exception:
+    #                         defaults_metric = OmegaConf.create({})
 
-                # Merge so that existing/user-provided keys WIN over defaults
-                # (OmegaConf.merge: later arguments take precedence)
-                merged_metric = OmegaConf.merge(defaults_metric, existing_metric)
+    #             # Merge so that existing/user-provided keys WIN over defaults
+    #             # (OmegaConf.merge: later arguments take precedence)
+    #             merged_metric = OmegaConf.merge(defaults_metric, existing_metric)
 
-                component_cfg.metric_params = merged_metric
+    #             component_cfg.metric_params = merged_metric
             
-            OmegaConf.set_struct(cfg.loss_config, True)
+    #         OmegaConf.set_struct(cfg.loss_config, True)
 
     return cfg
