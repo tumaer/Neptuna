@@ -1,12 +1,12 @@
 # For details on the parameters, refer to data_config-->example_data_config.yaml
 dataset_name: KuramotoSivashinsky
 seed: 42
-dataset_directory_path: ./data/fluids/KS/2D
+dataset_directory_path: ./data/fluids/KS/2D_debug_5_groups
 dimension: 2
 grid_resolution: null 
-eval_groups: ["seed 000049"]
+eval_groups: ['seed 000021']
 is_steady_state_prediction: False
-sequence_info: [3, 2, 1]
+sequence_info: [2, 1, 10]
 # available channels for KS: ['velocity']
 filter_features:
   train_filter_frames: null
@@ -26,6 +26,7 @@ residual_config: null
   # add_predicted_value_with_diff_loss: False
   # add_predicted_value_with_raw_loss: False
 coord_features: True
+log_transform_channels: []
 data_normalization_strategy: z_normalization
 data_normalization_stats:
   velocity:
