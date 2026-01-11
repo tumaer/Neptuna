@@ -15,6 +15,7 @@ from transformers import TrainingArguments
 from train.trainer import Trainer
 import hydra
 from omegaconf import DictConfig
+from typing import Dict
 import json
 from utils.seed_utils import set_global_seed
 import torch
@@ -95,7 +96,7 @@ def inverse_log_transform_channels(data_array, channel_names, log_transform_chan
     
     return data_array
 
-def build_train_and_eval_loss(loss_config, data_config, device: torch.device):
+def build_train_and_infer_loss(loss_config, data_config, device: torch.device):
     """
     Construct training and eval CompositeLoss from configs.
     For inference, both are used as metrics -> keep them on CPU.
@@ -114,7 +115,7 @@ def build_train_and_eval_loss(loss_config, data_config, device: torch.device):
     train_loss_dict = fetch_train_loss_dict(full_train_cfg)
     train_loss_fn = fetch_loss_metric(data_config, train_loss_dict).to(metric_device)
 
-    infer_loss_dict = fetch_infer_loss_dict(full_train_cfg)
+    infer_loss_dict = fetch_infer_loss_dict(full_train_cfg) #TODO: if only data_config is required, only provide that
     infer_loss_fn = fetch_loss_metric(data_config, infer_loss_dict).to(metric_device)
 
     return train_loss_fn, infer_loss_fn
@@ -468,7 +469,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         metric_device = torch.device("cpu")
 
         # Build loss functions
-        train_loss_fn, eval_loss_fn = build_train_and_eval_loss(
+        train_loss_fn, infer_loss_fn = build_train_and_infer_loss(
             loss_config=loss_config,
             data_config=data_config,
             device=metric_device,
@@ -532,11 +533,11 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                     print(f"Failed to compute composite loss metrics: {e}")
 
             # 2) Evaluation loss components for logging
-            if eval_loss_fn is not None:
+            if infer_loss_fn is not None:
                 try:
                     with torch.no_grad():
-                        _, detailed = eval_loss_fn(
-                            model=None,
+                        _, detailed = infer_loss_fn(
+                            model=None, 
                             predictions=preds_tensor.to(metric_device),
                             labels=targets_tensor.to(metric_device),
                             return_detailed=True,
@@ -896,7 +897,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 ex_targets = targets[example_idx:example_idx+1]
                 
                 per_rollout_metrics_ex = compute_metrics_for_n_rollouts(
-                    ex_preds, ex_targets, outputs_per_rollout=outputs_per_rollout, loss_metric=eval_loss_fn
+                    ex_preds, ex_targets, outputs_per_rollout=outputs_per_rollout, loss_metric=infer_loss_fn
                 )
                 ex_title = f"Per-rollout metrics ({data_config.get('dataset_name', 'dataset')} - random start, example {int(example_idx)})"
                 plot_rollout_metrics(
@@ -938,8 +939,8 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 extra_dims = preds.shape[4:]
                 preds = preds.reshape(n, n_rollouts * seq_len, c, *extra_dims) # (N, R*T, C, *spatial)
 
-            per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(
-                preds, targets, outputs_per_rollout=outputs_per_rollout, include_per_timestep=True, loss_metric=eval_loss_fn
+            per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(   
+                preds, targets, outputs_per_rollout=outputs_per_rollout, include_per_timestep=True, loss_metric=infer_loss_fn
             )
             
             errors = {}
@@ -984,7 +985,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
 
             # Compute renormalized metrics: necessary for comparing performance between runs with different data preprocessing
             per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(
-                pred_renorm, tgt_renorm, outputs_per_rollout=outputs_per_rollout, include_per_timestep=True, loss_metric=eval_loss_fn
+                pred_renorm, tgt_renorm, outputs_per_rollout=outputs_per_rollout, include_per_timestep=True, loss_metric=infer_loss_fn
             )
             
             errors = {}
