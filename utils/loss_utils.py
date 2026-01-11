@@ -160,7 +160,7 @@ def _create_loss_component(
     else:
         config_file = component_cfg.get("config_file", default_config)
         if config_file is not None:
-            config_path = f"config/loss_config/{config_file}.yaml"
+            config_path = f"config/train_strategy_config/{config_file}.yaml"
             try:
                 metric_config = OmegaConf.load(config_path)
                 metric_params = OmegaConf.to_container(metric_config, resolve=True)
@@ -215,7 +215,7 @@ def create_loss_weighting_strategy(train_loss_dict) -> Optional[LossWeightingStr
         # Determine config_file: explicit in YAML or from registry default
         config_file = scheduler_cfg.get("config_file", default_config)
         if config_file is not None:
-            config_path = f"config/loss_config/{config_file}.yaml"
+            config_path = f"config/train_strategy_config/{config_file}.yaml"
             try:
                 scheduler_config = OmegaConf.load(config_path)
                 scheduler_params = OmegaConf.to_container(scheduler_config, resolve=True)
@@ -258,7 +258,7 @@ def fetch_infer_loss_dict(cfg):
     Inference requires the loss object to be initialized with per-channel and timestep
     weighting in order to compute rollout metrics (compute_metrics_for_n_rollouts)
     """
-    eval_loss_config_path = "./config/loss_config/infer_loss.yaml"
+    eval_loss_config_path = "./config/train_strategy_config/infer_loss.yaml" #TODO: avoid hardcoding "infer_loss.yaml".
     eval_loss_cfg = OmegaConf.load(eval_loss_config_path)
 
     num_channels = len(cfg.data_config.filter_features.filter_out_channels)
@@ -268,9 +268,12 @@ def fetch_infer_loss_dict(cfg):
     
     return eval_loss_cfg.loss
 
+#TODO: remove this
+# def fetch_train_loss_dict(cfg):
+#     return cfg.loss_config.train_loss
 
-def fetch_train_loss_dict(cfg):
-    return cfg.loss_config.train_loss
+# #TODO: remove this
+# def fetch_eval_loss_dict(cfg):
+#     return cfg.loss_config.validation_loss
 
-def fetch_eval_loss_dict(cfg):
-    return cfg.loss_config.validation_loss
+    

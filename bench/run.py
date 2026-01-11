@@ -2,7 +2,7 @@ import time
 import os
 import atexit
 from transformers import TrainingArguments
-from train.trainer import Trainer
+from train.trainer import Trainer, compute_curriculum_start_epochs
 from metrics.inference_metrics import compute_metrics_for_n_rollouts
 from metrics.loss_weighting_strategy_registry import get_loss_weighting_strategy_entry
 from transformers.trainer import EvalPrediction
@@ -17,7 +17,7 @@ from optuna.pruners import NopPruner
 from utils.custom_callbacks import PlotOnEvalAndSaveCallback, NaNCallback, LossStatisticsCallback, AdaptiveWeightCallback
 import csv
 from utils.hp_optimization import trial_name_factory
-from utils.loss_utils import fetch_eval_loss_dict, fetch_train_loss_dict, fetch_loss_metric, create_loss_weighting_strategy
+from utils.loss_utils import fetch_loss_metric, create_loss_weighting_strategy
 from utils.plot_progress import preprocess_for_plotting, plot_rollout_metrics
 from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
 from utils.plot_progress import build_info_strings
@@ -27,10 +27,28 @@ from only_inference import save_errors_to_csv
 import numpy as np
 import torch
 import torch.distributed as dist
+from omegaconf import ListConfig
 
 __all__ = ["run"]
 
 _CLEANUP_DONE = False
+
+
+def _resolve_metric_for_best_model(metric_cfg) -> str | None:
+    """Return the metric identifier string, preferring name over type."""
+
+    def _from_entry(entry):
+        name = entry.get("name", None)
+        mtype = entry.get("type", None)
+        #if name is None then returns the type otherwise returns the name
+        return name or mtype  
+
+    if isinstance(metric_cfg, (list, tuple, ListConfig)):
+        if len(metric_cfg) == 0:
+            raise ValueError("metric_cfg is empty")
+        return _from_entry(metric_cfg[0])
+
+    return _from_entry(metric_cfg)
 
 def get_device_string() -> str:
     """Return a human-readable device identifier for logging."""
@@ -147,7 +165,7 @@ def run(cfg):
         # Optimiser / schedule
         # ------------------------------------------------------------------
         max_grad_norm=1.0,  # gradient clipping (default is 1.0)
-        num_train_epochs=cfg["train_config"]["num_train_epochs"],
+        num_train_epochs=cfg["train_strategy_config"]["num_train_epochs"],
         learning_rate=cfg["scheduler_config"]["lr"],
         weight_decay=cfg["scheduler_config"]["weight_decay"],
         optim=cfg["scheduler_config"]["optim"], 
@@ -184,9 +202,9 @@ def run(cfg):
         # Misc runtime knobs 
         # ------------------------------------------------------------------    
         dataloader_num_workers=cfg["train_config"]["dataloader_num_workers"],
-        metric_for_best_model=cfg["train_config"][
-            "metric_for_best_model"
-        ],  # checkpoint metric
+        metric_for_best_model=_resolve_metric_for_best_model(  # best checkpoint metric string
+            cfg["train_strategy_config"]["metric_for_best_model"]
+        ),
         include_for_metrics=[
             "inputs",
         ]
@@ -204,7 +222,7 @@ def run(cfg):
         torch_compile=False,
         use_cpu=cfg["train_config"]["use_cpu"],  # use_cpu even if other devices are present
         label_names=["label_including_rollouts"],
-        disable_tqdm=True,
+        disable_tqdm=False,
         # ------------------------------------------------------------------
         # Reporting 
         # ------------------------------------------------------------------
@@ -283,25 +301,26 @@ def run(cfg):
                 else torch.tensor(targets, dtype=torch.float32)
             )
 
-        # 1. Training loss metric (composite_loss for checkpointing)
+        # 1. Create an additional composite_train_loss metric using the metrics from train_loss block.
+        # "Can" be used for checkpointing.
         if getattr(trainer, "loss_fn", None) is not None:
             try:
                 with torch.no_grad():
-                    loss_fn = trainer.loss_fn.to(device)
-                    composite_loss = loss_fn(
+                    train_loss_fn = trainer.loss_fn.to(device)
+                    composite_train_loss = train_loss_fn(
                         model=None,
                         predictions=preds_tensor.to(device),
                         labels=targets_tensor.to(device),
                         return_detailed=False,  # scalar only
                     )
 
-                if torch.is_tensor(composite_loss):
-                    metrics["composite_loss"] = composite_loss.item()
+                if torch.is_tensor(composite_train_loss):
+                    metrics["composite_train_loss"] = composite_train_loss.item()
                 else:
-                    metrics["composite_loss"] = float(composite_loss)
+                    metrics["composite_train_loss"] = float(composite_train_loss)
 
             except Exception as e:
-                print("[compute_metrics] composite_loss failed:", repr(e))
+                print("[compute_metrics] composite_train_loss failed:", repr(e))
 
         # 2. Evaluation loss metrics (for logging), cached on trainer
         eval_loss_fn = getattr(trainer, "eval_loss_fn", None)
@@ -328,36 +347,39 @@ def run(cfg):
 
         return metrics
 
+    # Curriculum start epochs (shared helper from Trainer module)
+    curriculum_start_epochs = compute_curriculum_start_epochs(cfg["train_strategy_config"])
+
     # Build the callbacks list
     callbacks = []
     # Always add PlotOnEvalAndSaveCallback and NaNCallback
     callbacks.append(PlotOnEvalAndSaveCallback)
     callbacks.append(NaNCallback)
 
-    train_loss_dict = fetch_train_loss_dict(cfg)
-    loss_weighting_strategy = create_loss_weighting_strategy(train_loss_dict)
-    if loss_weighting_strategy is not None:
+    initial_train_strategy_dict = cfg.train_strategy_config.curriculum[0]
+    initial_train_loss_dict = initial_train_strategy_dict.train_loss
+
+    #train_loss_dict = fetch_train_loss_dict(cfg)
+    initial_loss_weighting_strategy = create_loss_weighting_strategy(initial_train_loss_dict)
+    if initial_loss_weighting_strategy is not None:
         
-        use_gradients = get_loss_weighting_strategy_entry(train_loss_dict.train_loss_weighting_strategy.type).get("use_gradients", False)
+        use_gradients = get_loss_weighting_strategy_entry(initial_train_loss_dict.train_loss_weighting_strategy.type).get("use_gradients", False)
         # Create statistics collector
-        stats_callback = LossStatisticsCallback(collect_train_losses=True, collect_gradients=use_gradients)
-        callbacks.append(stats_callback)
+        initial_loss_stats_callback = LossStatisticsCallback(collect_train_losses=True, collect_gradients=use_gradients)
+        callbacks.append(initial_loss_stats_callback)
         
         # Create adaptive weight callback
-        loss_source = train_loss_dict.train_loss_weighting_strategy.get('loss_source', 'train')
-        weight_callback = AdaptiveWeightCallback(
-            loss_weighting_strategy, 
-            stats_callback,
+        loss_source = initial_train_loss_dict.train_loss_weighting_strategy.get('loss_source', 'train')
+        initial_weight_callback = AdaptiveWeightCallback(
+            initial_loss_weighting_strategy, 
+            initial_loss_stats_callback,
             loss_source = loss_source,
-            use_gradients = use_gradients
+            use_gradients = use_gradients,
+            curriculum_start_epochs=curriculum_start_epochs,
         )
-        callbacks.append(weight_callback)
+        callbacks.append(initial_weight_callback)
     else:
-        weight_callback = None
-
-    loss_config = None
-    if hasattr(cfg, 'loss_config'):
-        loss_config = cfg.loss_config
+        initial_weight_callback = None
 
     trainer = Trainer(
         model_config=cfg["model_config"],
@@ -366,6 +388,7 @@ def run(cfg):
         scheduler_config=cfg["scheduler_config"],
         infer_config=cfg["infer_config"],
         output_log_config=cfg["output_log_config"],
+        train_strategy_config=cfg["train_strategy_config"],
         # all kwargs below go directly to the base trainer class of HF
         model=model,
         model_init=model_init if cfg["hyperparam_opt_config"]["optimize"] else None,
@@ -374,7 +397,6 @@ def run(cfg):
         eval_dataset=eval_ds,
         compute_metrics=compute_metrics,
         callbacks=callbacks if callbacks else None,
-        loss_config=loss_config,
     )
 
     trainer.set_eval_or_test_rollout_steps(
@@ -384,8 +406,9 @@ def run(cfg):
     # Initialize eval_loss_fn
     metric_device = torch.device("cpu")
     try:
-        eval_loss_dict = fetch_eval_loss_dict(cfg)
-        eval_loss_fn = fetch_loss_metric(cfg["data_config"], eval_loss_dict)
+        initial_eval_loss_dict = initial_train_strategy_dict.validation_loss
+        #eval_loss_dict = fetch_eval_loss_dict(cfg)
+        eval_loss_fn = trainer.get_loss_fn(initial_eval_loss_dict)
         trainer.eval_loss_fn = eval_loss_fn.to(metric_device)
     except Exception as e:
         print("[run] Failed to initialize eval_loss_fn:", repr(e))
@@ -393,11 +416,11 @@ def run(cfg):
 
     trainer.metric_device = metric_device
 
-    if weight_callback is not None:
-        weight_callback.trainer = trainer
-        stats_callback.trainer = trainer
+    if initial_weight_callback is not None:
+        initial_weight_callback.trainer = trainer
+        initial_loss_stats_callback.trainer = trainer
         # Enable detailed loss collection in trainer
-        trainer._collect_detailed_losses = train_loss_dict.train_loss_weighting_strategy.get(
+        trainer._collect_detailed_losses = initial_train_loss_dict.train_loss_weighting_strategy.get(
             'enabled', False,
         )
         trainer._last_detailed_losses = {}
@@ -411,7 +434,7 @@ def run(cfg):
         print(f"Training on device {device_str} \n", flush=True)
         # trainer.train(resume_from_checkpoint=f"./checkpoints/KuramotoSivashinsky_2D_ScOT_09072025_074058/checkpoint-15")
         trainer.train(resume_from_checkpoint=False)
-        print(f"Total train time: {time.time() - start:.2f} s")
+        #print(f"Total train time: {time.time() - start:.2f} s")
 
         print(f"All done with training, rank: {RANK} \n", flush=True)
         if training_args.push_to_hub and IS_MAIN_PROCESS:

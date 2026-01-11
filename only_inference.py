@@ -8,7 +8,7 @@ from utils.plot_progress import preprocess_for_plotting, plot_rollout_metrics
 from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
 from utils.plot_progress import plot_rollout_metrics_bar_chart
 from utils.plot_progress import plot_multi_run_rollout_metrics
-from utils.loss_utils import fetch_loss_metric, fetch_infer_loss_dict, fetch_train_loss_dict
+from utils.loss_utils import fetch_loss_metric #fetch_infer_loss_dict, fetch_train_loss_dict
 from metrics.inference_metrics import compute_metrics_for_n_rollouts
 from transformers.trainer import EvalPrediction
 from transformers import TrainingArguments
