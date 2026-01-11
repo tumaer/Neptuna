@@ -8,16 +8,16 @@ per_device_train_batch_size: 32
 per_device_eval_batch_size: 32
 # Number of training epochs
 num_train_epochs: 128
-# Parameters related to the push-forward trick during training (see example below)
-pushforward_config:
-  #By default, pf is deactivated, set enabled to True to activate pf with the conifg below
-  enabled: False
-  # Training epoch at which a new unroll stage is unlocked.
-  deciding_epochs: [-1, 2, 50]
-  # Maximum number of unroll steps between deciding epoch.
-  max_allowed_unroll_steps: [0, 1, 2]
-  # Probability of unroll steps between deciding epochs.
-  relative_probabilities: [7, 2, 1]
+# # Parameters related to the push-forward trick during training (see example below)
+# pushforward_config:
+#   #By default, pf is deactivated, set enabled to True to activate pf with the conifg below
+#   enabled: False
+#   # Training epoch at which a new unroll stage is unlocked.
+#   deciding_epochs: [-1, 2, 50]
+#   # Maximum number of unroll steps between deciding epoch.
+#   max_allowed_unroll_steps: [0, 1, 2]
+#   # Probability of unroll steps between deciding epochs.
+#   relative_probabilities: [7, 2, 1]
 #To use mix precison training
 mix_precision_config:
   fp16: False

@@ -4,7 +4,7 @@ HDF5 Dataset Loading and Management.
 This module provides comprehensive dataset loading capabilities for HDF5-based
 datasets, with specialized support for both transient (time-series) and steady-state
 data. It includes flexible data splitting, normalization, channel filtering, and
-support for various training strategies including pushforward learning and residual
+support for various training strategies including residual
 modeling.
 
 Key Features:
@@ -15,7 +15,6 @@ Key Features:
 - Residual learning support with configurable modes
 - Conditioning parameter extraction from group names
 - Data loading with configurable sequence lengths and strides
-- Pushforward training support for improved temporal modeling
 
 Dataset Types:
     TransientDataset: Handles time-series data with configurable sequence lengths,
@@ -53,7 +52,6 @@ Configuration Options:
     - data_normalization_strategy: "z_normalization", "min_max_normalization", robust_normalization.
     
     Training Strategies:
-    - pushforward_config: Configuration for pushforward training
     - residual_config: Settings for residual learning modes
     - n_eval_rollouts/n_test_rollouts: Rollout lengths for evaluation/testing
 
@@ -388,7 +386,6 @@ def build_transient_index_map(h5py_file, group_list, filter_frame, window_size):
     - Input sequence length
     - Label sequence length  
     - Stride between temporal samples
-    - Number of rollout steps for pushforward training
     """
     index_map = []
     channel_names_in_h5_file = list(h5py_file[group_list[0]].keys())
@@ -453,7 +450,7 @@ def create_train_eval_transient_index_map(h5file_path: str,
     This function splits transient (time-series) data into training and
     validation sets, creating index maps that define all valid temporal
     sequences for each split. It handles different window sizes for
-    training and validation to accommodate pushforward trick while training and a different rollout length during validation.
+    training and validation to accommodate a different rollout length during validation.
     
     Parameters
     ----------
@@ -471,7 +468,6 @@ def create_train_eval_transient_index_map(h5file_path: str,
         Two-element list [min_frame, max_frame] for temporal filtering.
         If None, uses the full temporal range available.
     n_max_pf_train_rollouts : int, default=0
-        Maximum number of pushforward rollouts during training.
         Increases training window size to accommodate longer sequences.
     n_eval_rollouts : int, default=1
         Number of rollouts to perform during validation.
@@ -520,7 +516,6 @@ def create_train_eval_transient_index_map(h5file_path: str,
         # as an example, if start_idx = 21, then the end_idx = 21 + 25 - 1 = 45
         # the window size is 25, so the input sequence is [21, 23, 25, 27] 
         # and the label sequence is [29, 31, 33], first pf-label indices: [35, 37, 39] and second pf-label indices: [41, 43, 45]
-        # pushforward only kicks in according to the current epoch and the relative probabilities at that epoch, but we have to slice and select the labels for the max number of pf-rollouts
         
         # --- Build both train and eval maps ---
         train_index_map = build_transient_index_map(f, train_groups, filter_frames, train_window_size)
@@ -661,8 +656,6 @@ def fetch_dataset(dataset_name: str,
             Explicit validation groups
         - conditioning_in_channels : list, optional
             Channels that do not get predicted (used for conditioning the model)
-        - pushforward_config : dict, optional
-            Configuration for pushforward basedtraining
         - residual_config : dict, optional
             Configuration for residual learning
         - n_eval_rollouts : int, optional
@@ -698,14 +691,7 @@ def fetch_dataset(dataset_name: str,
 
     if not is_steady_state:
         if mode == "train":
-            # For pushforward training we enlarge the training window only when the
-            # feature is actually enabled. The extended windows are created with the max_allowed_unroll_stepsbefore training. The toggle lives inside
-            # pushforward_config["enabled"].
-            pf_cfg = kwargs.get("pushforward_config")
-            if pf_cfg is not None and bool(pf_cfg.get("enabled", True)):
-                n_max_pf_train_rollouts = pf_cfg["max_allowed_unroll_steps"][-1]
-            else:
-                n_max_pf_train_rollouts = 0
+            n_max_pf_train_rollouts = 0
             n_eval_rollouts = kwargs.get("n_eval_rollouts") or 0
 
             train_index_map, eval_index_map, all_groups = create_train_eval_transient_index_map(
@@ -715,7 +701,7 @@ def fetch_dataset(dataset_name: str,
                 stride=sequence_info[2],
                 filter_groups=kwargs["train_filter_groups"],
                 filter_frames=kwargs["train_filter_frames"],
-                n_max_pf_train_rollouts=n_max_pf_train_rollouts,
+                n_max_pf_train_rollouts=n_max_pf_train_rollouts,  #TODO: Window size to be determined from the maximum number of rollout/pf steps
                 n_eval_rollouts=n_eval_rollouts,
                 eval_split_ratio=kwargs["eval_split_ratio"],
                 eval_groups = kwargs["eval_groups"],
@@ -876,7 +862,7 @@ class TransientDataset(Dataset):
     This dataset handles time-series data stored in HDF5 format, providing
     flexible temporal sequence extraction, multi-channel support, and
     advanced features for scientific machine learning including residual
-    learning, pushforward training, and conditioning parameter extraction.
+    learning and conditioning parameter extraction.
     
     Parameters
     ----------

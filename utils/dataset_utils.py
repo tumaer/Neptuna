@@ -57,7 +57,6 @@ def make_datasets(cfg: DictConfig, mode: str = "train"):
         is_steady_state_prediction=data_cfg["is_steady_state_prediction"],
         residual_config=data_cfg["residual_config"],
         eval_split_ratio=train_cfg["eval_split_ratio"],
-        pushforward_config=train_cfg["pushforward_config"],
         n_eval_rollouts=train_cfg["n_eval_rollouts"],
         n_infer_rollouts=infer_cfg["n_infer_rollouts"],
         infer_from_random_timestep=infer_cfg["infer_from_random_timestep"],
