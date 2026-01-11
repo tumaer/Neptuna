@@ -52,9 +52,9 @@
     "name": "Loss debug 2D_KS",
     "type": "debugpy",
     "request": "launch",
-    "program": "loss_debug.py",
+    "program": "main.py",
     "console": "integratedTerminal",
-    "justMyCode": true,
+    "justMyCode": false,
     "args": [
         "data_config=fluids/KS/2d_ks_data_default.yaml",
       ],
