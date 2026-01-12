@@ -295,7 +295,7 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
         OmegaConf.set_struct(cfg.loss_config, False)
         
         # Process both train_loss and validation_loss
-        for loss_key in ['train_loss', 'validation_loss']:
+        for loss_key in ['train_loss']:
             if hasattr(cfg.loss_config, loss_key):
                 loss_section = getattr(cfg.loss_config, loss_key)
                 

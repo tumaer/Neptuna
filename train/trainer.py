@@ -535,12 +535,15 @@ class Trainer(Trainer_):
             (self.data_config.sequence_info[1]*pushforward_unroll_steps):
             (self.data_config.sequence_info[1]*(pushforward_unroll_steps+1))
         ]
+
+        input_frames = inputs["input_data"]
         
         if not self._collect_detailed_losses:
             loss = self.loss_fn(
                 model=model,
                 predictions=prediction,
                 labels=labels,
+                input_frames=input_frames,
                 return_detailed=False
             )
         else:
@@ -548,6 +551,7 @@ class Trainer(Trainer_):
                 model=model,
                 predictions=prediction,
                 labels=labels,
+                input_frames=input_frames,
                 return_detailed=True,
                 preserve_component_grads=self._collect_gradients
             )

@@ -21,6 +21,7 @@ from .losses import (
     MeanRelativeError,
     NegativityLoss,
     ShockRMSE,
+    PINNLoss,
 )
 
 from .weighting_strategies import (
@@ -55,4 +56,5 @@ __all__ = [
     'MeanRelativeError',
     'NegativityLoss',
     'ShockRMSE',
+    'PINNLoss',
 ]

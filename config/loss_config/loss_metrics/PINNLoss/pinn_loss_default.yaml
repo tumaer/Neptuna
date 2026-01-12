@@ -1,0 +1,11 @@
+pde: 'EulerPrimitives2D'
+dt: 1.0
+dx: 1.0
+spatial_backend: "FDSpatialDerivatives"
+
+reference_quantities:
+  density: 1000.0
+  velocity: 100.0
+  pressure: 100000.0
+  length: 100.0
+residual_scale_eps: 1e-8

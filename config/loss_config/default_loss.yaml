@@ -2,10 +2,8 @@ train_loss:
   components:
     - type: L2Loss
       weight: 0.5
-    - type: SSIM
+    - type: PINNLoss
       weight: 0.5
-    - type: ShockRMSE
-      weight: 1.0
   train_loss_weighting_strategy:
     enabled: false  # Set to true to enable
     type: BalancedResidualDecayRate

@@ -28,7 +28,7 @@ residual_config: null
 coord_features: True
 data_normalization_strategy: z_normalization
 
-log_transform_channels: ["Density"]
+log_transform_channels: []
 #NOTE: Statistics are according to sequence_stride = 5
 data_normalization_stats:
   Density:
