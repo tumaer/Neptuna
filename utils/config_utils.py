@@ -449,41 +449,66 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     # ------------------------------------------------------------------
     # 7) Load and merge the relevant loss component configs
     # ------------------------------------------------------------------
-    #TODO: To be revised 
-    # if hasattr(cfg, 'loss_config') and cfg.loss_config is not None:
-    #     # TODO: review once loss config format has been finalized (per-epoch scheduling)
 
-    #     if hasattr(cfg.loss_config, 'loss') and hasattr(cfg.loss_config.loss, 'components'):
-    #         OmegaConf.set_struct(cfg.loss_config, False)
+    def _load_and_merge_loss_config(component_cfg):
+        """Helper to load and merge loss component configuration."""
+        loss_type = component_cfg.type
+        
+        # Handle CompositeLoss with sub_components
+        if loss_type == "CompositeLoss" and hasattr(component_cfg, 'sub_components'):
+            for sub_comp in component_cfg.sub_components:
+                _load_and_merge_loss_config(sub_comp)
+        
+        # Load config for this component
+        try:
+            registry_entry = get_loss_entry(loss_type)
+            default_config = registry_entry["default_config"]
+        except (KeyError, ValueError):
+            # Loss type not in registry or no default config
+            return
+        
+        config_file = component_cfg.get("config_file", default_config)
+        
+        # Ensure metric_params exists
+        existing_metric = component_cfg.get("metric_params", None)
+        if existing_metric is None:
+            existing_metric = OmegaConf.create({})
+        
+        # Load defaults (if available)
+        defaults_metric = OmegaConf.create({})
+        if config_file is not None:
+            config_path = f"config/train_strategy_config/{config_file}.yaml"
+            if os.path.exists(config_path):
+                try:
+                    defaults_metric = OmegaConf.load(config_path)
+                except Exception:
+                    defaults_metric = OmegaConf.create({})
+        
+        # Merge: user-provided keys win over defaults
+        merged_metric = OmegaConf.merge(defaults_metric, existing_metric)
+        was_struct = OmegaConf.is_struct(component_cfg)
+        OmegaConf.set_struct(component_cfg, False)
+        component_cfg.metric_params = merged_metric
+        OmegaConf.set_struct(component_cfg, was_struct)
+
+
+    if hasattr(cfg, 'train_strategy_config') and cfg.train_strategy_config is not None:
+        train_strategy = cfg.train_strategy_config
+        
+        if hasattr(train_strategy, 'curriculum') and train_strategy.curriculum is not None:
+            OmegaConf.set_struct(train_strategy, False)
             
-    #         for component_cfg in cfg.loss_config.loss.components:
-    #             loss_type = component_cfg.type
-    #             registry_entry = get_loss_entry(loss_type)
-    #             default_config = registry_entry["default_config"]
-
-    #             config_file = component_cfg.get("config_file", default_config)
-
-    #             # Ensure metric_params exists (as a DictConfig) so merges behave nicely
-    #             existing_metric = component_cfg.get("metric_params", None)
-    #             if existing_metric is None:
-    #                 existing_metric = OmegaConf.create({})
-
-    #             # Load defaults (if available)
-    #             defaults_metric = OmegaConf.create({})
-    #             if config_file is not None:
-    #                 config_path = f"config/loss_config/{config_file}.yaml"
-    #                 if os.path.exists(config_path):
-    #                     try:
-    #                         defaults_metric = OmegaConf.load(config_path)
-    #                     except Exception:
-    #                         defaults_metric = OmegaConf.create({})
-
-    #             # Merge so that existing/user-provided keys WIN over defaults
-    #             # (OmegaConf.merge: later arguments take precedence)
-    #             merged_metric = OmegaConf.merge(defaults_metric, existing_metric)
-
-    #             component_cfg.metric_params = merged_metric
+            for block in train_strategy.curriculum:
+                # Process train_loss components
+                if hasattr(block, 'train_loss') and hasattr(block.train_loss, 'components'):
+                    for component_cfg in block.train_loss.components:
+                        _load_and_merge_loss_config(component_cfg)
+                
+                # Process validation_loss components
+                if hasattr(block, 'validation_loss') and hasattr(block.validation_loss, 'components'):
+                    for component_cfg in block.validation_loss.components:
+                        _load_and_merge_loss_config(component_cfg)
             
-    #         OmegaConf.set_struct(cfg.loss_config, True)
+            OmegaConf.set_struct(train_strategy, True)
 
     return cfg
