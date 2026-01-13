@@ -112,6 +112,7 @@ def compute_metrics_for_n_rollouts(
                         model=None,
                         predictions=p_b,
                         labels=t_b,
+                        input_frames=None,
                         return_detailed=True,
                     )
                     # assume scalar
@@ -132,6 +133,7 @@ def compute_metrics_for_n_rollouts(
                                 model=None,
                                 predictions=p_b,
                                 labels=t_b,
+                                input_frames=None,
                                 return_detailed=True,
                             )
 

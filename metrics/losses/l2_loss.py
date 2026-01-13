@@ -50,8 +50,8 @@ class L2Loss(LossComponent):
         self,
         model: nn.Module,
         predictions: torch.Tensor,
-        input_frames: Optional[torch.Tensor],
         labels: torch.Tensor,
+        input_frames: Optional[torch.Tensor],
         return_detailed: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
 

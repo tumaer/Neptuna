@@ -438,8 +438,8 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 
                 # Replace configured weights with current_weights from checkpoint
                 # This uses the weights that were active when the model was saved
-                if 'loss' in loss_config and 'components' in loss_config.loss:
-                    for component in loss_config.loss.components:
+                if 'train_loss' in loss_config and 'components' in loss_config.train_loss:
+                    for component in loss_config.train_loss.components:
                         if 'current_weights' in component:
                             # Extract current weights
                             current_weights = component.current_weights

@@ -2571,18 +2571,11 @@ class Trainer(Trainer_):
                 if self.loss_fn is not None:
                     weight_dict = self.loss_fn.get_loss_weight_dict()
 
-                    full_cfg = OmegaConf.create({
-                        "loss_config": self.loss_config,
-                        "data_config": self.data_config
-                    })
-
-                    train_loss_dict = fetch_train_loss_dict(full_cfg)
-                    
-                    for component in train_loss_dict['components']:
+                    for component in loss_config_dict['train_loss']['components']:
                         comp_name = component.get('name', component['type'])
                         if comp_name in weight_dict:
                             component['current_weights'] = _tensorize_for_json(weight_dict[comp_name])
-                
+            
                 # Save
                 with open(loss_config_path, 'w') as f:
                     json.dump(loss_config_dict, f, indent=2)

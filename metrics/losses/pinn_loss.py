@@ -863,8 +863,8 @@ class PINNLoss(LossComponent):
         self,
         model: nn.Module,
         predictions: torch.Tensor,
-        input_frames: Optional[torch.Tensor],
         labels: torch.Tensor,
+        input_frames: Optional[torch.Tensor],
         return_detailed: bool = True,
     ):
         pred = predictions

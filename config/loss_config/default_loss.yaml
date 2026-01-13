@@ -2,7 +2,7 @@ train_loss:
   components:
     - type: L2Loss
       weight: 0.5
-    - type: PINNLoss
+    - type: PearsonCorrelationLoss
       weight: 0.5
   train_loss_weighting_strategy:
     enabled: false  # Set to true to enable

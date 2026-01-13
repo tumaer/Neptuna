@@ -4,10 +4,10 @@
 #use_cpu
 use_cpu: False
 # Batch size for train and eval
-per_device_train_batch_size: 1
-per_device_eval_batch_size: 1
+per_device_train_batch_size: 8
+per_device_eval_batch_size: 8
 # Number of training epochs
-num_train_epochs: 5
+num_train_epochs: 2
 # Parameters related to the push-forward trick during training (see example below)
 pushforward_config:
   #By default, pf is deactivated, set enabled to True to activate pf with the conifg below
