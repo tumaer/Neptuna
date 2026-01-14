@@ -733,7 +733,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                                                 filter_in_channels=data_config["filter_features"]["filter_in_channels"],
                                                 filter_out_channels=data_config["filter_features"]["filter_out_channels"],
                                                 conditioning_in_channels=data_config["conditioning_features"]["conditioning_in_channels"],
-                                                include_conditioning_parameters=data_config["conditioning_features"]["include_conditioning_parameters"],
+                                                include_conditioning_parameters=False if data_config["conditioning_features"]["conditioning_method"] is None else True,
                                                 parameter_min_max_stats=data_config["conditioning_features"]["parameter_min_max_stats"],
                                                 data_normalization_stats=data_config["data_normalization_stats"],
                                                 data_normalization_strategy=data_config["data_normalization_strategy"],
