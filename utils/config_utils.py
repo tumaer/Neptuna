@@ -199,7 +199,8 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     # ------------------------------------------------------------------
     # Conditioning-parameter normalisation (min / max per dimension)
     # ------------------------------------------------------------------
-    if cfg["data_config"]["conditioning_features"].get("include_conditioning_parameters", False):
+    cond_method = cfg["data_config"]["conditioning_features"].get("conditioning_method", 'None')
+    if cond_method is not None:
         # Users can optionally provide ``parameter_min_max_stats`` directly in
         # the config.  When present we *respect* those values.  Otherwise we
         # compute the ranges from the *training* data file for consistency

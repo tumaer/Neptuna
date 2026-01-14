@@ -97,7 +97,6 @@ class FNO1D(PreTrainedModel):
             activation_fn=self.activation_fn,
             dimension=1,
         )
-        
         self.norm = nn.ModuleList([
             CustomNorm(config=config, 
                        num_channels=config.latent_channels,

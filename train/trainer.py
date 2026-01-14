@@ -131,7 +131,7 @@ class Trainer(Trainer_):
         # ------------------------------------------------------------------
         conditioning_features = self.data_config["conditioning_features"]
         self._use_cond_input_data = conditioning_features["conditioning_in_channels"] is not None
-        self._use_cond_parameters = conditioning_features["include_conditioning_parameters"]
+        self._use_cond_parameters = False if conditioning_features["conditioning_method"] is None else True
 
         def _build_model_forward_fn(use_cond_input, use_cond_params):
             if use_cond_input and use_cond_params:

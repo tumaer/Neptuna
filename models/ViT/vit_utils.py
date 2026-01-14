@@ -27,6 +27,7 @@ class ViTConfig(PretrainedConfig):
         patch_size=16,
         qkv_bias=True,
         interpolate_pos_encoding=False,
+        bool_masked_pos=None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -40,7 +41,7 @@ class ViTConfig(PretrainedConfig):
         self.initializer_range = initializer_range
         self.patch_size = patch_size
         self.qkv_bias = qkv_bias
-
+        self.bool_masked_pos = bool_masked_pos
         self.interpolate_pos_encoding = interpolate_pos_encoding
 
         self.hidden_size = self.latent_channels
@@ -54,10 +55,12 @@ class ViTEmbeddings(nn.Module):
     def __init__(self, config: ViTConfig, use_mask_token: bool = False) -> None:
         super().__init__()
 
-        self.mask_token = nn.Parameter(torch.zeros(1, 1, config.latent_channels)) if use_mask_token else None
+        if config.bool_masked_pos is not None:
+            self.mask_token = nn.Parameter(torch.zeros(1, 1, config.latent_channels)) if use_mask_token else None
         self.patch_embeddings = ViTPatchEmbeddings(config)
         num_patches = self.patch_embeddings.num_patches
-        self.position_embeddings = nn.Parameter(torch.randn(1, num_patches, config.latent_channels))
+        if not config.interpolate_pos_encoding:
+            self.position_embeddings = nn.Parameter(torch.randn(1, num_patches, config.latent_channels))
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.patch_size = config.patch_size
         self.config = config
@@ -66,21 +69,19 @@ class ViTEmbeddings(nn.Module):
     def forward(
         self,
         pixel_values: torch.Tensor,
-        bool_masked_pos: Optional[torch.BoolTensor] = None,
-        interpolate_pos_encoding: bool = False,
     ) -> torch.Tensor:
         batch_size, num_channels, height, width = pixel_values.shape
-        embeddings = self.patch_embeddings(pixel_values, interpolate_pos_encoding=interpolate_pos_encoding)
+        embeddings = self.patch_embeddings(pixel_values)
 
-        if bool_masked_pos is not None:
+        if self.config.bool_masked_pos is not None:
             seq_length = embeddings.shape[1]
             mask_tokens = self.mask_token.expand(batch_size, seq_length, -1)
             # replace the masked visual tokens by mask_tokens
-            mask = bool_masked_pos.unsqueeze(-1).type_as(mask_tokens)
+            mask = self.config.bool_masked_pos.unsqueeze(-1).type_as(mask_tokens)
             embeddings = embeddings * (1.0 - mask) + mask_tokens * mask
 
         # add positional encoding to each token
-        if interpolate_pos_encoding:
+        if self.config.interpolate_pos_encoding:
             embeddings = embeddings + self.interpolate_pos_encoding(embeddings, height, width)
         else:
             embeddings = embeddings + self.position_embeddings
@@ -107,17 +108,18 @@ class ViTPatchEmbeddings(nn.Module):
         self.patch_size = patch_size
         self.num_channels = num_channels
         self.num_patches = num_patches
+        self.config = config
 
         self.projection = nn.Conv2d(num_channels, latent_channels, kernel_size=patch_size, stride=patch_size)
 
-    def forward(self, pixel_values: torch.Tensor, interpolate_pos_encoding: bool = False) -> torch.Tensor:
+    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
         batch_size, num_channels, height, width = pixel_values.shape
         if num_channels != self.num_channels:
             raise ValueError(
                 "Make sure that the channel dimension of the pixel values match with the one set in the configuration."
                 f" Expected {self.num_channels} but got {num_channels}."
             )
-        if not interpolate_pos_encoding:
+        if not self.config.interpolate_pos_encoding:
             if height != self.grid_resolution[0] or width != self.grid_resolution[1]:
                 raise ValueError(
                     f"Input image size ({height}*{width}) doesn't match model"
