@@ -93,7 +93,7 @@
           "hydra.run.dir=.",
           "hydra.output_subdir=null",
           "data_config=fluids/Aerobreakup/2d_aerobreakup_data_default.yaml",
-          "model_config=UNet/default_unet",
+          "model_config=UNet/unet_1M",
         ],
       "env": {
           "HYDRA_FULL_ERROR": "1",

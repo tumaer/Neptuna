@@ -564,6 +564,7 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
         self.eval_dataset = kwargs['eval_dataset']
         self.data_config = kwargs['data_config']
         self.train_config = kwargs['train_config']
+        self.train_strategy_config = kwargs['train_strategy_config']
         self.scheduler_config = kwargs['scheduler_config']
         self.output_log_config = kwargs['output_log_config']
         self.model_config = kwargs['model_config']
@@ -657,12 +658,12 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
             # Also flag this condition so we can mark the saved image as "best".
             best_plot_at_train_end = False
             try:
-                final_epoch = self.train_config.get("num_train_epochs", None)
+                final_epoch = self.train_strategy_config.get("num_train_epochs", None)
                 if final_epoch is not None and kwargs["best_plot_at_train_end"]:
                     should_plot = True
                     best_plot_at_train_end = True
             except Exception:
-                pass
+                raise Exception("Error in PlotOnEvalAndSaveCallback: train_strategy_config is not found")
  
             if should_plot:
                 # ------------------------------------------------------------------

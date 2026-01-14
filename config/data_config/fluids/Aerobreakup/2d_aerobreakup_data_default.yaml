@@ -1,12 +1,12 @@
 # For details on the parameters, refer to data_config-->example_data_config.yaml
 dataset_name: Aerobreakup
-dataset_directory_path: ./data/fluids/AB/2D
+dataset_directory_path: ./data/fluids/Aerobreakup_DPUVVoS_const_sigma/2D
 seed: 42
 dimension: 2
 grid_resolution: null
-eval_groups: null
+eval_groups: null #["Mas3.4780_rhogasf5.0943_pgasf1413068.1149_ugasf923.0817_We59625.7412"]
 is_steady_state_prediction: False 
-sequence_info: [1, 1, 5]
+sequence_info: [3, 1, 10]
 # Available channels for Aerobreakup: ["Density", "Pressure", "Schlieren", "Velocity_X", "Velocity_Y", "Vorticity"]
 filter_features:
   train_filter_frames: null
@@ -18,17 +18,21 @@ filter_features:
 #NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels
 conditioning_features:
   conditioning_in_channels: null
-  include_conditioning_parameters: False
+  conditioning_method: AdaNorm_LSE # AdaNorm_LSE AdaNorm_SE_per_param AdaNorm_1SE AdaNorm null
   num_cond_params: null
   parameter_min_max_stats: null
+  conditioning_mlp:
+    mlp: False
+    hidden_size: null
+    activation: gelu
+    initialization: null
 residual_config: null
   # add_base_value_with_raw_loss: True
   # add_predicted_value_with_diff_loss: False
   # add_predicted_value_with_raw_loss: False
 coord_features: True
 data_normalization_strategy: z_normalization
-
-log_transform_channels: ["Density"]
+log_transform_channels: []
 #NOTE: Statistics are according to sequence_stride = 5
 data_normalization_stats:
   Density:
