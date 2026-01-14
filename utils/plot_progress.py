@@ -2219,6 +2219,9 @@ def plot_rollout_metrics_bar_chart(
         return run_group_labels
 
     # -------------------- Plotting Function (for a single metric) --------------------
+    def _clip_for_log_scale(values: np.ndarray, min_positive: float = 1e-10) -> np.ndarray:
+        """Clip values to ensure they're positive for log-scale plotting."""
+        return np.maximum(values, min_positive)
 
     def plot_grouped_metric_errors_on_axes(
         metric_name: str,
@@ -2254,9 +2257,9 @@ def plot_rollout_metrics_bar_chart(
         # Global y-limits (log scale) based on this metric only
         all_vals = []
         for run_name in have_metric:
-            val = results_all_metrics[run_name][metric_name]['mean_avg']
-            std = results_all_metrics[run_name][metric_name]['pooled_std']
-            all_vals.append(max(val - std, 0.0))
+            val = _clip_for_log_scale(results_all_metrics[run_name][metric_name]['mean_avg'])
+            std = _clip_for_log_scale(results_all_metrics[run_name][metric_name]['pooled_std'])
+            all_vals.append(val - std)
             all_vals.append(val + std)
         all_vals = [v for v in all_vals if v is not None]
         if not all_vals:
@@ -2308,10 +2311,10 @@ def plot_rollout_metrics_bar_chart(
                     for run in runs
                 ]
                 values = [
-                    results_all_metrics[run][metric_name]['mean_avg'] for run in runs
+                    _clip_for_log_scale(results_all_metrics[run][metric_name]['mean_avg']) for run in runs
                 ]
                 stds = [
-                    results_all_metrics[run][metric_name]['pooled_std'] for run in runs
+                    _clip_for_log_scale(results_all_metrics[run][metric_name]['pooled_std']) for run in runs
                 ]
 
                 for x, val, std, color in zip(x_positions, values, stds, all_colors):

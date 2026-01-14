@@ -1450,6 +1450,10 @@ class Trainer(Trainer_):
                     use_gradients = get_loss_weighting_strategy_entry(
                         train_loss_dict_next_block.train_loss_weighting_strategy.type
                     ).get("use_gradients", False)
+
+                    self._collect_detailed_losses = True
+                    self._collect_gradients = use_gradients
+
                     loss_stats_callback_next_block = LossStatisticsCallback(
                         collect_train_losses=True, collect_gradients=use_gradients, trainer=self
                     )
@@ -1490,6 +1494,9 @@ class Trainer(Trainer_):
                         if not isinstance(cb, (LossStatisticsCallback, AdaptiveWeightCallback))
                     ]
                     self.callback_handler.callbacks = callbacks
+
+                    self._collect_detailed_losses = False
+                    self._collect_gradients = False
 
                 self.loss_fn = self.get_loss_fn(train_loss_dict_next_block)
                 self.eval_loss_fn = self.get_loss_fn(validation_loss_dict_next_block)
@@ -2591,6 +2598,7 @@ class Trainer(Trainer_):
                 current_train_strategy_dict = OmegaConf.to_container(current_block, resolve=True)
                 
                 if self.loss_fn is not None:
+                    # Get loss weights at the time of checkpointing
                     weight_dict = self.loss_fn.get_loss_weight_dict()
 
                     current_train_loss_dict = current_train_strategy_dict["train_loss"]
@@ -2601,7 +2609,7 @@ class Trainer(Trainer_):
                             component['current_weights'] = _tensorize_for_json(weight_dict[comp_name])
                 
                 # Save
-                with open(loss_config_path, 'w') as f: #TODO: check if the weights are updated in the json file.
+                with open(loss_config_path, 'w') as f:
                     json.dump(current_train_strategy_dict , f, indent=2)
                 
                 logger.info(f"Saved loss_config to {loss_config_path}")

@@ -870,9 +870,6 @@ class LossStatisticsCallback(TrainerCallback):
         self.trainer._detailed_loss_accumulator = {} 
         if self.collect_gradients:
             self.trainer._gradient_accumulator = {}
-            self.trainer._collect_gradients = True
-        else:
-            self.trainer._collect_gradients = False
     
     def on_epoch_end(self, args, state, control, **kwargs):
         """Transfer and aggregate losses and gradient norms at end of epoch."""

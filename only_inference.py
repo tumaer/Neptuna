@@ -8,7 +8,7 @@ from utils.plot_progress import preprocess_for_plotting, plot_rollout_metrics
 from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
 from utils.plot_progress import plot_rollout_metrics_bar_chart
 from utils.plot_progress import plot_multi_run_rollout_metrics
-from utils.loss_utils import fetch_loss_metric #fetch_infer_loss_dict, fetch_train_loss_dict
+from utils.loss_utils import fetch_loss_metric, fetch_infer_loss_dict
 from metrics.inference_metrics import compute_metrics_for_n_rollouts
 from transformers.trainer import EvalPrediction
 from transformers import TrainingArguments
@@ -112,7 +112,7 @@ def build_train_and_infer_loss(loss_config, data_config, device: torch.device):
     # Always put metric losses on CPU
     metric_device = torch.device("cpu")
 
-    train_loss_dict = fetch_train_loss_dict(full_train_cfg)
+    train_loss_dict = loss_config.train_loss
     train_loss_fn = fetch_loss_metric(data_config, train_loss_dict).to(metric_device)
 
     infer_loss_dict = fetch_infer_loss_dict(full_train_cfg) #TODO: if only data_config is required, only provide that
@@ -199,6 +199,15 @@ def get_trainer(
     # Load pretrained model using the generic factory function
     model = load_pretrained_model(model_config)
 
+    train_strategy_config = OmegaConf.create({
+        "curriculum": [{
+            "name": "block_1",
+            "start_epoch": 0,
+            **OmegaConf.to_container(loss_config, resolve=True)
+        }],
+        "num_train_epochs": 5
+    })
+
     trainer = Trainer(
         model=model,
         args=args,
@@ -209,7 +218,7 @@ def get_trainer(
         scheduler_config=scheduler_config,
         infer_config=infer_config,
         output_log_config=output_log_config,
-        loss_config=loss_config,
+        train_strategy_config=train_strategy_config,
     )
     return trainer
 
@@ -439,8 +448,8 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 
                 # Replace configured weights with current_weights from checkpoint
                 # This uses the weights that were active when the model was saved
-                if 'loss' in loss_config and 'components' in loss_config.loss:
-                    for component in loss_config.loss.components:
+                if 'train_loss' in loss_config and 'components' in loss_config.train_loss:
+                    for component in loss_config.train_loss.components:
                         if 'current_weights' in component:
                             # Extract current weights
                             current_weights = component.current_weights
