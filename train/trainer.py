@@ -548,14 +548,14 @@ class Trainer(Trainer_):
         # Get labels for the current rollout step
         labels = inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1]]
         
-        if not self._collect_detailed_losses:
+        if not self._collect_detailed_losses: #for fixed weighting of train_loss components
             loss = self.loss_fn(
                 model=model,
                 predictions=prediction,
                 labels=labels,
                 return_detailed=False
             )
-        else:
+        else: #for adaptive weighting of train_loss components
             loss, detailed = self.loss_fn(
                 model=model,
                 predictions=prediction,

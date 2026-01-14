@@ -25,6 +25,8 @@ curriculum:
           sub_components:
             - type: SSIM
               weight: 0.1
+              metric_params: 
+                window_size: 7
             - type: L2Loss
               weight: 0.9
       train_loss_weighting_strategy:

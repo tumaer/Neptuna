@@ -663,7 +663,7 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
                     should_plot = True
                     best_plot_at_train_end = True
             except Exception:
-                raise Exception("Error in PlotOnEvalAndSaveCallback: train_strategy_config is not found")
+                pass
  
             if should_plot:
                 # ------------------------------------------------------------------

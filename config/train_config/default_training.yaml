@@ -38,7 +38,7 @@ n_eval_rollouts: 3
 # If a single float is provided, plotting will be done continously after this epoch is reached.
 # If a list is provided, plotting will be done "once" after each epoch in the list.
 # If null, then plotting is done after every validation step.
-plot_after_epoch: [50]
+plot_after_epoch: [1,5]
 # Number of examples to plot from the validation window and see how the training progresses over epochs for the same examples
 n_eval_plot_examples: 1
 #############################################################

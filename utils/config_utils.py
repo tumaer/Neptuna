@@ -445,10 +445,10 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
                 # Restore original struct setting
                 OmegaConf.set_struct(validation_loss_cfg, True)
 
-
-
     # ------------------------------------------------------------------
-    # 7) Load and merge the relevant loss component configs
+    # 7) Load and merge the relevant loss component configs. This block updates the 
+    # default metric_params for the loss component. For knowing the options for each loss component,
+    # refer to the config/train_strategy_config/loss_metrics folder/<loss_component_foler>/*_default.yaml.
     # ------------------------------------------------------------------
 
     def _load_and_merge_loss_config(component_cfg):
