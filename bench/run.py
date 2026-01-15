@@ -27,7 +27,9 @@ from only_inference import save_errors_to_csv
 import numpy as np
 import torch
 import torch.distributed as dist
-from omegaconf import ListConfig
+from omegaconf import ListConfig, OmegaConf
+from only_inference import inverse_log_transform_channels, build_train_and_infer_loss
+import glob
 
 __all__ = ["run"]
 
@@ -447,6 +449,55 @@ def run(cfg):
         
         if cfg["infer_config"]["do_infer"]:
             print("Running inference...")
+
+            def _find_checkpoint_path(base_dir: str) -> str | None:
+                ckpts = glob.glob(os.path.join(base_dir, "checkpoint-*"))
+                if not ckpts:
+                    return None
+                ckpts.sort(key=lambda p: int(os.path.basename(p).split("-")[-1]))
+                return ckpts[-1]
+
+            checkpoint_dir = trainer.state.best_model_checkpoint or _find_checkpoint_path(
+                cfg["output_log_config"]["logging"]["output_dir"]
+            )
+            if checkpoint_dir is None:
+                raise FileNotFoundError("No checkpoint-* found for inference.")
+
+            # loss_config from checkpoint
+            loss_config_path = os.path.join(checkpoint_dir, "loss_config.json")
+            loss_config_ckpt = OmegaConf.load(loss_config_path) if os.path.exists(loss_config_path) else None
+
+            for component in loss_config_ckpt.train_loss.components:
+                if 'current_weights' in component:
+                    # Extract current weights
+                    current_weights = component.current_weights
+                    
+                    # Update the component's weight configuration
+                    if 'base_weight' in current_weights:
+                        component.weight = current_weights.base_weight
+                    if 'timestep_weights' in current_weights:
+                        component.timestep_weights = current_weights.timestep_weights
+                    if 'channel_weights' in current_weights:
+                        component.channel_weights = current_weights.channel_weights
+                    if 'component_weights' in current_weights:
+                        component.component_weights = current_weights.component_weights
+                    
+                    print(f" Using checkpoint weights for '{component.get('name', component.type)}'")
+
+            # data_config from checkpoint (fallback to in-memory cfg)
+            data_config_path = os.path.join(checkpoint_dir, "data_config.json")
+            data_config_ckpt = OmegaConf.load(data_config_path) if os.path.exists(data_config_path) else cfg["data_config"]
+
+            metric_device = torch.device("cpu")
+            train_loss_fn_inf, eval_loss_fn_inf = build_train_and_infer_loss(
+                loss_config=loss_config_ckpt,
+                data_config=data_config_ckpt,
+                device=metric_device,
+            )
+
+            trainer.eval_loss_fn = eval_loss_fn_inf
+            trainer.train_loss_fn = train_loss_fn_inf
+
             inference_dir = os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots")  
             os.makedirs(inference_dir, exist_ok=True)
             infer_ds, infer_ds_from_ic = make_datasets(cfg, mode="infer")
@@ -472,7 +523,7 @@ def run(cfg):
                         if "error" in key:
                             print(f"{key}: {value}")
                             errors["random_start"+key] = value
-                    save_errors_to_csv(errors, os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots"))
+                    save_errors_to_csv(errors, os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots"), "results.csv")
                     # ----------------------------------------------------------
                     # Prepare prediction, target and input arrays
                     # ----------------------------------------------------------
@@ -481,6 +532,7 @@ def run(cfg):
                     # Flatten rollout and label sequence dimensions if necessary
                     if preds.ndim >= 5:
                         n, n_rollouts, seq_len, c = preds.shape[:4]
+                        outputs_per_rollout = seq_len
                         extra_dims = preds.shape[4:]
                         preds = preds.reshape(n, n_rollouts * seq_len, c, *extra_dims) # (N, R*T, C, *spatial)
 
@@ -491,6 +543,14 @@ def run(cfg):
 
                     # Conditioning inputs may be None
                     cond_inp_arr = conditioning_inputs if conditioning_inputs is not None else None
+
+                    per_rollout_metrics_rs = compute_metrics_for_n_rollouts(
+                        preds, targets, outputs_per_rollout=outputs_per_rollout, loss_metric=eval_loss_fn_inf
+                    )
+                    errors = {}
+                    for metric_name, values in per_rollout_metrics_rs.items():
+                        errors[metric_name] = values
+                    save_errors_to_csv(errors, os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots"), "results.csv")
 
                     # ----------------------------------------------------------
                     # Renormalise data and reconstruct residuals for plotting
@@ -510,6 +570,20 @@ def run(cfg):
                         residual_config=cfg["data_config"].get("residual_config", None),
                         conditioning_inputs=cond_inp_arr,
                     )
+
+                    log_transform_channels = cfg["data_config"]["log_transform_channels"]
+                    inp_renorm = inverse_log_transform_channels(inp_renorm, only_input_channel_names, log_transform_channels)
+                    tgt_renorm = inverse_log_transform_channels(tgt_renorm, output_channel_names, log_transform_channels)
+                    pred_renorm = inverse_log_transform_channels(pred_renorm, output_channel_names, log_transform_channels)
+
+                    # Renormalised per-rollout metrics
+                    per_rollout_metrics_rs_renorm = compute_metrics_for_n_rollouts(
+                        pred_renorm, tgt_renorm, outputs_per_rollout=outputs_per_rollout, loss_metric=eval_loss_fn_inf
+                    )
+                    errors = {}
+                    for metric_name, values in per_rollout_metrics_rs_renorm.items():
+                        errors[metric_name] = values
+                    save_errors_to_csv(errors, os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots"), "results_renorm.csv")
 
                     # Infer spatial dimensionality (1D / 2D / 3D)
                     ndim = pred_renorm.ndim - 3  # subtract batch, time, channel dims
@@ -593,7 +667,7 @@ def run(cfg):
                         if "error" in key:
                             print(f"{key}: {value}")
                             errors["ic_start"+key] = value
-                    save_errors_to_csv(errors, os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots"))
+                    save_errors_to_csv(errors, os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots"), "results.csv")
 
                     preds = predictions_obj.predictions
                     targets = predictions_obj.label_ids
@@ -616,7 +690,7 @@ def run(cfg):
                     for metric_name, values in per_rollout_step_metrics_ic.items():
                         print(f"{metric_name} per-step (IC start): {values}")
                         errors[metric_name] = values
-                    save_errors_to_csv(errors, os.path.join(cfg["output_log_config"]["logging"]["output_dir"],"inference_plots"))
+                    save_errors_to_csv(errors, os.path.join(cfg["output_log_config"]["logging"]["output_dir"],"inference_plots"), "results.csv")
 
                     # ----------------------------------------------------------
                     # Renormalise data and reconstruct residuals for plotting
@@ -636,6 +710,19 @@ def run(cfg):
                         residual_config=cfg["data_config"].get("residual_config", None),
                         conditioning_inputs=cond_inp_arr,
                     )
+
+                    log_transform_channels = cfg["data_config"]["log_transform_channels"]
+                    inp_renorm = inverse_log_transform_channels(inp_renorm, only_input_channel_names, log_transform_channels)
+                    tgt_renorm = inverse_log_transform_channels(tgt_renorm, output_channel_names, log_transform_channels)
+                    pred_renorm = inverse_log_transform_channels(pred_renorm, output_channel_names, log_transform_channels)
+                    
+                    per_rollout_step_metrics_ic_renorm = compute_metrics_for_n_rollouts(
+                        pred_renorm, tgt_renorm, outputs_per_rollout=outputs_per_rollout, include_per_timestep=True, loss_metric=eval_loss_fn_inf
+                    )
+                    errors = {}
+                    for metric_name, values in per_rollout_step_metrics_ic_renorm.items():
+                        errors[metric_name] = values
+                    save_errors_to_csv(errors, os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots"), "results_renorm.csv")
                     
                     # Infer spatial dimensionality (1D / 2D / 3D)
                     ndim = pred_renorm.ndim - 3  # subtract batch, time, channel dims
