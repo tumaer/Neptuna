@@ -468,7 +468,8 @@ class LossComponent(nn.Module, ABC):
         predictions: torch.Tensor,
         labels: torch.Tensor,
         input_frames: Optional[torch.Tensor],
-        return_detailed: bool = True
+        return_detailed: bool = True,
+        preserve_component_grads: bool = False,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         Compute the loss.
@@ -565,11 +566,11 @@ class CompositeLoss(LossComponent):
         for loss_component in self.loss_components:
             if return_detailed:
                 component_loss, component_detailed = loss_component(
-                    model, predictions, labels, input_frames, return_detailed=True
+                    model, predictions, labels, input_frames, return_detailed=True, preserve_component_grads=preserve_component_grads
                 )
             else:
                 component_loss = loss_component(
-                    model, predictions, labels, input_frames, return_detailed=False
+                    model, predictions, labels, input_frames, return_detailed=False, preserve_component_grads=preserve_component_grads
                 )
                 component_detailed = None  # type: ignore[assignment]
 
@@ -705,7 +706,8 @@ class NestedCompositeLoss(LossComponent):
         predictions: torch.Tensor,
         labels: torch.Tensor,
         input_frames: Optional[torch.Tensor],
-        return_detailed: bool = True
+        return_detailed: bool = True,
+        preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         Compute the nested composite loss.
@@ -725,11 +727,11 @@ class NestedCompositeLoss(LossComponent):
         for sub_comp in self.sub_components:
             if return_detailed:
                 comp_loss, comp_detail = sub_comp(
-                    model, predictions, labels, input_frames, return_detailed=True
+                    model, predictions, labels, input_frames, return_detailed=True, preserve_component_grads=preserve_component_grads
                 )
             else:
                 comp_loss = sub_comp(
-                    model, predictions, labels, input_frames, return_detailed=False
+                    model, predictions, labels, input_frames, return_detailed=False, preserve_component_grads=preserve_component_grads
                 )
                 comp_detail = None
             

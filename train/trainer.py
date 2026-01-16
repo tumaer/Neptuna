@@ -184,6 +184,11 @@ class Trainer(Trainer_):
         # Flag to indicate if component-wise gradient norms should be collected for adaptive weighting
         self._collect_gradients = getattr(self, '_collect_gradients', False)
 
+        self._weight_per_channel = self.loss_config.train_loss.train_loss_weighting_strategy.get("weight_per_channel", False)
+        self._weight_sub_components = self.loss_config.train_loss.train_loss_weighting_strategy.get("weight_sub_components", False)
+        self._loss_history_interval = self.loss_config.train_loss.train_loss_weighting_strategy.get("loss_history_interval", 1)
+        self._grad_history_interval = self.loss_config.train_loss.train_loss_weighting_strategy.get("grad_history_interval", 1)
+
         # Inject a reference to this Trainer into all registered callbacks so they can
         # access training context (datasets, model, args, etc.).
         try:
@@ -538,7 +543,19 @@ class Trainer(Trainer_):
 
         input_frames = inputs["input_data"]
         
-        if not self._collect_detailed_losses:
+        # Check if we should collect detailed losses at this step
+        should_collect_losses = (
+            self._collect_detailed_losses and 
+            self.state.global_step % self._loss_history_interval == 0
+        )
+        
+        # Check if we should collect gradients at this step
+        should_collect_grads = (
+            self._collect_gradients and 
+            self.state.global_step % self._grad_history_interval == 0
+        )
+        
+        if not should_collect_losses:
             loss = self.loss_fn(
                 model=model,
                 predictions=prediction,
@@ -553,32 +570,73 @@ class Trainer(Trainer_):
                 labels=labels,
                 input_frames=input_frames,
                 return_detailed=True,
-                preserve_component_grads=self._collect_gradients
+                preserve_component_grads=should_collect_grads
             )
 
             if not hasattr(self, '_detailed_loss_accumulator'):
                 self._detailed_loss_accumulator = {}
 
-            if self._collect_gradients and not hasattr(self, '_gradient_accumulator'):
+            if should_collect_grads and not hasattr(self, '_gradient_accumulator'):
                 self._gradient_accumulator = {}
             
             for component_name, component_detailed in detailed.items():
                 # Extract loss value
                 loss_value = component_detailed.get('total', component_detailed) if isinstance(component_detailed, dict) else component_detailed
                 
-                # Register gradient hooks if needed
-                if self._collect_gradients and torch.is_tensor(loss_value) and loss_value.requires_grad:
+                # Register gradient hooks if needed (only when collecting gradients)
+                if should_collect_grads and torch.is_tensor(loss_value) and loss_value.requires_grad:
                     loss_value.retain_grad()
                     self._register_gradient_hook(component_name, loss_value)
 
                 # Convert to detached GPU tensor
                 loss_scalar = loss_value.detach() if torch.is_tensor(loss_value) else torch.tensor(float(loss_value), device=loss.device)
                 
-                # Accumulate training loss
+                # Accumulate training loss for total
                 if component_name not in self._detailed_loss_accumulator:
                     self._detailed_loss_accumulator[component_name] = []
                 self._detailed_loss_accumulator[component_name].append(loss_scalar)
                 
+                # Process nested structure if it's a dict
+                if isinstance(component_detailed, dict):
+                    # Optionally accumulate per-channel losses
+                    if self._weight_per_channel and 'per_channel' in component_detailed:
+                        per_channel_value = component_detailed['per_channel']
+                        
+                        # Split the per_channel tensor into individual channel scalars
+                        if torch.is_tensor(per_channel_value):
+                            # Iterate over each channel index
+                            for ch_idx in range(per_channel_value.numel()):
+                                ch_scalar = per_channel_value[ch_idx]
+                                per_channel_key = f"{component_name}/channel_{ch_idx}"
+                                
+                                if per_channel_key not in self._detailed_loss_accumulator:
+                                    self._detailed_loss_accumulator[per_channel_key] = []
+                                
+                                # Accumulate the detached scalar
+                                per_channel_detached = ch_scalar.detach()
+                                self._detailed_loss_accumulator[per_channel_key].append(per_channel_detached)
+                                
+                                # Register gradient hooks for each channel scalar if needed
+                                if should_collect_grads and ch_scalar.requires_grad:
+                                    ch_scalar.retain_grad()
+                                    self._register_gradient_hook(per_channel_key, ch_scalar)
+                    
+                    # Optionally accumulate per-component losses
+                    if self._weight_sub_components and 'per_component' in component_detailed:
+                        per_component_dict = component_detailed['per_component']
+                        if isinstance(per_component_dict, dict):
+                            for sub_component_name, sub_component_value in per_component_dict.items():
+                                sub_component_key = f"{component_name}/{sub_component_name}"
+                                if sub_component_key not in self._detailed_loss_accumulator:
+                                    self._detailed_loss_accumulator[sub_component_key] = []
+                                
+                                sub_component_detached = sub_component_value.detach() if torch.is_tensor(sub_component_value) else torch.tensor(float(sub_component_value), device=loss.device)
+                                self._detailed_loss_accumulator[sub_component_key].append(sub_component_detached)
+                                
+                                # Register gradient hooks for per-component if needed
+                                if should_collect_grads and torch.is_tensor(sub_component_value) and sub_component_value.requires_grad:
+                                    sub_component_value.retain_grad()
+                                    self._register_gradient_hook(sub_component_key, sub_component_value)
             
         return (loss, prediction) if return_outputs else loss
 
@@ -676,8 +734,12 @@ class Trainer(Trainer_):
         with self.compute_loss_context_manager():
             loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
 
-        # Added: compute component gradient norms if needed
-        if self._collect_gradients:
+        should_collect_grads = (
+            self._collect_gradients and 
+            self.state.global_step % self._grad_history_interval == 0
+        )
+
+        if should_collect_grads:
             self._compute_component_gradient_norms()
 
         del inputs

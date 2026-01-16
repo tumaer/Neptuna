@@ -52,7 +52,8 @@ class L2Loss(LossComponent):
         predictions: torch.Tensor,
         labels: torch.Tensor,
         input_frames: Optional[torch.Tensor],
-        return_detailed: bool = False
+        return_detailed: bool = False,
+        preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
 
         # ------------------------------------------------------------------
@@ -86,16 +87,14 @@ class L2Loss(LossComponent):
                 per_timestep = diff2.mean(dim=dims_to_reduce)
                 if base != 1.0:
                     per_timestep = per_timestep * base
-                detailed['per_timestep'] = per_timestep.detach()
-
+                detailed['per_timestep'] = per_timestep if preserve_component_grads else per_timestep.detach()
             # Per-channel: average over batch, timesteps, spatial dims
             if diff2.ndim >= 3:
                 dims_to_reduce = [0, 1] + list(range(3, diff2.ndim))
                 per_channel = diff2.mean(dim=dims_to_reduce)
                 if base != 1.0:
                     per_channel = per_channel * base
-                detailed['per_channel'] = per_channel.detach()
-
+                detailed['per_channel'] = per_channel if preserve_component_grads else per_channel.detach()
             return total_loss, detailed
 
         # ------------------------------------------------------------------
@@ -117,10 +116,12 @@ class L2Loss(LossComponent):
         # Aggregated diagnostics (reductions over the weighted loss)
         if weighted.ndim >= 2:
             dims_to_reduce = [0] + list(range(2, weighted.ndim))
-            detailed['per_timestep'] = weighted.mean(dim=dims_to_reduce).detach()
+            per_timestep = weighted.mean(dim=dims_to_reduce)
+            detailed['per_timestep'] = per_timestep if preserve_component_grads else per_timestep.detach()
 
         if weighted.ndim >= 3:
             dims_to_reduce = [0, 1] + list(range(3, weighted.ndim))
-            detailed['per_channel'] = weighted.mean(dim=dims_to_reduce).detach()
+            per_channel = weighted.mean(dim=dims_to_reduce)
+            detailed['per_channel'] = per_channel if preserve_component_grads else per_channel.detach()
 
         return total_loss, detailed

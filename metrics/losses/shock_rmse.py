@@ -355,7 +355,8 @@ class ShockRMSE(LossComponent):
         predictions: torch.Tensor,
         labels: torch.Tensor,
         input_frames: Optional[torch.Tensor],
-        return_detailed: bool = False
+        return_detailed: bool = False,
+        preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         Compute shock RMSE loss.
@@ -409,38 +410,43 @@ class ShockRMSE(LossComponent):
         
         detailed = {}
         
+        # Conditionally detach based on preserve_component_grads
+        squared_error_for_detailed = squared_error if preserve_component_grads else squared_error.detach()
+        mask_for_detailed = mask if preserve_component_grads else mask.detach()
+        
         # Add mask statistics
-        total_elements = mask.numel()
-        detailed['mask_fraction'] = (mask_sum / total_elements).detach()
+        total_elements = mask_for_detailed.numel()
+        mask_sum_for_detailed = mask_for_detailed.sum()
+        detailed['mask_fraction'] = mask_sum_for_detailed / total_elements
         
         # Per-timestep breakdown (if mask has sufficient elements)
         if mask_sum > self.epsilon and predictions.ndim >= 2:
             timesteps = predictions.shape[1]
             per_timestep = []
             for t in range(timesteps):
-                t_squared_error = squared_error[:, t]
-                t_mask = mask[:, t]
+                t_squared_error = squared_error_for_detailed[:, t]
+                t_mask = mask_for_detailed[:, t]
                 t_mask_sum = t_mask.sum()
                 if t_mask_sum > self.epsilon:
                     t_rmse = torch.sqrt((t_squared_error * t_mask).sum() / t_mask_sum)
                 else:
                     t_rmse = torch.zeros((), device=predictions.device, dtype=predictions.dtype)
                 per_timestep.append(t_rmse)
-            detailed['per_timestep'] = torch.stack(per_timestep).detach()
+            detailed['per_timestep'] = torch.stack(per_timestep)
         
         # Per-channel breakdown (if mask has sufficient elements)
         if mask_sum > self.epsilon and predictions.ndim >= 3:
             channels = predictions.shape[2]
             per_channel = []
             for c in range(channels):
-                c_squared_error = squared_error[:, :, c]
-                c_mask = mask[:, :, c]
+                c_squared_error = squared_error_for_detailed[:, :, c]
+                c_mask = mask_for_detailed[:, :, c]
                 c_mask_sum = c_mask.sum()
                 if c_mask_sum > self.epsilon:
                     c_rmse = torch.sqrt((c_squared_error * c_mask).sum() / c_mask_sum)
                 else:
                     c_rmse = torch.zeros((), device=predictions.device, dtype=predictions.dtype)
                 per_channel.append(c_rmse)
-            detailed['per_channel'] = torch.stack(per_channel).detach()
+            detailed['per_channel'] = torch.stack(per_channel)
         
         return weighted_rmse, detailed

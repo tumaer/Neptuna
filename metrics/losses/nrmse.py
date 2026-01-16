@@ -55,7 +55,8 @@ class NRMSE(LossComponent):
         predictions: torch.Tensor,
         labels: torch.Tensor,
         input_frames: Optional[torch.Tensor],
-        return_detailed: bool = False
+        return_detailed: bool = False,
+        preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
 
         # ------------------------------------------------------------------
@@ -93,7 +94,7 @@ class NRMSE(LossComponent):
                 per_timestep = torch.sqrt(num_t / (denom_t + self.epsilon))
                 if base != 1.0:
                     per_timestep = per_timestep * base
-                detailed['per_timestep'] = per_timestep.detach()
+                detailed['per_timestep'] = per_timestep if preserve_component_grads else per_timestep.detach()
 
             # Per-channel: average over batch, timesteps, spatial dims
             if sq_error.ndim >= 3:
@@ -104,7 +105,7 @@ class NRMSE(LossComponent):
                 per_channel = torch.sqrt(num_c / (denom_c + self.epsilon))
                 if base != 1.0:
                     per_channel = per_channel * base
-                detailed['per_channel'] = per_channel.detach()
+                detailed['per_channel'] = per_channel if preserve_component_grads else per_channel.detach()
 
             return total_loss, detailed
 
@@ -132,23 +133,27 @@ class NRMSE(LossComponent):
 
         detailed: Dict[str, torch.Tensor] = {}
 
+        # Conditionally detach based on preserve_component_grads
+        weighted_sq_error_for_detailed = weighted_sq_error if preserve_component_grads else weighted_sq_error.detach()
+        weighted_sq_u_for_detailed = weighted_sq_u if preserve_component_grads else weighted_sq_u.detach()
+
         # Aggregated diagnostics (reductions over the weighted errors)
         if labels.ndim >= 2:
             dims_to_reduce = [0] + list(range(2, labels.ndim))
-            num_t = weighted_sq_error.mean(dim=dims_to_reduce)
-            denom_t = weighted_sq_u.mean(dim=dims_to_reduce)
+            num_t = weighted_sq_error_for_detailed.mean(dim=dims_to_reduce)
+            denom_t = weighted_sq_u_for_detailed.mean(dim=dims_to_reduce)
 
             detailed['per_timestep'] = torch.sqrt(
                 num_t / (denom_t + self.epsilon)
-            ).detach()
+            )
 
         if labels.ndim >= 3:
             dims_to_reduce = [0, 1] + list(range(3, labels.ndim))
-            num_c = weighted_sq_error.mean(dim=dims_to_reduce)
-            denom_c = weighted_sq_u.mean(dim=dims_to_reduce)
+            num_c = weighted_sq_error_for_detailed.mean(dim=dims_to_reduce)
+            denom_c = weighted_sq_u_for_detailed.mean(dim=dims_to_reduce)
 
             detailed['per_channel'] = torch.sqrt(
                 num_c / (denom_c + self.epsilon)
-            ).detach()
+            )
 
         return total_loss, detailed

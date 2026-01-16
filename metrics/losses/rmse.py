@@ -55,7 +55,8 @@ class RMSE(LossComponent):
         predictions: torch.Tensor,
         labels: torch.Tensor,
         input_frames: Optional[torch.Tensor],
-        return_detailed: bool = False
+        return_detailed: bool = False,
+        preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
 
         # ------------------------------------------------------------------
@@ -84,7 +85,7 @@ class RMSE(LossComponent):
                 per_timestep = torch.sqrt(per_timestep_mse + self.epsilon)
                 if base != 1.0:
                     per_timestep = per_timestep * base
-                detailed['per_timestep'] = per_timestep.detach()
+                detailed['per_timestep'] = per_timestep if preserve_component_grads else per_timestep.detach()
 
             # Per-channel: average over batch, timesteps, spatial dims
             if sq_error.ndim >= 3:
@@ -93,7 +94,7 @@ class RMSE(LossComponent):
                 per_channel = torch.sqrt(per_channel_mse + self.epsilon)
                 if base != 1.0:
                     per_channel = per_channel * base
-                detailed['per_channel'] = per_channel.detach()
+                detailed['per_channel'] = per_channel if preserve_component_grads else per_channel.detach()
 
             return total_loss, detailed
 
@@ -115,15 +116,18 @@ class RMSE(LossComponent):
 
         detailed: Dict[str, torch.Tensor] = {}
 
-        # Aggregated diagnostics (reductions over the weighted squared error)
-        if weighted_sq.ndim >= 2:
-            dims_to_reduce = [0] + list(range(2, weighted_sq.ndim))
-            per_timestep_mse = weighted_sq.mean(dim=dims_to_reduce)
-            detailed['per_timestep'] = torch.sqrt(per_timestep_mse + self.epsilon).detach()
+        # Conditionally detach based on preserve_component_grads
+        weighted_sq_for_detailed = weighted_sq if preserve_component_grads else weighted_sq.detach()
 
-        if weighted_sq.ndim >= 3:
-            dims_to_reduce = [0, 1] + list(range(3, weighted_sq.ndim))
-            per_channel_mse = weighted_sq.mean(dim=dims_to_reduce)
-            detailed['per_channel'] = torch.sqrt(per_channel_mse + self.epsilon).detach()
+        # Aggregated diagnostics (reductions over the weighted squared error)
+        if weighted_sq_for_detailed.ndim >= 2:
+            dims_to_reduce = [0] + list(range(2, weighted_sq_for_detailed.ndim))
+            per_timestep_mse = weighted_sq_for_detailed.mean(dim=dims_to_reduce)
+            detailed['per_timestep'] = torch.sqrt(per_timestep_mse + self.epsilon)
+
+        if weighted_sq_for_detailed.ndim >= 3:
+            dims_to_reduce = [0, 1] + list(range(3, weighted_sq_for_detailed.ndim))
+            per_channel_mse = weighted_sq_for_detailed.mean(dim=dims_to_reduce)
+            detailed['per_channel'] = torch.sqrt(per_channel_mse + self.epsilon)
 
         return total_loss, detailed

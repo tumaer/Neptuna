@@ -13,6 +13,9 @@ class ReLoBRaLo(LossWeightingStrategyBase):
     
     Based on (2021) "Multi-Objective Loss Balancing for Physics-Informed Deep Learning" 
     https://arxiv.org/abs/2110.09813
+    
+    Supports hierarchical weight updates for base components, per-channel,
+    and per-sub-component levels.
     """
 
     def __init__(
@@ -43,7 +46,7 @@ class ReLoBRaLo(LossWeightingStrategyBase):
         self.min_weight = min_weight
         self.max_weight = max_weight
 
-        # Internal state across timesteps t
+        # Internal state across timesteps t (now handles hierarchical keys)
         self._L0: Dict[str, float] = {}        # initial loss per component: L_i(0)
         self._L_prev: Dict[str, float] = {}    # previous loss per component: L_i(t-1)
         self._lambda_prev: Dict[str, float] = {}  # previous scaling λ_i(t-1)
@@ -64,18 +67,20 @@ class ReLoBRaLo(LossWeightingStrategyBase):
 
     def _lambda_bal(
         self,
-        component_names: List[str],
+        loss_keys: List[str],
         L_t: Dict[str, float],
         L_tprime: Dict[str, float],
     ) -> Dict[str, float]:
         """
         λ_bal_i(t,t') = m * softmax( L_i(t) / (τ * L_i(t')) )
+        
+        Now works with all loss keys (base, channel, sub-component) uniformly.
         """
-        m = len(component_names)
+        m = len(loss_keys)
         logits = []
-        for name in component_names:
-            num = max(L_t[name], self.eps)
-            den = max(self.tau * L_tprime[name], self.eps)
+        for key in loss_keys:
+            num = max(L_t[key], self.eps)
+            den = max(self.tau * L_tprime[key], self.eps)
             logits.append(num / den)
 
         logits_t = torch.tensor(logits, dtype=torch.float32)
@@ -83,106 +88,195 @@ class ReLoBRaLo(LossWeightingStrategyBase):
         scaled = probs * float(m)
 
         out: Dict[str, float] = {}
-        for i, name in enumerate(component_names):
-            out[name] = float(scaled[i].item())
+        for i, key in enumerate(loss_keys):
+            out[key] = float(scaled[i].item())
         return out
 
     def compute_new_weights(
         self,
         loss_history: Dict[str, List[float]],
         current_weights: Dict[str, Dict],
+        grad_norm_history: Optional[Dict[str, List[float]]] = None
     ) -> Dict[str, Dict]:
         """
-        Paper-faithful ReLoBRaLo update (Eq. (11)).
-        Preserves schedule structure from current_weights entries.
+        Paper-faithful ReLoBRaLo update (Eq. (11)) applied to all loss keys uniformly.
+        
+        Steps:
+          1) Compute L_i(t) for all loss keys (base, channel, sub-component)
+          2) Compute λ_bal(t, t-1) and λ_bal(t, 0) for all keys
+          3) Sample ρ and compute λ_hist for all keys
+          4) EMA combine into λ(t) for all keys
+          5) Reconstruct hierarchical weight dictionary
         """
-        component_names = list(current_weights.keys())
-        m = len(component_names)
+        # Get all loss keys from history
+        all_loss_keys = list(loss_history.keys())
+        m = len(all_loss_keys)
         if m == 0:
-            return {}
+            return {k: v.copy() for k, v in current_weights.items()}
 
-        # 1) Build L_i(t) for all components (mean over the provided list for this update call).
-        #    If a component has no data this step, we fall back to previous if available, else 1.0.
+        # --- Step 1: Build L_i(t) for all loss keys ---
         L_t: Dict[str, float] = {}
-        for name in component_names:
-            vals = loss_history.get(name, [])
+        for loss_key in all_loss_keys:
+            vals = loss_history.get(loss_key, [])
             mu = self._mean_loss(vals)
             if mu != mu:  # NaN check
                 # No/invalid data: fallback
-                if name in self._L_prev:
-                    mu = self._L_prev[name]
+                if loss_key in self._L_prev:
+                    mu = self._L_prev[loss_key]
                 else:
                     mu = 1.0
-            L_t[name] = float(mu)
+            L_t[loss_key] = float(mu)
 
-            # Initialize L0 the first time we see this component
-            if name not in self._L0:
-                self._L0[name] = float(mu)
+            # Initialize L0 the first time we see this key
+            if loss_key not in self._L0:
+                self._L0[loss_key] = float(mu)
 
-        # 2) Ensure we have L_prev and lambda_prev initialized
-        for name in component_names:
-            if name not in self._L_prev:
-                self._L_prev[name] = L_t[name]
+        # --- Step 2: Ensure we have L_prev and lambda_prev initialized ---
+        for loss_key in all_loss_keys:
+            if loss_key not in self._L_prev:
+                self._L_prev[loss_key] = L_t[loss_key]
 
-        # Initialize λ(t-1) from current_weights if we haven't stored it yet.
-        # If base_weight is missing, default to uniform weights summing to m.
+        # Initialize λ(t-1) from current_weights if we haven't stored it yet
         if not self._lambda_prev:
             uniform = float(m) / float(m)  # =1.0 each
-            for name in component_names:
-                bw = current_weights.get(name, {}).get("base_weight", uniform)
-                self._lambda_prev[name] = float(bw)
+            for loss_key in all_loss_keys:
+                prev_w = self._get_previous_weight(loss_key, current_weights)
+                self._lambda_prev[loss_key] = float(prev_w) if prev_w != 1.0 else uniform
 
-        # 3) Compute λ_bal(t, t-1) and λ_bal(t, 0)
-        L_tminus1 = {name: self._L_prev[name] for name in component_names}
-        L_0 = {name: self._L0[name] for name in component_names}
+        # Ensure all keys have lambda_prev (for newly added keys)
+        for loss_key in all_loss_keys:
+            if loss_key not in self._lambda_prev:
+                prev_w = self._get_previous_weight(loss_key, current_weights)
+                self._lambda_prev[loss_key] = float(prev_w)
 
-        lambda_bal_recent = self._lambda_bal(component_names, L_t, L_tminus1)  # (t, t-1)
-        lambda_bal_start = self._lambda_bal(component_names, L_t, L_0)         # (t, 0)
+        # --- Step 3: Compute λ_bal(t, t-1) and λ_bal(t, 0) ---
+        L_tminus1 = {key: self._L_prev[key] for key in all_loss_keys}
+        L_0 = {key: self._L0[key] for key in all_loss_keys}
 
-        # 4) Sample ρ ~ Bernoulli(rho_prob) and compute λ_hist
+        lambda_bal_recent = self._lambda_bal(all_loss_keys, L_t, L_tminus1)  # (t, t-1)
+        lambda_bal_start = self._lambda_bal(all_loss_keys, L_t, L_0)         # (t, 0)
+
+        # --- Step 4: Sample ρ ~ Bernoulli(rho_prob) and compute λ_hist ---
         rho = 1.0 if random.random() < self.rho_prob else 0.0
 
         lambda_hist: Dict[str, float] = {}
-        for name in component_names:
-            lambda_hist[name] = rho * self._lambda_prev[name] + (1.0 - rho) * lambda_bal_start[name]
+        for loss_key in all_loss_keys:
+            lambda_hist[loss_key] = rho * self._lambda_prev[loss_key] + (1.0 - rho) * lambda_bal_start[loss_key]
 
-        # 5) EMA combine into λ(t) per Eq. (11)
+        # --- Step 5: EMA combine into λ(t) per Eq. (11) ---
         lambda_t: Dict[str, float] = {}
-        for name in component_names:
-            lambda_t[name] = self.alpha * lambda_hist[name] + (1.0 - self.alpha) * lambda_bal_recent[name]
+        for loss_key in all_loss_keys:
+            lambda_t[loss_key] = self.alpha * lambda_hist[loss_key] + (1.0 - self.alpha) * lambda_bal_recent[loss_key]
 
-        # 6) Optional: enforce sum-to-m (should already be close; this keeps it exact if desired)
+        # --- Step 6: Optional: enforce sum-to-m ---
         if self.normalize_sum_to_m:
             s = sum(lambda_t.values())
             if s > self.eps:
                 scale = float(m) / s
-                for name in component_names:
-                    lambda_t[name] *= scale
+                for loss_key in all_loss_keys:
+                    lambda_t[loss_key] *= scale
 
-        # 7) Optional: clip (NOT in paper; leave None for strict paper behavior)
+        # --- Step 7: Optional: clip (NOT in paper) ---
         if self.min_weight is not None or self.max_weight is not None:
             lo = self.min_weight if self.min_weight is not None else -float("inf")
             hi = self.max_weight if self.max_weight is not None else float("inf")
-            for name in component_names:
-                lambda_t[name] = float(max(lo, min(hi, lambda_t[name])))
+            for loss_key in all_loss_keys:
+                lambda_t[loss_key] = float(max(lo, min(hi, lambda_t[loss_key])))
 
             if self.normalize_sum_to_m:
                 s = sum(lambda_t.values())
                 if s > self.eps:
                     scale = float(m) / s
-                    for name in component_names:
-                        lambda_t[name] *= scale
+                    for loss_key in all_loss_keys:
+                        lambda_t[loss_key] *= scale
 
-        # 8) Write back in framework format: preserve schedule structure, update 'base_weight'
+        # --- Step 8: Reconstruct hierarchical weight dictionary ---
+        new_weights = self._reconstruct_weight_dict(lambda_t, current_weights)
+
+        # --- Step 9: Update internal state for next call ---
+        for loss_key in all_loss_keys:
+            self._L_prev[loss_key] = L_t[loss_key]
+            self._lambda_prev[loss_key] = lambda_t[loss_key]
+
+        return new_weights
+
+    def _get_previous_weight(self, loss_key: str, current_weights: Dict[str, Dict]) -> float:
+        """Extract the previous weight for a given loss key."""
+        base_name, sub_name, channel_idx = self._parse_hierarchical_key(loss_key)
+        
+        if base_name not in current_weights:
+            return 1.0
+        
+        config = current_weights[base_name]
+        
+        # Base component weight
+        if sub_name is None and channel_idx is None:
+            return float(config.get('base_weight', 1.0))
+        
+        # Per-channel weight
+        if channel_idx is not None:
+            if 'channel_weights' in config:
+                channel_weights = config['channel_weights']
+                if channel_idx < len(channel_weights):
+                    return float(channel_weights[channel_idx])
+            return 1.0
+        
+        # Per-component weight
+        if sub_name is not None:
+            if 'component_weights' in config:
+                component_weights = config['component_weights']
+                return float(component_weights.get(sub_name, 1.0))
+            return 1.0
+        
+        return 1.0
+
+    def _reconstruct_weight_dict(
+        self, 
+        new_weight_scalars: Dict[str, float], 
+        current_weights: Dict[str, Dict]
+    ) -> Dict[str, Dict]:
+        """
+        Reconstruct the hierarchical weight dictionary from flat scalar weights.
+        
+        Args:
+            new_weight_scalars: Flat dict of loss_key -> weight
+            current_weights: Current weight structure to preserve format
+            
+        Returns:
+            Hierarchical weight dictionary matching current_weights format
+        """
         new_weights: Dict[str, Dict] = {}
-        for name in component_names:
-            entry = current_weights[name].copy()
-            entry["base_weight"] = float(lambda_t[name])
-            new_weights[name] = entry
-
-        # 9) Update internal state for next call
-        for name in component_names:
-            self._L_prev[name] = L_t[name]
-            self._lambda_prev[name] = lambda_t[name]
-
+        
+        for base_name, config in current_weights.items():
+            new_config = config.copy()
+            
+            # Update base weight if present
+            if base_name in new_weight_scalars:
+                new_config['base_weight'] = new_weight_scalars[base_name]
+            
+            # Update channel weights if present
+            if 'channel_weights' in config:
+                channel_weights = config['channel_weights'].clone()
+                num_channels = len(channel_weights)
+                
+                for ch_idx in range(num_channels):
+                    ch_key = f"{base_name}/channel_{ch_idx}"
+                    if ch_key in new_weight_scalars:
+                        channel_weights[ch_idx] = new_weight_scalars[ch_key]
+                
+                new_config['channel_weights'] = channel_weights
+            
+            # Update component weights if present
+            if 'component_weights' in config:
+                component_weights = config['component_weights'].copy()
+                
+                for sub_name in component_weights.keys():
+                    comp_key = f"{base_name}/{sub_name}"
+                    if comp_key in new_weight_scalars:
+                        component_weights[sub_name] = new_weight_scalars[comp_key]
+                
+                new_config['component_weights'] = component_weights
+            
+            new_weights[base_name] = new_config
+        
         return new_weights

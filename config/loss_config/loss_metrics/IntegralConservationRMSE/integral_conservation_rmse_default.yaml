@@ -2,17 +2,17 @@ conserved_keys:
   - mass
   - Px
   - Py
-  - kinetic_energy
+ # - kinetic_energy
 
 # Whether to include boundary flux metrics
 use_boundary_fluxes: true
 normalization: none
 
 boundary_keys:
-  - mass
-  - Px
-  - Py
-  - energy
+#  - mass
+#  - Px
+#  - Py
+#  - energy
 
 # Optional: weight different terms relative to each other
 quantity_weights:

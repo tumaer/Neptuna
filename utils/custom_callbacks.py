@@ -1055,6 +1055,8 @@ class AdaptiveWeightCallback(TrainerCallback):
         trainer=None,
         loss_source: str = 'train',  # 'train', 'eval', or 'both'
         use_gradients: bool = False,
+        weight_per_channel: bool = False,
+        weight_sub_components: bool = False,
     ):
         """
         Args:
@@ -1069,10 +1071,54 @@ class AdaptiveWeightCallback(TrainerCallback):
         self.last_update_epoch = -1
         self.loss_source = loss_source
         self.use_gradients = use_gradients
+        self.weight_per_channel = weight_per_channel
+        self.weight_sub_components = weight_sub_components
         
         if loss_source not in ['train', 'eval', 'both']:
             raise ValueError(f"loss_source must be 'train', 'eval', or 'both', got {loss_source}")
     
+    def _filter_loss_history(
+        self,
+        loss_history: Dict[str, List[float]],
+        training_components: set
+    ) -> Dict[str, List[float]]:
+        """
+        Filter loss history to include only relevant components based on flags.
+        
+        Args:
+            loss_history: Full history dictionary with all loss components
+            training_components: Set of base component names being trained
+            
+        Returns:
+            Filtered history including base components and optionally hierarchical ones
+        """
+        filtered = {}
+        
+        for name, losses in loss_history.items():
+            # Check if this is a base component
+            if name in training_components:
+                filtered[name] = losses
+                continue
+            
+            # Check if this is a hierarchical component (contains '/')
+            if '/' in name:
+                # Extract base component name (before first '/')
+                base_name = name.split('/')[0]
+                
+                # Only include if base component is being trained
+                if base_name not in training_components:
+                    continue
+                
+                # Check if it's a per-channel component
+                if '/channel_' in name:
+                    if self.weight_per_channel:
+                        filtered[name] = losses
+                # Otherwise it's a per-component
+                elif self.weight_sub_components:
+                    filtered[name] = losses
+        
+        return filtered
+
     def _update_loss_weights(
         self, 
         current_epoch: int, 
@@ -1089,13 +1135,16 @@ class AdaptiveWeightCallback(TrainerCallback):
         current_weights = self.trainer.loss_fn.get_loss_weight_dict()
         training_component_names = set(current_weights.keys())
         
-        # Filter to training components only
-        filtered_loss_history = {
-            name: losses 
-            for name, losses in loss_history.items() 
-            if name in training_component_names
-        }
-        
+        # Only filter if using eval losses (train losses are already filtered during collection)
+        if source_label == 'train' or self.loss_source == 'train':
+            filtered_loss_history = loss_history
+            filtered_grad_norm_history = grad_norm_history
+        else:
+            filtered_loss_history = self._filter_loss_history(loss_history, training_component_names)
+            filtered_grad_norm_history = None
+            if grad_norm_history is not None:
+                filtered_grad_norm_history = self._filter_loss_history(grad_norm_history, training_component_names)
+
         if not filtered_loss_history:
             logger.warning(
                 f"[AdaptiveWeightCallback] No matching training components in {source_label} loss history\n"
@@ -1103,14 +1152,6 @@ class AdaptiveWeightCallback(TrainerCallback):
                 f"  Available in {source_label}: {set(loss_history.keys())}"
             )
             return False
-
-        filtered_grad_norm_history = None
-        if grad_norm_history is not None:
-            filtered_grad_norm_history = {
-                name: grad_norms
-                for name, grad_norms in grad_norm_history.items()
-                if name in training_component_names
-            }
         
         # Compute new loss weights
         new_weights = self.loss_weighting_strategy.step(
@@ -1127,20 +1168,92 @@ class AdaptiveWeightCallback(TrainerCallback):
         self.trainer.loss_fn.update_loss_weights(new_weights)
         self.last_update_epoch = current_epoch
         
-        logger.info(f"Epoch {current_epoch}: Updated loss weights (from {source_label})")
+        logger.info(f"\nEpoch {current_epoch}: Updated loss weights (from {source_label})")
+        
+        # Collect all weight information for table formatting
+        table_rows = []
         
         for component_name, weight_dict in new_weights.items():
+            base_weight = weight_dict.get('base_weight', 1.0)
+            
+            # Only add row if we have statistics for this component
             if component_name in filtered_loss_history:
                 losses_tensor = torch.tensor(filtered_loss_history[component_name])
                 mean_loss = float(losses_tensor.mean())
                 std_loss = float(losses_tensor.std())
                 num_samples = len(filtered_loss_history[component_name])
+                stats_str = f"mean={mean_loss:.4e}, std={std_loss:.4e}, n={num_samples}"
                 
-                logger.info(f"  {component_name}:")
-                logger.info(f"    new weight: {weight_dict['base_weight']:.4f}")
-                logger.info(f"    statistics: mean={mean_loss:.4e}, std={std_loss:.4e}, n={num_samples}")
-            else:
-                logger.info(f"  {component_name}: weight={weight_dict['base_weight']:.4f} (no history)")
+                table_rows.append({
+                    'component': component_name,
+                    'weight': f"{base_weight:.4f}",
+                    'statistics': stats_str
+                })
+            
+            # Per-channel weights if present
+            if 'channel_weights' in weight_dict:
+                channel_weights = weight_dict['channel_weights']
+                for ch_idx in range(len(channel_weights)):
+                    ch_key = f"{component_name}/channel_{ch_idx}"
+                    
+                    # Only add row if we have statistics for this channel
+                    if ch_key in filtered_loss_history:
+                        ch_weight = float(channel_weights[ch_idx])
+                        ch_losses = torch.tensor(filtered_loss_history[ch_key])
+                        ch_mean = float(ch_losses.mean())
+                        ch_std = float(ch_losses.std())
+                        ch_n = len(filtered_loss_history[ch_key])
+                        ch_stats_str = f"mean={ch_mean:.4e}, std={ch_std:.4e}, n={ch_n}"
+                        
+                        table_rows.append({
+                            'component': f"  └─ channel_{ch_idx}",
+                            'weight': f"{ch_weight:.4f}",
+                            'statistics': ch_stats_str
+                        })
+            
+            # Per-component weights if present
+            if 'component_weights' in weight_dict:
+                component_weights = weight_dict['component_weights']
+                for sub_name, sub_weight in component_weights.items():
+                    comp_key = f"{component_name}/{sub_name}"
+                    
+                    # Only add row if we have statistics for this sub-component
+                    if comp_key in filtered_loss_history:
+                        comp_losses = torch.tensor(filtered_loss_history[comp_key])
+                        comp_mean = float(comp_losses.mean())
+                        comp_std = float(comp_losses.std())
+                        comp_n = len(filtered_loss_history[comp_key])
+                        comp_stats_str = f"mean={comp_mean:.4e}, std={comp_std:.4e}, n={comp_n}"
+                        
+                        table_rows.append({
+                            'component': f"  └─ {sub_name}",
+                            'weight': f"{sub_weight:.4f}",
+                            'statistics': comp_stats_str
+                        })
+        
+        # Calculate column widths and print table
+        if table_rows:
+            max_component_len = max(len(row['component']) for row in table_rows)
+            max_weight_len = max(len(row['weight']) for row in table_rows)
+            max_stats_len = max(len(row['statistics']) for row in table_rows)
+            
+            # Add some padding
+            component_width = max(max_component_len, len("Component")) + 2
+            weight_width = max(max_weight_len, len("Weight")) + 2
+            stats_width = max(max_stats_len, len("Statistics")) + 2
+            
+            # Print table header
+            header = f"{'Component':<{component_width}} {'Weight':<{weight_width}} {'Statistics':<{stats_width}}"
+            separator = "─" * len(header)
+            logger.info(separator)
+            logger.info(header)
+            logger.info(separator)
+            
+            # Print table rows
+            for row in table_rows:
+                logger.info(f"{row['component']:<{component_width}} {row['weight']:<{weight_width}} {row['statistics']:<{stats_width}}")
+            
+            logger.info(separator)
         
         return True
         

@@ -1,6 +1,6 @@
 # metrics/loss_weighting_strategies.py
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Union
 import torch
 
 class LossWeightingStrategyBase(ABC):
@@ -81,3 +81,79 @@ class LossWeightingStrategyBase(ABC):
         if self.should_update(epoch):
             return self.compute_new_weights(loss_history, current_weights)
         return None
+
+    def _parse_hierarchical_key(self, key: str) -> tuple[str, Optional[str], Optional[int]]:
+        """
+        Parse a hierarchical loss key into components.
+        
+        Args:
+            key: Loss component key (e.g., 'L2Loss', 'L2Loss/channel_0', 'RMSE/domain/mass')
+            
+        Returns:
+            Tuple of (base_name, sub_component_name, channel_idx)
+            Examples:
+                'L2Loss' -> ('L2Loss', None, None)
+                'L2Loss/channel_0' -> ('L2Loss', None, 0)
+                'RMSE/domain/mass' -> ('RMSE', 'domain/mass', None)
+        """
+        if '/' not in key:
+            return key, None, None
+        
+        # Check if it's a channel key
+        if '/channel_' in key:
+            base_name, channel_part = key.split('/channel_')
+            channel_idx = int(channel_part)
+            return base_name, None, channel_idx
+        
+        # Otherwise it's a sub-component key
+        parts = key.split('/')
+        base_name = parts[0]
+        sub_name = '/'.join(parts[1:])
+        return base_name, sub_name, None
+    
+    def _group_hierarchical_losses(
+        self, 
+        loss_history: Dict[str, List[float]]
+    ) -> Dict[str, Dict[str, Union[List[float], Dict]]]:
+        """
+        Group hierarchical loss history by base component.
+        
+        Args:
+            loss_history: Flat dictionary of all losses
+            
+        Returns:
+            Grouped dictionary:
+            {
+                'L2Loss': {
+                    'base': [loss_values],
+                    'channels': {0: [losses], 1: [losses], ...},
+                },
+                'RMSE': {
+                    'base': [loss_values],
+                    'components': {'domain/mass': [losses], ...}
+                }
+            }
+        """
+        grouped: Dict[str, Dict] = {}
+        
+        for key, losses in loss_history.items():
+            base_name, sub_name, channel_idx = self._parse_hierarchical_key(key)
+            
+            if base_name not in grouped:
+                grouped[base_name] = {
+                    'base': None,
+                    'channels': {},
+                    'components': {}
+                }
+            
+            if sub_name is None and channel_idx is None:
+                # Base component
+                grouped[base_name]['base'] = losses
+            elif channel_idx is not None:
+                # Per-channel
+                grouped[base_name]['channels'][channel_idx] = losses
+            else:
+                # Per-component
+                grouped[base_name]['components'][sub_name] = losses
+        
+        return grouped

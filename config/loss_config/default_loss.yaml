@@ -2,12 +2,17 @@ train_loss:
   components:
     - type: L2Loss
       weight: 0.5
-    - type: PearsonCorrelationLoss
+      channel_weights: [1.0, 1.0, 0.5]
+    - type: IntegralConservationRMSE
       weight: 0.5
   train_loss_weighting_strategy:
     enabled: false  # Set to true to enable
     type: BalancedResidualDecayRate
     loss_source: 'train' # 'train', 'eval' or 'both'
+    weight_sub_components: true
+    weight_per_channel: true
+    loss_history_interval: 50
+    grad_history_interval: 50
   
 validation_loss:
   components:

@@ -54,7 +54,8 @@ class NegativityLoss(LossComponent):
         predictions: torch.Tensor,
         labels: torch.Tensor,
         input_frames: Optional[torch.Tensor],
-        return_detailed: bool = False
+        return_detailed: bool = False,
+        preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
 
         # Compute normalization factor from labels
@@ -111,7 +112,7 @@ class NegativityLoss(LossComponent):
                 per_timestep_tensor = torch.stack(per_timestep)
                 if base != 1.0:
                     per_timestep_tensor = per_timestep_tensor * base
-                detailed['per_timestep'] = per_timestep_tensor.detach()
+                detailed['per_timestep'] = per_timestep_tensor if preserve_component_grads else per_timestep_tensor.detach()
 
             # Per-channel: sum over batch, timesteps, spatial dims
             if predictions.ndim >= 3:
@@ -134,7 +135,7 @@ class NegativityLoss(LossComponent):
                 per_channel_tensor = torch.stack(per_channel)
                 if base != 1.0:
                     per_channel_tensor = per_channel_tensor * base
-                detailed['per_channel'] = per_channel_tensor.detach()
+                detailed['per_channel'] = per_channel_tensor if preserve_component_grads else per_channel_tensor.detach()
 
             return total_loss, detailed
 
@@ -173,7 +174,7 @@ class NegativityLoss(LossComponent):
                     t_label_norm = torch.clamp(t_label_norm, min=self.epsilon)
                     per_timestep[t] = per_timestep[t] / t_label_norm
             
-            detailed['per_timestep'] = per_timestep.detach()
+            detailed['per_timestep'] = per_timestep if preserve_component_grads else per_timestep.detach()
 
         if weighted.ndim >= 3:
             dims_to_reduce = [0, 1] + list(range(3, weighted.ndim))
@@ -187,6 +188,6 @@ class NegativityLoss(LossComponent):
                     c_label_norm = torch.clamp(c_label_norm, min=self.epsilon)
                     per_channel[c] = per_channel[c] / c_label_norm
             
-            detailed['per_channel'] = per_channel.detach()
+            detailed['per_channel'] = per_channel if preserve_component_grads else per_channel.detach()
 
         return total_loss, detailed

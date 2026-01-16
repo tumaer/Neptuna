@@ -9,7 +9,10 @@ class ResidualBasedAttention(LossWeightingStrategyBase):
     
     Based on "Residual-based Attention and Connection to Information 
     Bottleneck Theory in PINNs" 
-    https://arxiv.org/abs/2307.00379 
+    https://arxiv.org/abs/2307.00379
+    
+    Supports hierarchical weight updates for base components, per-channel,
+    and per-sub-component levels.
     """
 
     def __init__(
@@ -40,6 +43,7 @@ class ResidualBasedAttention(LossWeightingStrategyBase):
         self.max_weight = float(max_weight)
         self.normalize_weights = bool(normalize_weights)
 
+        # Running weights now track all hierarchical keys
         self.running_weights: Dict[str, float] = {}
 
     def compute_statistics(self, losses: List[float]) -> Optional[Dict[str, float]]:
@@ -83,61 +87,154 @@ class ResidualBasedAttention(LossWeightingStrategyBase):
         self,
         loss_history: Dict[str, List[float]],
         current_weights: Dict[str, Dict],
+        grad_norm_history: Optional[Dict[str, List[float]]] = None
     ) -> Dict[str, Dict]:
         """
-        Compute updated component weights using paper-consistent RBA dynamics:
+        Compute updated weights using paper-consistent RBA dynamics for all loss keys:
 
             w_c <- gamma * w_c + eta_star * (R_c / max_j R_j)
 
         where R_c is the per-component residual proxy.
+        
+        Steps:
+          1) Compute residual proxies R_c for all loss keys (base, channel, sub-component)
+          2) Normalize by max residual
+          3) Apply RBA update with decay
+          4) Reconstruct hierarchical weight dictionary
         """
-        if not current_weights:
-            return {}
+        # Get all loss keys from history
+        all_loss_keys = list(loss_history.keys())
+        if not all_loss_keys:
+            return {k: v.copy() for k, v in current_weights.items()}
 
-        component_names = list(current_weights.keys())
-
-        # 1) Compute residual proxies R_c for each component
+        # --- Step 1: Compute residual proxies R_c for all loss keys ---
         residual_proxy: Dict[str, float] = {}
-        for name in component_names:
-            hist = loss_history.get(name, [])
-            residual_proxy[name] = float(self.compute_residual_proxy(hist))
+        for loss_key in all_loss_keys:
+            hist = loss_history.get(loss_key, [])
+            residual_proxy[loss_key] = float(self.compute_residual_proxy(hist))
 
-        # 2) Normalize by max over components (paper uses max over points)
+        # --- Step 2: Normalize by max over all components ---
         max_r = max(residual_proxy.values()) if residual_proxy else 1.0
         max_r = max(max_r, self.eps)
 
-        # 3) RBA-style update: decay previous running weight + normalized residual
-        new_weights: Dict[str, Dict] = {}
-        for name in component_names:
+        # --- Step 3: RBA-style update for all loss keys ---
+        new_weight_scalars: Dict[str, float] = {}
+        
+        for loss_key in all_loss_keys:
+            # Get previous weight for this key
             prev_w = self.running_weights.get(
-                name,
-                float(current_weights[name].get("base_weight", 1.0)),
+                loss_key,
+                self._get_previous_weight(loss_key, current_weights)
             )
 
-            normalized_r = residual_proxy[name] / max_r
-
+            # Normalize residual and apply RBA update
+            normalized_r = residual_proxy[loss_key] / max_r
             updated_w = self.gamma * prev_w + self.eta_star * normalized_r
 
             if self.add_constant != 0.0:
                 updated_w = updated_w + self.add_constant
 
+            # Clip to bounds
             updated_w = max(self.min_weight, min(self.max_weight, float(updated_w)))
 
-            self.running_weights[name] = float(updated_w)
+            # Store in running weights
+            self.running_weights[loss_key] = float(updated_w)
+            new_weight_scalars[loss_key] = float(updated_w)
 
-            new_weights[name] = current_weights[name].copy()
-            new_weights[name]["base_weight"] = float(updated_w)
-
-        # 4) Optional normalization so total weight stays comparable across #components
-        if self.normalize_weights and new_weights:
-            total = sum(v["base_weight"] for v in new_weights.values())
-            n = len(new_weights)
+        # --- Step 4: Optional normalization ---
+        if self.normalize_weights:
+            total = sum(new_weight_scalars.values())
+            n = len(new_weight_scalars)
             if total > self.eps:
                 factor = n / total
-                for name in new_weights:
-                    w = new_weights[name]["base_weight"] * factor
+                for loss_key in all_loss_keys:
+                    w = new_weight_scalars[loss_key] * factor
                     w = max(self.min_weight, min(self.max_weight, float(w)))
-                    new_weights[name]["base_weight"] = w
-                    self.running_weights[name] = w
+                    new_weight_scalars[loss_key] = w
+                    self.running_weights[loss_key] = w
 
+        # --- Step 5: Reconstruct hierarchical weight dictionary ---
+        new_weights = self._reconstruct_weight_dict(new_weight_scalars, current_weights)
+
+        return new_weights
+
+    def _get_previous_weight(self, loss_key: str, current_weights: Dict[str, Dict]) -> float:
+        """Extract the previous weight for a given loss key."""
+        base_name, sub_name, channel_idx = self._parse_hierarchical_key(loss_key)
+        
+        if base_name not in current_weights:
+            return 1.0
+        
+        config = current_weights[base_name]
+        
+        # Base component weight
+        if sub_name is None and channel_idx is None:
+            return float(config.get('base_weight', 1.0))
+        
+        # Per-channel weight
+        if channel_idx is not None:
+            if 'channel_weights' in config:
+                channel_weights = config['channel_weights']
+                if channel_idx < len(channel_weights):
+                    return float(channel_weights[channel_idx])
+            return 1.0
+        
+        # Per-component weight
+        if sub_name is not None:
+            if 'component_weights' in config:
+                component_weights = config['component_weights']
+                return float(component_weights.get(sub_name, 1.0))
+            return 1.0
+        
+        return 1.0
+
+    def _reconstruct_weight_dict(
+        self, 
+        new_weight_scalars: Dict[str, float], 
+        current_weights: Dict[str, Dict]
+    ) -> Dict[str, Dict]:
+        """
+        Reconstruct the hierarchical weight dictionary from flat scalar weights.
+        
+        Args:
+            new_weight_scalars: Flat dict of loss_key -> weight
+            current_weights: Current weight structure to preserve format
+            
+        Returns:
+            Hierarchical weight dictionary matching current_weights format
+        """
+        new_weights: Dict[str, Dict] = {}
+        
+        for base_name, config in current_weights.items():
+            new_config = config.copy()
+            
+            # Update base weight if present
+            if base_name in new_weight_scalars:
+                new_config['base_weight'] = new_weight_scalars[base_name]
+            
+            # Update channel weights if present
+            if 'channel_weights' in config:
+                channel_weights = config['channel_weights'].clone()
+                num_channels = len(channel_weights)
+                
+                for ch_idx in range(num_channels):
+                    ch_key = f"{base_name}/channel_{ch_idx}"
+                    if ch_key in new_weight_scalars:
+                        channel_weights[ch_idx] = new_weight_scalars[ch_key]
+                
+                new_config['channel_weights'] = channel_weights
+            
+            # Update component weights if present
+            if 'component_weights' in config:
+                component_weights = config['component_weights'].copy()
+                
+                for sub_name in component_weights.keys():
+                    comp_key = f"{base_name}/{sub_name}"
+                    if comp_key in new_weight_scalars:
+                        component_weights[sub_name] = new_weight_scalars[comp_key]
+                
+                new_config['component_weights'] = component_weights
+            
+            new_weights[base_name] = new_config
+        
         return new_weights

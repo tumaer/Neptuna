@@ -866,6 +866,7 @@ class PINNLoss(LossComponent):
         labels: torch.Tensor,
         input_frames: Optional[torch.Tensor],
         return_detailed: bool = True,
+        preserve_component_grads: bool = False
     ):
         pred = predictions
         if self.compute_in_physical_space and self.norm_helper is not None:
@@ -939,6 +940,13 @@ class PINNLoss(LossComponent):
                 normalization=self.residual_normalization,
             )
 
+        # Conditionally detach based on preserve_component_grads
+        pen_red_for_detailed = pen_red if preserve_component_grads else pen_red.detach()
+
+        # Compute per-equation components (mean over batch and time)
+        per_equation = pen_red_for_detailed.mean(dim=(0, 1))  # (Ceq,)
+        all_components = {eq_names[i]: per_equation[i] for i in range(len(eq_names))}
+
         # WeightSchedule expects (B,T,C,...) so Ceq acts as channel
         if self.weight_schedule.is_scalar_only():
             # fast path: aggregate over time as configured, then apply base weight
@@ -952,10 +960,7 @@ class PINNLoss(LossComponent):
             if not return_detailed:
                 return loss
             detailed = {
-                "unweighted": loss_unweighted.detach(),
-                "equations": eq_names,
-                "per_timestep": per_t.detach(),
-                "per_channel": pen_red.mean(dim=(0, 1)).detach(),
+                "per_component": {name: value for name, value in all_components.items()}
             }
             return loss, detailed
 
@@ -969,12 +974,7 @@ class PINNLoss(LossComponent):
             return loss_weighted
 
         detailed = {
-            "unweighted": loss_unweighted.detach(),
-            "equations": eq_names,
-            "per_timestep": pen_red.mean(dim=(0, 2)).detach(),
-            "per_channel": pen_red.mean(dim=(0, 1)).detach(),
-            "per_timestep_weighted": weighted.mean(dim=(0, 2)).detach(),
-            "per_channel_weighted": weighted.mean(dim=(0, 1)).detach(),
+            "per_component": {name: value for name, value in all_components.items()}
         }
         return loss_weighted, detailed
 
