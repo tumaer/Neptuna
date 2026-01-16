@@ -965,6 +965,10 @@ class BasePlotter(ABC):
             pred_step = step - T_in + 1
             return f"t + {self.stride * pred_step}"
 
+    def _get_pred_time_label(self, pred_step: int) -> str:
+        """Generate time label for prediction steps (start at t + stride)."""
+        return f"t + {self.stride * (pred_step + 1)}"
+
     def _add_title_section(self, fig, gs, idx: int, N: int, spatial_shape: tuple,
                            T_in: int, C: int, T_pred: int) -> None:
         """Add title section to figure."""
@@ -1258,7 +1262,7 @@ class VerticalPlotter(BasePlotter):
                     gs_col = col_gs_indices[col_idx]
                     time_ax = fig.add_subplot(gs[row_idx, gs_col])
                     time_ax.axis('off')
-                    time_ax.text(0.5, 0.5, self._get_time_label(current_time_step, T_in),
+                    time_ax.text(0.5, 0.5, self._get_pred_time_label(current_time_step),
                                 ha='center', va='center', fontsize=12, weight='bold')
                     col_idx += 1
                 
@@ -1296,7 +1300,7 @@ class VerticalPlotter(BasePlotter):
                 gs_col = col_gs_indices[col_idx]
                 time_ax = fig.add_subplot(gs[row_idx, gs_col])
                 time_ax.axis('off')
-                time_ax.text(0.5, 0.5, self._get_time_label(current_time_step, T_in),
+                time_ax.text(0.5, 0.5, self._get_pred_time_label(current_time_step),
                             ha='center', va='center', fontsize=12, weight='bold')
                 col_idx += 1
             
@@ -1593,7 +1597,7 @@ class HorizontalPlotter(BasePlotter):
                     gs_row = row_gs_indices[row_idx]
                     time_ax = fig.add_subplot(gs[gs_row, col_gs_idx])
                     time_ax.axis('off')
-                    time_ax.text(0.5, 0.5, self._get_time_label(current_time_step, T_in),
+                    time_ax.text(0.5, 0.5, self._get_pred_time_label(current_time_step),
                                 ha='center', va='center', fontsize=12, weight='bold')
                     row_idx += 1
                 
@@ -1631,7 +1635,7 @@ class HorizontalPlotter(BasePlotter):
                 gs_row = row_gs_indices[row_idx]
                 time_ax = fig.add_subplot(gs[gs_row, col_gs_idx])
                 time_ax.axis('off')
-                time_ax.text(0.5, 0.5, self._get_time_label(current_time_step, T_in),
+                time_ax.text(0.5, 0.5, self._get_pred_time_label(current_time_step),
                             ha='center', va='center', fontsize=12, weight='bold')
                 row_idx += 1
             
