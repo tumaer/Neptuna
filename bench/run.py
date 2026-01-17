@@ -21,6 +21,7 @@ from utils.loss_utils import fetch_eval_loss_dict, fetch_train_loss_dict, fetch_
 from utils.plot_progress import preprocess_for_plotting, plot_rollout_metrics
 from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
 from utils.plot_progress import build_info_strings
+from utils.plot_progress import calculate_and_save_results_all_channels
 from utils.seed_utils import set_global_seed
 import psutil
 from only_inference import save_errors_to_csv
@@ -445,6 +446,8 @@ def run(cfg):
             )
             if checkpoint_dir is None:
                 raise FileNotFoundError("No checkpoint-* found for inference.")
+            
+            checkpoint_parent_dir = os.path.dirname(checkpoint_dir)
 
             # loss_config from checkpoint (optional)
             loss_config_path = os.path.join(checkpoint_dir, "loss_config.json")
@@ -481,8 +484,10 @@ def run(cfg):
             trainer.eval_loss_fn = eval_loss_fn_inf
             trainer.train_loss_fn = train_loss_fn_inf
 
-            inference_dir = os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots")  
+            solo_inference_dir = os.path.join(checkpoint_parent_dir, "solo_inference")
+            inference_dir = os.path.join(solo_inference_dir, "inference_plots")
             os.makedirs(inference_dir, exist_ok=True)
+
             infer_ds, infer_ds_from_ic = make_datasets(cfg, mode="infer")
             if cfg["infer_config"]["infer_from_random_timestep"]:
                 print(" \n Running inference from random timestep...")
@@ -506,7 +511,7 @@ def run(cfg):
                         if "error" in key:
                             print(f"{key}: {value}")
                             errors["random_start"+key] = value
-                    save_errors_to_csv(errors, os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots"), "results.csv")
+                    save_errors_to_csv(errors, solo_inference_dir, "results.csv")
                     # ----------------------------------------------------------
                     # Prepare prediction, target and input arrays
                     # ----------------------------------------------------------
@@ -533,7 +538,7 @@ def run(cfg):
                     errors = {}
                     for metric_name, values in per_rollout_metrics_rs.items():
                         errors[metric_name] = values
-                    save_errors_to_csv(errors, os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots"), "results.csv")
+                    save_errors_to_csv(errors, solo_inference_dir, "results.csv")
 
                     # ----------------------------------------------------------
                     # Renormalise data and reconstruct residuals for plotting
@@ -566,13 +571,13 @@ def run(cfg):
                     errors = {}
                     for metric_name, values in per_rollout_metrics_rs_renorm.items():
                         errors[metric_name] = values
-                    save_errors_to_csv(errors, os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots"), "results_renorm.csv")
+                    save_errors_to_csv(errors, solo_inference_dir, "results_renorm.csv")
 
                     # Infer spatial dimensionality (1D / 2D / 3D)
                     ndim = pred_renorm.ndim - 3  # subtract batch, time, channel dims
                     seq_info = cfg["data_config"].get("sequence_info", [1, 1, 1])
                     stride_val = cfg["data_config"].get("sequence_info", [1, 1, 1])[2]
-                    plot_save_dir = os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots/random_start")
+                    plot_save_dir = os.path.join(inference_dir, "random_start")
 
                     model_info_str, data_info_str, train_info_str, sched_info_str = build_info_strings(model_obj=trainer.model, 
                                                                                                         data_config=cfg["data_config"],
@@ -647,7 +652,7 @@ def run(cfg):
                         if "error" in key:
                             print(f"{key}: {value}")
                             errors["ic_start"+key] = value
-                    save_errors_to_csv(errors, os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots"), "results.csv")
+                    save_errors_to_csv(errors, solo_inference_dir, "results.csv")
 
                     preds = predictions_obj.predictions
                     targets = predictions_obj.label_ids
@@ -670,7 +675,7 @@ def run(cfg):
                     for metric_name, values in per_rollout_step_metrics_ic.items():
                         print(f"{metric_name} per-step (IC start): {values}")
                         errors[metric_name] = values
-                    save_errors_to_csv(errors, os.path.join(cfg["output_log_config"]["logging"]["output_dir"],"inference_plots"), "results.csv")
+                    save_errors_to_csv(errors, solo_inference_dir, "results.csv")
 
                     # ----------------------------------------------------------
                     # Renormalise data and reconstruct residuals for plotting
@@ -702,7 +707,22 @@ def run(cfg):
                     errors = {}
                     for metric_name, values in per_rollout_step_metrics_ic_renorm.items():
                         errors[metric_name] = values
-                    save_errors_to_csv(errors, os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots"), "results_renorm.csv")
+                    save_errors_to_csv(errors, solo_inference_dir, "results_renorm.csv")
+                    
+                    # Tabulate metrics (IC start)
+                    run_label = os.path.basename(os.path.normpath(cfg["output_log_config"]["logging"]["output_dir"]))
+                    calculate_and_save_results_all_channels(
+                        runs_step_metrics={f"{run_label}_ic_start": per_rollout_step_metrics_ic},
+                        save_dir=checkpoint_parent_dir,
+                        output_channel_names=output_channel_names,
+                        filename="rollout_metrics_tabulated_ic_start.csv"
+                    )
+                    calculate_and_save_results_all_channels(
+                        runs_step_metrics={f"{run_label}_ic_start": per_rollout_step_metrics_ic_renorm},
+                        save_dir=checkpoint_parent_dir,
+                        output_channel_names=output_channel_names,
+                        filename="rollout_metrics_tabulated_ic_start_renorm.csv"
+                    )
 
                     # Infer spatial dimensionality (1D / 2D / 3D)
                     ndim = pred_renorm.ndim - 3  # subtract batch, time, channel dims
@@ -711,7 +731,7 @@ def run(cfg):
                     stride_val = cfg["data_config"].get("sequence_info", [1, 1, 1])[2]
 
                     # Directory for saving inference plots (IC start)
-                    plot_save_dir = os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots/ic_start")
+                    plot_save_dir = os.path.join(inference_dir, "ic_start")
 
                     # Plot rollout metrics (per metric subplot)
                     plot_rollout_metrics(
