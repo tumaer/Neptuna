@@ -495,7 +495,7 @@ def run(cfg):
                 device=metric_device,
             )
 
-            trainer.eval_loss_fn = eval_loss_fn_inf
+            trainer.eval_loss_fn = eval_loss_fn_inf  #this is taken from train_strategy_config/infer_loss.yaml
             trainer.train_loss_fn = train_loss_fn_inf
 
             inference_dir = os.path.join(cfg["output_log_config"]["logging"]["output_dir"], "inference_plots")  
@@ -683,7 +683,7 @@ def run(cfg):
 
                     # Compute per-rollout errors (mean across batch) before plotting
                     per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(
-                        preds, targets, outputs_per_rollout=outputs_per_rollout, loss_metric=eval_loss_fn
+                        preds, targets, outputs_per_rollout=outputs_per_rollout, loss_metric=eval_loss_fn_inf
                     )
 
                     errors = {}
@@ -740,7 +740,7 @@ def run(cfg):
                         save_dir=plot_save_dir,
                         title=f"Per-rollout step metric(s) ({cfg['data_config'].get('dataset_name', 'dataset')} - IC start)",
                         filename="rollout_metrics.png",
-                        sequence_info=seq_info,
+                        sequence_info=cfg["data_config"].get("sequence_info"),
                     )
 
                     model_info_str, data_info_str, train_info_str, sched_info_str = build_info_strings(
