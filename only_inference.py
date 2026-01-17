@@ -6,7 +6,7 @@ from utils.load_data import fetch_dataset
 from utils.plot_progress import build_info_strings
 from utils.plot_progress import preprocess_for_plotting, plot_rollout_metrics
 from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
-from utils.plot_progress import plot_rollout_metrics_bar_chart
+from utils.plot_progress import plot_rollout_metrics_bar_chart, calculate_and_save_results_all_channels
 from utils.plot_progress import plot_multi_run_rollout_metrics
 from utils.loss_utils import fetch_loss_metric, fetch_infer_loss_dict
 from metrics.inference_metrics import compute_metrics_for_n_rollouts
@@ -993,12 +993,12 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             
 
             # Compute renormalized metrics: necessary for comparing performance between runs with different data preprocessing
-            per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(
+            per_rollout_step_metrics_ic_renorm = compute_metrics_for_n_rollouts(
                 pred_renorm, tgt_renorm, outputs_per_rollout=outputs_per_rollout, include_per_timestep=True, loss_metric=infer_loss_fn
             )
             
             errors = {}
-            for metric_name, values in per_rollout_step_metrics_ic.items():
+            for metric_name, values in per_rollout_step_metrics_ic_renorm.items():
                 print(f"{metric_name} per-step (IC start, renorm): {values}")
                 errors[metric_name] = values
             save_errors_to_csv(errors, solo_inference_dir, "results_renorm.csv")
@@ -1069,7 +1069,9 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             # Prepare return payload for top-level multi-run plotting
             ic_return = {
                 "metrics": per_rollout_step_metrics_ic,
+                "metrics_renorm": per_rollout_step_metrics_ic_renorm,
                 "sequence_info": list(data_config.get("sequence_info", [1, 1, 1])),
+                "output_channel_names": output_channel_names,
             }
 
         print(f"Inference completed for {os.path.basename(experiment_dir)}")
@@ -1148,20 +1150,26 @@ def main(cfg: DictConfig):
     
     # Process each experiment directory and collect IC-start metrics for multi-run overlay (no aggregation)
     runs_step_metrics = {}
+    runs_step_metrics_renorm = {}
     runs_sequence_info = {}
     run_configs = {}
     sequence_info_ref = None
+    output_channel_names_ref = None
     
     for experiment_dir in experiment_dirs:
         res = run_inference_for_each_experiment(experiment_dir, infer_config)
         if isinstance(res, dict) and res.get("metrics") is not None:
             run_label = os.path.basename(experiment_dir)
             runs_step_metrics[run_label] = res["metrics"]
+            if res.get("metrics_renorm") is not None:
+                runs_step_metrics_renorm[run_label] = res["metrics_renorm"]
             if sequence_info_ref is None and res.get("sequence_info") is not None:
                 sequence_info_ref = res.get("sequence_info")
             # Keep per-run sequence info for correct timestep x-axis
             if res.get("sequence_info") is not None:
                 runs_sequence_info[run_label] = res.get("sequence_info")
+            if output_channel_names_ref is None and res.get("output_channel_names") is not None:
+                output_channel_names_ref = res.get("output_channel_names")
         try:
             checkpoint_path = find_checkpoint_path(experiment_dir)
             if checkpoint_path:
@@ -1193,6 +1201,20 @@ def main(cfg: DictConfig):
         save_dir=inference_dir,
         run_configs=run_configs,
         filename="rollout_metrics_bar_chart.png"
+    )
+
+    calculate_and_save_results_all_channels(
+        runs_step_metrics=runs_step_metrics,
+        save_dir=inference_dir,
+        output_channel_names=output_channel_names_ref,
+        filename="rollout_metrics_tabulated.csv"
+    )
+
+    calculate_and_save_results_all_channels(
+        runs_step_metrics=runs_step_metrics_renorm,
+        save_dir=inference_dir,
+        output_channel_names=output_channel_names_ref,
+        filename="rollout_metrics_tabulated_renorm.csv"
     )
 
 
