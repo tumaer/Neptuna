@@ -18,9 +18,14 @@ filter_features:
 #NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels
 conditioning_features:
   conditioning_in_channels: null
-  include_conditioning_parameters: False
+  conditioning_method: AdaNorm_LSE # AdaNorm_LSE AdaNorm_SE_per_param AdaNorm_1SE AdaNorm null
   num_cond_params: null
   parameter_min_max_stats: null
+  conditioning_mlp:
+    mlp: False
+    hidden_size: null
+    activation: gelu
+    initialization: null
 residual_config: null
   # add_base_value_with_raw_loss: True
   # add_predicted_value_with_diff_loss: False
