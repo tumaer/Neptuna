@@ -20,14 +20,15 @@ class LossWeightingStrategyBase(ABC):
         self.use_gradients = use_gradients
         self.current_epoch = 0
         self.history: Dict[str, List[List[float]]] = {}  # component -> [epoch_losses_list]
-        self.grad_norm_history: Dict[str, List[List[float]]] = {} # component -> [epoch_grad_norms_list]
+        # Nested grad stats: component -> stat_name -> [epoch_stats_list]
+        self.grad_stats_history: Dict[str, Dict[str, List[List[float]]]] = {}
     
     @abstractmethod
     def compute_new_weights(
         self,
         loss_history: Dict[str, List[float]],
         current_weights: Dict[str, Dict],
-        grad_norm_history: Optional[Dict[str, List[float]]] = None
+        grad_stats_history: Optional[Dict[str, Dict[str, List[float]]]] = None
     ) -> Dict[str, Dict]:
         """
         Compute new loss weight schedules based on loss history.
@@ -53,7 +54,7 @@ class LossWeightingStrategyBase(ABC):
         epoch: int,
         loss_history: Dict[str, List[float]],
         current_weights: Dict[str, Dict],
-        grad_norm_history: Optional[Dict[str, List[float]]] = None
+        grad_stats_history: Optional[Dict[str, Dict[str, List[float]]]] = None
     ) -> Optional[Dict[str, Dict]]:
         """
         Step the scheduler. Returns new loss weights if update is due, else None.
@@ -71,15 +72,17 @@ class LossWeightingStrategyBase(ABC):
                 self.history[component_name] = []
             self.history[component_name].append(losses.copy())
         
-        # Store gradient norm history
-        if grad_norm_history is not None:
-            for component_name, grad_norms in grad_norm_history.items():
-                if component_name not in self.grad_norm_history:
-                    self.grad_norm_history[component_name] = []
-                self.grad_norm_history[component_name].append(grad_norms.copy())
+        # Store gradient stats history (nested dict)
+        if grad_stats_history is not None:
+            for component_name, stats_dict in grad_stats_history.items():
+                if component_name not in self.grad_stats_history:
+                    self.grad_stats_history[component_name] = {}
+                if isinstance(stats_dict, dict):
+                    for stat_name, stat_values in stats_dict.items():
+                        self.grad_stats_history[component_name].setdefault(stat_name, []).append(stat_values.copy())
 
         if self.should_update(epoch):
-            return self.compute_new_weights(loss_history, current_weights)
+            return self.compute_new_weights(loss_history, current_weights, grad_stats_history)
         return None
 
     def _parse_hierarchical_key(self, key: str) -> tuple[str, Optional[str], Optional[int]]:

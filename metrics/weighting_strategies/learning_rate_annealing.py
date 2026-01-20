@@ -8,16 +8,6 @@ class LearningRateAnnealing(LossWeightingStrategyBase):
     """
     Learning-rate annealing loss reweighting from:
     Wang et al. (2020) "Understanding and mitigating gradient pathologies in physics-informed neural networks".
-
-    Core update (Algorithm 1 / Eqs. 40-41):
-        lambda_hat_i = max_theta |∇_θ L_ref|  /  mean_theta |∇_θ L_i|
-        lambda_i     = (1 - alpha) * lambda_i + alpha * lambda_hat_i
-
-    Notes for this codebase:
-    - We assume `grad_norm_history[loss_key]` is a list of *scalar* gradient magnitudes collected over the epoch
-      (e.g., per-step grad L2-norm, or mean(|grad|) over parameters). We only need *relative* magnitudes.
-    - One loss term is treated as the reference term (paper uses PDE residual L_r with fixed weight 1.0).
-    - All loss keys (including hierarchical keys like 'X/channel_0' or 'X/sub') are treated as independent terms.
     """
 
     def __init__(
@@ -30,6 +20,11 @@ class LearningRateAnnealing(LossWeightingStrategyBase):
         max_weight: float = 1e6,
         epsilon: float = 1e-12,
         freeze_reference_weight: bool = True,
+        # Aggregation across steps within an epoch:
+        # - "last"  : use last recorded step (closest to paper's "current iterate")
+        # - "mean"  : use mean over steps
+        # - "max"   : use max over steps
+        epoch_agg: str = "last",
     ):
         super().__init__(update_frequency=update_frequency, use_gradients=use_gradients)
         self.reference_key = reference_key
@@ -38,26 +33,90 @@ class LearningRateAnnealing(LossWeightingStrategyBase):
         self.max_weight = float(max_weight)
         self.epsilon = float(epsilon)
         self.freeze_reference_weight = bool(freeze_reference_weight)
+        self.epoch_agg = str(epoch_agg).lower().strip()
+        if self.epoch_agg not in ("last", "mean", "max"):
+            raise ValueError(f"epoch_agg must be one of ('last','mean','max'), got: {epoch_agg}")
 
     def _clip(self, x: float) -> float:
         return max(self.min_weight, min(self.max_weight, x))
 
-    def _safe_mean(self, xs: List[float]) -> float:
+    def _as_tensor(self, xs: List[float]) -> torch.Tensor:
         if not xs:
-            return 0.0
-        t = torch.tensor(xs, dtype=torch.float32)
-        return float(t.mean())
+            return torch.tensor([], dtype=torch.float32)
+        return torch.tensor(xs, dtype=torch.float32)
 
-    def _safe_max(self, xs: List[float]) -> float:
+    def _agg_epoch(self, xs: List[float]) -> float:
+        """
+        Aggregate a list of per-step scalars into one per-epoch scalar.
+        """
         if not xs:
             return 0.0
-        t = torch.tensor(xs, dtype=torch.float32)
+        if self.epoch_agg == "last":
+            return float(xs[-1])
+        t = self._as_tensor(xs)
+        if t.numel() == 0:
+            return 0.0
+        if self.epoch_agg == "mean":
+            return float(t.mean())
+        # self.epoch_agg == "max"
         return float(t.max())
+
+    def step(
+        self,
+        epoch: int,
+        loss_history: Dict[str, List[float]],
+        current_weights: Dict[str, Dict],
+        grad_stats_history: Optional[Dict[str, Dict[str, List[float]]]] = None,
+    ) -> Optional[Dict[str, Dict]]:
+        self.current_epoch = epoch
+
+        # Save loss history
+        for component_name, losses in loss_history.items():
+            self.history.setdefault(component_name, []).append(losses.copy())
+
+        # Cache grad stats history (nested) for analysis/inspection
+        if grad_stats_history is not None:
+            for component_name, stats_dict in grad_stats_history.items():
+                if component_name not in self.grad_stats_history:
+                    self.grad_stats_history[component_name] = {}
+                if isinstance(stats_dict, dict):
+                    for stat_name, stat_values in stats_dict.items():
+                        self.grad_stats_history[component_name].setdefault(stat_name, []).append(stat_values.copy())
+
+        # Flatten the needed per-loss-key histories for this epoch
+        # Expect grad_stats_history like:
+        # { loss_key: {"norm":[...], "max":[...], "mean_abs":[...], ...}, ... }
+        grad_meanabs_history = None
+        grad_max_history = None
+        if grad_stats_history:
+            grad_meanabs_history = {}
+            grad_max_history = {}
+            for loss_key, stats in grad_stats_history.items():
+                if not isinstance(stats, dict):
+                    continue
+
+                # Prefer "mean_abs" if present; fall back to "norm"
+                if "mean_abs" in stats and isinstance(stats["mean_abs"], list):
+                    grad_meanabs_history[loss_key] = stats["mean_abs"]
+                elif "norm" in stats and isinstance(stats["norm"], list):
+                    grad_meanabs_history[loss_key] = stats["norm"]
+
+                if "max" in stats and isinstance(stats["max"], list):
+                    grad_max_history[loss_key] = stats["max"]
+
+        if self.should_update(epoch):
+            return self.compute_new_weights(
+                loss_history=loss_history,
+                current_weights=current_weights,
+                grad_meanabs_history=grad_meanabs_history,
+                grad_max_history=grad_max_history,
+            )
+
+        return None
 
     def _get_previous_weight(self, loss_key: str, current_weights: Dict[str, Dict]) -> float:
         """
         Extract the previous scalar weight for a flat loss_key from the hierarchical weight dict.
-        Mirrors the pattern used in BalancedResidualDecayRate.
         """
         base_name, sub_name, channel_idx = self._parse_hierarchical_key(loss_key)
 
@@ -126,70 +185,69 @@ class LearningRateAnnealing(LossWeightingStrategyBase):
 
         return new_weights
 
-    def _choose_reference_key(
-        self,
-        grad_norm_history: Dict[str, List[float]],
-        current_weights: Dict[str, Dict],
-    ) -> Optional[str]:
+    def _choose_reference_key(self, keys_available: List[str]) -> Optional[str]:
         """
-        Pick the reference loss key used in the numerator. Preference order:
-        1) self.reference_key if provided and present
-        2) common PINN names if present
-        3) first key that exists in grad_norm_history
+        Pick the reference loss key used in the numerator.
+        Preference order:
+          1) self.reference_key if provided and present
+          2) common PINN names if present
+          3) first available key
         """
-        if self.reference_key is not None and self.reference_key in grad_norm_history:
+        if self.reference_key is not None and self.reference_key in keys_available:
             return self.reference_key
 
         for cand in ("Lr", "residual", "pde_residual", "physics", "PDE", "PDEResidual"):
-            if cand in grad_norm_history:
+            if cand in keys_available:
                 return cand
 
-        # Fall back to first gradient key
-        for k in grad_norm_history.keys():
-            return k
-
-        return None
+        return keys_available[0] if keys_available else None
 
     def compute_new_weights(
         self,
         loss_history: Dict[str, List[float]],
         current_weights: Dict[str, Dict],
-        grad_norm_history: Optional[Dict[str, List[float]]] = None,
+        grad_meanabs_history: Optional[Dict[str, List[float]]] = None,
+        grad_max_history: Optional[Dict[str, List[float]]] = None,
     ) -> Dict[str, Dict]:
-        # Algorithm relies on gradients.
-        if grad_norm_history is None or not grad_norm_history:
+        """
+        Paper-faithful under per-epoch constraints:
+
+        Numerator ~ max_theta |∇ L_ref|  ==> use grad_max_history[ref_key] aggregated per epoch
+        Denominator ~ mean_theta |∇ L_i| ==> use grad_meanabs_history[loss_key] aggregated per epoch
+        """
+        if not grad_meanabs_history or not isinstance(grad_meanabs_history, dict):
             return {k: v.copy() for k, v in current_weights.items()}
 
-        ref_key = self._choose_reference_key(grad_norm_history, current_weights)
-        if ref_key is None or ref_key not in grad_norm_history:
+        if not grad_max_history or not isinstance(grad_max_history, dict):
+            # Without "max" stats we cannot match the paper numerator; safest is no-op.
             return {k: v.copy() for k, v in current_weights.items()}
 
-        # Numerator: max gradient magnitude of reference term over the epoch (Eq. 40)
-        g_ref_max = self._safe_max(grad_norm_history.get(ref_key, []))
+        keys_available = [k for k in grad_meanabs_history.keys() if k in grad_max_history]
+        ref_key = self._choose_reference_key(keys_available)
+        if ref_key is None or ref_key not in grad_max_history:
+            return {k: v.copy() for k, v in current_weights.items()}
+
+        # Paper numerator: max_theta |∇ L_ref| (for the "current iterate")
+        # Per-epoch approximation: aggregate stepwise max-theta stats within the epoch.
+        g_ref_max = self._agg_epoch(grad_max_history.get(ref_key, []))
         if g_ref_max <= self.epsilon:
-            # If reference grads are ~0, don't change anything.
             return {k: v.copy() for k, v in current_weights.items()}
 
-        # Compute new scalar weights for every loss key we have gradients for.
         new_weight_scalars: Dict[str, float] = {}
 
-        for loss_key, g_list in grad_norm_history.items():
+        for loss_key, g_meanabs_steps in grad_meanabs_history.items():
             prev_w = self._get_previous_weight(loss_key, current_weights)
 
-            # Optionally keep reference weight fixed (paper keeps L_r unweighted).
             if self.freeze_reference_weight and loss_key == ref_key:
                 new_weight_scalars[loss_key] = prev_w
                 continue
 
-            g_i_mean = self._safe_mean(g_list)  # denominator uses mean(|grad|) (Eq. 40)
-            denom = max(g_i_mean, self.epsilon)
-            w_hat = float(g_ref_max / denom)
+            # Paper denominator: mean_theta |∇ L_i|
+            g_i_meanabs = self._agg_epoch(g_meanabs_steps)
+            denom = max(float(g_i_meanabs), self.epsilon)
 
-            # Moving-average update (Eq. 41): lambda <- (1-alpha)*lambda + alpha*lambda_hat
+            w_hat = float(g_ref_max / denom)
             w_new = (1.0 - self.alpha) * float(prev_w) + self.alpha * float(w_hat)
             new_weight_scalars[loss_key] = self._clip(w_new)
 
-        # Preserve any weights that don't have gradients recorded this epoch.
-        # (e.g., if only some terms were logged)
-        # We do this by simply reconstructing from the partial updates; everything else stays as-is.
         return self._reconstruct_weight_dict(new_weight_scalars, current_weights)

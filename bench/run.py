@@ -345,9 +345,10 @@ def run(cfg):
     loss_weighting_strategy = create_loss_weighting_strategy(train_loss_dict)
     if loss_weighting_strategy is not None:
         
-        use_gradients = get_loss_weighting_strategy_entry(train_loss_dict.train_loss_weighting_strategy.type).get("use_gradients", False)
+        grad_stats = get_loss_weighting_strategy_entry(train_loss_dict.train_loss_weighting_strategy.type).get("grad_stats", [])
+        use_gradients = bool(grad_stats)
         # Create statistics collector
-        stats_callback = LossStatisticsCallback(collect_train_losses=True, collect_gradients=use_gradients)
+        stats_callback = LossStatisticsCallback(collect_train_losses=True, grad_stats=grad_stats, collect_gradients=use_gradients)
         callbacks.append(stats_callback)
         
         # Create adaptive weight callback
@@ -356,7 +357,8 @@ def run(cfg):
             loss_weighting_strategy, 
             stats_callback,
             loss_source = loss_source,
-            use_gradients = use_gradients
+            use_gradients = use_gradients,
+            grad_stats = grad_stats,
         )
         callbacks.append(weight_callback)
     else:

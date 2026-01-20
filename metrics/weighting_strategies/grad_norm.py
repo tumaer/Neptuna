@@ -57,16 +57,30 @@ class GradNorm(LossWeightingStrategyBase):
         epoch: int,
         loss_history: Dict[str, List[float]],
         current_weights: Dict[str, Dict],
-        grad_norm_history: Optional[Dict[str, List[float]]] = None,
+        grad_stats_history: Optional[Dict[str, List[float]]] = None,
     ) -> Optional[Dict[str, Dict]]:
         self.current_epoch = epoch
 
         for component_name, losses in loss_history.items():
             self.history.setdefault(component_name, []).append(losses.copy())
 
-        if grad_norm_history is not None:
-            for component_name, grads in grad_norm_history.items():
-                self.grad_norm_history.setdefault(component_name, []).append(grads.copy())
+        # Cache full grad stats history (nested) for analysis
+        if grad_stats_history is not None:
+            for component_name, stats_dict in grad_stats_history.items():
+                if component_name not in self.grad_stats_history:
+                    self.grad_stats_history[component_name] = {}
+                if isinstance(stats_dict, dict):
+                    for stat_name, stat_values in stats_dict.items():
+                        self.grad_stats_history[component_name].setdefault(stat_name, []).append(stat_values.copy())
+
+        # Extract norms for GradNorm algorithm
+        grad_norm_history = None
+        if grad_stats_history:
+            grad_norm_history = {
+                k: v.get("norm", [])
+                for k, v in grad_stats_history.items()
+                if isinstance(v, dict)
+            }
 
         if self.should_update(epoch):
             return self.compute_new_weights(loss_history, current_weights, grad_norm_history)

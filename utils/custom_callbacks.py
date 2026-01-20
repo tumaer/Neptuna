@@ -848,19 +848,20 @@ class LossStatisticsCallback(TrainerCallback):
     during training and only transferring/aggregating at epoch end.
     """
     
-    def __init__(self, collect_train_losses: bool = True, collect_gradients: bool = False):
+    def __init__(self, collect_train_losses: bool = True, grad_stats: List = [], collect_gradients: bool = False):
         self.collect_train_losses = collect_train_losses
-        self.collect_gradients = collect_gradients
+        self.grad_stats = grad_stats
         self.train_losses: Dict[str, List[float]] = {}
         self.eval_losses: Dict[str, List[float]] = {}
-        self.grad_norms: Dict[str, List[float]] = {}
+        self.grad_stats_history: Dict[str, Dict[str, List[float]]] = {}
         self.current_epoch = -1
         self.trainer = None
+        self.collect_gradients = collect_gradients
     
     def on_epoch_begin(self, args, state, control, **kwargs):
         """Initialize loss accumulator at start of epoch."""
         self.train_losses = {}
-        self.grad_norms = {}
+        self.grad_stats_history = {}
         self.current_epoch = state.epoch
         
         # Initialize fresh accumulator for this epoch
@@ -869,6 +870,7 @@ class LossStatisticsCallback(TrainerCallback):
             if self.collect_gradients:
                 self.trainer._gradient_accumulator = {}
                 self.trainer._collect_gradients = True
+                self.trainer._grad_stat_names = self.grad_stats
             else:
                 self.trainer._collect_gradients = False
     
@@ -883,7 +885,7 @@ class LossStatisticsCallback(TrainerCallback):
         
         # Transfer gradient norms
         if self.collect_gradients:
-            self._transfer_gradient_norms()
+            self._transfer_gradient_stats()
         
         # Clear accumulators to free GPU memory
         if hasattr(self.trainer, '_detailed_loss_accumulator'):
@@ -912,8 +914,8 @@ class LossStatisticsCallback(TrainerCallback):
                 cpu_values = stacked.cpu().tolist()  # Single transfer to CPU
                 self.train_losses[component_name].extend(cpu_values)
     
-    def _transfer_gradient_norms(self):
-        """Transfer gradient norms from GPU to CPU (parallel to loss transfer)."""
+    def _transfer_gradient_stats(self):
+        """Transfer gradient stats from GPU to CPU (parallel to loss transfer)."""
         if not hasattr(self.trainer, '_gradient_accumulator'):
             return
         
@@ -923,15 +925,18 @@ class LossStatisticsCallback(TrainerCallback):
             return
         
         # Transfer from GPU to CPU and convert to Python floats
-        for component_name, grad_norm_tensors in accumulator.items():
-            if component_name not in self.grad_norms:
-                self.grad_norms[component_name] = []
+        for component_name, stat_dict in accumulator.items():
+            if component_name not in self.grad_stats_history:
+                self.grad_stats_history[component_name] = {}
             
-            # Stack tensors and transfer to CPU in one operation
-            if grad_norm_tensors:
-                stacked = torch.stack(grad_norm_tensors)  # [num_steps]
-                cpu_values = stacked.cpu().tolist()  # Single transfer to CPU
-                self.grad_norms[component_name].extend(cpu_values)
+            for stat_name, stat_tensors in stat_dict.items():
+                if stat_name not in self.grad_stats_history[component_name]:
+                    self.grad_stats_history[component_name][stat_name] = []
+                
+                if stat_tensors:
+                    stacked = torch.stack(stat_tensors)
+                    cpu_values = stacked.cpu().tolist()
+                    self.grad_stats_history[component_name][stat_name].extend(cpu_values)
     
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
         """Accumulate loss values from evaluation metrics."""
@@ -989,24 +994,24 @@ class LossStatisticsCallback(TrainerCallback):
             # Non-rank-0 returns empty dict
             return {}
     
-    def get_gradient_norm_history(self, aggregate_distributed: bool = True) -> Dict[str, List[float]]:
+    def get_grad_stats_history(self, aggregate_distributed: bool = True) -> Dict[str, Dict[str, List[float]]]:
         """
-        Get accumulated gradient norm history.
-        
-        Parameters
-        ----------
-        aggregate_distributed : bool
-            Whether to aggregate across distributed processes
-            
+        Get accumulated gradient stats history.
+
         Returns
         -------
-        Dict[str, List[float]]
-            Dictionary mapping component names to lists of gradient norms
+        Dict[str, Dict[str, List[float]]]
+            Dictionary mapping component -> stat -> list of values
         """
         if aggregate_distributed and dist.is_initialized():
-            return self._aggregate_distributed_losses(self.grad_norms)
+            return self._aggregate_distributed_losses(self.grad_stats_history)
         
-        return self.grad_norms.copy()
+        return {k: {sk: sv.copy() for sk, sv in v.items()} for k, v in self.grad_stats_history.items()}
+
+    # Back-compat helper (norm-only)
+    def get_gradient_norm_history(self, aggregate_distributed: bool = True) -> Dict[str, List[float]]:
+        grad_stats = self.get_grad_stats_history(aggregate_distributed=aggregate_distributed)
+        return {k: v.get("norm", []) for k, v in grad_stats.items()}
 
     def get_loss_history(self, source: str = 'train', aggregate_distributed: bool = True) -> Dict[str, List[float]]:
         """
@@ -1055,6 +1060,7 @@ class AdaptiveWeightCallback(TrainerCallback):
         trainer=None,
         loss_source: str = 'train',  # 'train', 'eval', or 'both'
         use_gradients: bool = False,
+        grad_stats: List = [],
         weight_per_channel: bool = False,
         weight_sub_components: bool = False,
     ):
@@ -1073,6 +1079,7 @@ class AdaptiveWeightCallback(TrainerCallback):
         self.use_gradients = use_gradients
         self.weight_per_channel = weight_per_channel
         self.weight_sub_components = weight_sub_components
+        self.grad_stats = list(grad_stats) if grad_stats is not None else []
         
         if loss_source not in ['train', 'eval', 'both']:
             raise ValueError(f"loss_source must be 'train', 'eval', or 'both', got {loss_source}")
@@ -1123,7 +1130,7 @@ class AdaptiveWeightCallback(TrainerCallback):
         self, 
         current_epoch: int, 
         loss_history: Dict[str, List[float]],
-        grad_norm_history: Optional[Dict[str, List[float]]] = None,
+        grad_stats_history: Optional[Dict[str, Dict[str, List[float]]]] = None,
         source_label: str = 'train'
     ):
         """Helper method to perform weight update."""
@@ -1138,12 +1145,14 @@ class AdaptiveWeightCallback(TrainerCallback):
         # Only filter if using eval losses (train losses are already filtered during collection)
         if source_label == 'train' or self.loss_source == 'train':
             filtered_loss_history = loss_history
-            filtered_grad_norm_history = grad_norm_history
+            filtered_grad_stats_history = grad_stats_history
         else:
             filtered_loss_history = self._filter_loss_history(loss_history, training_component_names)
-            filtered_grad_norm_history = None
-            if grad_norm_history is not None:
-                filtered_grad_norm_history = self._filter_loss_history(grad_norm_history, training_component_names)
+            filtered_grad_stats_history = None
+            if grad_stats_history is not None:
+                filtered_grad_stats_history = self._filter_grad_stats_history(
+                    grad_stats_history, training_component_names
+                )
 
         if not filtered_loss_history:
             logger.warning(
@@ -1158,7 +1167,7 @@ class AdaptiveWeightCallback(TrainerCallback):
             epoch=current_epoch,
             loss_history=filtered_loss_history,
             current_weights=current_weights,
-            grad_norm_history=filtered_grad_norm_history  # NEW
+            grad_stats_history=filtered_grad_stats_history
         )
         
         # Apply new loss weights if scheduler returned them
@@ -1265,14 +1274,14 @@ class AdaptiveWeightCallback(TrainerCallback):
             if current_epoch != self.last_update_epoch and self.trainer is not None:
                 train_losses = self.stats_callback.get_loss_history(source='train')
                 
-                grad_norm_history = None
+                grad_stats_history = None
                 if self.use_gradients:
-                    grad_norm_history = self.stats_callback.get_gradient_norm_history()
+                    grad_stats_history = self.stats_callback.get_grad_stats_history()
 
                 self._update_loss_weights(
                     current_epoch, 
                     train_losses, 
-                    grad_norm_history=grad_norm_history,
+                    grad_stats_history=grad_stats_history,
                     source_label='training'
                 )
     

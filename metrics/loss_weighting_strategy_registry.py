@@ -37,19 +37,19 @@ WEIGHT_SCHEDULER_REGISTRY = {
         "class": GradNorm,
         "default_name": "GradNorm",
         "default_config": "weighting_strategies/GradNorm/grad_norm_default",
-        "use_gradients": True,
+        "grad_stats": ["norm"],
     },
     "InverseDirichlet": {
         "class": InverseDirichlet,
         "default_name": "InverseDirichlet",
         "default_config": "weighting_strategies/InverseDirichlet/inverse_dirichlet_default",
-        "use_gradients": True,
+        "grad_stats": ["var"],
     },
     "LearningRateAnnealing": {
         "class": LearningRateAnnealing,
         "default_name": "LearningRateAnnealing",
         "default_config": "weighting_strategies/LearningRateAnnealing/learning_rate_annealing_default",
-        "use_gradients": True,
+        "grad_stats": ["norm", "max"],
     },
 }
 

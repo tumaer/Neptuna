@@ -183,6 +183,7 @@ class Trainer(Trainer_):
 
         # Flag to indicate if component-wise gradient norms should be collected for adaptive weighting
         self._collect_gradients = getattr(self, '_collect_gradients', False)
+        self._grad_stat_names = getattr(self, '_grad_stat_names', [])
 
         self._weight_per_channel = self.loss_config.train_loss.train_loss_weighting_strategy.get("weight_per_channel", False)
         self._weight_sub_components = self.loss_config.train_loss.train_loss_weighting_strategy.get("weight_sub_components", False)
@@ -549,11 +550,6 @@ class Trainer(Trainer_):
             self.state.global_step % self._loss_history_interval == 0
         )
         
-        # Check if we should collect gradients at this step
-        should_collect_grads = (
-            self._collect_gradients and 
-            self.state.global_step % self._grad_history_interval == 0
-        )
         
         if not should_collect_losses:
             loss = self.loss_fn(
@@ -564,6 +560,12 @@ class Trainer(Trainer_):
                 return_detailed=False
             )
         else:
+            # Check if we should collect gradients at this step
+            should_collect_grads = (
+                self._collect_gradients and 
+                self.state.global_step % self._grad_history_interval == 0
+            )
+
             loss, detailed = self.loss_fn(
                 model=model,
                 predictions=prediction,
@@ -650,53 +652,93 @@ class Trainer(Trainer_):
             self._component_losses_for_grad = {}
         self._component_losses_for_grad[component_name] = component_loss
 
-    def _compute_component_gradient_norms(self):
+    def _compute_component_gradient_stats(self):
         """
-        Compute gradient norms of each component w.r.t. model parameters.
+        Compute gradient statistics of each component w.r.t. model parameters.
+        Stats are controlled by self._grad_stat_names (e.g., ["norm", "var", "max"]).
         """
         if not hasattr(self, '_component_losses_for_grad'):
             return
-        
+
+        if not getattr(self, "_grad_stat_names", None):
+            return
+
         if not hasattr(self, '_gradient_accumulator'):
             self._gradient_accumulator = {}
-        
+
+        stat_names = set(self._grad_stat_names)
         model = self.model
-        
+
         # Store current gradients if any exist
         saved_grads = {}
         for name, param in model.named_parameters():
             if param.grad is not None:
                 saved_grads[name] = param.grad.clone()
-        
+
         for component_name, component_loss in self._component_losses_for_grad.items():
             # Zero gradients
             model.zero_grad(set_to_none=True)
-            
+
             # Compute gradient of this component w.r.t. parameters
             component_loss.backward(retain_graph=True)
-            
-            # Compute total gradient norm across parameters
+
+            # Accumulators
             total_norm_sq = 0.0
+            max_abs = 0.0
+            sum_vals = 0.0
+            sum_sq = 0.0
+            count = 0
+
             for param in model.parameters():
-                if param.grad is not None:
-                    total_norm_sq += param.grad.norm(2).item() ** 2
-            
-            grad_norm = total_norm_sq ** 0.5
-            
-            # Store as GPU tensor (consistent with loss handling)
+                if param.grad is None:
+                    continue
+                g = param.grad.detach()
+
+                if "norm" in stat_names:
+                    # Use sum of squares to avoid extra sqrt each param
+                    total_norm_sq += float(g.pow(2).sum().item())
+
+                if "max" in stat_names:
+                    max_abs = max(max_abs, float(g.abs().max().item()))
+
+                if "var" in stat_names:
+                    sum_vals += float(g.sum().item())
+                    sum_sq += float(g.pow(2).sum().item())
+                    count += g.numel()
+
+            # Prepare component entry
             if component_name not in self._gradient_accumulator:
-                self._gradient_accumulator[component_name] = []
-            
-            # Convert to tensor on same device as component_loss
-            grad_norm_tensor = torch.tensor(grad_norm, device=component_loss.device)
-            self._gradient_accumulator[component_name].append(grad_norm_tensor)
-        
+                self._gradient_accumulator[component_name] = {}
+
+            device = component_loss.device
+
+            if "norm" in stat_names:
+                grad_norm = total_norm_sq ** 0.5
+                self._gradient_accumulator[component_name].setdefault("norm", []).append(
+                    torch.tensor(grad_norm, device=device)
+                )
+
+            if "max" in stat_names:
+                self._gradient_accumulator[component_name].setdefault("max", []).append(
+                    torch.tensor(max_abs, device=device)
+                )
+
+            if "var" in stat_names:
+                if count > 0:
+                    mean = sum_vals / count
+                    var = max((sum_sq / count) - (mean ** 2), 0.0)
+                else:
+                    var = 0.0
+                self._gradient_accumulator[component_name].setdefault("var", []).append(
+                    torch.tensor(var, device=device)
+                )
+
         # Restore previous gradients
         model.zero_grad(set_to_none=True)
         for name, param in model.named_parameters():
             if name in saved_grads:
                 param.grad = saved_grads[name]
-        
+
         # Clear stored component losses
         self._component_losses_for_grad = {}
 
@@ -740,7 +782,7 @@ class Trainer(Trainer_):
         )
 
         if should_collect_grads:
-            self._compute_component_gradient_norms()
+            self._compute_component_gradient_stats()
 
         del inputs
         if (
