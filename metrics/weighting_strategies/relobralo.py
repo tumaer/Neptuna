@@ -13,9 +13,6 @@ class ReLoBRaLo(LossWeightingStrategyBase):
     
     Based on (2021) "Multi-Objective Loss Balancing for Physics-Informed Deep Learning" 
     https://arxiv.org/abs/2110.09813
-    
-    Supports hierarchical weight updates for base components, per-channel,
-    and per-sub-component levels.
     """
 
     def __init__(
@@ -46,7 +43,7 @@ class ReLoBRaLo(LossWeightingStrategyBase):
         self.min_weight = min_weight
         self.max_weight = max_weight
 
-        # Internal state across timesteps t (now handles hierarchical keys)
+        # Internal state across timesteps t
         self._L0: Dict[str, float] = {}        # initial loss per component: L_i(0)
         self._L_prev: Dict[str, float] = {}    # previous loss per component: L_i(t-1)
         self._lambda_prev: Dict[str, float] = {}  # previous scaling λ_i(t-1)
@@ -73,8 +70,6 @@ class ReLoBRaLo(LossWeightingStrategyBase):
     ) -> Dict[str, float]:
         """
         λ_bal_i(t,t') = m * softmax( L_i(t) / (τ * L_i(t')) )
-        
-        Now works with all loss keys (base, channel, sub-component) uniformly.
         """
         m = len(loss_keys)
         logits = []
@@ -99,8 +94,6 @@ class ReLoBRaLo(LossWeightingStrategyBase):
         grad_norm_history: Optional[Dict[str, List[float]]] = None
     ) -> Dict[str, Dict]:
         """
-        Paper-faithful ReLoBRaLo update (Eq. (11)) applied to all loss keys uniformly.
-        
         Steps:
           1) Compute L_i(t) for all loss keys (base, channel, sub-component)
           2) Compute λ_bal(t, t-1) and λ_bal(t, 0) for all keys
@@ -235,16 +228,6 @@ class ReLoBRaLo(LossWeightingStrategyBase):
         new_weight_scalars: Dict[str, float], 
         current_weights: Dict[str, Dict]
     ) -> Dict[str, Dict]:
-        """
-        Reconstruct the hierarchical weight dictionary from flat scalar weights.
-        
-        Args:
-            new_weight_scalars: Flat dict of loss_key -> weight
-            current_weights: Current weight structure to preserve format
-            
-        Returns:
-            Hierarchical weight dictionary matching current_weights format
-        """
         new_weights: Dict[str, Dict] = {}
         
         for base_name, config in current_weights.items():

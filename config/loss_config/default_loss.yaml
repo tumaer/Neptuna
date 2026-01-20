@@ -6,8 +6,8 @@ train_loss:
     - type: IntegralConservationRMSE
       weight: 0.5
   train_loss_weighting_strategy:
-    enabled: false  # Set to true to enable
-    type: BalancedResidualDecayRate
+    enabled: true  # Set to true to enable
+    type: GradNorm
     loss_source: 'train' # 'train', 'eval' or 'both'
     weight_sub_components: true
     weight_per_channel: true

@@ -29,6 +29,9 @@ from .weighting_strategies import (
     ResidualBasedAttention,
     SoftAdapt,
     BalancedResidualDecayRate,
+    GradNorm,
+    InverseDirichlet,
+    LearningRateAnnealing,
 )
 
 __all__ = [
@@ -57,4 +60,7 @@ __all__ = [
     'NegativityLoss',
     'ShockRMSE',
     'PINNLoss',
+    'GradNorm',
+    'InverseDirichlet',
+    'LearningRateAnnealing',
 ]

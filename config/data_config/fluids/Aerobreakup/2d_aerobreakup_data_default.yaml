@@ -13,8 +13,8 @@ filter_features:
   train_filter_groups: null
   infer_filter_frames: null
   infer_filter_groups: null
-  filter_in_channels: null
-  filter_out_channels: null
+  filter_in_channels: ["Density", "Velocity_X", "Velocity_Y"]
+  filter_out_channels: ["Density", "Velocity_X", "Velocity_Y"]
 #NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels
 conditioning_features:
   conditioning_in_channels: null
