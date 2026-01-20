@@ -43,15 +43,15 @@ def compute_metrics_for_n_rollouts(
         )
     num_rollouts = total_steps // outputs_per_rollout
 
-    grouped_shape = (
-        preds_arr.shape[0],
-        num_rollouts,
-        outputs_per_rollout,
-        preds_arr.shape[2],
-        *preds_arr.shape[3:],
-    )
-    grouped_preds = preds_arr.reshape(grouped_shape)
-    grouped_targets = targets_arr.reshape(grouped_shape)
+    # grouped_shape = (
+    #     preds_arr.shape[0],
+    #     num_rollouts,
+    #     outputs_per_rollout,
+    #     preds_arr.shape[2],
+    #     *preds_arr.shape[3:],
+    # )
+    # grouped_preds = preds_arr.reshape(grouped_shape)
+    # grouped_targets = targets_arr.reshape(grouped_shape)
 
     # ------------------------------------------------------------------
     # Compute metrics using LossComponent / CompositeLoss
@@ -125,7 +125,7 @@ def compute_metrics_for_n_rollouts(
                     if use_channel_weights:
                         for ch in range(C):
                             one_hot = torch.zeros_like(original_channel_weights)
-                            one_hot[..., ch] = 1.0
+                            one_hot[..., ch] = float(len(range(C))) # when mean is taken inside the forward of the metric, it takes into account all the elements in the tensor which is C times the per channel 
                             ws.channel_weights = one_hot
 
                             ch_loss_b, _ = comp(
@@ -141,9 +141,9 @@ def compute_metrics_for_n_rollouts(
                                 else torch.tensor(ch_loss_b, device=device)
                             )
 
-                # restore channel weights
-                if use_channel_weights:
-                    ws.channel_weights = original_channel_weights
+                    # restore channel weights
+                    if use_channel_weights:
+                        ws.channel_weights = original_channel_weights
 
             # If we could not decompose channels, broadcast overall
             if per_sample_channel is None:

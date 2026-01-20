@@ -125,7 +125,18 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
         print(f"compute_statistics took {time.perf_counter() - _t_start:.2f} seconds")
         cfg["data_config"]["data_normalization_stats"] = stats
     else:
-        raw_keys = list(cfg["data_config"]["data_normalization_stats"].keys())
+        #if cfg["data_config"]['log_transform_channels'] is not None, then the data_normalization_stats should contain the statistics for the log-transformed channels
+        if cfg["data_config"]["log_transform_channels"] is not None:
+            for ch_name in cfg["data_config"]["log_transform_channels"]:
+                ch_name = f"log_{ch_name}"
+                if ch_name not in cfg["data_config"]["data_normalization_stats"]:
+                    raise ValueError(f"Statistics for the log-transformed channel {ch_name} are not provided in the data_normalization_stats dictionary.")
+        # Exclude log-transformed channels; downstream logic expects raw names
+        raw_keys = [
+            k
+            for k in cfg["data_config"]["data_normalization_stats"].keys()
+            if not k.startswith("log_")
+        ]
         # Collapse residual keys: if both "foo" and "foo_residual" exist, keep only "foo"
         channel_names = []
         for k in raw_keys:

@@ -1123,17 +1123,21 @@ class TransientDataset(Dataset):
                     input_seq_per_channel = np.stack([group[channel_name][i][component_idx:component_idx + 1] for i in input_indices], axis=0)
 
                 if channel in self.log_transform_channels:
-                    # Add small epsilon to avoid log(0)
-                    epsilon = 1e-10
-                    input_seq_per_channel = np.log(np.maximum(input_seq_per_channel, epsilon))
-                
-                # Skip normalization for mask channels
-                if "mask" not in channel.lower():
+                    input_seq_per_channel = np.log(input_seq_per_channel)
                     input_seq_per_channel = normalize_data(
                         input_seq_per_channel,
-                        self.data_normalization_stats[channel],
+                        self.data_normalization_stats[f"log_{channel}"],
                         self.data_normalization_strategy,
                     )
+                
+                # Skip normalization for mask channels
+                else:
+                    if "mask" not in channel.lower():
+                        input_seq_per_channel = normalize_data(
+                            input_seq_per_channel,
+                            self.data_normalization_stats[channel],
+                            self.data_normalization_strategy,
+                        )
 
                 # Append to the appropriate container
                 if is_conditioning:
@@ -1185,12 +1189,11 @@ class TransientDataset(Dataset):
                             label_seq_per_channel = np.stack([group[channel_name][label_indices[i]][component_idx:component_idx + 1] for i in range(1, len(label_indices))], axis=0)
 
                 if channel in self.log_transform_channels:
-                    # Add small epsilon to avoid log(0)
-                    epsilon = 1e-10
-                    label_seq_per_channel = np.log(np.maximum(label_seq_per_channel, epsilon))
+                    label_seq_per_channel = np.log(label_seq_per_channel)
 
                 # Select appropriate normalisation stats depending on residual mode
-                norm_key = channel if ((self.residual_config is None) or (self.residual_config["add_base_value_with_raw_loss"]) or (self.residual_config["add_predicted_value_with_raw_loss"])) else f"{channel}_residual"
+                norm_base = f"log_{channel}" if channel in self.log_transform_channels else channel
+                norm_key = norm_base if ((self.residual_config is None) or (self.residual_config["add_base_value_with_raw_loss"]) or (self.residual_config["add_predicted_value_with_raw_loss"])) else f"{norm_base}_residual"
                 label_seq_per_channel = normalize_data(
                     label_seq_per_channel, #label_seq_per_channel is the residual of that particular channel if residual_config is not None
                     self.data_normalization_stats[norm_key],
@@ -1467,8 +1470,15 @@ class SteadyStateDataset(Dataset):
                 # Add a leading time dimension so the final shape is [T, C, H, W, ...]
                 input_seq_per_channel = input_data[np.newaxis, ...]
 
-                # Skip normalization for mask channels
-                if "mask" not in channel.lower():
+                # Apply log normalization if configured; otherwise skip masks
+                if channel in self.log_transform_channels:
+                    input_seq_per_channel = np.log(input_seq_per_channel)
+                    input_seq_per_channel = normalize_data(
+                        input_seq_per_channel,
+                        self.data_normalization_stats.get(f"log_{channel}"),
+                        self.data_normalization_strategy,
+                    )
+                elif "mask" not in channel.lower():
                     input_seq_per_channel = normalize_data(
                         input_seq_per_channel,
                         self.data_normalization_stats[channel],
@@ -1509,11 +1519,19 @@ class SteadyStateDataset(Dataset):
                 # Add a leading time dimension so the final shape is [T, C, H, W, ...]
                 label_seq_per_channel = label_data[np.newaxis, ...]
 
-                label_seq_per_channel = normalize_data(
-                    label_seq_per_channel,
-                    self.data_normalization_stats[channel],
-                    self.data_normalization_strategy,
-                )
+                if channel in self.log_transform_channels:
+                    label_seq_per_channel = np.log(label_seq_per_channel)
+                    label_seq_per_channel = normalize_data(
+                        label_seq_per_channel,
+                        self.data_normalization_stats.get(f"log_{channel}"),
+                        self.data_normalization_strategy,
+                    )
+                else:
+                    label_seq_per_channel = normalize_data(
+                        label_seq_per_channel,
+                        self.data_normalization_stats[channel],
+                        self.data_normalization_strategy,
+                    )
 
                 # append to non-conditioning label list
                 label_chunks.append(label_seq_per_channel)

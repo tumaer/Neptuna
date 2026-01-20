@@ -142,6 +142,7 @@ def preprocess_for_plotting(
             raise ValueError(f"Stats for input channel {ch_name} are unavailable.")
         stats = norm_stats[ch_name]
         if "mask" not in ch_name.lower():
+            #inputs has a shape (N, T_in, C, *spatial_dims)
             inputs_renormed[:, :, c_idx] = re_normalize_data(inputs[:, :, c_idx], stats, norm_strategy)
 
     if conditioning_inputs is not None:

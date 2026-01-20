@@ -15,7 +15,7 @@ from transformers import TrainingArguments
 from train.trainer import Trainer
 import hydra
 from omegaconf import DictConfig
-from typing import Dict
+from typing import Dict, List, Optional
 import json
 from utils.seed_utils import set_global_seed
 import torch
@@ -72,29 +72,29 @@ def load_pretrained_model(model_config):
 
     return model
 
-def inverse_log_transform_channels(data_array, channel_names, log_transform_channels):
-    """
-    Apply inverse log transform (exp) to specified channels.
+# def inverse_log_transform_channels(data_array, channel_names, log_transform_channels):
+#     """
+#     Apply inverse log transform (exp) to specified channels.
     
-    Args:
-        data_array: numpy array with shape (N, T, C, *spatial)
-        channel_names: list of channel names corresponding to C dimension
-        log_transform_channels: list of channel names that were log-transformed
+#     Args:
+#         data_array: numpy array with shape (N, T, C, *spatial)
+#         channel_names: list of channel names corresponding to C dimension
+#         log_transform_channels: list of channel names that were log-transformed
     
-    Returns:
-        Modified array with inverse log transform applied
-    """
-    if not log_transform_channels:
-        return data_array
+#     Returns:
+#         Modified array with inverse log transform applied
+#     """
+#     if not log_transform_channels:
+#         return data_array
     
-    data_array = data_array.copy()  # Avoid modifying original
+#     data_array = data_array.copy()  # Avoid modifying original
     
-    for c_idx, ch_name in enumerate(channel_names):
-        if ch_name in log_transform_channels:
-            # Apply exp to invert log transform
-            data_array[:, :, c_idx] = np.exp(data_array[:, :, c_idx])
+#     for c_idx, ch_name in enumerate(channel_names):
+#         if ch_name in log_transform_channels:
+#             # Apply exp to invert log transform
+#             data_array[:, :, c_idx] = np.exp(data_array[:, :, c_idx])
     
-    return data_array
+#     return data_array
 
 def build_train_and_infer_loss(loss_config, data_config, device: torch.device):
     """
@@ -244,14 +244,14 @@ def find_checkpoint_path(experiment_dir):
     checkpoint_dirs.sort(key=lambda x: int(x.split('-')[-1]))
     return checkpoint_dirs[-1]
 
-def save_errors_to_csv(errors, output_dir, file_name):
+def save_overall_errors_to_csv(errors, output_dir):
     """
-    Save errors to 2 CSV files in the specified output directory.
-
+    Save overall errors to a CSV file named overall_results.csv in the specified output directory.
     Args:
         errors: Dictionary of errors to save.
         output_dir: Directory where the CSV file will be saved.
     """
+    file_name = "overall_results.csv"
     csv_file = os.path.join(output_dir, file_name)
     file_is_empty = not os.path.exists(csv_file) or os.stat(csv_file).st_size == 0
 
@@ -263,6 +263,13 @@ def save_errors_to_csv(errors, output_dir, file_name):
         for key, value in errors.items():
             writer.writerow([key, value])
 
+def save_errors_to_structured_csv(errors, output_dir, channel_names: Optional[List[str]] = None, file_name: str = "results_structured.csv"):
+    """
+    Save 'normalized' errors to a structured CSV named results_structured.csv in the specified output directory.
+    Args:
+        errors: Dictionary of errors to save.
+        output_dir: Directory where the CSV file will be saved.
+    """
     # Structured CSV file
     # --------------------------------------------------------------
     # Collect data into a dict-of-dicts before writing
@@ -341,7 +348,10 @@ def save_errors_to_csv(errors, output_dir, file_name):
             overall_col = f"{base}__overall"
             all_col_names.add(overall_col)
             for ch in range(n_channels - 1):
-                ch_col = f"{base}__ch{ch}"
+                ch_label = (
+                    channel_names[ch] if channel_names is not None and ch < len(channel_names) else f"ch{ch}"
+                )
+                ch_col = f"{base}__{ch_label}"
                 all_col_names.add(ch_col)
 
             for idx in range(n_idx):
@@ -354,14 +364,21 @@ def save_errors_to_csv(errors, output_dir, file_name):
 
                 # per-channel columns
                 for ch in range(n_channels - 1):
-                    ch_col = f"{base}__ch{ch}"
+                    ch_label = (
+                        channel_names[ch] if channel_names is not None and ch < len(channel_names) else f"ch{ch}"
+                    )
+                    ch_col = f"{base}__{ch_label}"
                     rows[row_key][ch_col] = float(np_arr[idx, ch])
 
     # If nothing to write, just ensure header exists
-    pretty_csv_file = os.path.join(output_dir, "results_structured.csv")
+    pretty_csv_file = os.path.join(output_dir, file_name)
 
-    # Sort columns for deterministic order
-    all_col_names_sorted = sorted(all_col_names)
+    # Sort columns for deterministic order; place cumulative columns at the end
+    def _col_key(name: str):
+        is_cumulative = "cumulative" in name
+        return (is_cumulative, name)
+
+    all_col_names_sorted = sorted(all_col_names, key=_col_key)
 
     with open(pretty_csv_file, mode='w', newline='') as file:
         writer = csv.writer(file)
@@ -533,7 +550,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                             labels=targets_tensor.to(metric_device),
                             return_detailed=False,
                         )
-                    metrics["eval_composite_loss"] = float(
+                    metrics["error_composite_train_loss"] = float(
                         composite_loss.item()
                         if torch.is_tensor(composite_loss)
                         else composite_loss
@@ -772,27 +789,42 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
 
             # pretty print the keys which have the word error in them
             print('Accumulated error for the whole test set (random start):')
-            errors = {} 
+            overall_errors = {} 
             for key, value in predictions_obj.metrics.items():
                 if ("error" in key) or ("eval" in key):
                     print(f"{key}: {value}")
-                    errors["random_start"+key] = value
-            save_errors_to_csv(errors, solo_inference_dir, "results.csv")
+                    overall_errors["random_start"+key] = value
+            save_overall_errors_to_csv(overall_errors, solo_inference_dir)
             # ----------------------------------------------------------
             # Prepare prediction, target and input arrays
             # ----------------------------------------------------------
             preds = predictions_obj.predictions  # (N, R, T, C, *spatial)
 
             # Flatten rollout and label sequence dimensions if necessary
+            outputs_per_rollout = 1
             if preds.ndim >= 5:
                 n, n_rollouts, seq_len, c = preds.shape[:4]
                 outputs_per_rollout = seq_len
                 extra_dims = preds.shape[4:]
                 preds = preds.reshape(n, n_rollouts * seq_len, c, *extra_dims) # (N, R*T, C, *spatial)
-            # else:
-            #     outputs_per_rollout = 1
 
             targets = predictions_obj.label_ids  # Expected shape: (N, R*T, C, *spatial)
+
+            per_rollout_step_metrics_random = compute_metrics_for_n_rollouts(
+                preds,
+                targets,
+                outputs_per_rollout=outputs_per_rollout,
+                include_per_timestep=True,
+                loss_metric=infer_loss_fn
+            )
+
+            per_step_errors = {}
+            for metric_name, values in per_rollout_step_metrics_random.items():
+                print(f"{metric_name} per-step (random start): {values}")
+                per_step_errors[metric_name] = values
+
+            channel_names_random = getattr(infer_ds, "output_channels", None)
+            save_errors_to_structured_csv(per_step_errors, solo_inference_dir, channel_names=channel_names_random, file_name="results_structured_random_start.csv")
 
             # Inputs already returned by `trainer.predict`
             inp_arr = inputs  # Shape: (N, T_in, C_in, *spatial)
@@ -821,17 +853,17 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
 
             log_transform_channels = data_config["log_transform_channels"]
 
-            inp_renorm = inverse_log_transform_channels(
-                inp_renorm, only_input_channel_names, log_transform_channels
-            )
+            # inp_renorm = inverse_log_transform_channels(
+            #     inp_renorm, only_input_channel_names, log_transform_channels
+            # )
 
-            tgt_renorm = inverse_log_transform_channels(
-                tgt_renorm, output_channel_names, log_transform_channels
-            )
+            # tgt_renorm = inverse_log_transform_channels(
+            #     tgt_renorm, output_channel_names, log_transform_channels
+            # )
 
-            pred_renorm = inverse_log_transform_channels(
-                pred_renorm, output_channel_names, log_transform_channels
-            )
+            # pred_renorm = inverse_log_transform_channels(
+            #     pred_renorm, output_channel_names, log_transform_channels
+            # )
 
             # Infer spatial dimensionality (1D / 2D / 3D)
             ndim = pred_renorm.ndim - 3  # subtract batch, time, channel dims
@@ -927,6 +959,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             # Prepare prediction, target and input arrays
             # ----------------------------------------------------------
             predictions_obj, inputs, conditioning_inputs = trainer.predict(infer_ds_from_ic, metric_key_prefix="")
+            #predictions and labels have NO log-transformed channels
 
             print('Accumulated error for the whole test set (IC start):')
             errors = {}
@@ -934,7 +967,8 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 if ("error" in key) or ("eval" in key):
                     print(f"{key}: {value}")
                     errors["ic_start"+key] = value
-            save_errors_to_csv(errors, solo_inference_dir, "results.csv")
+            save_overall_errors_to_csv(errors, solo_inference_dir)
+            
 
             preds = predictions_obj.predictions
             targets = predictions_obj.label_ids
@@ -956,7 +990,9 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             for metric_name, values in per_rollout_step_metrics_ic.items():
                 print(f"{metric_name} per-step (IC start): {values}")
                 errors[metric_name] = values
-            save_errors_to_csv(errors, solo_inference_dir, "results.csv")
+            channel_names_ic = getattr(infer_ds_from_ic, "output_channels", None)
+            save_errors_to_structured_csv(errors, solo_inference_dir, channel_names=channel_names_ic, file_name="results_structured_ic_start.csv")
+            # save_errors_to_csv(errors, solo_inference_dir, "results.csv")
 
             # ----------------------------------------------------------
             # Renormalise data and reconstruct residuals for plotting
@@ -977,31 +1013,31 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 conditioning_inputs=cond_inp_arr,
             )
 
-            log_transform_channels = data_config["log_transform_channels"]
+            # log_transform_channels = data_config["log_transform_channels"]
 
-            inp_renorm = inverse_log_transform_channels(
-                inp_renorm, only_input_channel_names, log_transform_channels
-            )
+            # inp_renorm = inverse_log_transform_channels(
+            #     inp_renorm, only_input_channel_names, log_transform_channels
+            # )
 
-            tgt_renorm = inverse_log_transform_channels(
-                tgt_renorm, output_channel_names, log_transform_channels
-            )
+            # tgt_renorm = inverse_log_transform_channels(
+            #     tgt_renorm, output_channel_names, log_transform_channels
+            # )
 
-            pred_renorm = inverse_log_transform_channels(
-                pred_renorm, output_channel_names, log_transform_channels
-            )
+            # pred_renorm = inverse_log_transform_channels(
+            #     pred_renorm, output_channel_names, log_transform_channels
+            # )
             
 
             # Compute renormalized metrics: necessary for comparing performance between runs with different data preprocessing
-            per_rollout_step_metrics_ic_renorm = compute_metrics_for_n_rollouts(
-                pred_renorm, tgt_renorm, outputs_per_rollout=outputs_per_rollout, include_per_timestep=True, loss_metric=infer_loss_fn
-            )
+            # per_rollout_step_metrics_ic_renorm = compute_metrics_for_n_rollouts(
+            #     pred_renorm, tgt_renorm, outputs_per_rollout=outputs_per_rollout, include_per_timestep=True, loss_metric=infer_loss_fn
+            # )
             
-            errors = {}
-            for metric_name, values in per_rollout_step_metrics_ic_renorm.items():
-                print(f"{metric_name} per-step (IC start, renorm): {values}")
-                errors[metric_name] = values
-            save_errors_to_csv(errors, solo_inference_dir, "results_renorm.csv")
+            # errors = {}
+            # for metric_name, values in per_rollout_step_metrics_ic_renorm.items():
+            #     print(f"{metric_name} per-step (IC start, renorm): {values}")
+            #     errors[metric_name] = values
+            # save_errors_to_csv(errors, solo_inference_dir, "results_renorm.csv")
 
             # Infer spatial dimensionality (1D / 2D / 3D)
             ndim = pred_renorm.ndim - 3  # subtract batch, time, channel dims
@@ -1066,11 +1102,10 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             
             plotter.plot()
 
-            # Prepare return payload for top-level multi-run plotting
             ic_return = {
                 "metrics": per_rollout_step_metrics_ic,
-                "metrics_renorm": per_rollout_step_metrics_ic_renorm,
-                "sequence_info": list(data_config.get("sequence_info", [1, 1, 1])),
+                #"metrics_renorm": per_rollout_step_metrics_ic_renorm,
+                "sequence_info": list(data_config.get("sequence_info")),
                 "output_channel_names": output_channel_names,
             }
 
@@ -1161,8 +1196,8 @@ def main(cfg: DictConfig):
         if isinstance(res, dict) and res.get("metrics") is not None:
             run_label = os.path.basename(experiment_dir)
             runs_step_metrics[run_label] = res["metrics"]
-            if res.get("metrics_renorm") is not None:
-                runs_step_metrics_renorm[run_label] = res["metrics_renorm"]
+            # if res.get("metrics_renorm") is not None:
+            #     runs_step_metrics_renorm[run_label] = res["metrics_renorm"]
             if sequence_info_ref is None and res.get("sequence_info") is not None:
                 sequence_info_ref = res.get("sequence_info")
             # Keep per-run sequence info for correct timestep x-axis
@@ -1210,12 +1245,12 @@ def main(cfg: DictConfig):
         filename="rollout_metrics_tabulated.csv"
     )
 
-    calculate_and_save_results_all_channels(
-        runs_step_metrics=runs_step_metrics_renorm,
-        save_dir=inference_dir,
-        output_channel_names=output_channel_names_ref,
-        filename="rollout_metrics_tabulated_renorm.csv"
-    )
+    # calculate_and_save_results_all_channels(
+    #     runs_step_metrics=runs_step_metrics_renorm,
+    #     save_dir=inference_dir,
+    #     output_channel_names=output_channel_names_ref,
+    #     filename="rollout_metrics_tabulated_renorm.csv"
+    # )
 
 
     print(f"\n{'='*60}")

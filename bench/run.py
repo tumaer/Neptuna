@@ -24,12 +24,12 @@ from utils.plot_progress import build_info_strings
 from utils.plot_progress import calculate_and_save_results_all_channels
 from utils.seed_utils import set_global_seed
 import psutil
-from only_inference import save_errors_to_csv
+#from only_inference import save_errors_to_csv
 import numpy as np
 import torch
 import torch.distributed as dist
 from omegaconf import ListConfig, OmegaConf
-from only_inference import inverse_log_transform_channels, build_train_and_infer_loss
+#from only_inference import inverse_log_transform_channels, build_train_and_infer_loss
 import glob
 
 __all__ = ["run"]
@@ -498,7 +498,8 @@ def run(cfg):
                 device=metric_device,
             )
 
-            trainer.eval_loss_fn = eval_loss_fn_inf  #this is taken from train_strategy_config/infer_loss.yaml
+            if eval_loss_fn_inf is not None:
+                trainer.eval_loss_fn = eval_loss_fn_inf  #this is taken from train_strategy_config/infer_loss.yaml
             trainer.train_loss_fn = train_loss_fn_inf
 
             solo_inference_dir = os.path.join(checkpoint_parent_dir, "solo_inference")

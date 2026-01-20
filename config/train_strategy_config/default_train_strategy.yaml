@@ -1,18 +1,18 @@
 ########################################################
 # Training strategy configuration
 ########################################################
-num_train_epochs: 5
+num_train_epochs: 2
 metric_for_best_model:
-  # - type: L2Loss
-  #   weight: 1.0         
-  - type: CompositeLoss
-    weight: 1.0
-    name: "SSIM_L2_Composite"
-    sub_components:
-      - type: SSIM
-        weight: 0.7
-      - type: L2Loss
-        weight: 0.3
+  - type: L2Loss
+    weight: 1.0         
+  # - type: CompositeLoss
+  #   weight: 1.0
+  #   name: "SSIM_L2_Composite"
+  #   sub_components:
+  #     - type: SSIM
+  #       weight: 0.7
+  #     - type: L2Loss
+  #       weight: 0.3
 
 curriculum:
   - name: block_1
@@ -48,7 +48,7 @@ curriculum:
               weight: 0.3
 
   - name: block_2
-    start_epoch: 2
+    start_epoch: 1
     train_loss:
       components:
         - type: RMSE
@@ -71,23 +71,23 @@ curriculum:
         - type: H1SemiNorm
           weight: 1.0
 
-  - name: block_3
-    start_epoch: 3
-    train_loss:
-      components:
-        - type: H2SemiNorm
-          weight: 0.5
-      train_loss_weighting_strategy:
-        enabled: false  # Set to true to enable
-        #type: SoftAdapt
-        #loss_source: 'eval' # 'train' OR 'eval'
+  # - name: block_3
+  #   start_epoch: 4
+  #   train_loss:
+  #     components:
+  #       - type: H2SemiNorm
+  #         weight: 0.5
+  #     train_loss_weighting_strategy:
+  #       enabled: false  # Set to true to enable
+  #       #type: SoftAdapt
+  #       #loss_source: 'eval' # 'train' OR 'eval'
       
-    validation_loss: #TODO: Add loss components from train loss mertrics of this block in validation
-      components:
-        - type: VRMSE
-          weight: 1.0
-        - type: NRMSE
-          weight: 1.0
+  #   validation_loss: #TODO: Add loss components from train loss mertrics of this block in validation
+  #     components:
+  #       - type: VRMSE
+  #         weight: 1.0
+  #       - type: NRMSE
+  #         weight: 1.0
 
 
 
