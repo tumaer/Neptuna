@@ -115,7 +115,6 @@ def compute_metrics_for_n_rollouts(
                         input_frames=None,
                         return_detailed=True,
                     )
-                    # assume scalar
                     per_sample_overall[b_idx] = (
                         total_loss_b.detach()
                         if torch.is_tensor(total_loss_b)
@@ -126,7 +125,7 @@ def compute_metrics_for_n_rollouts(
                     if use_channel_weights:
                         for ch in range(C):
                             one_hot = torch.zeros_like(original_channel_weights)
-                            one_hot[..., ch] = 1.0
+                            one_hot[..., ch] = float(len(range(C)))
                             ws.channel_weights = one_hot
 
                             ch_loss_b, _ = comp(
@@ -142,10 +141,9 @@ def compute_metrics_for_n_rollouts(
                                 if torch.is_tensor(ch_loss_b)
                                 else torch.tensor(ch_loss_b, device=device)
                             )
-
                 # restore channel weights
-                if use_channel_weights:
-                    ws.channel_weights = original_channel_weights
+                    if use_channel_weights:
+                        ws.channel_weights = original_channel_weights
 
             # If we could not decompose channels, broadcast overall
             if per_sample_channel is None:
