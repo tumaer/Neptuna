@@ -219,6 +219,7 @@ class NormalizationHelper(nn.Module):
             f"{name}{residual_suffix}" if is_residual else name
             for name in channel_names
         ]
+        self._loss_norm_cache: Dict[Tuple[str, float], float] = {}
 
     def denormalize(self, tensor: torch.Tensor) -> torch.Tensor:
         if self.norm_strategy == 'no_normalization':
@@ -413,6 +414,87 @@ class NormalizationHelper(nn.Module):
             return (value - median) / (iqr + eps)
         
         return value
+    
+    def _loss_norm_denom(self, normalization: str, epsilon: float) -> float:
+        if normalization == 'none':
+            return 1.0
+
+        def _variance_from_stats(stats: Dict[str, float]) -> float:
+            strategy = self.norm_strategy
+            table = {
+                'z_normalization': lambda s: 1.0,
+                'min_max_normalization': lambda s: (s['std'] ** 2) / (((s['max'] - s['min']) ** 2) + epsilon),
+                'robust_normalization': lambda s: (s['std'] ** 2) / ((s['iqr'] ** 2) + epsilon),
+                'no_normalization': lambda s: s['std'] ** 2,
+            }
+            fn = table.get(strategy)
+            if fn is None:
+                raise ValueError(f"Unknown normalization strategy: {strategy}")
+            return fn(stats)
+
+        def _range_from_stats(stats: Dict[str, float]) -> float:
+            strategy = self.norm_strategy
+            table = {
+                'z_normalization': lambda s: (s['max'] - s['min']) / (s['std'] + epsilon),
+                'min_max_normalization': lambda s: 1.0,
+                'robust_normalization': lambda s: (s['max'] - s['min']) / (s['iqr'] + epsilon),
+                'no_normalization': lambda s: s['max'] - s['min'],
+            }
+            fn = table.get(strategy)
+            if fn is None:
+                raise ValueError(f"Unknown normalization strategy: {strategy}")
+            return fn(stats)
+
+        denom_builder = {
+            'variance': _variance_from_stats,
+            'range': _range_from_stats,
+        }.get(normalization)
+
+        if denom_builder is None:
+            raise ValueError(f"Unknown normalization type: {normalization}")
+
+        values: List[float] = []
+        for i, name in enumerate(self.channel_names):
+            if "mask" in name.lower():
+                continue
+            key = self.stat_keys[i]
+            if key not in self.norm_stats:
+                raise ValueError(f"Missing normalization stats for channel: {key}")
+            values.append(denom_builder(self.norm_stats[key]))
+
+        if not values:
+            return 1.0
+
+        return sum(values) / len(values)
+
+    def normalize_loss(
+        self,
+        unweighted: torch.Tensor,
+        normalization: str,
+        epsilon: float = 1e-8
+    ) -> torch.Tensor:
+        """
+        Normalize a loss tensor using dataset-level statistics.
+
+        Args:
+            unweighted: Unnormalized loss tensor
+            normalization: 'none' | 'variance' | 'range'
+            epsilon: Small constant for numerical stability
+
+        Returns:
+            Normalized loss tensor, same shape as unweighted
+        """
+        if normalization == 'none':
+            return unweighted
+
+        key = (normalization, float(epsilon))
+        denom = self._loss_norm_cache.get(key)
+        if denom is None:
+            denom = self._loss_norm_denom(normalization, epsilon)
+            self._loss_norm_cache[key] = denom
+
+        denom_t = unweighted.new_tensor(denom)
+        return unweighted / (denom_t + epsilon)
 
 class LossComponent(nn.Module, ABC):
     """
@@ -467,7 +549,8 @@ class LossComponent(nn.Module, ABC):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-        return_detailed: bool = True
+        return_detailed: bool = True,
+        keep_batch_dim: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         Compute the loss.
@@ -529,7 +612,8 @@ class CompositeLoss(LossComponent):
         predictions: torch.Tensor,
         labels: torch.Tensor,
         return_detailed: bool = True,
-        preserve_component_grads: bool = False
+        preserve_component_grads: bool = False,
+        keep_batch_dim: bool = False
     ) -> Union[
         torch.Tensor,
         Tuple[torch.Tensor, Dict[str, Union[torch.Tensor, Dict[str, torch.Tensor]]]]
@@ -557,17 +641,20 @@ class CompositeLoss(LossComponent):
             * Detailed stats are forwarded from components as-is;
               this class does not perform extra reductions.
         """
+        if keep_batch_dim and return_detailed:
+            raise ValueError("keep_batch_dim is only supported when return_detailed is False.")
+        
         total_loss: Optional[torch.Tensor] = None
         detailed_dict = {} if return_detailed else None
         
         for loss_component in self.loss_components:
             if return_detailed:
                 component_loss, component_detailed = loss_component(
-                    model, predictions, labels, return_detailed=True
+                    model, predictions, labels, return_detailed=True, keep_batch_dim=False
                 )
             else:
                 component_loss = loss_component(
-                    model, predictions, labels, return_detailed=False
+                    model, predictions, labels, return_detailed=False, keep_batch_dim=keep_batch_dim
                 )
                 component_detailed = None  # type: ignore[assignment]
 
@@ -702,7 +789,8 @@ class NestedCompositeLoss(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-        return_detailed: bool = True
+        return_detailed: bool = True,
+        keep_batch_dim: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         Compute the nested composite loss.
@@ -722,11 +810,11 @@ class NestedCompositeLoss(LossComponent):
         for sub_comp in self.sub_components:
             if return_detailed:
                 comp_loss, comp_detail = sub_comp(
-                    model, predictions, labels, return_detailed=True
+                    model, predictions, labels, return_detailed=True, keep_batch_dim=False
                 )
             else:
                 comp_loss = sub_comp(
-                    model, predictions, labels, return_detailed=False
+                    model, predictions, labels, return_detailed=False, keep_batch_dim=keep_batch_dim
                 )
                 comp_detail = None
             
@@ -763,50 +851,3 @@ class NestedCompositeLoss(LossComponent):
             return weighted_total, detailed
         
         return weighted_total
-
-
-def apply_batch_wise_normalization(
-    unweighted: torch.Tensor,
-    labels: torch.Tensor,
-    normalization: str,
-    epsilon: float = 1e-8
-) -> torch.Tensor:
-    """
-    Apply batch-wise normalization to a loss tensor.
-    
-    Args:
-        unweighted: Unnormalized loss tensor
-        labels: Label tensor for computing normalization statistics
-        normalization: Type of normalization to apply
-            - 'none': No normalization
-            - 'nrmse': Normalize by <|u|^2>
-            - 'vrmse': Normalize by <|u - u_bar|^2> (variance)
-        epsilon: Small constant for numerical stability
-        
-    Returns:
-        Normalized loss tensor, same shape as unweighted
-    """
-    if normalization == 'none':
-        return unweighted
-    
-    elif normalization == 'magnitude':
-        # Normalize by <|u|^2>
-        sq_labels = labels ** 2
-        denom = sq_labels.mean()
-        return unweighted / (denom + epsilon)
-    
-    elif normalization == 'variance':
-        # Normalize by <|u - u_bar|^2> (variance)
-        # Mean over batch and spatial dims (keep time/channel structure)
-        if labels.ndim >= 2:
-            dims_for_mean = [0] + list(range(2, labels.ndim))
-        else:
-            dims_for_mean = [0]
-        
-        u_bar = labels.mean(dim=dims_for_mean, keepdim=True)
-        sq_dev = (labels - u_bar) ** 2
-        denom = sq_dev.mean()
-        return unweighted / (denom + epsilon)
-    
-    else:
-        raise ValueError(f"Unknown normalization type: {normalization}")

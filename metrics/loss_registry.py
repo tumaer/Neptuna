@@ -12,8 +12,6 @@ from metrics.losses import (
     WaveletBinnedRMSE,
     IntegralConservationRMSE,
     RMSE,
-    VRMSE,
-    NRMSE,
     InterfaceRMSE,
 )
 
@@ -81,16 +79,6 @@ LOSS_REGISTRY = {
         "class": RMSE,
         "default_name": "RMSE",
         "default_config": "loss_metrics/RMSE/rmse_default",
-    },
-    "VRMSE": {
-        "class": VRMSE,
-        "default_name": "VRMSE",
-        "default_config": "loss_metrics/VRMSE/vrmse_default",
-    },
-    "NRMSE": {
-        "class": NRMSE,
-        "default_name": "NRMSE",
-        "default_config": "loss_metrics/NRMSE/nrmse_default",
     },
     "InterfaceRMSE": {
         "class": InterfaceRMSE,

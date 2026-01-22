@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import ptwt  # pip install ptwt
-from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 from typing import Literal, Optional, List, Sequence, Dict, Union, Tuple
 
 # Inspired by fRMSE from the paper by Takamoto et al.,
@@ -65,7 +65,8 @@ class WaveletBinnedRMSE(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-        return_detailed: bool = False
+        return_detailed: bool = False,
+        keep_batch_dim: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         predictions, labels: (B, T, C, *spatial_dims)
@@ -89,35 +90,37 @@ class WaveletBinnedRMSE(LossComponent):
         labels_weighted = labels * weight_sqrt
 
         # Flatten batch/time/channel into a single leading dimension
-        N = B * T * C
-        pred_flat = predictions_weighted.reshape(N, *spatial)
-        target_flat = labels_weighted.reshape(N, *spatial)
+        N_tc = T * C
+        pred_flat = predictions_weighted.reshape(B, N_tc, *spatial)
+        target_flat = labels_weighted.reshape(B, N_tc, *spatial)
 
         if D == 1:
-            per_level_rmse = self._binned_rmse_1d(pred_flat, target_flat)
+            per_level_rmse = self._binned_rmse_1d(pred_flat, target_flat, keep_batch_dim=keep_batch_dim)
         elif D == 2:
-            per_level_rmse = self._binned_rmse_2d(pred_flat, target_flat)
+            per_level_rmse = self._binned_rmse_2d(pred_flat, target_flat, keep_batch_dim=keep_batch_dim)
         else:  # D == 3
-            per_level_rmse = self._binned_rmse_3d(pred_flat, target_flat)
+            per_level_rmse = self._binned_rmse_3d(pred_flat, target_flat, keep_batch_dim=keep_batch_dim)
 
-        # Aggregate across levels to get a scalar loss
+        # Aggregate across levels to get a loss
         if self.aggregate == "mean":
-            loss = per_level_rmse.mean()
+            loss = per_level_rmse.mean(dim=-1) if keep_batch_dim else per_level_rmse.mean()
         elif self.aggregate == "sum":
-            loss = per_level_rmse.sum()
+            loss = per_level_rmse.sum(dim=-1) if keep_batch_dim else per_level_rmse.sum()
         elif self.aggregate == "weighted":
             weights = self._get_level_weights(
-                n_levels=per_level_rmse.numel(),
+                n_levels=per_level_rmse.shape[-1],
                 device=per_level_rmse.device,
                 dtype=per_level_rmse.dtype,
             )
-            loss = (weights * per_level_rmse).sum()
+            if keep_batch_dim:
+                loss = (per_level_rmse * weights).sum(dim=-1)
+            else:
+                loss = (weights * per_level_rmse).sum()
         else:
             raise RuntimeError(f"Unknown aggregate mode: {self.aggregate}")
 
-        loss = apply_batch_wise_normalization(
+        loss = self.norm_helper.normalize_loss(
             loss,
-            labels,
             self.normalization,
             self.epsilon
         )
@@ -131,10 +134,15 @@ class WaveletBinnedRMSE(LossComponent):
     # ------------------------------------------------------------------
     # 1D case
     # ------------------------------------------------------------------
-    def _binned_rmse_1d(self, pred_flat: torch.Tensor, target_flat: torch.Tensor) -> torch.Tensor:
+    def _binned_rmse_1d(
+        self,
+        pred_flat: torch.Tensor,
+        target_flat: torch.Tensor,
+        keep_batch_dim: bool = False
+    ) -> torch.Tensor:
         """
-        pred_flat, target_flat: (N, L)
-        Returns: rmse_per_level: (n_levels,)
+        pred_flat, target_flat: (B, N_tc, L)
+        Returns: rmse_per_level: (B, n_levels) if keep_batch_dim else (n_levels,)
         """
         # Multi-level DWT along last axis
         coeffs_pred = ptwt.wavedec(
@@ -166,19 +174,28 @@ class WaveletBinnedRMSE(LossComponent):
         rmse_levels = []
         for dp, dt in zip(details_p, details_t):
             diff = dp - dt
-            mse = (diff ** 2).mean()   # average over N and spatial
+            if keep_batch_dim:
+                reduce_dims = list(range(1, diff.ndim))
+            else:
+                reduce_dims = list(range(0, diff.ndim))
+            mse = diff.pow(2).mean(dim=reduce_dims)
             rmse = torch.sqrt(mse)
             rmse_levels.append(rmse)
 
-        return torch.stack(rmse_levels, dim=0)  # (n_levels,)
+        return torch.stack(rmse_levels, dim=-1)  # (B, n_levels) or (n_levels,)
 
     # ------------------------------------------------------------------
     # 2D case
     # ------------------------------------------------------------------
-    def _binned_rmse_2d(self, pred_flat: torch.Tensor, target_flat: torch.Tensor) -> torch.Tensor:
+    def _binned_rmse_2d(
+        self,
+        pred_flat: torch.Tensor,
+        target_flat: torch.Tensor,
+        keep_batch_dim: bool = False
+    ) -> torch.Tensor:
         """
-        pred_flat, target_flat: (N, H, W)
-        Returns: rmse_per_level: (n_levels,)
+        pred_flat, target_flat: (B, N_tc, H, W)
+        Returns: rmse_per_level: (B, n_levels) if keep_batch_dim else (n_levels,)
         """
         coeffs_pred = ptwt.wavedec2(
             pred_flat,
@@ -215,18 +232,27 @@ class WaveletBinnedRMSE(LossComponent):
             count = 0
             for bp, bt in ((Hp, Ht), (Vp, Vt), (Dp, Dt)):
                 diff = bp - bt
-                sq_sum = sq_sum + diff.pow(2).sum()
-                count = count + diff.numel()
+                if keep_batch_dim:
+                    sq_sum = sq_sum + diff.pow(2).sum(dim=list(range(1, diff.ndim)))
+                    count = count + diff[0].numel()
+                else:
+                    sq_sum = sq_sum + diff.pow(2).sum()
+                    count = count + diff.numel()
             mse = sq_sum / count
             rmse = torch.sqrt(mse)
             rmse_levels.append(rmse)
 
-        return torch.stack(rmse_levels, dim=0)
+        return torch.stack(rmse_levels, dim=-1)
 
     # ------------------------------------------------------------------
     # 3D case
     # ------------------------------------------------------------------
-    def _binned_rmse_3d(self, pred_flat: torch.Tensor, target_flat: torch.Tensor) -> torch.Tensor:
+    def _binned_rmse_3d(
+        self,
+        pred_flat: torch.Tensor,
+        target_flat: torch.Tensor,
+        keep_batch_dim: bool = False
+    ) -> torch.Tensor:
         """
         pred_flat, target_flat: (N, D, H, W)
         Returns: rmse_per_level: (n_levels,)
@@ -270,13 +296,17 @@ class WaveletBinnedRMSE(LossComponent):
                 bp = dct_p[k]
                 bt = dct_t[k]
                 diff = bp - bt
-                sq_sum = sq_sum + diff.pow(2).sum()
-                count = count + diff.numel()
+                if keep_batch_dim:
+                    sq_sum = sq_sum + diff.pow(2).sum(dim=list(range(1, diff.ndim)))
+                    count = count + diff[0].numel()
+                else:
+                    sq_sum = sq_sum + diff.pow(2).sum()
+                    count = count + diff.numel()
             mse = sq_sum / count
             rmse = torch.sqrt(mse)
             rmse_levels.append(rmse)
 
-        return torch.stack(rmse_levels, dim=0)
+        return torch.stack(rmse_levels, dim=-1)
 
     # ------------------------------------------------------------------
     # Utility

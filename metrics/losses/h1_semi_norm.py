@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Literal, Optional, List, Any, Union, Dict, Tuple
-from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 import matplotlib.pyplot as plt
 
 # Filter kernels adapted from Kornia
@@ -81,7 +81,8 @@ class H1SemiNorm(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-        return_detailed: bool = False
+        return_detailed: bool = False,
+        keep_batch_dim: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         Compute Sobolev loss.
@@ -94,6 +95,7 @@ class H1SemiNorm(LossComponent):
         Returns:
             Weighted scalar loss value
         """
+
         # Compute gradients
         pred_grads = self._compute_gradients(predictions)
         target_grads = self._compute_gradients(labels)
@@ -122,9 +124,8 @@ class H1SemiNorm(LossComponent):
         # Get weight tensor with proper broadcasting
         weight_tensor = self.weight_schedule.get_loss_weight(unweighted.shape).to(predictions.device)
         
-        unweighted = apply_batch_wise_normalization(
+        unweighted = self.norm_helper.normalize_loss(
             unweighted,
-            labels,
             self.normalization,
             self.epsilon
         )
@@ -132,13 +133,20 @@ class H1SemiNorm(LossComponent):
         # Apply weights element-wise
         weighted = unweighted * weight_tensor
         
-        # Reduce to scalar
-        if self.reduction == 'mean':
-            total_loss = weighted.mean()
-        elif self.reduction == 'sum':
-            total_loss = weighted.sum()
+        # Reduce to scalar or per-batch vector
+        if keep_batch_dim:
+            reduce_dims = tuple(range(1, weighted.ndim))
+            if self.reduction == 'sum':
+                total_loss = weighted.sum(dim=reduce_dims)
+            else:
+                total_loss = weighted.mean(dim=reduce_dims)
         else:
-            total_loss = weighted.mean()
+            if self.reduction == 'mean':
+                total_loss = weighted.mean()
+            elif self.reduction == 'sum':
+                total_loss = weighted.sum()
+            else:
+                total_loss = weighted.mean()
         
         if not return_detailed:
             return total_loss

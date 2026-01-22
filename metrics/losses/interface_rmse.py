@@ -1,7 +1,7 @@
 from typing import Dict, List, Optional, Tuple, Union
 import torch
 from torch import nn
-from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 
 
 class InterfaceRMSE(LossComponent):
@@ -97,7 +97,8 @@ class InterfaceRMSE(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-        return_detailed: bool = False
+        return_detailed: bool = False,
+        keep_batch_dim: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         Compute interface RMSE loss.
@@ -125,19 +126,18 @@ class InterfaceRMSE(LossComponent):
         # Compute masked squared error in normalized space
         squared_error_norm = (pred_density_norm - true_density_norm) ** 2
         masked_squared_error = squared_error_norm * mask
-        
-        # Compute mean over masked regions
-        mask_sum = mask.sum()
-        if mask_sum > self.eps:
-            unweighted_rmse_norm = torch.sqrt(masked_squared_error.sum() / mask_sum)
-        else:
-            # Fallback: no interface cells found, return zero loss
-            unweighted_rmse_norm = torch.zeros((), device=predictions.device, dtype=predictions.dtype)
+
+        # Compute per-sample RMSE over masked regions
+        reduce_dims = list(range(1, mask.ndim))
+        num = masked_squared_error.sum(dim=reduce_dims)
+        denom = mask.sum(dim=reduce_dims)
+
+        per_sample_rmse_norm = torch.sqrt(num / (denom + self.eps))
+        unweighted_rmse_norm = per_sample_rmse_norm if keep_batch_dim else per_sample_rmse_norm.mean()
         
         # Apply per-batch normalization if requested
-        normalized_rmse = apply_batch_wise_normalization(
+        normalized_rmse = self.norm_helper.normalize_loss(
             unweighted_rmse_norm,
-            labels,
             self.normalization,
             self.eps
         )

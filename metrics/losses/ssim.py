@@ -4,7 +4,7 @@ import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 from typing import Literal, Optional, List, Dict, Union, Tuple
 
 # Adapted from mssim.pytorch:
@@ -76,7 +76,8 @@ class SSIM(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-        return_detailed: bool = False
+        return_detailed: bool = False,
+        keep_batch_dim: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """Calculate the mean SSIM (MSSIM) between two 3d/4d/5d tensors.
 
@@ -111,12 +112,15 @@ class SSIM(LossComponent):
         if labels_weighted.type() != self.gaussian_filter.gaussian_window.type():
             labels_weighted = labels_weighted.type_as(self.gaussian_filter.gaussian_window)
 
-        ssim_value = self.ssim(predictions_weighted, labels_weighted)
+        ssim_value = self.ssim(predictions_weighted, labels_weighted, keep_batch_dim=keep_batch_dim)
+        if keep_batch_dim:
+            # ssim_value is (B*T,) -> reshape and aggregate over T to get (B,)
+            ssim_value = ssim_value.view(B, T).mean(dim=1)
+        
         loss = (1.0 - ssim_value) * self.weight
         
-        loss = apply_batch_wise_normalization(
+        loss = self.norm_helper.normalize_loss(
             loss,
-            labels,
             self.normalization,
             self.epsilon
         )
@@ -127,10 +131,10 @@ class SSIM(LossComponent):
         # SSIM doesn't support detailed breakdown due to non-linear aggregation
         return loss, {}
 
-    def ssim(self, x, y):
+    def ssim(self, x, y, keep_batch_dim: bool = False):
         ssim, _ = self._ssim(x, y)
 
-        if self.keep_batch_dim:
+        if keep_batch_dim:
             return ssim.flatten(1).mean(-1)
         else:
             return ssim.mean()
