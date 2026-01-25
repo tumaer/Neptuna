@@ -7,7 +7,7 @@ train_loss:
       weight: 0.5
   train_loss_weighting_strategy:
     enabled: true  # Set to true to enable
-    type: LearningRateAnnealing
+    type: SoftAdapt
     loss_source: 'train' # 'train', 'eval' or 'both'
     weight_sub_components: true
     weight_per_channel: true

@@ -90,69 +90,6 @@ class InverseDirichlet(LossWeightingStrategyBase):
         var = float(max(0.0, second - mean * mean))
         return {"mean": mean, "second": second, "var": var}
 
-    def _get_previous_weight(self, loss_key: str, current_weights: Dict[str, Dict]) -> float:
-        base_name, sub_name, channel_idx = self._parse_hierarchical_key(loss_key)
-
-        if base_name not in current_weights:
-            return 1.0
-
-        cfg = current_weights[base_name]
-
-        # Base component
-        if sub_name is None and channel_idx is None:
-            return float(cfg.get("base_weight", 1.0))
-
-        # Per-channel
-        if channel_idx is not None:
-            if "channel_weights" in cfg:
-                cw = cfg["channel_weights"]
-                if channel_idx < len(cw):
-                    return float(cw[channel_idx])
-            return 1.0
-
-        # Per-subcomponent
-        if sub_name is not None:
-            if "component_weights" in cfg:
-                return float(cfg["component_weights"].get(sub_name, 1.0))
-            return 1.0
-
-        return 1.0
-
-    def _reconstruct_weight_dict(
-        self,
-        new_weight_scalars: Dict[str, float],
-        current_weights: Dict[str, Dict],
-    ) -> Dict[str, Dict]:
-        new_weights: Dict[str, Dict] = {}
-
-        for base_name, cfg in current_weights.items():
-            new_cfg = cfg.copy()
-
-            # Base weight
-            if base_name in new_weight_scalars:
-                new_cfg["base_weight"] = float(new_weight_scalars[base_name])
-
-            # Channel weights
-            if "channel_weights" in cfg:
-                channel_weights = cfg["channel_weights"].clone()
-                for ch_idx in range(len(channel_weights)):
-                    key = f"{base_name}/channel_{ch_idx}"
-                    if key in new_weight_scalars:
-                        channel_weights[ch_idx] = float(new_weight_scalars[key])
-                new_cfg["channel_weights"] = channel_weights
-
-            # Component weights
-            if "component_weights" in cfg:
-                component_weights = cfg["component_weights"].copy()
-                for sub_name in list(component_weights.keys()):
-                    key = f"{base_name}/{sub_name}"
-                    if key in new_weight_scalars:
-                        component_weights[sub_name] = float(new_weight_scalars[key])
-                new_cfg["component_weights"] = component_weights
-
-            new_weights[base_name] = new_cfg
-
-        return new_weights
 
     def _choose_reference_key(self, keys: List[str]) -> Optional[str]:
         if self.reference_key is not None and self.reference_key in keys:

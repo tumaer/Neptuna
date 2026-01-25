@@ -160,3 +160,85 @@ class LossWeightingStrategyBase(ABC):
                 grouped[base_name]['components'][sub_name] = losses
         
         return grouped
+
+    def _get_previous_weight(
+        self,
+        loss_key: str,
+        current_weights: Dict[str, Dict],
+        default: float = 1.0,
+    ) -> float:
+        """
+        Extract the previous scalar weight for a flat loss_key from the hierarchical weight dict.
+
+        Args:
+            loss_key: Flat key (base, base/channel_i, or base/subcomponent)
+            current_weights: Nested weight dict from CompositeLoss.get_loss_weight_dict()
+            default: Fallback value if the key is missing
+        """
+        base_name, sub_name, channel_idx = self._parse_hierarchical_key(loss_key)
+
+        if base_name not in current_weights:
+            return float(default)
+
+        config = current_weights[base_name]
+
+        if sub_name is None and channel_idx is None:
+            return float(config.get("base_weight", default))
+
+        if channel_idx is not None:
+            if "channel_weights" in config:
+                channel_weights = config["channel_weights"]
+                if channel_idx < len(channel_weights):
+                    return float(channel_weights[channel_idx])
+            return float(default)
+
+        if sub_name is not None:
+            if "component_weights" in config:
+                return float(config["component_weights"].get(sub_name, default))
+            return float(default)
+
+        return float(default)
+
+    def _reconstruct_weight_dict(
+        self,
+        new_weight_scalars: Dict[str, float],
+        current_weights: Dict[str, Dict],
+    ) -> Dict[str, Dict]:
+        """
+        Reconstruct hierarchical dict (base_weight / channel_weights / component_weights)
+        from a flat mapping loss_key -> scalar.
+        """
+        new_weights: Dict[str, Dict] = {}
+
+        for base_name, config in current_weights.items():
+            new_config = config.copy()
+
+            if base_name in new_weight_scalars:
+                new_config["base_weight"] = float(new_weight_scalars[base_name])
+
+            if "channel_weights" in config:
+                channel_weights = config["channel_weights"]
+                if torch.is_tensor(channel_weights):
+                    channel_weights = channel_weights.clone()
+                elif hasattr(channel_weights, "copy"):
+                    channel_weights = channel_weights.copy()
+                else:
+                    channel_weights = list(channel_weights)
+
+                for ch_idx in range(len(channel_weights)):
+                    ch_key = f"{base_name}/channel_{ch_idx}"
+                    if ch_key in new_weight_scalars:
+                        channel_weights[ch_idx] = float(new_weight_scalars[ch_key])
+                new_config["channel_weights"] = channel_weights
+
+            if "component_weights" in config:
+                component_weights = config["component_weights"].copy()
+                for sub_name in list(component_weights.keys()):
+                    comp_key = f"{base_name}/{sub_name}"
+                    if comp_key in new_weight_scalars:
+                        component_weights[sub_name] = float(new_weight_scalars[comp_key])
+                new_config["component_weights"] = component_weights
+
+            new_weights[base_name] = new_config
+
+        return new_weights

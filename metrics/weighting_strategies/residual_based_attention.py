@@ -102,7 +102,7 @@ class ResidualBasedAttention(LossWeightingStrategyBase):
         if key in self.running_lambda:
             return self.running_lambda[key]
 
-        prev_w = self._get_previous_weight(key, current_weights)
+        prev_w = self._get_previous_weight(key, current_weights, default=0.0)
         prev_w = max(float(prev_w), 0.0)
         if prev_w > 0.0:
             return math.sqrt(prev_w)
@@ -169,68 +169,3 @@ class ResidualBasedAttention(LossWeightingStrategyBase):
 
         # 5) Reconstruct hierarchical dict
         return self._reconstruct_weight_dict(new_weight_scalars, current_weights)
-
-    def _get_previous_weight(self, loss_key: str, current_weights: Dict[str, Dict]) -> float:
-        base_name, sub_name, channel_idx = self._parse_hierarchical_key(loss_key)
-
-        if base_name not in current_weights:
-            return 0.0
-
-        config = current_weights[base_name]
-
-        # Base component weight
-        if sub_name is None and channel_idx is None:
-            return float(config.get("base_weight", 0.0))
-
-        # Per-channel weight
-        if channel_idx is not None:
-            if "channel_weights" in config:
-                channel_weights = config["channel_weights"]
-                if channel_idx < len(channel_weights):
-                    return float(channel_weights[channel_idx])
-            return 0.0
-
-        # Per-sub-component weight
-        if sub_name is not None:
-            if "component_weights" in config:
-                component_weights = config["component_weights"]
-                return float(component_weights.get(sub_name, 0.0))
-            return 0.0
-
-        return 0.0
-
-    def _reconstruct_weight_dict(
-        self,
-        new_weight_scalars: Dict[str, float],
-        current_weights: Dict[str, Dict],
-    ) -> Dict[str, Dict]:
-        new_weights: Dict[str, Dict] = {}
-
-        for base_name, config in current_weights.items():
-            new_config = config.copy()
-
-            # Update base weight if present
-            if base_name in new_weight_scalars:
-                new_config["base_weight"] = float(new_weight_scalars[base_name])
-
-            # Update channel weights if present
-            if "channel_weights" in config:
-                channel_weights = config["channel_weights"].clone()
-                for ch_idx in range(len(channel_weights)):
-                    ch_key = f"{base_name}/channel_{ch_idx}"
-                    if ch_key in new_weight_scalars:
-                        channel_weights[ch_idx] = float(new_weight_scalars[ch_key])
-                new_config["channel_weights"] = channel_weights
-
-            # Update component weights if present
-            if "component_weights" in config:
-                component_weights = config["component_weights"].copy()
-                for sub_name in list(component_weights.keys()):
-                    comp_key = f"{base_name}/{sub_name}"
-                    if comp_key in new_weight_scalars:
-                        component_weights[sub_name] = float(new_weight_scalars[comp_key])
-                new_config["component_weights"] = component_weights
-
-            new_weights[base_name] = new_config
-
-        return new_weights
