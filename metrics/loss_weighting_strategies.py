@@ -213,7 +213,21 @@ class LossWeightingStrategyBase(ABC):
         for base_name, config in current_weights.items():
             new_config = config.copy()
 
-            if base_name in new_weight_scalars:
+            has_channel_updates = False
+            if "channel_weights" in config:
+                for ch_idx in range(len(config["channel_weights"])):
+                    if f"{base_name}/channel_{ch_idx}" in new_weight_scalars:
+                        has_channel_updates = True
+                        break
+
+            has_component_updates = False
+            if "component_weights" in config:
+                for sub_name in config["component_weights"].keys():
+                    if f"{base_name}/{sub_name}" in new_weight_scalars:
+                        has_component_updates = True
+                        break
+
+            if base_name in new_weight_scalars and not (has_channel_updates or has_component_updates):
                 new_config["base_weight"] = float(new_weight_scalars[base_name])
 
             if "channel_weights" in config:
