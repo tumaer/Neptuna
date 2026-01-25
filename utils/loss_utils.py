@@ -258,7 +258,7 @@ def fetch_infer_loss_dict(cfg):
     Inference requires the loss object to be initialized with per-channel and timestep
     weighting in order to compute rollout metrics (compute_metrics_for_n_rollouts)
     """
-    eval_loss_config_path = "./config/train_strategy_config/infer_loss.yaml" #TODO: avoid hardcoding "infer_loss.yaml".
+    eval_loss_config_path = "./config/infer_config/infer_loss.yaml" #TODO: avoid hardcoding "infer_loss.yaml".
     eval_loss_cfg = OmegaConf.load(eval_loss_config_path)
 
     num_channels = len(cfg.data_config.filter_features.filter_out_channels)
