@@ -1178,6 +1178,9 @@ class AdaptiveWeightCallback(TrainerCallback):
         self.last_update_epoch = current_epoch
         
         logger.info(f"\nEpoch {current_epoch}: Updated loss weights (from {source_label})")
+
+        # Log weights to W&B via Trainer log (if available)
+        self._log_loss_weights(new_weights, current_epoch)
         
         # Collect all weight information for table formatting
         table_rows = []
@@ -1265,6 +1268,41 @@ class AdaptiveWeightCallback(TrainerCallback):
             logger.info(separator)
         
         return True
+
+    def _log_loss_weights(self, weight_dict: Dict[str, Dict], epoch: int) -> None:
+        """
+        Log loss weights to W&B (through Trainer.log) in a flat, readable format.
+
+        Args:
+            weight_dict: Nested weight dict from CompositeLoss.get_loss_weight_dict()
+            epoch: Current epoch number
+        """
+        trainer = getattr(self, "trainer", None)
+        if trainer is None or not hasattr(trainer, "log"):
+            return
+
+        log_dict: Dict[str, float] = {}
+
+        for component_name, cfg in weight_dict.items():
+            base_weight = float(cfg.get("base_weight", 1.0))
+            log_dict[f"loss_weights/{component_name}"] = base_weight
+
+            if "channel_weights" in cfg:
+                channel_weights = cfg["channel_weights"]
+                for ch_idx in range(len(channel_weights)):
+                    log_dict[
+                        f"loss_weights/{component_name}/channel_{ch_idx}"
+                    ] = float(channel_weights[ch_idx])
+
+            if "component_weights" in cfg:
+                for sub_name, sub_weight in cfg["component_weights"].items():
+                    log_dict[
+                        f"loss_weights/{component_name}/{sub_name}"
+                    ] = float(sub_weight)
+
+        if log_dict:
+            log_dict["loss_weights/epoch"] = float(epoch)
+            trainer.log(log_dict)
         
 
     def on_epoch_end(self, args, state, control, **kwargs):
