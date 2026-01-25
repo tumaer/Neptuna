@@ -170,10 +170,10 @@ def compute_metrics_for_n_rollouts(
             per_sample_overall_metric[:, r] = overall_vals
 
         # std over batch, as in legacy implementation
-        per_step_channel_mean = per_sample_channel_metric.mean(dim=0)            # (R, C)
-        per_step_channel_std = per_sample_channel_metric.std(dim=0, unbiased=False)
-        per_step_overall_mean = per_sample_overall_metric.mean(dim=0)           # (R,)
-        per_step_overall_std = per_sample_overall_metric.std(dim=0, unbiased=False)
+        per_step_channel_mean = per_sample_channel_metric.mean(dim=0)            # (N,R,C) --> (R, C)
+        per_step_channel_std = per_sample_channel_metric.std(dim=0, unbiased=False) # (N,R,C) --> (R, C)
+        per_step_overall_mean = per_sample_overall_metric.mean(dim=0)           # (N,R) --> (R,)
+        per_step_overall_std = per_sample_overall_metric.std(dim=0, unbiased=False) # (N,R) --> (R,)
 
         per_step_mean = torch.cat(
             [per_step_channel_mean, per_step_overall_mean[:, None]], dim=-1
@@ -185,14 +185,14 @@ def compute_metrics_for_n_rollouts(
         out["per_rollout_step_mean"] = per_step_mean.cpu().numpy()
         out["per_rollout_step_std"] = per_step_std.cpu().numpy()
 
-        # cumulative over rollout steps
-        cumulative_channel_per_sample = torch.cumsum(per_sample_channel_metric, dim=1)  # (B, R, C)
-        cumulative_overall_per_sample = torch.cumsum(per_sample_overall_metric, dim=1)  # (B, R)
+        # cumulative over rollout steps (R), N is the number of windows, C is the number of channels
+        cumulative_channel_per_sample = torch.cumsum(per_sample_channel_metric, dim=1)  # (N, R, C) --> (N, R, C)  (cumulative sum over rollout steps)
+        cumulative_overall_per_sample = torch.cumsum(per_sample_overall_metric, dim=1)  # (N, R) --> (N, R)  (cumulative sum over rollout steps)
 
-        cumulative_channel_mean = cumulative_channel_per_sample.mean(dim=0)             # (R, C)
-        cumulative_channel_std = cumulative_channel_per_sample.std(dim=0, unbiased=False)
-        cumulative_overall_mean = cumulative_overall_per_sample.mean(dim=0)             # (R,)
-        cumulative_overall_std = cumulative_overall_per_sample.std(dim=0, unbiased=False)
+        cumulative_channel_mean = cumulative_channel_per_sample.mean(dim=0)             # (N, R, C) --> (R, C)
+        cumulative_channel_std = cumulative_channel_per_sample.std(dim=0, unbiased=False) # (N, R, C) --> (R, C)
+        cumulative_overall_mean = cumulative_overall_per_sample.mean(dim=0)             # (N, R) --> (R,)
+        cumulative_overall_std = cumulative_overall_per_sample.std(dim=0, unbiased=False) # (N, R) --> (R,)
 
         cumulative_mean = torch.cat(
             [cumulative_channel_mean, cumulative_overall_mean[:, None]], dim=-1
@@ -219,10 +219,10 @@ def compute_metrics_for_n_rollouts(
                 per_sample_channel_t[:, t, :] = ch_vals      # (B, C)
                 per_sample_overall_t[:, t] = overall_vals    # (B,)
 
-            per_t_channel_mean = per_sample_channel_t.mean(dim=0)             # (T_flat, C)
-            per_t_channel_std = per_sample_channel_t.std(dim=0, unbiased=False)
-            per_t_overall_mean = per_sample_overall_t.mean(dim=0)            # (T_flat,)
-            per_t_overall_std = per_sample_overall_t.std(dim=0, unbiased=False)
+            per_t_channel_mean = per_sample_channel_t.mean(dim=0)             # (N, T_flat, C) --> (T_flat, C)
+            per_t_channel_std = per_sample_channel_t.std(dim=0, unbiased=False) # (N, T_flat, C) --> (T_flat, C)
+            per_t_overall_mean = per_sample_overall_t.mean(dim=0)            # (N, T_flat) --> (T_flat,)
+            per_t_overall_std = per_sample_overall_t.std(dim=0, unbiased=False) # (N, T_flat) --> (T_flat,)
 
             per_timestep_mean = torch.cat(
                 [per_t_channel_mean, per_t_overall_mean[:, None]], dim=-1
@@ -231,13 +231,16 @@ def compute_metrics_for_n_rollouts(
                 [per_t_channel_std, per_t_overall_std[:, None]], dim=-1
             )
 
-            cumulative_channel_per_sample_t = torch.cumsum(per_sample_channel_t, dim=1)  # (B, T_flat, C)
-            cumulative_overall_per_sample_t = torch.cumsum(per_sample_overall_t, dim=1)  # (B, T_flat)
+            out["per_timestep_mean"] = per_timestep_mean.cpu().numpy()  # (T_flat, C+1)
+            out["per_timestep_std"] = per_timestep_std.cpu().numpy()  # (T_flat, C+1)
 
-            cumulative_t_channel_mean = cumulative_channel_per_sample_t.mean(dim=0)      # (T_flat, C)
-            cumulative_t_channel_std = cumulative_channel_per_sample_t.std(dim=0, unbiased=False)
-            cumulative_t_overall_mean = cumulative_overall_per_sample_t.mean(dim=0)      # (T_flat,)
-            cumulative_t_overall_std = cumulative_overall_per_sample_t.std(dim=0, unbiased=False)
+            cumulative_channel_per_sample_t = torch.cumsum(per_sample_channel_t, dim=1)  # (N, T_flat, C) --> (N, T_flat, C)  (cumulative sum over timesteps)
+            cumulative_overall_per_sample_t = torch.cumsum(per_sample_overall_t, dim=1)  # (N, T_flat) --> (N, T_flat)  (cumulative sum over timesteps)
+
+            cumulative_t_channel_mean = cumulative_channel_per_sample_t.mean(dim=0)      # (N, T_flat, C) --> (T_flat, C)
+            cumulative_t_channel_std = cumulative_channel_per_sample_t.std(dim=0, unbiased=False) # (N, T_flat, C) --> (T_flat, C)
+            cumulative_t_overall_mean = cumulative_overall_per_sample_t.mean(dim=0)      # (N, T_flat) --> (T_flat,)
+            cumulative_t_overall_std = cumulative_overall_per_sample_t.std(dim=0, unbiased=False) # (N, T_flat) --> (T_flat,)
 
             cumulative_timestep_mean = torch.cat(
                 [cumulative_t_channel_mean, cumulative_t_overall_mean[:, None]], dim=-1
@@ -246,10 +249,8 @@ def compute_metrics_for_n_rollouts(
                 [cumulative_t_channel_std, cumulative_t_overall_std[:, None]], dim=-1
             )
 
-            out["per_timestep_mean"] = per_timestep_mean.cpu().numpy()
-            out["per_timestep_std"] = per_timestep_std.cpu().numpy()
-            out["cumulative_timestep_mean"] = cumulative_timestep_mean.cpu().numpy()
-            out["cumulative_timestep_std"] = cumulative_timestep_std.cpu().numpy()
+            out["cumulative_timestep_mean"] = cumulative_timestep_mean.cpu().numpy()  # (T_flat, C+1)
+            out["cumulative_timestep_std"] = cumulative_timestep_std.cpu().numpy()  # (T_flat, C+1)
 
         return metric_name_to_values
 

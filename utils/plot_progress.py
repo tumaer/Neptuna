@@ -1763,7 +1763,8 @@ def plot_rollout_metrics(step_metrics: dict, output_channel_names: list[str], sa
             ax_rollout.axis("off")
 
         # ----------------------
-        # Right column: Timestep
+        # Right column: Timestep, TODO: Do not plot timestep evolution metrics for random start as the start and end range will be incorrect, 
+        # i.e. x_t will be incorrect as it does not take into account where the window of the random start is starting from.
         # ----------------------
         if timestep_mean_key in stats and timestep_std_key in stats:
             means_t = stats[timestep_mean_key]  # (T_flat, C+1)
@@ -1894,7 +1895,6 @@ def plot_multi_run_rollout_metrics(
     save_dir: str,
     title: str | None = None,
     filename: str = "all_runs_rollout_timestep_metrics.png",
-    sequence_info: list[int] | tuple[int, int, int] | None = None,
     runs_sequence_info: dict | None = None,
 ) -> None:
     """Overlay per-metric rollout and timestep curves from multiple runs in one figure.
@@ -1910,9 +1910,6 @@ def plot_multi_run_rollout_metrics(
         Figure title.
     filename : str
         Output filename.
-    sequence_info : List[int] | Tuple[int, int, int] | None
-        Default sequence configuration [input_steps, output_steps, stride] used when a run
-        does not supply its own configuration.
     runs_sequence_info : Optional[dict[str, list[int] | tuple[int, int, int]]]
         Optional mapping from run label to its sequence configuration; when provided,
         each run's timestep x-axis is computed using its own configuration.
@@ -1940,8 +1937,8 @@ def plot_multi_run_rollout_metrics(
     axes[0, 1].set_title("Timestep metrics", fontsize=12)
 
     # Default x-axis scaling for timesteps (used if a run-specific value is absent)
-    default_input_steps = sequence_info[0] if sequence_info is not None else 1
-    default_stride = sequence_info[2] if sequence_info is not None else 1
+    default_input_steps = 1
+    default_stride = 1
 
     # Track one handle per run for a global legend
     run_label_to_handle: dict[str, any] = {}
@@ -2597,91 +2594,104 @@ def calculate_and_save_results_all_channels(
         return
     
     # Build column headers
-    # For each metric and each channel (+ overall), we have mean and std
+    # Arrange overall metrics interleaved by metric, then channel metrics interleaved by metric
     column_headers = ["run_name"]
+    # Overall columns grouped by metric
     for metric_name in all_metric_names:
-        # Per-channel columns
-        for ch_name in output_channel_names:
-            column_headers.append(f"{metric_name}_{ch_name}_mean")
-            column_headers.append(f"{metric_name}_{ch_name}_std")
-        # Overall column
         column_headers.append(f"{metric_name}_overall_mean")
         column_headers.append(f"{metric_name}_overall_std")
-    
-    # Collect data for each run
-    rows = []
-    for run_name, run_metrics in runs_step_metrics.items():
-        row = {"run_name": run_name}
-        
+    # Per-channel columns grouped by metric within each channel
+    for ch_name in output_channel_names:
         for metric_name in all_metric_names:
-            if metric_name not in run_metrics:
-                # Fill with None/empty if metric not present
-                for ch_name in output_channel_names:
-                    row[f"{metric_name}_{ch_name}_mean"] = None
-                    row[f"{metric_name}_{ch_name}_std"] = None
-                row[f"{metric_name}_overall_mean"] = None
-                row[f"{metric_name}_overall_std"] = None
-                continue
+            column_headers.append(f"{metric_name}_{ch_name}_mean")
+            column_headers.append(f"{metric_name}_{ch_name}_std")
+    
+    # Collect data for the single run (expected to be exactly one)
+    run_name, run_metrics = next(iter(runs_step_metrics.items()))
+    row = {"run_name": run_name}
+    
+    for metric_name in all_metric_names:
+        if metric_name not in run_metrics:
+            # Fill with None/empty if metric not present
+            row[f"{metric_name}_overall_mean"] = None
+            row[f"{metric_name}_overall_std"] = None
+            for ch_name in output_channel_names:
+                row[f"{metric_name}_{ch_name}_mean"] = None
+                row[f"{metric_name}_{ch_name}_std"] = None
+            continue
+        
+        stats = run_metrics[metric_name]
+        means = stats.get("per_rollout_step_mean", None)
+        stds = stats.get("per_rollout_step_std", None)
+        
+        if means is None or stds is None:
+            row[f"{metric_name}_overall_mean"] = None
+            row[f"{metric_name}_overall_std"] = None
+            for ch_name in output_channel_names:
+                row[f"{metric_name}_{ch_name}_mean"] = None
+                row[f"{metric_name}_{ch_name}_std"] = None
+            continue
+        
+        # means and stds have shape (R, C+1)
+        # Columns 0..C-1 are per-channel, column -1 is overall
+        R, total_cols = means.shape
+        num_channels = total_cols - 1
+        
+        # Overall statistics (last column)
+        overall_means = means[:, -1] # overall_means has shape (R,)
+        overall_stds = stds[:, -1] # overall_stds has shape (R,)
+        
+        # Mean of means of rollout steps
+        overall_mean_avg = float(np.mean(overall_means))
+
+        # Pooled std of rollout steps
+        overall_pooled_std = float(
+            np.sqrt(
+                np.sum(overall_stds**2 + (overall_means - overall_mean_avg)**2)
+                / (len(overall_means)) #len(overall_means) is the number of rollout steps
+            )
+        )
+        
+        row[f"{metric_name}_overall_mean"] = overall_mean_avg
+        row[f"{metric_name}_overall_std"] = overall_pooled_std
+        
+        # Per-channel statistics after overall
+        for c_idx in range(min(num_channels, len(output_channel_names))):
+            ch_name = output_channel_names[c_idx]
+            channel_means = means[:, c_idx]  # channel_means has shape (R,)
+            channel_stds = stds[:, c_idx]    # channel_stds has shape (R,)
             
-            stats = run_metrics[metric_name]
-            means = stats.get("per_rollout_step_mean", None)
-            stds = stats.get("per_rollout_step_std", None)
+            # Mean of means of rollout steps
+            mean_avg = float(np.mean(channel_means))
             
-            if means is None or stds is None:
-                for ch_name in output_channel_names:
-                    row[f"{metric_name}_{ch_name}_mean"] = None
-                    row[f"{metric_name}_{ch_name}_std"] = None
-                row[f"{metric_name}_overall_mean"] = None
-                row[f"{metric_name}_overall_std"] = None
-                continue
-            
-            # means and stds have shape (R, C+1)
-            # Columns 0..C-1 are per-channel, column -1 is overall
-            R, total_cols = means.shape
-            num_channels = total_cols - 1
-            
-            # Per-channel statistics
-            for c_idx in range(min(num_channels, len(output_channel_names))):
-                ch_name = output_channel_names[c_idx]
-                channel_means = means[:, c_idx]  # shape (R,)
-                channel_stds = stds[:, c_idx]    # shape (R,)
-                
-                # Mean of means
-                mean_avg = float(np.mean(channel_means))
-                
-                # Pooled std
-                pooled_std = float(
-                    np.sqrt(
-                        np.sum(channel_stds**2 + (channel_means - mean_avg)**2)
-                        / (len(channel_means) + 1)
-                    )
-                )
-                
-                row[f"{metric_name}_{ch_name}_mean"] = mean_avg
-                row[f"{metric_name}_{ch_name}_std"] = pooled_std
-            
-            # Overall statistics (last column)
-            overall_means = means[:, -1]
-            overall_stds = stds[:, -1]
-            
-            overall_mean_avg = float(np.mean(overall_means))
-            overall_pooled_std = float(
+            # Pooled std of rollout steps
+            pooled_std = float(
                 np.sqrt(
-                    np.sum(overall_stds**2 + (overall_means - overall_mean_avg)**2)
-                    / (len(overall_means) + 1)
+                    np.sum(channel_stds**2 + (channel_means - mean_avg)**2)
+                    / (len(channel_means)) #len(channel_means) is the number of rollout steps
                 )
             )
             
-            row[f"{metric_name}_overall_mean"] = overall_mean_avg
-            row[f"{metric_name}_overall_std"] = overall_pooled_std
-        
-        rows.append(row)
+            row[f"{metric_name}_{ch_name}_mean"] = mean_avg
+            row[f"{metric_name}_{ch_name}_std"] = pooled_std
+    
+    rows = [row]
     
     # Write to CSV
     out_path = os.path.join(save_dir, filename)
-    with open(out_path, 'w', newline='') as csvfile:
+    prev_column_headers = None
+    if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+        #write out once again the column headers if the column headers are not the same as the previous ones
+        with open(out_path, "r", newline="") as existing_csv:
+            reader = csv.reader(existing_csv)
+            prev_row = next(reader, None)
+            if prev_row:
+                prev_column_headers = [col.strip() for col in prev_row]
+    write_header = prev_column_headers is None or list(prev_column_headers) != list(column_headers)
+    with open(out_path, 'a', newline='') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=column_headers)
-        writer.writeheader()
+        if write_header:
+            writer.writeheader()
         writer.writerows(rows)
     
     print(f"Saved rollout metrics to {out_path}")
