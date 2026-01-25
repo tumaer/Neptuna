@@ -1,4 +1,4 @@
-from typing import Optional, List, Dict, Union, Tuple
+from typing import Optional, List, Dict, Union, Tuple, Literal
 
 import torch
 import torch.nn as nn
@@ -37,6 +37,7 @@ class RMSE(LossComponent):
         data_dim: int = None,
         field_names: List[str] = None,
         reduction: str = 'mean',
+        normalization: Literal['none', 'variance', 'range'] = 'none',
         epsilon: float = 1e-8
     ):
         super().__init__(
@@ -48,13 +49,15 @@ class RMSE(LossComponent):
         )
         self.reduction = reduction
         self.epsilon = epsilon
+        self.normalization = normalization
     
     def forward(
         self,
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-        return_detailed: bool = False
+        return_detailed: bool = False,
+        keep_batch_dim: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
 
         # ------------------------------------------------------------------
@@ -63,10 +66,22 @@ class RMSE(LossComponent):
         if isinstance(self.weight_schedule, WeightSchedule) and self.weight_schedule.is_scalar_only():
             base = float(self.weight_schedule.base_weight)
 
-            # Clean RMSE
+            # Clean RMSE (per-sample sqrt)
             sq_error = (predictions - labels) ** 2
-            mse = sq_error.mean()
-            total_loss = torch.sqrt(mse + self.epsilon)
+            reduce_dims = list(range(1, sq_error.ndim))
+            per_sample_mse = sq_error.mean(dim=reduce_dims)
+            per_sample_rmse = torch.sqrt(per_sample_mse + self.epsilon)
+
+            total_loss = per_sample_rmse if keep_batch_dim else per_sample_rmse.mean()
+
+            total_loss = self.norm_helper.normalize_loss(
+                total_loss,
+                self.normalization,
+                self.epsilon
+            )
+
+            if base != 1.0:
+                total_loss = total_loss * base
 
             if base != 1.0:
                 total_loss = total_loss * base
@@ -105,9 +120,18 @@ class RMSE(LossComponent):
         weight_tensor = self.weight_schedule.get_loss_weight(sq_error.shape).to(predictions.device)
         weighted_sq = sq_error * weight_tensor
 
-        # Compute weighted MSE then RMSE
-        mse = weighted_sq.mean()
-        total_loss = torch.sqrt(mse + self.epsilon)
+        # Compute weighted RMSE (per-sample sqrt)
+        reduce_dims = list(range(1, weighted_sq.ndim))
+        per_sample_mse = weighted_sq.mean(dim=reduce_dims)
+        per_sample_rmse = torch.sqrt(per_sample_mse + self.epsilon)
+
+        total_loss = per_sample_rmse if keep_batch_dim else per_sample_rmse.mean()
+
+        total_loss = self.norm_helper.normalize_loss(
+            total_loss,
+            self.normalization,
+            self.epsilon
+        )
 
         if not return_detailed:
             return total_loss

@@ -5,7 +5,7 @@ from typing import Literal, List, Optional, Dict, Union, Tuple
 import torch
 import torch.nn as nn
 from torch.nn.functional import conv1d, avg_pool1d, avg_pool2d, avg_pool3d, interpolate
-from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 
 try:  # Import the keops library, www.kernel-operations.io
     from pykeops.torch import generic_logsumexp, LazyTensor
@@ -67,7 +67,8 @@ class SinkhornDivergence(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-        return_detailed: bool = False
+        return_detailed: bool = False,
+        keep_batch_dim: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         Compute Sinkhorn divergence between predictions and labels.
@@ -112,11 +113,13 @@ class SinkhornDivergence(LossComponent):
             **self.kwargs,
         )
         
-        loss = divergence.mean()
+        if keep_batch_dim:
+            loss = divergence
+        else:
+            loss = divergence.mean()
 
-        loss = apply_batch_wise_normalization(
+        loss = self.norm_helper.normalize_loss(
             loss,
-            labels,
             self.normalization,
             self.epsilon
         )

@@ -102,48 +102,43 @@ def compute_metrics_for_n_rollouts(
                 per_sample_channel = None  # we will fill with overall later
 
             with torch.no_grad():
-                # loop over samples in batch
-                for b_idx in range(bsz):
-                    p_b = preds_slice[b_idx : b_idx + 1]     # (1, T', C, ...)
-                    t_b = targets_slice[b_idx : b_idx + 1]  # (1, T', C, ...)
+                # overall scalar per sample (vectorized)
+                total_loss = comp(
+                    model=None,
+                    predictions=preds_slice,
+                    labels=targets_slice,
+                    return_detailed=False,
+                    keep_batch_dim=True
+                )
+                per_sample_overall = (
+                    total_loss.detach()
+                    if torch.is_tensor(total_loss)
+                    else torch.tensor(total_loss, device=device)
+                )
 
-                    # overall scalar for this sample
-                    total_loss_b, _ = comp(
-                        model=None,
-                        predictions=p_b,
-                        labels=t_b,
-                        return_detailed=True,
-                    )
-                    # assume scalar
-                    per_sample_overall[b_idx] = (
-                        total_loss_b.detach()
-                        if torch.is_tensor(total_loss_b)
-                        else torch.tensor(total_loss_b, device=device)
-                    )
+                # per-channel via one-hots, if possible (loop over channels only)
+                if use_channel_weights:
+                    for ch in range(C):
+                        one_hot = torch.zeros_like(original_channel_weights)
+                        one_hot[..., ch] = float(len(range(C)))  # keep scale consistent with mean
+                        ws.channel_weights = one_hot
 
-                    # per-channel via one-hots, if possible
-                    if use_channel_weights:
-                        for ch in range(C):
-                            one_hot = torch.zeros_like(original_channel_weights)
-                            one_hot[..., ch] = float(len(range(C))) # when mean is taken inside the forward of the metric, it takes into account all the elements in the tensor which is C times the per channel 
-                            ws.channel_weights = one_hot
+                        ch_loss = comp(
+                            model=None,
+                            predictions=preds_slice,
+                            labels=targets_slice,
+                            return_detailed=False,
+                            keep_batch_dim=True
+                        )
 
-                            ch_loss_b, _ = comp(
-                                model=None,
-                                predictions=p_b,
-                                labels=t_b,
-                                return_detailed=True,
-                            )
-
-                            per_sample_channel[b_idx, ch] = (
-                                ch_loss_b.detach()
-                                if torch.is_tensor(ch_loss_b)
-                                else torch.tensor(ch_loss_b, device=device)
-                            )
+                        per_sample_channel[:, ch] = (
+                            ch_loss.detach()
+                            if torch.is_tensor(ch_loss)
+                            else torch.tensor(ch_loss, device=device)
+                        )
 
                     # restore channel weights
-                    if use_channel_weights:
-                        ws.channel_weights = original_channel_weights
+                    ws.channel_weights = original_channel_weights
 
             # If we could not decompose channels, broadcast overall
             if per_sample_channel is None:

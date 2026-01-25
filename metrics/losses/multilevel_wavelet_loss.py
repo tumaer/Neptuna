@@ -3,7 +3,7 @@ import torch.nn as nn
 import ptwt
 
 from typing import Literal, Optional, List, Dict, Union, Tuple
-from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 
 # Based on paper by L. Prandtl et al.,
 # 'Wavelet-Based Loss for High-Frequency Interface Dynamics',
@@ -54,7 +54,8 @@ class MultilevelWaveletLoss(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-        return_detailed: bool = False
+        return_detailed: bool = False,
+        keep_batch_dim: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         predictions, labels: (B, T, C, *spatial)
@@ -75,18 +76,31 @@ class MultilevelWaveletLoss(LossComponent):
         predictions_weighted = predictions * weight_sqrt
         labels_weighted = labels * weight_sqrt
 
-        # spatial wavelet loss (over spatial dimensions only)
-        Lws = self._wavelet_loss_spatial(predictions_weighted, labels_weighted)
+        if keep_batch_dim:
+            # Compute per-sample loss
+            per_batch = []
+            for b in range(predictions_weighted.shape[0]):
+                pred_b = predictions_weighted[b:b+1]
+                label_b = labels_weighted[b:b+1]
 
-        # temporal wavelet loss (over time dimension only)
-        Lwt = self._wavelet_loss_temporal(predictions_weighted, labels_weighted)
+                Lws = self._wavelet_loss_spatial(pred_b, label_b)
+                Lwt = self._wavelet_loss_temporal(pred_b, label_b)
+                total_b = (Lws + self.beta * Lwt) * base
+                per_batch.append(total_b)
 
-        # total (weighted)
-        total = (Lws + self.beta * Lwt) * base
+            total = torch.stack(per_batch, dim=0)
+        else:
+            # spatial wavelet loss (over spatial dimensions only)
+            Lws = self._wavelet_loss_spatial(predictions_weighted, labels_weighted)
 
-        total = apply_batch_wise_normalization(
+            # temporal wavelet loss (over time dimension only)
+            Lwt = self._wavelet_loss_temporal(predictions_weighted, labels_weighted)
+
+            # total (weighted)
+            total = (Lws + self.beta * Lwt) * base
+
+        total = self.norm_helper.normalize_loss(
             total,
-            labels,
             self.normalization,
             self.eps
         )

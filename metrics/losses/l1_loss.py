@@ -3,7 +3,7 @@ from typing import Literal, Optional, List, Dict, Union, Tuple
 import torch
 import torch.nn as nn
 
-from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 
 
 class L1Loss(LossComponent):
@@ -50,7 +50,8 @@ class L1Loss(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-        return_detailed: bool = False
+        return_detailed: bool = False,
+        keep_batch_dim: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
 
         # ------------------------------------------------------------------
@@ -61,14 +62,18 @@ class L1Loss(LossComponent):
 
             # Clean L1
             abs_err = torch.abs(predictions - labels)
-            total_loss = abs_err.mean()
+
+            if keep_batch_dim:
+                reduce_dims = list(range(1, abs_err.ndim))
+                total_loss = abs_err.mean(dim=reduce_dims)
+            else:
+                total_loss = abs_err.mean()
 
             if base != 1.0:
                 total_loss = total_loss * base
 
-            total_loss = apply_batch_wise_normalization(
+            total_loss = self.norm_helper.normalize_loss(
                 total_loss,
-                labels,
                 self.normalization,
                 self.epsilon
             )
@@ -107,7 +112,17 @@ class L1Loss(LossComponent):
         
         weighted = unweighted * weight_tensor
         
-        total_loss = weighted.mean()
+        if keep_batch_dim:
+            reduce_dims = list(range(1, weighted.ndim))
+            total_loss = weighted.mean(dim=reduce_dims)
+        else:
+            total_loss = weighted.mean()
+
+        total_loss = self.norm_helper.normalize_loss(
+            total_loss,
+            self.normalization,
+            self.epsilon
+        )
         
         if not return_detailed:
             return total_loss

@@ -15,8 +15,6 @@ from .losses import (
     WaveletBinnedRMSE,
     IntegralConservationRMSE,
     RMSE,
-    VRMSE,
-    NRMSE,
     InterfaceRMSE,
 )
 
@@ -42,8 +40,6 @@ __all__ = [
     'WaveletBinnedRMSE',
     'IntegralConservationRMSE',
     'RMSE',
-    'VRMSE',
-    'NRMSE',
     'ReLoBRaLo',
     'ResidualBasedAttention',
     'SoftAdapt',
