@@ -123,7 +123,7 @@ class RMSE(LossComponent):
         # Compute weighted RMSE (per-sample sqrt)
         reduce_dims = list(range(1, weighted_sq.ndim))
         per_sample_mse = weighted_sq.mean(dim=reduce_dims)
-        per_sample_rmse = torch.sqrt(per_sample_mse + self.epsilon)
+        per_sample_rmse = torch.sqrt(per_sample_mse)
 
         total_loss = per_sample_rmse if keep_batch_dim else per_sample_rmse.mean()
 

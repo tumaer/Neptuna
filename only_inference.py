@@ -1205,10 +1205,11 @@ def main(cfg: DictConfig):
     for experiment_dir in experiment_dirs:
         res = run_inference_for_each_experiment(experiment_dir, infer_config)
         run_label = os.path.basename(experiment_dir)
-        runs_step_metrics_random_start[run_label] = res["random_start"]["metrics"]
-        runs_step_metrics_ic_start[run_label] = res["ic_start"]["metrics"]
-        # Set sequence info only when IC start results are present
+        if res.get("random_start"):
+            runs_step_metrics_random_start[run_label] = res["random_start"]["metrics"]
+            runs_sequence_info[run_label] = res["random_start"]["sequence_info"]
         if res.get("ic_start"):
+            runs_step_metrics_ic_start[run_label] = res["ic_start"]["metrics"]
             runs_sequence_info[run_label] = res["ic_start"]["sequence_info"]
         try:
             checkpoint_path = find_checkpoint_path(experiment_dir)

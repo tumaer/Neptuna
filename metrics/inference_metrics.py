@@ -121,6 +121,8 @@ def compute_metrics_for_n_rollouts(
                     for ch in range(C):
                         one_hot = torch.zeros_like(original_channel_weights)
                         one_hot[..., ch] = float(len(range(C)))  # keep scale consistent with mean
+                        # when mean is taken inside the forward() method of the metric class, it takes into account all the elements
+                        # in the tensor which is C times the per channel
                         ws.channel_weights = one_hot
 
                         ch_loss = comp(
