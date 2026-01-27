@@ -119,16 +119,16 @@ def compute_metrics_for_n_rollouts(
                 # per-channel via one-hots, if possible (loop over channels only)
                 if use_channel_weights:
                     for ch in range(C):
-                        one_hot = torch.zeros_like(original_channel_weights)
-                        one_hot[..., ch] = float(len(range(C)))  # keep scale consistent with mean
+                        #one_hot = torch.zeros_like(original_channel_weights)
+                        #one_hot[..., ch] = 1.0 #float(len(range(C)))  # keep scale consistent with mean
                         # when mean is taken inside the forward() method of the metric class, it takes into account all the elements
                         # in the tensor which is C times the per channel
-                        ws.channel_weights = one_hot
+                        ws.channel_weights = torch.tensor([1.0])
 
                         ch_loss = comp(
                             model=None,
-                            predictions=preds_slice,
-                            labels=targets_slice,
+                            predictions=preds_slice[:,:,ch:ch+1,...],
+                            labels=targets_slice[:,:,ch:ch+1,...],
                             return_detailed=False,
                             keep_batch_dim=True
                         )
