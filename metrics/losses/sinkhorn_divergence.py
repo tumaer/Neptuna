@@ -42,7 +42,7 @@ class SinkhornDivergence(LossComponent):
         scaling: float = 0.5,
         cost=None,
         debias: bool = True,
-        normalization: Literal['none', 'magnitude', 'variance'] = 'none',
+        normalization: Literal['none', 'range', 'variance'] = 'none',
         epsilon: float = 1e-8,
 
         **kwargs,
@@ -68,7 +68,7 @@ class SinkhornDivergence(LossComponent):
         predictions: torch.Tensor,
         labels: torch.Tensor,
         return_detailed: bool = False,
-        keep_batch_dim: bool = False
+        keep_bc_dims: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         Compute Sinkhorn divergence between predictions and labels.
@@ -92,37 +92,57 @@ class SinkhornDivergence(LossComponent):
         predictions_weighted = predictions * weight_sqrt
         labels_weighted = labels * weight_sqrt
         
-        # Prepare tensors for Sinkhorn (handles reshaping, non-negativity, etc.)
-        predictions_weighted, labels_weighted, axes = prepare_for_sinkhorn(
-            predictions_weighted, labels_weighted
-        )
-        
-        axes_to_use = self.axes if self.axes is not None else axes
+        if keep_bc_dims:
+            B, T, C = predictions_weighted.shape[:3]
+            per_bc = []
+            for b in range(B):
+                per_c = []
+                for c in range(C):
+                    pred_bc = predictions_weighted[b:b+1, :, c:c+1, ...]
+                    label_bc = labels_weighted[b:b+1, :, c:c+1, ...]
 
-        divergence = sinkhorn_divergence(
-            a=predictions_weighted,
-            b=labels_weighted,
-            p=self.p,
-            blur=self.blur,
-            reach=self.reach,
-            axes=axes_to_use,
-            scaling=self.scaling,
-            cost=self.cost,
-            debias=self.debias,
-            potentials=False,
-            **self.kwargs,
-        )
-        
-        if keep_batch_dim:
-            loss = divergence
+                    pred_bc, label_bc, axes = prepare_for_sinkhorn(pred_bc, label_bc)
+                    axes_to_use = self.axes if self.axes is not None else axes
+
+                    divergence = sinkhorn_divergence(
+                        a=pred_bc,
+                        b=label_bc,
+                        p=self.p,
+                        blur=self.blur,
+                        reach=self.reach,
+                        axes=axes_to_use,
+                        scaling=self.scaling,
+                        cost=self.cost,
+                        debias=self.debias,
+                        potentials=False,
+                        **self.kwargs,
+                    )
+                    per_c.append(divergence.mean())  # reduce over frames
+                per_bc.append(torch.stack(per_c, dim=0))
+            loss = torch.stack(per_bc, dim=0)  # (B, C)
         else:
-            loss = divergence.mean()
+            # Prepare tensors for Sinkhorn (handles reshaping, non-negativity, etc.)
+            predictions_weighted, labels_weighted, axes = prepare_for_sinkhorn(
+                predictions_weighted, labels_weighted
+            )
+            
+            axes_to_use = self.axes if self.axes is not None else axes
 
-        loss = self.norm_helper.normalize_loss(
-            loss,
-            self.normalization,
-            self.epsilon
-        )
+            divergence = sinkhorn_divergence(
+                a=predictions_weighted,
+                b=labels_weighted,
+                p=self.p,
+                blur=self.blur,
+                reach=self.reach,
+                axes=axes_to_use,
+                scaling=self.scaling,
+                cost=self.cost,
+                debias=self.debias,
+                potentials=False,
+                **self.kwargs,
+            )
+            
+            loss = divergence.mean()
         
         if not return_detailed:
             return loss

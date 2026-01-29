@@ -34,7 +34,7 @@ class MultilevelWaveletLoss(LossComponent):
         mode_spatial: str = "reflect",
         mode_temporal: str = "reflect",
         reduction: str = "mean",
-        normalization: Literal['none', 'magnitude', 'variance'] = 'none',
+        normalization: Literal['none', 'range', 'variance'] = 'none',
     ):
         super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_helper=norm_helper)
         assert reduction in ("mean", "sum")
@@ -55,7 +55,7 @@ class MultilevelWaveletLoss(LossComponent):
         predictions: torch.Tensor,
         labels: torch.Tensor,
         return_detailed: bool = False,
-        keep_batch_dim: bool = False
+        keep_bc_dims: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         predictions, labels: (B, T, C, *spatial)
@@ -76,19 +76,21 @@ class MultilevelWaveletLoss(LossComponent):
         predictions_weighted = predictions * weight_sqrt
         labels_weighted = labels * weight_sqrt
 
-        if keep_batch_dim:
-            # Compute per-sample loss
-            per_batch = []
-            for b in range(predictions_weighted.shape[0]):
-                pred_b = predictions_weighted[b:b+1]
-                label_b = labels_weighted[b:b+1]
+        if keep_bc_dims:
+            B, T, C = predictions_weighted.shape[:3]
+            per_bc = []
+            for b in range(B):
+                per_c = []
+                for c in range(C):
+                    pred_bc = predictions_weighted[b:b+1, :, c:c+1, ...]
+                    label_bc = labels_weighted[b:b+1, :, c:c+1, ...]
 
-                Lws = self._wavelet_loss_spatial(pred_b, label_b)
-                Lwt = self._wavelet_loss_temporal(pred_b, label_b)
-                total_b = (Lws + self.beta * Lwt) * base
-                per_batch.append(total_b)
-
-            total = torch.stack(per_batch, dim=0)
+                    Lws = self._wavelet_loss_spatial(pred_bc, label_bc)
+                    Lwt = self._wavelet_loss_temporal(pred_bc, label_bc)
+                    total_bc = (Lws + self.beta * Lwt) * base
+                    per_c.append(total_bc)
+                per_bc.append(torch.stack(per_c, dim=0))
+            total = torch.stack(per_bc, dim=0)  # (B, C)
         else:
             # spatial wavelet loss (over spatial dimensions only)
             Lws = self._wavelet_loss_spatial(predictions_weighted, labels_weighted)
@@ -98,12 +100,6 @@ class MultilevelWaveletLoss(LossComponent):
 
             # total (weighted)
             total = (Lws + self.beta * Lwt) * base
-
-        total = self.norm_helper.normalize_loss(
-            total,
-            self.normalization,
-            self.eps
-        )
         
         if not return_detailed:
             return total

@@ -37,7 +37,7 @@ class RMSE(LossComponent):
         data_dim: int = None,
         field_names: List[str] = None,
         reduction: str = 'mean',
-        normalization: Literal['none', 'variance', 'range'] = 'none',
+        normalization: Literal['none', 'range', 'variance'] = 'none',
         epsilon: float = 1e-8
     ):
         super().__init__(
@@ -47,9 +47,16 @@ class RMSE(LossComponent):
             field_names=field_names,
             norm_helper=norm_helper
         )
+        if reduction not in ('mean', 'sum'):
+            raise ValueError(f"Unsupported reduction: {reduction}")
         self.reduction = reduction
         self.epsilon = epsilon
         self.normalization = normalization
+
+    def _reduce(self, x: torch.Tensor, dims: Optional[List[int]] = None) -> torch.Tensor:
+        if self.reduction == 'mean':
+            return x.mean(dim=dims) if dims is not None else x.mean()
+        return x.sum(dim=dims) if dims is not None else x.sum()
     
     def forward(
         self,
@@ -57,31 +64,34 @@ class RMSE(LossComponent):
         predictions: torch.Tensor,
         labels: torch.Tensor,
         return_detailed: bool = False,
-        keep_batch_dim: bool = False
+        keep_bc_dims: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
 
         # ------------------------------------------------------------------
         # Fast path: scalar-only schedule (no timestep/channel/component)
         # ------------------------------------------------------------------
-        if isinstance(self.weight_schedule, WeightSchedule) and self.weight_schedule.is_scalar_only():
+        if self.weight_schedule.is_scalar_only():
             base = float(self.weight_schedule.base_weight)
 
             # Clean RMSE (per-sample sqrt)
             sq_error = (predictions - labels) ** 2
-            reduce_dims = list(range(1, sq_error.ndim))
-            per_sample_mse = sq_error.mean(dim=reduce_dims)
-            per_sample_rmse = torch.sqrt(per_sample_mse + self.epsilon)
-
-            total_loss = per_sample_rmse if keep_batch_dim else per_sample_rmse.mean()
-
-            total_loss = self.norm_helper.normalize_loss(
-                total_loss,
+            norm_error = self.norm_helper.normalize_error(
+                sq_error,
+                labels,
+                self.data_dim,
                 self.normalization,
                 self.epsilon
             )
 
-            if base != 1.0:
-                total_loss = total_loss * base
+            if keep_bc_dims:
+                # Keep batch and channel; reduce over time + spatial
+                reduce_dims = [1] + list(range(3, norm_error.ndim))
+            else:
+                reduce_dims = list(range(1, norm_error.ndim))
+            per_sample_mse = self._reduce(norm_error, reduce_dims)
+            per_sample_rmse = torch.sqrt(per_sample_mse + self.epsilon)
+
+            total_loss = per_sample_rmse if keep_bc_dims else self._reduce(per_sample_rmse)
 
             if base != 1.0:
                 total_loss = total_loss * base
@@ -92,22 +102,20 @@ class RMSE(LossComponent):
             detailed: Dict[str, torch.Tensor] = {}
 
             # Per-timestep: average over batch, channels, spatial dims
-            if sq_error.ndim >= 2:
-                dims_to_reduce = [0] + list(range(2, sq_error.ndim))
-                per_timestep_mse = sq_error.mean(dim=dims_to_reduce)
-                per_timestep = torch.sqrt(per_timestep_mse + self.epsilon)
-                if base != 1.0:
-                    per_timestep = per_timestep * base
-                detailed['per_timestep'] = per_timestep.detach()
+            dims_to_reduce = [0] + list(range(2, sq_error.ndim))
+            per_timestep_mse = self._reduce(sq_error, dims_to_reduce)
+            per_timestep = torch.sqrt(per_timestep_mse + self.epsilon)
+            if base != 1.0:
+                per_timestep = per_timestep * base
+            detailed['per_timestep'] = per_timestep.detach()
 
             # Per-channel: average over batch, timesteps, spatial dims
-            if sq_error.ndim >= 3:
-                dims_to_reduce = [0, 1] + list(range(3, sq_error.ndim))
-                per_channel_mse = sq_error.mean(dim=dims_to_reduce)
-                per_channel = torch.sqrt(per_channel_mse + self.epsilon)
-                if base != 1.0:
-                    per_channel = per_channel * base
-                detailed['per_channel'] = per_channel.detach()
+            dims_to_reduce = [0, 1] + list(range(3, sq_error.ndim))
+            per_channel_mse = self._reduce(sq_error, dims_to_reduce)
+            per_channel = torch.sqrt(per_channel_mse + self.epsilon)
+            if base != 1.0:
+                per_channel = per_channel * base
+            detailed['per_channel'] = per_channel.detach()
 
             return total_loss, detailed
 
@@ -116,22 +124,27 @@ class RMSE(LossComponent):
         # ------------------------------------------------------------------
         sq_error = (predictions - labels) ** 2
 
+        norm_error = self.norm_helper.normalize_error(
+                sq_error,
+                labels,
+                self.data_dim,
+                self.normalization,
+                self.epsilon
+            )
+
         # Broadcastable weights (at most (1, T, C, 1, ...)), on correct device
-        weight_tensor = self.weight_schedule.get_loss_weight(sq_error.shape).to(predictions.device)
-        weighted_sq = sq_error * weight_tensor
+        weight_tensor = self.weight_schedule.get_loss_weight(norm_error.shape).to(predictions.device)
+        weighted_sq = norm_error * weight_tensor
 
-        # Compute weighted RMSE (per-sample sqrt)
-        reduce_dims = list(range(1, weighted_sq.ndim))
-        per_sample_mse = weighted_sq.mean(dim=reduce_dims)
-        per_sample_rmse = torch.sqrt(per_sample_mse)
+        if keep_bc_dims:
+            # Keep batch and channel; reduce over time + spatial
+            reduce_dims = [1] + list(range(3, weighted_sq.ndim))
+        else:
+            reduce_dims = list(range(1, weighted_sq.ndim))
+        per_sample_mse = self._reduce(weighted_sq, reduce_dims)
+        per_sample_rmse = torch.sqrt(per_sample_mse + self.epsilon)
 
-        total_loss = per_sample_rmse if keep_batch_dim else per_sample_rmse.mean()
-
-        total_loss = self.norm_helper.normalize_loss(
-            total_loss,
-            self.normalization,
-            self.epsilon
-        )
+        total_loss = per_sample_rmse if keep_bc_dims else self._reduce(per_sample_rmse)
 
         if not return_detailed:
             return total_loss
@@ -139,14 +152,12 @@ class RMSE(LossComponent):
         detailed: Dict[str, torch.Tensor] = {}
 
         # Aggregated diagnostics (reductions over the weighted squared error)
-        if weighted_sq.ndim >= 2:
-            dims_to_reduce = [0] + list(range(2, weighted_sq.ndim))
-            per_timestep_mse = weighted_sq.mean(dim=dims_to_reduce)
-            detailed['per_timestep'] = torch.sqrt(per_timestep_mse + self.epsilon).detach()
+        dims_to_reduce = [0] + list(range(2, weighted_sq.ndim))
+        per_timestep_mse = self._reduce(weighted_sq, dims_to_reduce)
+        detailed['per_timestep'] = torch.sqrt(per_timestep_mse + self.epsilon).detach()
 
-        if weighted_sq.ndim >= 3:
-            dims_to_reduce = [0, 1] + list(range(3, weighted_sq.ndim))
-            per_channel_mse = weighted_sq.mean(dim=dims_to_reduce)
-            detailed['per_channel'] = torch.sqrt(per_channel_mse + self.epsilon).detach()
+        dims_to_reduce = [0, 1] + list(range(3, weighted_sq.ndim))
+        per_channel_mse = self._reduce(weighted_sq, dims_to_reduce)
+        detailed['per_channel'] = torch.sqrt(per_channel_mse + self.epsilon).detach()
 
         return total_loss, detailed

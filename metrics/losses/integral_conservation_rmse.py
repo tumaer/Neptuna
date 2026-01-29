@@ -101,7 +101,7 @@ class IntegralConservationRMSE(LossComponent):
         boundary_keys: Optional[Sequence[str]] = None,
         use_boundary_fluxes: bool = False,
         quantity_weights: Optional[Dict[str, float]] = None,
-        normalization: Literal['none', 'magnitude', 'variance'] = 'none',
+        normalization: Literal['none', 'range', 'variance'] = 'none',
         reference_quantities: Optional[Dict[str, float]] = None,
         eps: float = 1e-8,
     ):
@@ -223,7 +223,7 @@ class IntegralConservationRMSE(LossComponent):
         predictions: torch.Tensor,
         labels: torch.Tensor,
         return_detailed: bool = False,
-        keep_batch_dim: bool = False
+        keep_bc_dims: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         # Denormalize fields
         pred_fields = self.norm_helper.denormalize_to_fields(predictions)
@@ -238,7 +238,7 @@ class IntegralConservationRMSE(LossComponent):
             domain_pred,
             domain_true,
             prefix="domain",
-            keep_batch_dim=keep_batch_dim,
+            keep_bc_dims=keep_bc_dims,
         )
 
         # Compute boundary fluxes if enabled
@@ -249,7 +249,7 @@ class IntegralConservationRMSE(LossComponent):
             boundary_loss_dict = self._compute_cRMSE_boundary_dict(
                 flux_pred,
                 flux_true,
-                keep_batch_dim=keep_batch_dim,
+                keep_bc_dims=keep_bc_dims,
             )
 
         # All components contain raw normalized differences
@@ -259,7 +259,7 @@ class IntegralConservationRMSE(LossComponent):
         self.last_components = {k: v.detach() for k, v in all_components.items()}
 
         # Aggregate: compute per-sample MSE = sum(weighted_components^2)
-        if keep_batch_dim:
+        if keep_bc_dims:
             total_squared = torch.zeros(
                 (predictions.shape[0],),
                 device=predictions.device,
@@ -272,14 +272,8 @@ class IntegralConservationRMSE(LossComponent):
             q_weight = self.weight_schedule.get_loss_component_weight(name)
             total_squared = total_squared + q_weight * (value ** 2)
 
-        # Take square root to get RMSE (per-sample if keep_batch_dim)
+        # Take square root to get RMSE (per-sample if keep_bc_dims)
         total = torch.sqrt(total_squared + self.eps)
-
-        total = self.norm_helper.normalize_loss(
-            total,
-            self.normalization,
-            self.eps
-        )
         
         # Apply base weight
         weighted_total = self.weight_schedule.base_weight * total
@@ -478,7 +472,7 @@ class IntegralConservationRMSE(LossComponent):
         series_pred: Dict[str, torch.Tensor],
         series_true: Dict[str, torch.Tensor],
         prefix: str = "",
-        keep_batch_dim: bool = False,
+        keep_bc_dims: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
         Compute dimensionless normalized raw difference for each quantity.
@@ -511,7 +505,7 @@ class IntegralConservationRMSE(LossComponent):
             pred = series_pred[key]
             true = series_true[key]
 
-            diff = self._mean_diff(pred, true, keep_batch_dim=keep_batch_dim)
+            diff = self._mean_diff(pred, true, keep_bc_dims=keep_bc_dims)
             
             # Get characteristic scale for this quantity
             char_scale = self.characteristic_scales.get(key, 1.0)
@@ -533,7 +527,7 @@ class IntegralConservationRMSE(LossComponent):
         self,
         flux_pred: Dict[str, Dict[str, torch.Tensor]],
         flux_true: Dict[str, Dict[str, torch.Tensor]],
-        keep_batch_dim: bool = False,
+        keep_bc_dims: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
         Compute dimensionless normalized raw difference for boundary fluxes.
@@ -569,7 +563,7 @@ class IntegralConservationRMSE(LossComponent):
 
                 pred_series = flux_pred[q_key][patch_name]
                 
-                diff = self._mean_diff(pred_series, true_series, keep_batch_dim=keep_batch_dim)
+                diff = self._mean_diff(pred_series, true_series, keep_bc_dims=keep_bc_dims)
                 
                 # Convert scale to tensor
                 char_scale_tensor = torch.tensor(
@@ -590,11 +584,11 @@ class IntegralConservationRMSE(LossComponent):
     def _mean_diff(
         pred: torch.Tensor,
         true: torch.Tensor,
-        keep_batch_dim: bool = False,
+        keep_bc_dims: bool = False,
     ) -> torch.Tensor:
         """Compute mean absolute difference over all non-batch dimensions."""
         diff = pred - true
-        if keep_batch_dim:
+        if keep_bc_dims:
             reduce_dims = list(range(1, diff.ndim))
         else:
             reduce_dims = list(range(0, diff.ndim))

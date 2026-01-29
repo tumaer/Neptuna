@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List, Optional, Dict, Union, Tuple
+from typing import List, Optional, Dict, Union, Tuple, Literal
 
 import torch
 import torch.nn as nn
@@ -415,86 +415,34 @@ class NormalizationHelper(nn.Module):
         
         return value
     
-    def _loss_norm_denom(self, normalization: str, epsilon: float) -> float:
-        if normalization == 'none':
-            return 1.0
-
-        def _variance_from_stats(stats: Dict[str, float]) -> float:
-            strategy = self.norm_strategy
-            table = {
-                'z_normalization': lambda s: 1.0,
-                'min_max_normalization': lambda s: (s['std'] ** 2) / (((s['max'] - s['min']) ** 2) + epsilon),
-                'robust_normalization': lambda s: (s['std'] ** 2) / ((s['iqr'] ** 2) + epsilon),
-                'no_normalization': lambda s: s['std'] ** 2,
-            }
-            fn = table.get(strategy)
-            if fn is None:
-                raise ValueError(f"Unknown normalization strategy: {strategy}")
-            return fn(stats)
-
-        def _range_from_stats(stats: Dict[str, float]) -> float:
-            strategy = self.norm_strategy
-            table = {
-                'z_normalization': lambda s: (s['max'] - s['min']) / (s['std'] + epsilon),
-                'min_max_normalization': lambda s: 1.0,
-                'robust_normalization': lambda s: (s['max'] - s['min']) / (s['iqr'] + epsilon),
-                'no_normalization': lambda s: s['max'] - s['min'],
-            }
-            fn = table.get(strategy)
-            if fn is None:
-                raise ValueError(f"Unknown normalization strategy: {strategy}")
-            return fn(stats)
-
-        denom_builder = {
-            'variance': _variance_from_stats,
-            'range': _range_from_stats,
-        }.get(normalization)
-
-        if denom_builder is None:
-            raise ValueError(f"Unknown normalization type: {normalization}")
-
-        values: List[float] = []
-        for i, name in enumerate(self.channel_names):
-            if "mask" in name.lower():
-                continue
-            key = self.stat_keys[i]
-            if key not in self.norm_stats:
-                raise ValueError(f"Missing normalization stats for channel: {key}")
-            values.append(denom_builder(self.norm_stats[key]))
-
-        if not values:
-            return 1.0
-
-        return sum(values) / len(values)
-
-    def normalize_loss(
-        self,
-        unweighted: torch.Tensor,
-        normalization: str,
-        epsilon: float = 1e-8
-    ) -> torch.Tensor:
+    @staticmethod
+    def normalize_error(
+            error: torch.Tensor,
+            label: torch.Tensor,
+            data_dim: int,
+            normalization: Literal['none', 'variance', 'range'],
+            epsilon: float = 1e-8
+        ) -> torch.Tensor:
         """
-        Normalize a loss tensor using dataset-level statistics.
+        Normalize error tensor per sample/channel/timestep over spatial dims.
 
-        Args:
-            unweighted: Unnormalized loss tensor
-            normalization: 'none' | 'variance' | 'range'
-            epsilon: Small constant for numerical stability
-
-        Returns:
-            Normalized loss tensor, same shape as unweighted
+        Spatial dims are the last `data_dim` dimensions of `label`/`error`.
         """
         if normalization == 'none':
-            return unweighted
+            return error
 
-        key = (normalization, float(epsilon))
-        denom = self._loss_norm_cache.get(key)
-        if denom is None:
-            denom = self._loss_norm_denom(normalization, epsilon)
-            self._loss_norm_cache[key] = denom
+        spatial_dims = tuple(range(label.ndim - data_dim, label.ndim))
 
-        denom_t = unweighted.new_tensor(denom)
-        return unweighted / (denom_t + epsilon)
+        if normalization == 'variance':
+            denom = label.var(dim=spatial_dims, unbiased=False, keepdim=True)
+        elif normalization == 'range':
+            max_val = torch.amax(label, dim=spatial_dims, keepdim=True)
+            min_val = torch.amin(label, dim=spatial_dims, keepdim=True)
+            denom = max_val - min_val
+        else:
+            raise ValueError(f"Unknown normalization strategy: {normalization}")
+
+        return error / (denom + epsilon)
 
 class LossComponent(nn.Module, ABC):
     """
@@ -550,7 +498,7 @@ class LossComponent(nn.Module, ABC):
         predictions: torch.Tensor,
         labels: torch.Tensor,
         return_detailed: bool = True,
-        keep_batch_dim: bool = False
+        keep_bc_dims: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         Compute the loss.
@@ -613,7 +561,7 @@ class CompositeLoss(LossComponent):
         labels: torch.Tensor,
         return_detailed: bool = True,
         preserve_component_grads: bool = False,
-        keep_batch_dim: bool = False
+        keep_bc_dims: bool = False
     ) -> Union[
         torch.Tensor,
         Tuple[torch.Tensor, Dict[str, Union[torch.Tensor, Dict[str, torch.Tensor]]]]
@@ -641,8 +589,8 @@ class CompositeLoss(LossComponent):
             * Detailed stats are forwarded from components as-is;
               this class does not perform extra reductions.
         """
-        if keep_batch_dim and return_detailed:
-            raise ValueError("keep_batch_dim is only supported when return_detailed is False.")
+        if keep_bc_dims and return_detailed:
+            raise ValueError("keep_bc_dims is only supported when return_detailed is False.")
         
         total_loss: Optional[torch.Tensor] = None
         detailed_dict = {} if return_detailed else None
@@ -650,11 +598,11 @@ class CompositeLoss(LossComponent):
         for loss_component in self.loss_components:
             if return_detailed:
                 component_loss, component_detailed = loss_component(
-                    model, predictions, labels, return_detailed=True, keep_batch_dim=False
+                    model, predictions, labels, return_detailed=True, keep_bc_dims=False
                 )
             else:
                 component_loss = loss_component(
-                    model, predictions, labels, return_detailed=False, keep_batch_dim=keep_batch_dim
+                    model, predictions, labels, return_detailed=False, keep_bc_dims=keep_bc_dims
                 )
                 component_detailed = None  # type: ignore[assignment]
 
@@ -790,7 +738,7 @@ class NestedCompositeLoss(LossComponent):
         predictions: torch.Tensor,
         labels: torch.Tensor,
         return_detailed: bool = True,
-        keep_batch_dim: bool = False
+        keep_bc_dims: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         Compute the nested composite loss.
@@ -810,11 +758,11 @@ class NestedCompositeLoss(LossComponent):
         for sub_comp in self.sub_components:
             if return_detailed:
                 comp_loss, comp_detail = sub_comp(
-                    model, predictions, labels, return_detailed=True, keep_batch_dim=False
+                    model, predictions, labels, return_detailed=True, keep_bc_dims=False
                 )
             else:
                 comp_loss = sub_comp(
-                    model, predictions, labels, return_detailed=False, keep_batch_dim=keep_batch_dim
+                    model, predictions, labels, return_detailed=False, keep_bc_dims=keep_bc_dims
                 )
                 comp_detail = None
             

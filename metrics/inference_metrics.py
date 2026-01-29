@@ -3,6 +3,7 @@ import torch
 from typing import Iterable, Dict, Optional
 
 from metrics.loss_framework import LossComponent, WeightSchedule, CompositeLoss
+from metrics.loss_registry import get_loss_entry
 
 def compute_metrics_for_n_rollouts(
     preds,
@@ -95,52 +96,48 @@ def compute_metrics_for_n_rollouts(
             ws: Optional[WeightSchedule] = getattr(comp, "weight_schedule", None)
             original_channel_weights = getattr(ws, "channel_weights", None) if ws is not None else None
 
+            loss_key = comp.__class__.__name__
+            try:
+                channel_aggregation = get_loss_entry(loss_key).get("channel_aggregation", "linear")
+            except ValueError:
+                channel_aggregation = "linear"
+
+            reduction = getattr(comp, "reduction", "mean")
+
             use_channel_weights = ws is not None and original_channel_weights is not None
-            if use_channel_weights:
-                per_sample_channel = torch.zeros(bsz, C, device=device)
-            else:
-                per_sample_channel = None  # we will fill with overall later
+            per_sample_channel = None
 
             with torch.no_grad():
-                # overall scalar per sample (vectorized)
+                # overall scalar per sample/channel (vectorized)
                 total_loss = comp(
                     model=None,
                     predictions=preds_slice,
                     labels=targets_slice,
                     return_detailed=False,
-                    keep_batch_dim=True
+                    keep_bc_dims=True
                 )
-                per_sample_overall = (
+                total_loss = (
                     total_loss.detach()
                     if torch.is_tensor(total_loss)
                     else torch.tensor(total_loss, device=device)
                 )
+                if total_loss.ndim >= 2:
+                    if channel_aggregation == "linear":
+                        if reduction == "sum":
+                            per_sample_overall = total_loss.sum(dim=1)
+                        else:
+                            per_sample_overall = total_loss.mean(dim=1)
+                    elif channel_aggregation == "sqrt":
+                        channel_sum = (total_loss ** 2).sum(dim=1)
+                        if reduction == "mean":
+                            channel_sum = channel_sum / total_loss.shape[1]
+                        per_sample_overall = torch.sqrt(channel_sum)
+                    else:
+                        raise ValueError(f"Unsupported channel_aggregation: {channel_aggregation}")
 
-                # per-channel via one-hots, if possible (loop over channels only)
+                # per-channel via keep_bc_dims outputs
                 if use_channel_weights:
-                    for ch in range(C):
-                        #one_hot = torch.zeros_like(original_channel_weights)
-                        #one_hot[..., ch] = 1.0 #float(len(range(C)))  # keep scale consistent with mean
-                        # when mean is taken inside the forward() method of the metric class, it takes into account all the elements
-                        # in the tensor which is C times the per channel
-                        ws.channel_weights = torch.tensor([1.0])
-
-                        ch_loss = comp(
-                            model=None,
-                            predictions=preds_slice[:,:,ch:ch+1,...],
-                            labels=targets_slice[:,:,ch:ch+1,...],
-                            return_detailed=False,
-                            keep_batch_dim=True
-                        )
-
-                        per_sample_channel[:, ch] = (
-                            ch_loss.detach()
-                            if torch.is_tensor(ch_loss)
-                            else torch.tensor(ch_loss, device=device)
-                        )
-
-                    # restore channel weights
-                    ws.channel_weights = original_channel_weights
+                    per_sample_channel = total_loss
 
             # If we could not decompose channels, broadcast overall
             if per_sample_channel is None:

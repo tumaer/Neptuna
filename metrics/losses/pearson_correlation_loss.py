@@ -18,7 +18,7 @@ class PearsonCorrelationLoss(LossComponent):
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
-        normalization: Literal['none', 'magnitude', 'variance'] = 'none',
+        normalization: Literal['none', 'range', 'variance'] = 'none',
         epsilon: float = 1e-8
     ):
         super().__init__(weight=weight, name=name, data_dim=data_dim, 
@@ -32,7 +32,7 @@ class PearsonCorrelationLoss(LossComponent):
         predictions: torch.Tensor,
         labels: torch.Tensor,
         return_detailed: bool = False,
-        keep_batch_dim: bool = False
+        keep_bc_dims: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         # Shape: (batch, frames, channels, *spatial_dims)
         # Compute correlation per (batch, frame, channel) across spatial points
@@ -66,17 +66,10 @@ class PearsonCorrelationLoss(LossComponent):
         weighted = unweighted * weight_tensor
         
         # Reduce to scalar or per-batch vector
-        if keep_batch_dim:
-            reduce_dims = tuple(range(1, weighted.ndim))
-            total_loss = weighted.mean(dim=reduce_dims)
+        if keep_bc_dims:
+            total_loss = weighted.mean(dim=1)
         else:
             total_loss = weighted.mean()
-
-        total_loss = self.norm_helper.normalize_loss(
-            total_loss,
-            self.normalization,
-            self.epsilon
-        )
 
         if not return_detailed:
             return total_loss

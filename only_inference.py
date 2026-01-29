@@ -94,7 +94,7 @@ def build_train_and_infer_loss(loss_config, data_config, device: torch.device):
     infer_loss_dict = fetch_infer_loss_dict(full_train_cfg) #TODO: if only data_config is required, only provide that
     infer_loss_fn = fetch_loss_metric(data_config, infer_loss_dict).to(metric_device)
 
-    return train_loss_fn, infer_loss_fn
+    return train_loss_fn, infer_loss_fn, infer_loss_dict
 
 def get_trainer(
     model_config,
@@ -508,7 +508,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         metric_device = torch.device("cpu")
 
         # Build loss functions
-        train_loss_fn, infer_loss_fn = build_train_and_infer_loss(
+        train_loss_fn, infer_loss_fn, infer_loss_dict = build_train_and_infer_loss(
             loss_config=loss_config,
             data_config=data_config,
             device=metric_device,
