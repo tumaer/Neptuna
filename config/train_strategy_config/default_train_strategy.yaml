@@ -3,8 +3,8 @@
 ########################################################
 num_train_epochs: 2
 metric_for_best_model:
-  - type: L2Loss
-    weight: 1.0         
+  - type: RMSE
+    weight: 1.0 
   # - type: CompositeLoss
   #   weight: 1.0
   #   name: "SSIM_L2_Composite"
@@ -19,34 +19,19 @@ curriculum:
     start_epoch: 0
     train_loss:
       components:
-        - type: CompositeLoss
-          weight: 1.0
-          name: "SSIM_L2_Composite_train"
-          sub_components:
-            - type: SSIM
-              weight: 0.1
-              metric_params: 
-                window_size: 7
-            - type: L2Loss
-              weight: 0.9
+        - type: L2Loss
+          weight: 0.7
+          channel_weights: [1.0, 1.0, 0.5]
       train_loss_weighting_strategy:
         enabled: false  # Set to true to enable
         type: BalancedResidualDecayRate
         loss_source: 'train' # 'train' OR 'eval'
-      
+  
     validation_loss:
       components:
-        - type: L1Loss
+        - type: RMSE
           weight: 1.0
-        - type: CompositeLoss
-          weight: 1.0
-          name: "SSIM_L2_Composite"
-          sub_components:
-            - type: SSIM
-              weight: 0.7
-            - type: L2Loss
-              weight: 0.3
-
+      
   - name: block_2
     start_epoch: 1
     train_loss:
