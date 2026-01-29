@@ -71,7 +71,20 @@ class L2Loss(LossComponent):
             # Clean L2
             diff2 = (predictions - labels) ** 2
 
-            total_loss = self._reduce(diff2)
+            diff2 = self.norm_helper.normalize_error(
+                diff2,
+                labels,
+                self.data_dim,
+                self.normalization,
+                self.epsilon
+            )
+
+            if keep_bc_dims:
+                # Keep batch and channel dims; reduce over time + spatial
+                reduce_dims = [1] + list(range(3, diff2.ndim))
+                total_loss = self._reduce(diff2, reduce_dims)
+            else:
+                total_loss = self._reduce(diff2)
 
             if base != 1.0:
                 total_loss = total_loss * base

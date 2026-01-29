@@ -525,12 +525,23 @@ class Trainer(Trainer_):
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None): 
         """
         Compute training loss.
-        """
-        # --- timing: loss computation (forward + loss) ---
-        _t0 = time.perf_counter()
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
 
+        Parameters
+        ----------
+        model : torch.nn.Module
+            The model to compute loss for.
+        inputs : Dict[str, torch.Tensor]
+            Input tensors and labels.
+        return_outputs : bool, default=False
+            Whether to return model outputs along with loss.
+        num_items_in_batch : Optional[int]
+            Number of items in the batch.
+
+        Returns
+        -------
+        Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]
+            Loss tensor, or tuple of (loss, outputs) if return_outputs=True.
+        """
         #return_outputs is true only when doing eval or test. By default it is false for training.
         ########################################################
         prediction = self._forward_model_train(model, inputs)
@@ -576,18 +587,7 @@ class Trainer(Trainer_):
                 if component_name not in self._detailed_loss_accumulator:
                     self._detailed_loss_accumulator[component_name] = []
                 self._detailed_loss_accumulator[component_name].append(loss_scalar)
-
-        # --- timing: loss computation end ---
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        _t1 = time.perf_counter()
-        _dt = _t1 - _t0
-        if not getattr(self, "_timing_skip", False):
-            if not hasattr(self, "_epoch_loss_time_sum"):
-                self._epoch_loss_time_sum = 0.0
-                self._epoch_loss_time_n = 0
-            self._epoch_loss_time_sum += _dt
-            self._epoch_loss_time_n += 1
+                
             
         return (loss, prediction) if return_outputs else loss
 
@@ -658,18 +658,21 @@ class Trainer(Trainer_):
     ) -> torch.Tensor:
         """
         Perform a training step on a batch of inputs.
+
+        Subclass and override to inject custom behavior.
+
+        Args:
+            model (`nn.Module`):
+                The model to train.
+            inputs (`Dict[str, Union[torch.Tensor, Any]]`):
+                The inputs and targets of the model.
+
+                The dictionary will be unpacked before being fed to the model. Most models expect the targets under the
+                argument `labels`. Check your model's documentation for all accepted arguments.
+
+        Return:
+            `torch.Tensor`: The tensor with training loss on this batch.
         """
-        # --- warmup skip logic (discard first 3 steps) ---
-        if not hasattr(self, "_timing_step_count"):
-            self._timing_step_count = 0
-        self._timing_step_count += 1
-        self._timing_skip = self._timing_step_count <= 3
-
-        # --- timing: full training step ---
-        _t0 = time.perf_counter()
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-
         model.train()
         if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
             self.optimizer.train()
@@ -732,18 +735,6 @@ class Trainer(Trainer_):
                 kwargs["scale_wrt_gas"] = False
 
             self.accelerator.backward(loss, **kwargs)
-
-            # --- timing: end full training step ---
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            _t1 = time.perf_counter()
-            _dt = _t1 - _t0
-            if not self._timing_skip:
-                if not hasattr(self, "_epoch_step_time_sum"):
-                    self._epoch_step_time_sum = 0.0
-                    self._epoch_step_time_n = 0
-                self._epoch_step_time_sum += _dt
-                self._epoch_step_time_n += 1
 
             return loss.detach()
 
@@ -1268,14 +1259,6 @@ class Trainer(Trainer_):
             self._evaluate(trial, ignore_keys_for_eval, skip_scheduler=True)
 
         for epoch in range(epochs_trained, num_train_epochs):
-            # Reset epoch timing accumulators
-            self._epoch_loss_time_sum = 0.0
-            self._epoch_loss_time_n = 0
-            self._epoch_step_time_sum = 0.0
-            self._epoch_step_time_n = 0
-            self._timing_step_count = 0
-            self._timing_skip = False
-
             epoch_dataloader = train_dataloader
             if hasattr(epoch_dataloader, "set_epoch"):
                 epoch_dataloader.set_epoch(epoch)
@@ -1455,18 +1438,6 @@ class Trainer(Trainer_):
 
             self.control = self.callback_handler.on_epoch_end(args, self.state, self.control)
             self._maybe_log_save_evaluate(tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time)
-
-            # Log epoch timing averages (rank 0 only)
-            RANK = int(os.environ.get("LOCAL_RANK", -1))
-            IS_MAIN_PROCESS = RANK in [-1, 0]
-            if IS_MAIN_PROCESS:
-                avg_loss_t = self._epoch_loss_time_sum / max(self._epoch_loss_time_n, 1)
-                avg_step_t = self._epoch_step_time_sum / max(self._epoch_step_time_n, 1)
-                logger.info(
-                    f"[Timing][Epoch {epoch}] avg_loss_time_s={avg_loss_t:.6f} "
-                    f"avg_step_time_s={avg_step_t:.6f} "
-                    f"(n={self._epoch_step_time_n})"
-                )
 
             # Modify the callbacks if the curriculum block changed based on the epoch
             # using epoch instead of self.state.epoch because there is a possibility that self.state.epoch is fractional.
