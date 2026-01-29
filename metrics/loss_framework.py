@@ -420,7 +420,7 @@ class NormalizationHelper(nn.Module):
             error: torch.Tensor,
             label: torch.Tensor,
             data_dim: int,
-            normalization: Literal['none', 'variance', 'range'],
+            normalization: Literal['none', 'variance', 'std', 'range'],
             epsilon: float = 1e-8
         ) -> torch.Tensor:
         """
@@ -435,6 +435,8 @@ class NormalizationHelper(nn.Module):
 
         if normalization == 'variance':
             denom = label.var(dim=spatial_dims, unbiased=False, keepdim=True)
+        elif normalization == 'std':
+            denom = label.std(dim=spatial_dims, unbiased=False, keepdim=True)
         elif normalization == 'range':
             max_val = torch.amax(label, dim=spatial_dims, keepdim=True)
             min_val = torch.amin(label, dim=spatial_dims, keepdim=True)

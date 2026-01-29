@@ -121,6 +121,8 @@ def compute_metrics_for_n_rollouts(
                     if torch.is_tensor(total_loss)
                     else torch.tensor(total_loss, device=device)
                 )
+
+                # Channel aggregation to get overall per-sample loss
                 if total_loss.ndim >= 2:
                     if channel_aggregation == "linear":
                         if reduction == "sum":

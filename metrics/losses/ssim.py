@@ -27,7 +27,7 @@ class SSIM(LossComponent):
         keep_bc_dims=False,
         padding=None,
         ensemble_kernel=True,
-        normalization: Literal['none', 'range', 'variance'] = 'none',
+        normalization: Literal['none', 'range', 'variance', 'std'] = 'none',
         epsilon: float = 1e-8
     ):
         """Calculate the mean SSIM (MSSIM) between two 4D tensors.
