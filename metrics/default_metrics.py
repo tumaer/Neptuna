@@ -1,3 +1,5 @@
+# TODO: the names should be updated. There is no mean in L1 and L2.
+
 import numpy as np
 
 def l1_error(preds, targets):
