@@ -1,0 +1,4 @@
+# L1Loss specific parameters
+reduction: sum
+normalization: none
+epsilon: 1e-8

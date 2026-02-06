@@ -3,7 +3,7 @@ from typing import Literal, Optional, List, Dict, Union, Tuple
 import torch
 import torch.nn as nn
 
-from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 
 
 class PearsonCorrelationLoss(LossComponent):
@@ -18,7 +18,7 @@ class PearsonCorrelationLoss(LossComponent):
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
-        normalization: Literal['none', 'magnitude', 'variance'] = 'none',
+        normalization: Literal['none', 'range', 'variance', 'std'] = 'none',
         epsilon: float = 1e-8
     ):
         super().__init__(weight=weight, name=name, data_dim=data_dim, 
@@ -33,6 +33,7 @@ class PearsonCorrelationLoss(LossComponent):
         labels: torch.Tensor,
         input_frames: Optional[torch.Tensor],
         return_detailed: bool = False,
+        keep_bc_dims: bool = False,
         preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         # Shape: (batch, frames, channels, *spatial_dims)
@@ -66,15 +67,11 @@ class PearsonCorrelationLoss(LossComponent):
         weight_tensor = self.weight_schedule.get_loss_weight(unweighted.shape).to(predictions.device)
         weighted = unweighted * weight_tensor
         
-        # Reduce to scalar
-        total_loss = weighted.mean()
-
-        total_loss = apply_batch_wise_normalization(
-            total_loss,
-            labels,
-            self.normalization,
-            self.epsilon
-        )
+        # Reduce to scalar or per-batch vector
+        if keep_bc_dims:
+            total_loss = weighted.mean(dim=1)
+        else:
+            total_loss = weighted.mean()
 
         if not return_detailed:
             return total_loss

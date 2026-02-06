@@ -399,7 +399,7 @@ def compute_parameter_statistics(
 
     return param_ranges
 
-
+# Deprecated function (will be removed in future)
 def compute_statistics(
     h5_paths: List[str],
     residual_config: Dict[str, bool] | None = None,
@@ -407,6 +407,7 @@ def compute_statistics(
     filter_frames: List[int] | None = None,
     frame_stride: int = 1,
     on_fly_stats: bool = False,
+    log_transform_channels: List[str] | None = None,
 ) -> Tuple[Dict[str, Dict[str, float]], List[str], int]:
     """
     Compute comprehensive statistics for HDF5 datasets with optional residual analysis.
@@ -515,6 +516,8 @@ def compute_statistics(
     if len(h5_paths) == 0:
         raise ValueError("h5_paths list is empty.")
 
+    log_channels_set = set(log_transform_channels or [])
+
     # --------------------------------------------------------------
     # Discover metadata (channel names and spatial dimensionality)
     # --------------------------------------------------------------
@@ -538,10 +541,16 @@ def compute_statistics(
 
     # Aggregators for raw channels (created now but populated later)
     aggregators: Dict[str, _StatsAggregator] = {name: _StatsAggregator() for name in channel_names}
+    # Pre-create log-channel aggregators for channels marked for log transform
+    for name in channel_names:
+        if name in log_channels_set:
+            aggregators[f"log_{name}"] = _StatsAggregator()
 
     # Optional aggregators for residuals, keyed by "<channel>_residual"
     residual_aggregators: Dict[str, _StatsAggregator] | None = None
     if residual_config is not None:
+        if log_channels_set:
+            raise ValueError("Residual computation for log-transformed channels is not implemented yet.")
         add_pred = residual_config.get("add_predicted_value", False)
         add_base = residual_config.get("add_base_value", False)
 
@@ -561,6 +570,9 @@ def compute_statistics(
     collected_residual: Dict[str, List[np.ndarray]] | None = None
     if not on_fly_stats:
         collected_data = {name: [] for name in channel_names}
+        for name in channel_names:
+            if name in log_channels_set:
+                collected_data[f"log_{name}"] = []
         if residual_aggregators is not None:
             collected_residual = {k: [] for k in residual_aggregators.keys()}
 
@@ -615,14 +627,28 @@ def compute_statistics(
 
                         if key not in aggregators:
                             aggregators[key] = _StatsAggregator()
+                            if key in log_channels_set:
+                                aggregators[f"log_{key}"] = _StatsAggregator()
 
                         if on_fly_stats:
                             aggregators[key].add(channel_data)
+                            if key in log_channels_set:
+                                if np.any(channel_data <= 0):
+                                    raise ValueError(f"Channel {key} contains negative or zero values. Cannot apply log transform.")
+                                log_key = f"log_{key}"
+                                log_channel_data = np.log(channel_data)
+                                aggregators[log_key].add(log_channel_data)
                             if residual_data is not None:
                                 res_key = f"{key}_residual"
                                 residual_aggregators[res_key].add(residual_data[:, ch])
                         else:
                             collected_data[key].append(channel_data)
+                            if key in log_channels_set:
+                                if np.any(channel_data <= 0):
+                                    raise ValueError(f"Channel {key} contains negative or zero values. Cannot apply log transform.")
+                                log_key = f"log_{key}"
+                                log_channel_data = np.log(channel_data)
+                                collected_data[log_key].append(log_channel_data)
                             if residual_data is not None:
                                 res_key = f"{key}_residual"
                                 collected_residual[res_key].append(residual_data[:, ch])
@@ -708,6 +734,10 @@ def _process_single_file(
         return {}
 
     aggs: Dict[str, _StatsAggregator] = {n: _StatsAggregator() for n in channel_names}
+    # Pre-create log-channel aggregators for any channel marked for log transform
+    for n in channel_names:
+        if n in log_channels_set:
+            aggs[f"log_{n}"] = _StatsAggregator()
     residual_aggs: Dict[str, _StatsAggregator] | None = None
     if residual_config is not None:
         residual_aggs = {f"{n}_residual": _StatsAggregator() for n in channel_names}
@@ -736,6 +766,7 @@ def _process_single_file(
                         end_idx = field.shape[0] - 1
                     frame_slice = slice(start_idx, end_idx + 1, frame_stride)
                 else:
+                    #by default, process all frames of a trajectory with the variable 'frame_stride' 
                     frame_slice = slice(None, None, frame_stride if frame_stride != 1 else None)
 
                 data = field[frame_slice]
@@ -750,15 +781,26 @@ def _process_single_file(
                     # Apply log transform BEFORE computing statistics
                     # ============================================================
                     if key in log_channels_set:
-                        channel_data = np.log(np.maximum(channel_data, epsilon))
+                        # Raise an error if the channel data contains negative values
+                        if np.any(channel_data <= 0):
+                            raise ValueError(f"Channel {key} contains negative or zero values. Cannot apply log transform.")
+                        # add a new key to the aggregator with the log-transformed data
+                        log_key = f"log_{key}"
+                        log_channel_data = np.log(channel_data)
+                        #add is the function to add the statistics to the aggregator
+                        aggs[log_key].add(log_channel_data)
+                        #channel_data = np.log(np.maximum(channel_data, epsilon))
                     
                     # Add to aggregator
                     aggs[key].add(channel_data)
                     
                     # ============================================================
-                    # Handle residuals
+                    # Handle residuals (TODO: Implement residual stats computation for log-transformed channels)
                     # ============================================================
                     if residual_aggs is not None and data.shape[0] > 1:
+                        # if the log_channel_set is not empty, raise an error
+                        if log_channels_set:
+                            raise ValueError("Residual computation for log-transformed channels is not implemented yet.")
                         res_key = f"{key}_residual"
                         
                         if key in log_channels_set:
@@ -810,7 +852,7 @@ def compute_statistics_parallel(
     if len(h5_paths) == 0:
         raise ValueError("h5_paths list is empty.")
 
-    log_channels_set = set(log_transform_channels or [])
+    #log_channels_set = set(log_transform_channels or [])
 
     # ------------------------------------------------------------------
     # Discover metadata once (first file that fits the filters)
@@ -821,6 +863,8 @@ def compute_statistics_parallel(
     for p in h5_paths:
         try:
             channel_names, problem_dim = _discover_metadata(p, filter_groups)
+            #remove the channels that start with 'log_', we just need the statistics for the log trnsformed channel.
+            channel_names = [ch for ch in channel_names if not ch.startswith("log_")]
             metadata_found = True
             break
         except ValueError:
@@ -920,7 +964,7 @@ def normalize_data(arr: np.ndarray, stats: Dict[str, float], strategy: str) -> n
     np.ndarray
         Normalized array (new copy).
     """
-    eps = 1e-12  # small constant to prevent divide-by-zero
+    eps = 1e-12 # small constant to prevent divide-by-zero
 
     if strategy == "z_normalization":
         return (arr - stats["mean"]) / (stats["std"]  + eps)

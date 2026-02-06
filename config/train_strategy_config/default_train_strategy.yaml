@@ -1,0 +1,121 @@
+########################################################
+# Training strategy configuration
+########################################################
+num_train_epochs: 2
+metric_for_best_model:
+  - type: L2Loss
+    weight: 1.0         
+  # - type: CompositeLoss
+  #   weight: 1.0
+  #   name: "SSIM_L2_Composite"
+  #   sub_components:
+  #     - type: SSIM
+  #       weight: 0.7
+  #     - type: L2Loss
+  #       weight: 0.3
+
+curriculum:
+  - name: block_1
+    start_epoch: 0
+    train_loss:
+      components:
+        - type: CompositeLoss
+          weight: 1.0
+          name: "SSIM_L2_Composite_train"
+          sub_components:
+            - type: SSIM
+              weight: 0.1
+              metric_params: 
+                window_size: 7
+            - type: L2Loss
+              weight: 0.9
+      train_loss_weighting_strategy:
+        enabled: false  # Set to true to enable
+        type: BalancedResidualDecayRate
+        loss_source: 'train' # 'train' OR 'eval'
+      
+    validation_loss:
+      components:
+        - type: L1Loss
+          weight: 1.0
+        - type: CompositeLoss
+          weight: 1.0
+          name: "SSIM_L2_Composite"
+          sub_components:
+            - type: SSIM
+              weight: 0.7
+            - type: L2Loss
+              weight: 0.3
+
+  - name: block_2
+    start_epoch: 1
+    train_loss:
+      components:
+        - type: RMSE
+          weight: 0.5
+        - type: H1SemiNorm
+          weight: 0.5
+      train_loss_weighting_strategy:
+        enabled: true  # Set to true to enable
+        type: SoftAdapt
+        loss_source: 'eval' # 'train' OR 'eval'
+      
+    validation_loss: #TODO: Add loss components from train loss mertrics of this block in validation
+      components:
+        - type: WaveletBinnedRMSE
+          weight: 1.0
+        - type: PearsonCorrelationLoss
+          weight: 1.0
+        - type: RMSE
+          weight: 1.0
+        - type: H1SemiNorm
+          weight: 1.0
+
+  # - name: block_3
+  #   start_epoch: 4
+  #   train_loss:
+  #     components:
+  #       - type: H2SemiNorm
+  #         weight: 0.5
+  #     train_loss_weighting_strategy:
+  #       enabled: false  # Set to true to enable
+  #       #type: SoftAdapt
+  #       #loss_source: 'eval' # 'train' OR 'eval'
+      
+  #   validation_loss: #TODO: Add loss components from train loss mertrics of this block in validation
+  #     components:
+  #       - type: VRMSE
+  #         weight: 1.0
+  #       - type: NRMSE
+  #         weight: 1.0
+
+
+
+# Each component is a dictionary with the following fields.
+# Mandatory:
+# - type: Name of the loss class (see metrics/losses)
+# Optional:
+#   name: Custom name for the loss component
+#   config_file: Custom path to a config file for the loss component
+#   weight: Base scalar weight (default: 1.0)
+#   timestep_weights: List of per-timestep weights, length T (optional)
+#   channel_weights: List of per-channel weights, length C (optional)
+
+# Composite metrics can be defined for validation/inference using the type 
+# "CompositeLoss" and specifying the components as "sub-components".
+
+# Example: RMSE with per-channel weighting
+# - type: RMSE
+#   weight: 1.0
+#   channel_weights: [1.0, 1.0, 0.5]
+
+# Example: RMSE/L2 composite eval loss
+# - type: CompositeLoss
+#   weight: 1.0
+#   name: "SSIM_L2_Composite"
+#   sub_components:
+#     - type: SSIM
+#       weight: 0.7
+#     - type: L2Loss
+#       weight: 0.3
+

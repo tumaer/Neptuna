@@ -79,10 +79,17 @@ conditioning_features:
   # For transient simulations: filter_out_channels + conditioning_in_channels = filter_in_channels 
   # For steady-state simulations, the above relationship doesnt need to hold.
 
-  include_conditioning_parameters: False
-  # Type: bool 
-  # infers the conditioning parameters from the group names
-  # Example: If the group name is: "Re_100_Ma_0.1" --> extracted parameters are: [100, 0.1]
+  conditioning_method: None
+  # Type: str
+  # infers the conditioning parameters from the group names and determines the conditioning method.
+  # Options: None, AdaNorm_LSE, AdaNorm_SE_per_param, AdaNorm_1SE, AdaNorm
+  # If it is None, no conditioning is applied
+  #Example: If the group name is: "Re_100_Ma_0.1" --> extracted parameters are: [100, 0.1]
+
+  num_cond_params: null
+  # Type: int
+  # number of conditioning parameters.
+  # if not provided, will be inferred from the dataset group names.
 
   parameter_min_max_stats: null
   # Type: Dict
@@ -95,6 +102,22 @@ conditioning_features:
   # 1:
   #   min: 0.01
   #   max: 0.10
+
+  conditioning_mlp:
+    mlp: False
+    # Type: bool
+    # whether to use an MLP to process the embedded conditioning parameters before using the embedded parameters as affine transform parameters in AdaNorm.
+    # If False, a Linear Layer is used instead of the MLP.
+
+    hidden_size: null
+    # Type: int
+    # hidden size of the conditioning MLP. Only relevant if mlp is True.
+    # if not provided, will be set to 4 * num_cond_params
+
+    activation: gelu
+    # Type: str
+    # activation function for the conditioning MLP. Only relevant if mlp is True.
+    # Options: relu, gelu, tanh, leaky_relu
 
 residual_config: null
   add_base_value_with_raw_loss:

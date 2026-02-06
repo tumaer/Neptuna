@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Literal, Optional, List, Any, Union, Dict, Tuple
-from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 
 # Filter kernels adapted from Kornia
 # https://github.com/kornia/kornia
@@ -32,7 +32,7 @@ class H2SemiNorm(LossComponent):
         field_names: List[str] = None,
         mode: Literal['sobel', 'diff'] = 'diff',
         reduction: str = 'mean',
-        normalization: Literal['none', 'magnitude', 'variance'] = 'none',
+        normalization: Literal['none', 'range', 'variance', 'std'] = 'none',
         epsilon: float = 1e-8
     ):
         super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_helper=norm_helper)
@@ -84,6 +84,7 @@ class H2SemiNorm(LossComponent):
         labels: torch.Tensor,
         input_frames: Optional[torch.Tensor],
         return_detailed: bool = False,
+        keep_bc_dims: bool = False,
         preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
@@ -114,31 +115,38 @@ class H2SemiNorm(LossComponent):
         elif ndim == 3:
             # grad_diff shape: (B, F, C, 6, D, H, W) - sum over 6 Hessian components
             unweighted = (grad_diff ** 2).sum(dim=3)
+
+        norm_error = self.norm_helper.normalize_error(
+                unweighted,
+                labels,
+                self.data_dim,
+                self.normalization,
+                self.epsilon
+            )
         
         # Average over spatial dimensions to get (B, F, C)
-        spatial_dims = tuple(range(3, unweighted.ndim))
-        unweighted = unweighted.mean(dim=spatial_dims)
+        spatial_dims = tuple(range(3, norm_error.ndim))
+        unweighted = norm_error.mean(dim=spatial_dims)
         
         # Get weight tensor with proper broadcasting
         weight_tensor = self.weight_schedule.get_loss_weight(unweighted.shape).to(predictions.device)
-        
-        unweighted = apply_batch_wise_normalization(
-            unweighted,
-            labels,
-            self.normalization,
-            self.epsilon
-        )
 
         # Apply weights element-wise
         weighted = unweighted * weight_tensor
         
-        # Reduce to scalar
-        if self.reduction == 'mean':
-            total_loss = weighted.mean()
-        elif self.reduction == 'sum':
-            total_loss = weighted.sum()
+        # Reduce to scalar or per-batch vector
+        if keep_bc_dims:
+            if self.reduction == 'sum':
+                total_loss = weighted.sum(dim=1)
+            else:
+                total_loss = weighted.mean(dim=1)
         else:
-            total_loss = weighted.mean()
+            if self.reduction == 'mean':
+                total_loss = weighted.mean()
+            elif self.reduction == 'sum':
+                total_loss = weighted.sum()
+            else:
+                total_loss = weighted.mean()
         
         if not return_detailed:
             return total_loss

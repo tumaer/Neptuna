@@ -1,0 +1,9 @@
+loss:
+  components:
+    # Same components as training but with weight=1.0 for unweighted comparison
+    # - type: RMSE
+    #   weight: 1.0
+    - type: RMSE
+      weight: 0.22
+      name: VRMSE
+      config_file: loss_metrics/RMSE/vrmse

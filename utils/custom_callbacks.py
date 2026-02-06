@@ -62,6 +62,9 @@ Notes:
 from transformers.integrations.integration_utils import WandbCallback as WandbCallback_
 from transformers.integrations.integration_utils import rewrite_logs, is_torch_xla_available
 from transformers.trainer_callback import CallbackHandler as CallbackHandler_
+from transformers.trainer_callback import DefaultFlowCallback as DefaultFlowCallback_
+from transformers.trainer_utils import IntervalStrategy, SaveStrategy
+from transformers.training_args import TrainingArguments
 from transformers.trainer_callback import TrainerCallback as TrainerCallback_
 from transformers.trainer_callback import TrainerControl as TrainerControl_
 from dataclasses import dataclass
@@ -81,7 +84,6 @@ from typing import Dict, List, Optional
 import torch
 from metrics.loss_weighting_strategies import LossWeightingStrategyBase
 import torch.distributed as dist
-
 class CallbackHandler(CallbackHandler_):
     """
     Extended callback handler with support for custom evaluation and plotting events.
@@ -170,7 +172,6 @@ class CallbackHandler(CallbackHandler_):
         """
         return self.call_event("on_plot", args, state, control, **kwargs)
 
-
 class NaNCallback(TrainerCallback):
     """
     Callback to stop training if NaN is encountered in the loss. Training will stop at the nearest step where on_log is called.
@@ -187,7 +188,6 @@ class NaNCallback(TrainerCallback):
             control.should_evaluate = False
             control.should_save = False
             control.should_plot = False
-
 
 class WandbCallback(WandbCallback_):
     """
@@ -564,6 +564,7 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
         self.eval_dataset = kwargs['eval_dataset']
         self.data_config = kwargs['data_config']
         self.train_config = kwargs['train_config']
+        self.train_strategy_config = kwargs['train_strategy_config']
         self.scheduler_config = kwargs['scheduler_config']
         self.output_log_config = kwargs['output_log_config']
         self.model_config = kwargs['model_config']
@@ -657,7 +658,7 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
             # Also flag this condition so we can mark the saved image as "best".
             best_plot_at_train_end = False
             try:
-                final_epoch = self.train_config.get("num_train_epochs", None)
+                final_epoch = self.train_strategy_config.get("num_train_epochs", None)
                 if final_epoch is not None and kwargs["best_plot_at_train_end"]:
                     should_plot = True
                     best_plot_at_train_end = True
@@ -848,36 +849,34 @@ class LossStatisticsCallback(TrainerCallback):
     during training and only transferring/aggregating at epoch end.
     """
     
-    def __init__(self, collect_train_losses: bool = True, grad_stats: List = [], collect_gradients: bool = False):
+    def __init__(self, collect_train_losses: bool = True, grad_stats: List = [], collect_gradients: bool = False, trainer=None):
         self.collect_train_losses = collect_train_losses
         self.grad_stats = grad_stats
         self.train_losses: Dict[str, List[float]] = {}
         self.eval_losses: Dict[str, List[float]] = {}
         self.grad_stats_history: Dict[str, Dict[str, List[float]]] = {}
-        self.current_epoch = -1
-        self.trainer = None
+        self.trainer = trainer
+        #self.current_epoch = -1
+        #self.trainer = None
         self.collect_gradients = collect_gradients
     
     def on_epoch_begin(self, args, state, control, **kwargs):
         """Initialize loss accumulator at start of epoch."""
         self.train_losses = {}
         self.grad_stats_history = {}
-        self.current_epoch = state.epoch
+        #self.current_epoch = state.epoch
         
         # Initialize fresh accumulator for this epoch
-        if self.trainer is not None:
-            self.trainer._detailed_loss_accumulator = {} 
-            if self.collect_gradients:
-                self.trainer._gradient_accumulator = {}
-                self.trainer._collect_gradients = True
-                self.trainer._grad_stat_names = self.grad_stats
-            else:
-                self.trainer._collect_gradients = False
+        #if self.trainer is not None:
+        self.trainer._detailed_loss_accumulator = {} 
+        if self.collect_gradients:
+            self.trainer._gradient_accumulator = {}
+            self.trainer._grad_stat_names = self.grad_stats
     
     def on_epoch_end(self, args, state, control, **kwargs):
         """Transfer and aggregate losses and gradient norms at end of epoch."""
-        if self.trainer is None:
-            return
+        # if self.trainer is None:
+        #     return
         
         # Transfer losses
         if self.collect_train_losses:
@@ -1028,14 +1027,14 @@ class LossStatisticsCallback(TrainerCallback):
             losses = self.train_losses.copy()
         elif source == 'eval':
             losses = self.eval_losses.copy()
-        elif source == 'both':
-            combined = self.train_losses.copy()
-            for key, values in self.eval_losses.items():
-                if key in combined:
-                    combined[key].extend(values)
-                else:
-                    combined[key] = values
-            losses = combined
+        # elif source == 'both':
+        #     combined = self.train_losses.copy()
+        #     for key, values in self.eval_losses.items():
+        #         if key in combined:
+        #             combined[key].extend(values)
+        #         else:
+        #             combined[key] = values
+        #     losses = combined
         else:
             raise ValueError(f"Invalid source: {source}")
         
@@ -1044,7 +1043,6 @@ class LossStatisticsCallback(TrainerCallback):
             losses = self._aggregate_distributed_losses(losses)
         
         return losses
-
 
 class AdaptiveWeightCallback(TrainerCallback):
     """
@@ -1060,6 +1058,7 @@ class AdaptiveWeightCallback(TrainerCallback):
         trainer=None,
         loss_source: str = 'train',  # 'train', 'eval', or 'both'
         use_gradients: bool = False,
+        curriculum_start_epochs: List[int] = [0],
         grad_stats: List = [],
         weight_per_channel: bool = False,
         weight_sub_components: bool = False,
@@ -1074,9 +1073,10 @@ class AdaptiveWeightCallback(TrainerCallback):
         self.loss_weighting_strategy = loss_weighting_strategy
         self.stats_callback = stats_callback
         self.trainer = trainer
-        self.last_update_epoch = -1
+        #self.last_update_epoch = -1
         self.loss_source = loss_source
         self.use_gradients = use_gradients
+        self.curriculum_start_epochs = curriculum_start_epochs
         self.weight_per_channel = weight_per_channel
         self.weight_sub_components = weight_sub_components
         self.grad_stats = list(grad_stats) if grad_stats is not None else []
@@ -1139,8 +1139,10 @@ class AdaptiveWeightCallback(TrainerCallback):
             return False
         
         # Get current loss weights
+        # Only the train loss function metrics are used for weight updates, but the loss history source can be train or eval.
         current_weights = self.trainer.loss_fn.get_loss_weight_dict()
-        training_component_names = set(current_weights.keys())
+
+        component_names = set(current_weights.keys()) #TODO_MAX:
         
         # Only filter if using eval losses (train losses are already filtered during collection)
         if source_label == 'train' or self.loss_source == 'train':
@@ -1156,8 +1158,8 @@ class AdaptiveWeightCallback(TrainerCallback):
 
         if not filtered_loss_history:
             logger.warning(
-                f"[AdaptiveWeightCallback] No matching training components in {source_label} loss history\n"
-                f"  Training components: {training_component_names}\n"
+                f"[AdaptiveWeightCallback] No matching loss components in {source_label} loss history\n"
+                f"  Loss components: {component_names}\n"
                 f"  Available in {source_label}: {set(loss_history.keys())}"
             )
             return False
@@ -1303,44 +1305,41 @@ class AdaptiveWeightCallback(TrainerCallback):
         if log_dict:
             log_dict["loss_weights/epoch"] = float(epoch)
             trainer.log(log_dict)
+
+    def on_epoch_end(self, args, state, control, **kwargs): #This happens before on_evaluate
+        """Update weights at end of epoch using "training" losses."""
+        next_epoch = round(state.epoch)
+        #skip update_loss_weights if the curriculum block changes in the next epoch.
+        if next_epoch in self.curriculum_start_epochs:
+            return
         
-
-    def on_epoch_end(self, args, state, control, **kwargs):
-        """Update weights at end of epoch using training losses."""
         if self.loss_source == 'train':
-            current_epoch = int(state.epoch) if state.epoch is not None else -1
-            if current_epoch != self.last_update_epoch and self.trainer is not None:
-                train_losses = self.stats_callback.get_loss_history(source='train')
-                
-                grad_stats_history = None
-                if self.use_gradients:
-                    grad_stats_history = self.stats_callback.get_grad_stats_history()
+            next_epoch = int(state.epoch)
+            train_losses = self.stats_callback.get_loss_history(source=self.loss_source)
+            
+            grad_stats_history = None
+            if self.use_gradients:
+                grad_stats_history = self.stats_callback.get_grad_stats_history()
 
-                self._update_loss_weights(
-                    current_epoch, 
-                    train_losses, 
-                    grad_stats_history=grad_stats_history,
-                    source_label='training'
-                )
+            self._update_loss_weights(
+                next_epoch, 
+                train_losses, 
+                grad_stats_history=grad_stats_history,
+                source_label='train'
+            )
     
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
-        """Update weights after evaluation, optionally combining with training losses."""
-        if self.trainer is None:
+        """Update weights after evaluation, optionally combining with training losses."""        
+        # Get appropriate loss history based on configuration (LossStatisticsCallback collects both train and eval losses)
+        next_epoch = round(state.epoch)
+        if next_epoch in self.curriculum_start_epochs:
             return
-        
-        current_epoch = int(state.epoch) if state.epoch is not None else -1
-        
-        # Skip if already updated this epoch
-        if current_epoch == self.last_update_epoch:
-            return
-        
-        # Get appropriate loss history based on configuration
-        loss_history = self.stats_callback.get_loss_history(source=self.loss_source)
-        
-        # Update loss weights
-        if self.loss_source in ['eval', 'both']:
-            self._update_loss_weights(current_epoch, loss_history, source_label=self.loss_source)
-
+        # Update the train loss weights using the eval loss history for the next epoch.
+        else:
+            if self.loss_source == 'eval':
+                #if state.epoch is not None else -1
+                loss_history = self.stats_callback.get_loss_history(source=self.loss_source)
+                self._update_loss_weights(next_epoch, loss_history, source_label=self.loss_source)
 
 # ------------------------------------------------------------------
 # Extend the 🤗 Transformers callback interface with an optional

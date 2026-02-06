@@ -28,18 +28,13 @@ class ViTModel(ViTPreTrainedModel):
     def forward(
         self,
         pixel_values: Optional[torch.Tensor] = None,
-        bool_masked_pos: Optional[torch.BoolTensor] = None,
         head_mask: Optional[torch.Tensor] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
-        interpolate_pos_encoding: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         **kwargs
     ) -> Union[Tuple, BaseModelOutput]:
-        r"""
-        bool_masked_pos (`torch.BoolTensor` of shape `(batch_size, num_patches)`, *optional*):
-            Boolean masked positions. Indicates which patches are masked (1) and which aren't (0).
-        """
+
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -62,7 +57,7 @@ class ViTModel(ViTPreTrainedModel):
             pixel_values = pixel_values.to(expected_dtype)
 
         embedding_output = self.embeddings(
-            pixel_values, bool_masked_pos=bool_masked_pos, interpolate_pos_encoding=interpolate_pos_encoding
+            pixel_values
         )
 
         encoder_outputs = self.encoder(
@@ -86,6 +81,9 @@ class ViTModel(ViTPreTrainedModel):
             attentions=encoder_outputs.attentions,
         )
     
+    def _init_weights(self, module):
+        pass
+        # TODO: Implement custom weight initialization if needed
 
 class ViT(PreTrainedModel):
 
@@ -162,8 +160,8 @@ class ViT2D(ViTModel):
         **kwargs
     ) -> Tensor:
 
-        # ToDo: add head_mask in case necessary
-        bool_masked_pos = None
+        # TODO: add head_mask in case necessary
+        bool_masked_pos = None # This is now saved in ViTConfig
         head_mask = None
         
         if input_data is None:
@@ -171,11 +169,9 @@ class ViT2D(ViTModel):
 
         outputs = self.vit(
             input_data, #[6, 5, 160, 160]
-            bool_masked_pos=bool_masked_pos,
             head_mask=head_mask,
             output_attentions=self.config.output_attentions,
             output_hidden_states=self.config.output_hidden_states,
-            interpolate_pos_encoding=self.config.interpolate_pos_encoding,
             return_dict=False,
             **kwargs
         )

@@ -1,7 +1,7 @@
 from typing import Dict, List, Optional, Tuple, Union
 import torch
 from torch import nn
-from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 
 
 class InterfaceRMSE(LossComponent):
@@ -99,6 +99,7 @@ class InterfaceRMSE(LossComponent):
         labels: torch.Tensor,
         input_frames: Optional[torch.Tensor],
         return_detailed: bool = False,
+        keep_bc_dims: bool = False,
         preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
@@ -126,26 +127,31 @@ class InterfaceRMSE(LossComponent):
         
         # Compute masked squared error in normalized space
         squared_error_norm = (pred_density_norm - true_density_norm) ** 2
-        masked_squared_error = squared_error_norm * mask
-        
-        # Compute mean over masked regions
-        mask_sum = mask.sum()
-        if mask_sum > self.eps:
-            unweighted_rmse_norm = torch.sqrt(masked_squared_error.sum() / mask_sum)
+
+        norm_error = self.norm_helper.normalize_error(
+                squared_error_norm,
+                labels,
+                self.data_dim,
+                self.normalization,
+                self.eps
+            )
+
+        masked_squared_error = norm_error * mask
+
+        # Compute per-sample RMSE over masked regions
+        reduce_dims = list(range(1, mask.ndim))
+        num = masked_squared_error.sum(dim=reduce_dims)
+        denom = mask.sum(dim=reduce_dims)
+
+        per_sample_rmse_norm = torch.sqrt(num / (denom + self.eps))
+        if keep_bc_dims:
+            # Keep batch and channel dims (density-only => C=1)
+            unweighted_rmse_norm = per_sample_rmse_norm.unsqueeze(-1)  # (B, 1)
         else:
-            # Fallback: no interface cells found, return zero loss
-            unweighted_rmse_norm = torch.zeros((), device=predictions.device, dtype=predictions.dtype)
-        
-        # Apply per-batch normalization if requested
-        normalized_rmse = apply_batch_wise_normalization(
-            unweighted_rmse_norm,
-            labels,
-            self.normalization,
-            self.eps
-        )
+            unweighted_rmse_norm = per_sample_rmse_norm.mean()
         
         # Apply weight schedule
-        weighted_rmse = self.weight_schedule.base_weight * normalized_rmse
+        weighted_rmse = self.weight_schedule.base_weight * unweighted_rmse_norm
         
         if not return_detailed:
             return weighted_rmse

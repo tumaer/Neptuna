@@ -1,56 +1,72 @@
-"""
-Custom Trainer Implementation.
 
-This module provides an extended Trainer class that builds upon the HuggingFace
-transformers Trainer with specialized features.
-
-Key Features:
-- Autoregressive prediction with configurable rollout steps
-- Pushforward training strategy for improved temporal stability
-- Residual learning with multiple configuration modes
-- Custom callback system with visualization and logging
-- Support for conditioning inputs and steady-state prediction
-- Hyperparameter search with nested configuration support
-
-Classes:
-    Trainer: Extended trainer class with scientific computing features
-    
-Training Strategies:
-    - Pushforward Training: Gradually increases unroll steps during training with some probabilities to introduce noise generated during rollouts of validation/testing
-    - Residual Learning: Supports multiple residual computation modes
-    - Autoregressive Rollout: Multi-step prediction for evaluation
-    - Steady-State Prediction: Specialized handling for equilibrium problems
-
-Evaluation Modes:
-    - Window-based Loss: Computes loss per evaluation window
-    - Rollout Evaluation: Multi-step autoregressive prediction
-    - Memory-efficient Processing: Handles large datasets with batch accumulation
-
-Integration Points:
-    - HuggingFace transformers training infrastructure
-    - Custom datasets
-    - Weights & Biases logging and visualization
-    - Hyperparameter optimization frameworks
-"""
 import torch
 from torch import nn
 from typing import List, Optional, Dict, Tuple, Union, Any
 from transformers.trainer import *
 from transformers import Trainer as Trainer_
 import numpy as np
+from utils.compute_stats import re_normalize_data, normalize_data
 from utils.load_data import fetch_dataset
-from utils.custom_callbacks import WandbCallback #custom callbacks
-from utils.custom_callbacks import CallbackHandler 
+from utils.custom_callbacks import (
+    WandbCallback,
+    CallbackHandler,
+    #DefaultFlowCallback,
+    LossStatisticsCallback,
+    AdaptiveWeightCallback,
+)  # custom callbacks
+from transformers.trainer_callback import DefaultFlowCallback as DefaultFlowCallback_
 from transformers.integrations.integration_utils import WandbCallback as WandbCallback_
 from utils.trainer_utils import EvalPrediction
-from utils.loss_utils import fetch_loss_metric, fetch_train_loss_dict
-from omegaconf import OmegaConf
+from utils.loss_utils import (
+    fetch_loss_metric,
+    get_loss_weighting_strategy_entry,
+    create_loss_weighting_strategy,
+)
+from omegaconf import OmegaConf, ListConfig
 from collections.abc import Mapping  # locally import to avoid top-of-file change
 import json
 import os
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"           
 import h5py
 import time
+
+
+def compute_curriculum_start_epochs(train_strategy_config) -> list:
+    """
+    Compute and validate the list of curriculum start epochs from the strategy config.
+    """
+    if train_strategy_config is None:
+        raise ValueError("train_strategy_config is required to compute start epochs.")
+
+    curriculum_cfg = getattr(train_strategy_config, "curriculum", None)
+    if curriculum_cfg is None:
+        raise ValueError("train_strategy_config.curriculum is required to compute start epochs.")
+
+    curriculum_change_epochs = []
+
+    for idx, block in enumerate(curriculum_cfg):
+        start_epoch = block.get("start_epoch", None)
+        if start_epoch is None:
+            raise ValueError(
+                f"start_epoch missing in train_strategy_config.curriculum[{idx}]"
+            )
+        curriculum_change_epochs.append(start_epoch)
+
+    if not curriculum_change_epochs:
+        raise ValueError("train_strategy_config.curriculum must contain at least one block.")
+
+    #num_train_epochs = None
+    num_train_epochs = train_strategy_config.get("num_train_epochs")
+    if num_train_epochs is None:
+        raise ValueError("train_strategy_config.num_train_epochs is required to compute start epochs.")
+
+    if curriculum_change_epochs[-1] > num_train_epochs:
+        raise ValueError(
+            "last element of curriculum_change_epochs is greater than num_train_epochs"
+        )
+    #Append the num_train_epochs to the list of curriculum change epochs, to avoid updating the loss weights at the last epoch.
+    curriculum_change_epochs.append(num_train_epochs)
+    return curriculum_change_epochs
 
 
 class Trainer(Trainer_):
@@ -86,8 +102,6 @@ class Trainer(Trainer_):
         Whether to compute prediction loss for validation/testing windows.
     residual_config : Dict
         Configuration for residual learning strategies.
-    pushforward_config : Dict
-        Configuration for pushforward training strategy.
     """
     def __init__(self, **kwargs):
         
@@ -99,7 +113,10 @@ class Trainer(Trainer_):
         self.scheduler_config = kwargs.pop("scheduler_config", None)
         self.infer_config = kwargs.pop("infer_config", None)
         self.output_log_config = kwargs.pop("output_log_config", None)
-        self.loss_config = kwargs.pop("loss_config", None)
+        self.train_strategy_config = kwargs.pop("train_strategy_config", None) #each entry of the list has a range of epoch for which the train strategy and loss metric is active.
+
+        # Pre-extract curriculum start epochs for convenience
+        self.curriculum_start_epochs = compute_curriculum_start_epochs(self.train_strategy_config)
 
         super().__init__(**kwargs)
 
@@ -108,11 +125,6 @@ class Trainer(Trainer_):
         self.get_prediction_loss_for_eval_windows = False #TODO: Find a way to not hardcode this.
 
         self.residual_config = self.data_config["residual_config"]
-        # Push-forward configuration
-        self.pushforward_config = self.train_config["pushforward_config"] if self.train_config is not None else None
-        # Enabled flag now lives inside the pushforward_config dict (key: "enabled").
-        # If the key is absent we assume push-forward should run when a config is supplied.
-        self.pushforward_enabled = self.pushforward_config is not None and bool(self.pushforward_config.get("enabled", True))
 
         # ------------------------------------------------------------------
         # Precompute conditioning flags and a fast model-forward function to
@@ -120,7 +132,7 @@ class Trainer(Trainer_):
         # ------------------------------------------------------------------
         conditioning_features = self.data_config["conditioning_features"]
         self._use_cond_input_data = conditioning_features["conditioning_in_channels"] is not None
-        self._use_cond_parameters = conditioning_features["include_conditioning_parameters"]
+        self._use_cond_parameters = False if conditioning_features["conditioning_method"] is None else True
 
         def _build_model_forward_fn(use_cond_input, use_cond_params):
             if use_cond_input and use_cond_params:
@@ -147,36 +159,23 @@ class Trainer(Trainer_):
             self._use_cond_input_data, self._use_cond_parameters
         )
 
-        # Capture any callbacks created by the base Trainer, then re-instantiate using our custom
-        # CallbackHandler class so the overridden methods are used.
-        existing_callbacks = getattr(self.callback_handler, "callbacks", [])
-        # Re-instantiate using our custom CallbackHandler class so the overridden methods are used.
+        # Capture any callbacks created by the base Trainer, replace the HF default flow callback
+        # with our custom DefaultFlowCallback, then re-instantiate using our CallbackHandler.
+        existing_callbacks = list(getattr(self.callback_handler, "callbacks", []) or [])
+        filtered_callbacks = [
+            cb for cb in existing_callbacks if not isinstance(cb, DefaultFlowCallback_)
+        ]
+        filtered_callbacks.append(DefaultFlowCallback())
+
         self.callback_handler = CallbackHandler(
-            existing_callbacks,
+            filtered_callbacks,
             self.model,
             getattr(self, "tokenizer", None),
             self.optimizer,
             self.lr_scheduler,
         )
-
-        # Initialize loss function
-        if self.loss_config is not None:
-            # Create a config object for the loss function
-            full_cfg = OmegaConf.create({
-                "loss_config": self.loss_config,
-                "data_config": self.data_config
-            })
-            train_loss_dict = fetch_train_loss_dict(full_cfg)
-            self.loss_fn = fetch_loss_metric(self.data_config, train_loss_dict)
-            logger.info("Initialized composite loss function from config")
-
-            # Move loss function to appropriate device
-            device = self.args.device if hasattr(self.args, 'device') else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-            self.loss_fn = self.loss_fn.to(device)
-        else:
-            # Fallback to MSE if no loss config provided
-            self.loss_fn = None
-            logger.warning("No loss_config provided, using default MSE loss")
+        # Initialize loss function from the first train strategy block. (#TODO: START HERE: Update the train_loss_fn and eval_loss_fn from each epoch block
+        self.loss_fn = self.get_loss_fn(self.train_strategy_config.curriculum[0].train_loss)
 
         # Flag to indicate if detailed losses should be collected for adaptive weighting
         self._collect_detailed_losses = getattr(self, '_collect_detailed_losses', False)
@@ -207,6 +206,77 @@ class Trainer(Trainer_):
                     setattr(cb, "trainer", self)
             except Exception:
                 pass
+
+    def get_loss_fn(self, loss_config):
+        """
+        Build a training loss function from a train_loss config block and place
+        it on the appropriate device.
+        """
+        #self.initial_loss_config = train_loss_config
+        if loss_config is not None:
+            loss_fn = fetch_loss_metric(self.data_config, loss_config)
+            logger.info("Initialized composite train loss function from config")
+
+            device = (
+                self.args.device
+                if hasattr(self.args, "device")
+                else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            )
+            return loss_fn.to(device)
+
+        logger.warning("No loss_config provided, using default MSE loss")
+        return None
+
+    def _get_train_strategy_block_for_epoch(
+        self,
+        epoch: Optional[int] = None,
+    ):
+        """
+        Return the curriculum block active for the given epoch.
+
+        Parameters
+        ----------
+        epoch : Optional[int]
+            Epoch index to resolve. Defaults to the current trainer state epoch.
+        train_strategy_config : Optional[dict]
+            Strategy configuration; defaults to ``self.train_strategy_config``.
+
+        Returns
+        -------
+        Any
+            The selected curriculum block.
+        """
+        cfg = self.train_strategy_config
+        if cfg is None:
+            raise ValueError("train_strategy_config is required to resolve the strategy block.")
+
+        # Extract curriculum in a way that works for both OmegaConf objects and plain dicts.
+        curriculum = getattr(cfg, "curriculum", None)
+        if curriculum is None and isinstance(cfg, Mapping):
+            curriculum = cfg.get("curriculum")
+
+        if not curriculum:
+            raise ValueError("train_strategy_config.curriculum is missing or empty.")
+
+        # Use current epoch if not provided.
+        current_epoch = int(epoch if epoch is not None else getattr(self.state, "epoch", 0) or 0)
+
+        def _start_epoch(block) -> int:
+            # Support both Mapping (dict) and OmegaConf/DotMap-like objects.
+            if isinstance(block, Mapping):
+                return int(block.get("start_epoch", 0))
+            return int(getattr(block, "start_epoch", 0))
+
+        # Sort blocks by start_epoch to pick the latest block that has started.
+        sorted_blocks = sorted(curriculum, key=_start_epoch)
+        selected = sorted_blocks[0]
+        for block in sorted_blocks:
+            if current_epoch >= _start_epoch(block):
+                selected = block
+            else:
+                break
+
+        return selected
 
     def _compute_raw_prediction(self, prediction: torch.Tensor, base_value: torch.Tensor):
         """
@@ -278,7 +348,6 @@ class Trainer(Trainer_):
             eval_groups=self.data_config["eval_groups"],
             is_steady_state_prediction=self.data_config["is_steady_state_prediction"],
             residual_config=self.data_config["residual_config"],
-            pushforward_config=self.train_config["pushforward_config"] if self.train_config is not None else None,
             n_eval_rollouts=self.train_config["n_eval_rollouts"] if self.train_config is not None else None,
             n_infer_rollouts=self.infer_config["n_infer_rollouts"] if self.infer_config is not None else None,
         )
@@ -430,7 +499,7 @@ class Trainer(Trainer_):
     ##custom function, not inside transformers library
     def _forward_model_train(self, model, inputs):
         """
-        Forward pass for training with pushforward strategy support.
+        Forward pass for training.
 
         Parameters
         ----------
@@ -443,60 +512,10 @@ class Trainer(Trainer_):
         -------
         Tuple[torch.Tensor, int]
             prediction : Model predictions with shape (B, T, C, *spatial_dims).
-            pushforward_unroll_steps : Number of pushforward steps performed.
         """
         batch_size, _, _, *spatial_dims = inputs["input_data"].shape
         base_value = inputs["input_data"][:,-1:,]
-        if not self.data_config.is_steady_state_prediction:
-            #TODO: Add more training strategies here in continuation of the if statement.
-            pushforward_unroll_steps = 0
-            if self.pushforward_enabled and self.pushforward_config is not None:
-                #########################################################
-                #Pushforward trick (for training)
-                #########################################################
-                num_steps_in_one_epoch = self.state.max_steps//self.state.num_train_epochs
-                pushforward_unroll_steps = self.select_pushforward_unroll_steps_for_training(current_epoch = self.state.global_step//num_steps_in_one_epoch)
-                with torch.no_grad(): #comment this out for multi-step autoregressive training
-                    for unroll_step in range(pushforward_unroll_steps):
-                        #print(f"Pushforward unroll step {unroll_step+1} of {pushforward_unroll_steps}")
-                        prediction = self._model_forward_fn(model, inputs)
-                        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_features"]["filter_out_channels"]), *spatial_dims)
-                        
-                        if self.residual_config is not None:
-                            #NOTE: In all the three cases, we need the raw values to do rollout
-                            raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
-                        
-                        if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length >= input_sequence length
-                            inputs = {
-                                        **inputs,
-                                        **{ # This part replaces the "input_data" of input with the prediction of the model. 
-                                            # So the new input is the output from the previous step.
-                                            #prediction.shape = torch.Size([B, label_seq_len, C_labels, x_resolution, y_resolution])
-                                                "input_data": (
-                                                    prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the outputs so as to extract the input_sequence.
-                                                ) if self.residual_config is None else (
-                                                    raw_prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the outputs so as to extract the input_sequence.
-                                                )
-                                        },
-                                }
-                            
-                        else: #input_sequence length > label_sequence length (the more usual case)
-                                inputs = {
-                                **inputs,
-                                **{ #this part replaces the "input_data" of input with the output of the model and concatenates part of the input whch is missing to make a complete input sequence
-                                    #So the new input is the output from the previous step.
-                                    "input_data": (
-                                        torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1)
-                                    ) if self.residual_config is None else (
-                                        torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], raw_prediction.detach()], dim=1)
-                                    )
-                                },
-                                        }
-        else: 
-            #steady state prediction
-            pushforward_unroll_steps = 0
             
-        # NOTE:compute chain restored, the input_data is corrupted by the pushforward rollout steps (if any).
         prediction = self._model_forward_fn(model, inputs)
         
         prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_features"]["filter_out_channels"]), *spatial_dims)
@@ -506,12 +525,12 @@ class Trainer(Trainer_):
             raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
             prediction = raw_prediction
 
-        return prediction, pushforward_unroll_steps
+        return prediction
 
     ##overrides the one in the base class from transformers library
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None): 
         """
-        Compute training loss with pushforward strategy support.
+        Compute training loss.
 
         Parameters
         ----------
@@ -531,16 +550,10 @@ class Trainer(Trainer_):
         """
         #return_outputs is true only when doing eval or test. By default it is false for training.
         ########################################################
-        # Pushforward trick (for training)
-        ########################################################
-        prediction, pushforward_unroll_steps = self._forward_model_train(model, inputs)
+        prediction = self._forward_model_train(model, inputs)
         
         # Get labels for the current rollout step
-        labels = inputs["label_including_rollouts"][
-            :,
-            (self.data_config.sequence_info[1]*pushforward_unroll_steps):
-            (self.data_config.sequence_info[1]*(pushforward_unroll_steps+1))
-        ]
+        labels = inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1]]
 
         input_frames = inputs["input_data"]
         
@@ -559,7 +572,7 @@ class Trainer(Trainer_):
                 input_frames=input_frames,
                 return_detailed=False
             )
-        else:
+        else: #for adaptive weighting of train_loss components
             # Check if we should collect gradients at this step
             should_collect_grads = (
                 self._collect_gradients and 
@@ -773,6 +786,7 @@ class Trainer(Trainer_):
             loss_mb = smp_forward_backward(model, inputs, self.args.gradient_accumulation_steps)
             return loss_mb.reduce_mean().detach().to(self.args.device)
 
+        #loss here is the CompositeLoss scalar, which initiates the backward pass.
         with self.compute_loss_context_manager():
             loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
 
@@ -836,7 +850,7 @@ class Trainer(Trainer_):
     ##custom function, not inside transformers library
     def _forward_model_eval_or_test(self, model, inputs):
         """
-        Forward pass for evaluation or testing without pushforward strategy.
+        Forward pass for evaluation or testing.
 
         Parameters
         ----------
@@ -1533,6 +1547,71 @@ class Trainer(Trainer_):
             self.control = self.callback_handler.on_epoch_end(args, self.state, self.control)
             self._maybe_log_save_evaluate(tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time)
 
+            # Modify the callbacks if the curriculum block changed based on the epoch
+            # using epoch instead of self.state.epoch because there is a possibility that self.state.epoch is fractional.
+            if ((epoch + 1) in self.curriculum_start_epochs) and ((epoch + 1) < num_train_epochs):
+                next_block = self._get_train_strategy_block_for_epoch(epoch + 1)
+                train_loss_dict_next_block = next_block.train_loss
+                validation_loss_dict_next_block = next_block.validation_loss
+                loss_weighting_strategy_next_block = create_loss_weighting_strategy(train_loss_dict_next_block)
+
+                if loss_weighting_strategy_next_block is not None:
+                    use_gradients = get_loss_weighting_strategy_entry(
+                        train_loss_dict_next_block.train_loss_weighting_strategy.type
+                    ).get("use_gradients", False)
+
+                    self._collect_detailed_losses = True
+                    self._collect_gradients = use_gradients
+
+                    loss_stats_callback_next_block = LossStatisticsCallback(
+                        collect_train_losses=True, collect_gradients=use_gradients, trainer=self
+                    )
+                    loss_source = train_loss_dict_next_block.train_loss_weighting_strategy.get("loss_source", "train")
+                    adaptive_weight_callback_next_block = AdaptiveWeightCallback(
+                        loss_weighting_strategy=loss_weighting_strategy_next_block,
+                        stats_callback=loss_stats_callback_next_block,
+                        trainer=self,
+                        loss_source=loss_source,
+                        use_gradients=use_gradients,
+                        curriculum_start_epochs=self.curriculum_start_epochs
+                    )
+
+                    callbacks = list(getattr(self.callback_handler, "callbacks", []) or [])
+                    replaced_ls = False
+                    replaced_aw = False
+
+                    # Replace existing callbacks if present; otherwise append new ones.
+                    for idx, cb in enumerate(callbacks):
+                        if isinstance(cb, LossStatisticsCallback):
+                            callbacks[idx] = loss_stats_callback_next_block
+                            replaced_ls = True
+                        if isinstance(cb, AdaptiveWeightCallback):
+                            callbacks[idx] = adaptive_weight_callback_next_block
+                            replaced_aw = True
+
+                    if not replaced_ls:
+                        callbacks.append(loss_stats_callback_next_block)
+                    if not replaced_aw:
+                        callbacks.append(adaptive_weight_callback_next_block)
+
+                    self.callback_handler.callbacks = callbacks
+                else:
+                    # Remove LossStatisticsCallback and AdaptiveWeightCallback from the list of callbacks if the next block has no train_loss weighting strategy.
+                    callbacks = list(getattr(self.callback_handler, "callbacks", []) or [])
+                    callbacks = [
+                        cb for cb in callbacks
+                        if not isinstance(cb, (LossStatisticsCallback, AdaptiveWeightCallback))
+                    ]
+                    self.callback_handler.callbacks = callbacks
+
+                    self._collect_detailed_losses = False
+                    self._collect_gradients = False
+
+                self.loss_fn = self.get_loss_fn(train_loss_dict_next_block)
+                self.eval_loss_fn = self.get_loss_fn(validation_loss_dict_next_block)
+
+
+
             if DebugOption.TPU_METRICS_DEBUG in self.args.debug:
                 if is_torch_xla_available():
                     # tpu-comment: Logging debug metrics for PyTorch/XLA (compile, execute times, ops, etc.)
@@ -1803,6 +1882,7 @@ class Trainer(Trainer_):
             eval_dataset=eval_dataset,
             data_config=self.data_config,
             train_config=self.train_config,
+            train_strategy_config=self.train_strategy_config,
             output_log_config=self.output_log_config,
             model_config=self.model_config,
             scheduler_config=self.scheduler_config,
@@ -1815,53 +1895,6 @@ class Trainer(Trainer_):
             self.control.should_plot = False
         
         logger.info(f"\n***** Finished the LAST Evaluation for plotting from the best checkpoint *****")
-
-
-    def select_pushforward_unroll_steps_for_training(self, current_epoch):
-        """
-        Select number of pushforward unroll steps based on training epoch and configuration.
-
-        Parameters
-        ----------
-        current_epoch : int
-            Current training epoch.
-
-        Returns
-        -------
-        int
-            Number of unroll steps to perform for pushforward training.
-
-        Raises
-        ------
-        ValueError
-            If current epoch is before the first deciding epoch threshold.
-        """
-        current_epoch_tensor = torch.tensor(current_epoch)
-        deciding_epochs = torch.tensor(self.train_config["pushforward_config"]["deciding_epochs"])
-        max_unrolls = self.train_config["pushforward_config"]["max_allowed_unroll_steps"]
-        relative_probabilities = self.train_config["pushforward_config"]["relative_probabilities"]
-
-        assert all(deciding_epochs[i] <= deciding_epochs[i + 1] for i in range(len(deciding_epochs) - 1))
-
-        idx = (current_epoch_tensor > deciding_epochs).sum().item()
-
-        if idx == 0:
-            raise ValueError("Training step is before first step threshold in pushforward config.")
-
-        unroll_choices = torch.tensor(max_unrolls[:idx])
-        prob_choices = torch.tensor(relative_probabilities[:idx])
-        
-        # Convert from relative probabilities to absolute probabilities
-        prob_choices = prob_choices / prob_choices.sum()
-
-        gen = torch.Generator().manual_seed(42+current_epoch)
-
-        sample_idx = torch.multinomial(prob_choices, num_samples=1, generator=gen).item()
-        unroll_steps = unroll_choices[sample_idx]
-
-        # Convert the 0-D tensor to a native Python int before returning so callers can use it
-        # directly in range() and arithmetic operations without needing an explicit .item() call.
-        return unroll_steps.item()
 
     ##custom function, not inside transformers library
     def set_eval_or_test_rollout_steps(self, rollout_steps=None, output_all_steps=False):
@@ -2215,6 +2248,45 @@ class Trainer(Trainer_):
         all_inputs = all_inputs.get_arrays() #all_inputs.shape = torch.Size([B*(steps+1), input_seq_length, C_input, x_resolution, y_resolution, ...]) 
         all_conditioning_inputs = all_conditioning_inputs.get_arrays() #all_conditioning_inputs.shape = torch.Size([B*(steps+1), conditioning_seq_length, C_conditioning, x_resolution, y_resolution, ...]) 
 
+        # Renormalize log-transformed channels in predictions and labels using log statistics to obtain log-transformed channels in physical units.
+        # Then take the exponential of the log-transformed channels in physical units to obtain the channels in physical units.
+        # Finally, normalize the channels in physical units using the original statistics to get the channels in normalized (physical) units.
+        log_channels = self.data_config.get("log_transform_channels") or []
+        if log_channels:
+            dim = self.data_config.get("dimension")
+            channel_axis = -2 if dim == 1 else (-3 if dim == 2 else -4)
+            channel_names = getattr(eval_dataset, "output_channels")
+            norm_stats = self.data_config.get("data_normalization_stats")
+            norm_strategy = self.data_config.get("data_normalization_strategy")
+
+            def _apply_log_inverse(arr):
+                for ch_name in log_channels:
+                    if (
+                        ch_name not in channel_names
+                        or norm_stats is None
+                        or norm_strategy is None
+                    ):
+                        continue
+                    stats_key = f"log_{ch_name}"
+                    if stats_key not in norm_stats or ch_name not in norm_stats:
+                        continue
+                    ch_idx = channel_names.index(ch_name)
+                    slicer = [slice(None)] * arr.ndim
+                    slicer[channel_axis] = ch_idx
+                    log_space = re_normalize_data(  #Ex: Here we obtain log(Density) in physical units 
+                        arr[tuple(slicer)], norm_stats[stats_key], norm_strategy
+                    )
+                    physical_space = np.exp(log_space) #Ex: Here we obtain Density in physical units
+                    physical_space_normalized = normalize_data(
+                        physical_space, norm_stats[ch_name], norm_strategy #Ex: Here we normalize Density 
+                    )
+                    arr[tuple(slicer)] = physical_space_normalized #Ex: Here we store the normalized Density
+                return arr
+
+            all_preds = _apply_log_inverse(all_preds)
+            all_labels = _apply_log_inverse(all_labels)
+
+
         # Number of samples
         if has_length(eval_dataset):
             num_samples = len(eval_dataset)
@@ -2389,6 +2461,7 @@ class Trainer(Trainer_):
             eval_dataset=eval_dataset,
             data_config=self.data_config,
             train_config=self.train_config,
+            train_strategy_config=self.train_strategy_config,
             output_log_config=self.output_log_config,
             model_config=self.model_config,
             scheduler_config=self.scheduler_config,
@@ -2651,7 +2724,7 @@ class Trainer(Trainer_):
             else:
                 return obj
         
-        if self.loss_config is not None:
+        if self.train_strategy_config is not None:
             try:
                 # Get the output directory
                 output_dir = self.args.output_dir
@@ -2668,21 +2741,24 @@ class Trainer(Trainer_):
                 
                 loss_config_path = os.path.join(checkpoint_folder, "loss_config.json")
                 
-                # Convert to dict (keeps metric_params separate)
-                loss_config_dict = OmegaConf.to_container(self.loss_config, resolve=True)
+                current_block = self._get_train_strategy_block_for_epoch(self.state.epoch-1)
+
+                current_train_strategy_dict = OmegaConf.to_container(current_block, resolve=True)
                 
-                # Add current weights to each component
                 if self.loss_fn is not None:
+                    # Get loss weights at the time of checkpointing
                     weight_dict = self.loss_fn.get_loss_weight_dict()
 
-                    for component in loss_config_dict['train_loss']['components']:
+                    current_train_loss_dict = current_train_strategy_dict["train_loss"]
+                    
+                    for component in current_train_loss_dict['components']:
                         comp_name = component.get('name', component['type'])
                         if comp_name in weight_dict:
                             component['current_weights'] = _tensorize_for_json(weight_dict[comp_name])
             
                 # Save
                 with open(loss_config_path, 'w') as f:
-                    json.dump(loss_config_dict, f, indent=2)
+                    json.dump(current_train_strategy_dict , f, indent=2)
                 
                 logger.info(f"Saved loss_config to {loss_config_path}")
                 
@@ -3045,120 +3121,3 @@ class Trainer(Trainer_):
 
         self.hp_search_backend = None
         return best_run, study
-
-def test_pushforward_unroll_steps():
-    """
-    Test function to verify the pushforward unroll steps selection logic.
-    Tests various scenarios including:
-    1. Normal case with multiple epochs
-    2. Edge case at first deciding epoch
-    3. Edge case at last deciding epoch
-    4. Error case before first deciding epoch
-    5. Progression of unroll steps across epochs
-    """
-    import torch
-    import numpy as np
-    from collections import defaultdict
-
-    # Mock trainer class for testing
-    class MockTrainer:
-        def __init__(self, pushforward_config):
-            self.pushforward_config = pushforward_config
-
-        def select_pushforward_unroll_steps_for_training(self, current_epoch):
-            current_epoch_tensor = torch.tensor(current_epoch)
-            deciding_epochs = torch.tensor(self.pushforward_config["deciding_epochs"])
-            max_unrolls = self.pushforward_config["max_allowed_unroll_steps"]
-            relative_probabilities = self.pushforward_config["relative_probabilities"]
-
-            assert all(deciding_epochs[i] <= deciding_epochs[i + 1] for i in range(len(deciding_epochs) - 1))
-
-            idx = (current_epoch_tensor > deciding_epochs).sum().item()
-
-            if idx == 0:
-                raise ValueError("Training step is before first step threshold in pushforward config.")
-
-            unroll_choices = torch.tensor(max_unrolls[:idx])
-            prob_choices = torch.tensor(relative_probabilities[:idx])
-            
-            # Normalize explicitly
-            prob_choices = prob_choices / prob_choices.sum()
-
-            # Fixed local RNG with seed 42
-            gen = torch.Generator().manual_seed(42+current_epoch)
-
-            sample_idx = torch.multinomial(prob_choices, num_samples=1, generator=gen).item()
-            unroll_steps = unroll_choices[sample_idx]
-
-            # Convert the 0-D tensor to a native Python int before returning so callers can use it
-            # directly in range() and arithmetic operations without needing an explicit .item() call.
-            return unroll_steps.item()
-
-    # Test configuration
-    pushforward_config = {
-        "deciding_epochs": [-1, 2, 50],  # Epochs where new unroll steps become available
-        "max_allowed_unroll_steps": [0, 1, 2],        # Maximum unroll steps at each stage
-        "relative_probabilities": [7, 2, 1]  # Relative probabilities for each stage
-    }
-
-    trainer = MockTrainer(pushforward_config)
-    
-    # Test 1: Normal case - multiple epochs
-    print("\nTest 1: Normal case - multiple epochs")
-    unroll_counts = defaultdict(int)
-    n_samples = 1000
-    
-    # for _ in range(n_samples):
-    #     unroll_steps = trainer.select_pushforward_unroll_steps_for_training(25)  # Between 20 and 30
-    #     unroll_counts[unroll_steps.item()] += 1
-    
-    # print("Unroll step distribution:")
-    # for steps, count in sorted(unroll_counts.items()):
-    #     print(f"Steps {steps}: {count/n_samples:.2%}")
-
-    # # Test 2: Edge case - at first deciding epoch
-    # print("\nTest 2: Edge case - at first deciding epoch")
-    # unroll_steps = trainer.select_pushforward_unroll_steps_for_training(10)
-    # print(f"Unroll steps at epoch 10: {unroll_steps}")
-
-    # # Test 3: Edge case - at last deciding epoch
-    # print("\nTest 3: Edge case - at last deciding epoch")
-    # unroll_steps = trainer.select_pushforward_unroll_steps_for_training(30)
-    # print(f"Unroll steps at epoch 30: {unroll_steps}")
-
-    # # Test 4: Error case - before first deciding epoch
-    # print("\nTest 4: Error case - before first deciding epoch")
-    # try:
-    #     unroll_steps = trainer.select_pushforward_unroll_steps_for_training(5)
-    # except ValueError as e:
-    #     print(f"Expected error: {e}")
-
-    # Test 5: Simple progression test
-    print("\nTest 5: Epoch vs Unroll Steps")
-    print("Epoch\tUnroll Steps")
-    print("-" * 20)
-    
-    # Store results for 5 runs
-    all_runs = []
-    for run in range(5):
-        run_results = []
-        for epoch in range(500):
-            try:
-                unroll_steps = trainer.select_pushforward_unroll_steps_for_training(epoch)
-                run_results.append(unroll_steps)
-            except ValueError:
-                run_results.append(-1)  # Use -1 to represent error
-        all_runs.append(run_results)
-    
-    # Compare results across runs
-    print("\nComparing results across 5 runs:")
-    print("Epoch\tRun1\tRun2\tRun3\tRun4\tRun5\tAll Same?")
-    print("-" * 70)
-    
-    for epoch in range(500):
-        values = [run[epoch] for run in all_runs]
-        all_same = all(v == values[0] for v in values)
-        print(f"{epoch}\t{values[0]}\t{values[1]}\t{values[2]}\t{values[3]}\t{values[4]}\t{all_same}")
-
-if __name__ == "__main__":
-    test_pushforward_unroll_steps()

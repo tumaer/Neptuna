@@ -8,13 +8,14 @@ from utils.plot_progress import preprocess_for_plotting, plot_rollout_metrics
 from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
 from utils.plot_progress import plot_rollout_metrics_bar_chart, calculate_and_save_results_all_channels
 from utils.plot_progress import plot_multi_run_rollout_metrics
-from utils.loss_utils import fetch_loss_metric, fetch_infer_loss_dict, fetch_train_loss_dict
+from utils.loss_utils import fetch_loss_metric, fetch_infer_loss_dict
 from metrics.inference_metrics import compute_metrics_for_n_rollouts
 from transformers.trainer import EvalPrediction
 from transformers import TrainingArguments
 from train.trainer import Trainer
 import hydra
 from omegaconf import DictConfig
+from typing import Dict, List, Optional
 import json
 from utils.seed_utils import set_global_seed
 import torch
@@ -71,31 +72,7 @@ def load_pretrained_model(model_config):
 
     return model
 
-def inverse_log_transform_channels(data_array, channel_names, log_transform_channels):
-    """
-    Apply inverse log transform (exp) to specified channels.
-    
-    Args:
-        data_array: numpy array with shape (N, T, C, *spatial)
-        channel_names: list of channel names corresponding to C dimension
-        log_transform_channels: list of channel names that were log-transformed
-    
-    Returns:
-        Modified array with inverse log transform applied
-    """
-    if not log_transform_channels:
-        return data_array
-    
-    data_array = data_array.copy()  # Avoid modifying original
-    
-    for c_idx, ch_name in enumerate(channel_names):
-        if ch_name in log_transform_channels:
-            # Apply exp to invert log transform
-            data_array[:, :, c_idx] = np.exp(data_array[:, :, c_idx])
-    
-    return data_array
-
-def build_train_and_eval_loss(loss_config, data_config, device: torch.device):
+def build_train_and_infer_loss(loss_config, data_config, device: torch.device):
     """
     Construct training and eval CompositeLoss from configs.
     For inference, both are used as metrics -> keep them on CPU.
@@ -111,13 +88,13 @@ def build_train_and_eval_loss(loss_config, data_config, device: torch.device):
     # Always put metric losses on CPU
     metric_device = torch.device("cpu")
 
-    train_loss_dict = fetch_train_loss_dict(full_train_cfg)
+    train_loss_dict = loss_config.train_loss
     train_loss_fn = fetch_loss_metric(data_config, train_loss_dict).to(metric_device)
 
-    infer_loss_dict = fetch_infer_loss_dict(full_train_cfg)
+    infer_loss_dict = fetch_infer_loss_dict(full_train_cfg) #TODO: if only data_config is required, only provide that
     infer_loss_fn = fetch_loss_metric(data_config, infer_loss_dict).to(metric_device)
 
-    return train_loss_fn, infer_loss_fn
+    return train_loss_fn, infer_loss_fn, infer_loss_dict
 
 def get_trainer(
     model_config,
@@ -198,6 +175,15 @@ def get_trainer(
     # Load pretrained model using the generic factory function
     model = load_pretrained_model(model_config)
 
+    train_strategy_config = OmegaConf.create({
+        "curriculum": [{
+            "name": "block_1",
+            "start_epoch": 0,
+            **OmegaConf.to_container(loss_config, resolve=True)
+        }],
+        "num_train_epochs": 5
+    })
+
     trainer = Trainer(
         model=model,
         args=args,
@@ -208,7 +194,7 @@ def get_trainer(
         scheduler_config=scheduler_config,
         infer_config=infer_config,
         output_log_config=output_log_config,
-        loss_config=loss_config,
+        train_strategy_config=train_strategy_config,
     )
     return trainer
 
@@ -234,14 +220,14 @@ def find_checkpoint_path(experiment_dir):
     checkpoint_dirs.sort(key=lambda x: int(x.split('-')[-1]))
     return checkpoint_dirs[-1]
 
-def save_errors_to_csv(errors, output_dir, file_name):
+def save_overall_errors_to_csv(errors, output_dir):
     """
-    Save errors to 2 CSV files in the specified output directory.
-
+    Save overall errors to a CSV file named overall_results.csv in the specified output directory.
     Args:
         errors: Dictionary of errors to save.
         output_dir: Directory where the CSV file will be saved.
     """
+    file_name = "overall_results.csv"
     csv_file = os.path.join(output_dir, file_name)
     file_is_empty = not os.path.exists(csv_file) or os.stat(csv_file).st_size == 0
 
@@ -253,6 +239,13 @@ def save_errors_to_csv(errors, output_dir, file_name):
         for key, value in errors.items():
             writer.writerow([key, value])
 
+def save_errors_to_structured_csv(errors, output_dir, channel_names: Optional[List[str]] = None, file_name: str = "results_structured.csv"):
+    """
+    Save 'normalized' errors to a structured CSV named results_structured.csv in the specified output directory.
+    Args:
+        errors: Dictionary of errors to save.
+        output_dir: Directory where the CSV file will be saved.
+    """
     # Structured CSV file
     # --------------------------------------------------------------
     # Collect data into a dict-of-dicts before writing
@@ -331,7 +324,10 @@ def save_errors_to_csv(errors, output_dir, file_name):
             overall_col = f"{base}__overall"
             all_col_names.add(overall_col)
             for ch in range(n_channels - 1):
-                ch_col = f"{base}__ch{ch}"
+                ch_label = (
+                    channel_names[ch] if channel_names is not None and ch < len(channel_names) else f"ch{ch}"
+                )
+                ch_col = f"{base}__{ch_label}"
                 all_col_names.add(ch_col)
 
             for idx in range(n_idx):
@@ -344,14 +340,58 @@ def save_errors_to_csv(errors, output_dir, file_name):
 
                 # per-channel columns
                 for ch in range(n_channels - 1):
-                    ch_col = f"{base}__ch{ch}"
+                    ch_label = (
+                        channel_names[ch] if channel_names is not None and ch < len(channel_names) else f"ch{ch}"
+                    )
+                    ch_col = f"{base}__{ch_label}"
                     rows[row_key][ch_col] = float(np_arr[idx, ch])
 
     # If nothing to write, just ensure header exists
-    pretty_csv_file = os.path.join(output_dir, "results_structured.csv")
+    pretty_csv_file = os.path.join(output_dir, file_name)
 
-    # Sort columns for deterministic order
-    all_col_names_sorted = sorted(all_col_names)
+    # Sort columns so mean/std for each channel sit next to each other
+    def _parse_col(name: str):
+        parts = name.split("__")
+        if len(parts) < 3:
+            return name, "", ""
+        metric, stat, *channel_parts = parts
+        channel = "__".join(channel_parts) if channel_parts else ""
+        return metric, stat, channel
+
+    # Keep channels together: overall first, then provided channel_names order,
+    # then any leftover channels in lexicographic order.
+    channel_order_map: Dict[str, int] = {}
+    if channel_names:
+        channel_order_map = {ch: i + 1 for i, ch in enumerate(channel_names)}
+
+    def _channel_rank(channel: str):
+        if channel == "overall":
+            return (0, "overall")
+        if channel in channel_order_map:
+            return (channel_order_map[channel], channel)
+        if channel.startswith("ch"):
+            try:
+                num = int(channel[2:])
+                return (len(channel_order_map) + 1 + num, channel)
+            except ValueError:
+                pass
+        # unknown channel, push to the end but keep deterministic
+        return (len(channel_order_map) + 100, channel)
+
+    def _col_key(name: str):
+        metric, stat, channel = _parse_col(name)
+        is_cumulative = 1 if stat.startswith("cumulative_") else 0
+        stat_base = stat.replace("cumulative_", "")
+        stat_rank = {"mean": 0, "std": 1}.get(stat_base, 99)
+        ch_rank, _ = _channel_rank(channel)
+        # Order:
+        #   1) per-step (non-cumulative) overall group by metric (mean, std)
+        #   2) per-step per-channel groups (each channel, metrics interleaved)
+        #   3) cumulative overall group by metric
+        #   4) cumulative per-channel groups
+        return (is_cumulative, ch_rank, metric, stat_rank, stat, name)
+
+    all_col_names_sorted = sorted(all_col_names, key=_col_key)
 
     with open(pretty_csv_file, mode='w', newline='') as file:
         writer = csv.writer(file)
@@ -468,14 +508,14 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         metric_device = torch.device("cpu")
 
         # Build loss functions
-        train_loss_fn, eval_loss_fn = build_train_and_eval_loss(
+        train_loss_fn, infer_loss_fn, infer_loss_dict = build_train_and_infer_loss(
             loss_config=loss_config,
             data_config=data_config,
             device=metric_device,
         )
 
         # Define metrics for trainer
-        def compute_metrics(eval_pred: EvalPrediction):
+        def compute_metrics_during_inference(eval_pred: EvalPrediction):
             preds = eval_pred.predictions
             (
                 len_eval_dataloader,
@@ -523,7 +563,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                             labels=targets_tensor.to(metric_device),
                             return_detailed=False,
                         )
-                    metrics["eval_composite_loss"] = float(
+                    metrics["infer_composite_train_loss"] = float(
                         composite_loss.item()
                         if torch.is_tensor(composite_loss)
                         else composite_loss
@@ -532,18 +572,18 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                     print(f"Failed to compute composite loss metrics: {e}")
 
             # 2) Evaluation loss components for logging
-            if eval_loss_fn is not None:
+            if infer_loss_fn is not None:
                 try:
                     with torch.no_grad():
-                        _, detailed = eval_loss_fn(
-                            model=None,
+                        _, detailed = infer_loss_fn(
+                            model=None, 
                             predictions=preds_tensor.to(metric_device),
                             labels=targets_tensor.to(metric_device),
                             return_detailed=True,
                         )
                     for component_name, component_detailed in detailed.items():
                         component_total = component_detailed["total"]
-                        metrics[f"eval_{component_name}"] = (
+                        metrics[f"infer_{component_name}"] = (
                             component_total.item()
                             if torch.is_tensor(component_total)
                             else component_total
@@ -612,7 +652,6 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 "eval_accumulation_steps": int(_safe_get(args_obj, "eval_accumulation_steps", 0) or 0),
                 "metric_for_best_model": _safe_get(args_obj, "metric_for_best_model", None),
                 # Not recoverable from HF TrainingArguments; keep sensible defaults or None
-                "pushforward_config": None,
                 "n_eval_rollouts": None,
                 "eval_split_ratio": None,
             }
@@ -723,7 +762,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                                                 filter_in_channels=data_config["filter_features"]["filter_in_channels"],
                                                 filter_out_channels=data_config["filter_features"]["filter_out_channels"],
                                                 conditioning_in_channels=data_config["conditioning_features"]["conditioning_in_channels"],
-                                                include_conditioning_parameters=data_config["conditioning_features"]["include_conditioning_parameters"],
+                                                include_conditioning_parameters=False if data_config["conditioning_features"]["conditioning_method"] is None else True,
                                                 parameter_min_max_stats=data_config["conditioning_features"]["parameter_min_max_stats"],
                                                 data_normalization_stats=data_config["data_normalization_stats"],
                                                 data_normalization_strategy=data_config["data_normalization_strategy"],
@@ -744,10 +783,14 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             infer_config=infer_config,
             output_log_config=output_log_config,
             loss_config=loss_config,
-            compute_metrics=compute_metrics,
+            compute_metrics=compute_metrics_during_inference,
         )
 
+        random_start_stats_dict = None
+        ic_start_stats_dict = None
+        
         if infer_config["infer_from_random_timestep"]:
+            print(" \n Running inference rollouts using random windows sliced across the test trajectory...")
             trainer.set_eval_or_test_rollout_steps(
                 rollout_steps=infer_config["n_infer_rollouts"], output_all_steps=True
             )
@@ -762,12 +805,13 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
 
             # pretty print the keys which have the word error in them
             print('Accumulated error for the whole test set (random start):')
-            errors = {} 
+            overall_errors = {} 
             for key, value in predictions_obj.metrics.items():
-                if ("error" in key) or ("eval" in key):
-                    print(f"{key}: {value}")
-                    errors["random_start"+key] = value
-            save_errors_to_csv(errors, solo_inference_dir, "results.csv")
+                if key.endswith(("runtime", "samples_per_second", "steps_per_second", "model_preparation_time", "jit_compilation_time")):
+                    continue
+                print(f"{key}: {value}")
+                overall_errors["random_start_"+key] = value
+            save_overall_errors_to_csv(overall_errors, solo_inference_dir)
             # ----------------------------------------------------------
             # Prepare prediction, target and input arrays
             # ----------------------------------------------------------
@@ -779,10 +823,16 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 outputs_per_rollout = seq_len
                 extra_dims = preds.shape[4:]
                 preds = preds.reshape(n, n_rollouts * seq_len, c, *extra_dims) # (N, R*T, C, *spatial)
-            # else:
-            #     outputs_per_rollout = 1
 
             targets = predictions_obj.label_ids  # Expected shape: (N, R*T, C, *spatial)
+
+            per_rollout_step_metrics_random = compute_metrics_for_n_rollouts(
+                preds,
+                targets,
+                outputs_per_rollout=outputs_per_rollout,
+                include_per_timestep=True,
+                loss_metric=infer_loss_fn
+            )
 
             # Inputs already returned by `trainer.predict`
             inp_arr = inputs  # Shape: (N, T_in, C_in, *spatial)
@@ -808,38 +858,32 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 residual_config=data_config.get("residual_config", None),
                 conditioning_inputs=cond_inp_arr,
             )
-
-            log_transform_channels = data_config["log_transform_channels"]
-
-            inp_renorm = inverse_log_transform_channels(
-                inp_renorm, only_input_channel_names, log_transform_channels
-            )
-
-            tgt_renorm = inverse_log_transform_channels(
-                tgt_renorm, output_channel_names, log_transform_channels
-            )
-
-            pred_renorm = inverse_log_transform_channels(
-                pred_renorm, output_channel_names, log_transform_channels
-            )
+            per_step_errors = {}
+            for metric_name, values in per_rollout_step_metrics_random.items():
+                print(f"{metric_name} per-step (random start): {values}")
+                per_step_errors[metric_name] = values
+            save_errors_to_structured_csv(per_step_errors, 
+                                          solo_inference_dir, 
+                                          channel_names=output_channel_names, 
+                                          file_name="results_structured_random_start.csv")
 
             # Infer spatial dimensionality (1D / 2D / 3D)
-            ndim = pred_renorm.ndim - 3  # subtract batch, time, channel dims
+            ndim = pred_renorm.ndim - 3  # subtract l, time, channel dims
 
             # Use stride from the config if available
-            stride_val = data_config.get("sequence_info", [1, 1, 1])[2]
+            stride_val = data_config.get("sequence_info")[2]
 
             # Directory for saving inference plots
             plot_save_dir = os.path.join(solo_inference_dir, "inference_plots/random_start")
 
             # Build formatted info strings  
-            model_info_str, data_info_str, train_info_str, sched_info_str = build_info_strings(
-                                                                                            model_obj=trainer.model,
-                                                                                            data_config=data_config,
-                                                                                            model_config=model_config,
-                                                                                            train_config=train_config,
-                                                                                            scheduler_config=scheduler_config
-                                                                                        )
+            model_info_str, data_info_str, train_info_str, _ = build_info_strings(
+                                                                                    model_obj=trainer.model,
+                                                                                    data_config=data_config,
+                                                                                    model_config=model_config,
+                                                                                    train_config=train_config,
+                                                                                    scheduler_config=scheduler_config
+                                                                                )
 
             # Create rollout sample plots and per-example rollout metrics, saved per example folder
             # Compute the exact example indices used for plotting to reuse for per-example rollout metrics
@@ -891,12 +935,13 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 
                 plotter.plot()
 
-                # Create a rollout metrics plot for this example (no batch aggregation)
+                # Create only rollout metrics (and not timestep metrics) plot for this example (no batch aggregation)
+                # Reason: timestep metrics are useful in case 
                 ex_preds = preds[example_idx:example_idx+1]      # shape (1, R*T, C, *spatial)
                 ex_targets = targets[example_idx:example_idx+1]
                 
                 per_rollout_metrics_ex = compute_metrics_for_n_rollouts(
-                    ex_preds, ex_targets, outputs_per_rollout=outputs_per_rollout, loss_metric=eval_loss_fn
+                    ex_preds, ex_targets, outputs_per_rollout=outputs_per_rollout, loss_metric=infer_loss_fn, include_per_timestep=False
                 )
                 ex_title = f"Per-rollout metrics ({data_config.get('dataset_name', 'dataset')} - random start, example {int(example_idx)})"
                 plot_rollout_metrics(
@@ -904,12 +949,28 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                     output_channel_names=output_channel_names,
                     save_dir=ex_save_dir,
                     title=ex_title,
-                    filename="rollout_metrics.png",
-                    sequence_info=data_config.get("sequence_info", [1, 1, 1]),
+                    filename=f"Metric_evolution_for_random_Ex_{int(example_idx)}.png", 
+                    sequence_info=data_config.get("sequence_info"),
                 )
 
-        ic_return = None
+            random_start_stats_dict = {
+                "metrics": per_rollout_step_metrics_random,
+                "sequence_info": list(data_config.get("sequence_info")),
+                "output_channel_names": output_channel_names,
+            }
+            runs_step_metrics = {}
+            run_label = os.path.basename(experiment_dir)
+            runs_step_metrics[run_label] = random_start_stats_dict["metrics"]
+
+            calculate_and_save_results_all_channels(
+                runs_step_metrics=runs_step_metrics,
+                save_dir=os.path.dirname(experiment_dir),
+                output_channel_names=output_channel_names,
+                filename="rollout_metrics_random_start_tabulated.csv"
+            )
+
         if infer_config["infer_from_ic"]:
+            print(" \n Running inference rollouts using windows starting from the initial conditions...")
             trainer.set_eval_or_test_rollout_steps(
                 rollout_steps=infer_config["n_infer_rollouts"], output_all_steps=True
             )
@@ -917,15 +978,17 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             # Prepare prediction, target and input arrays
             # ----------------------------------------------------------
             predictions_obj, inputs, conditioning_inputs = trainer.predict(infer_ds_from_ic, metric_key_prefix="")
+            #predictions and labels have NO log-transformed channels
 
             print('Accumulated error for the whole test set (IC start):')
             errors = {}
             for key, value in predictions_obj.metrics.items():
-                if ("error" in key) or ("eval" in key):
-                    print(f"{key}: {value}")
-                    errors["ic_start"+key] = value
-            save_errors_to_csv(errors, solo_inference_dir, "results.csv")
-
+                if key.endswith(("runtime", "samples_per_second", "steps_per_second", "model_preparation_time", "jit_compilation_time")):
+                    continue
+                print(f"{key}: {value}")
+                errors["ic_start_"+key] = value
+            save_overall_errors_to_csv(errors, solo_inference_dir)
+            
             preds = predictions_obj.predictions
             targets = predictions_obj.label_ids
             inp_arr = inputs
@@ -938,16 +1001,14 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 extra_dims = preds.shape[4:]
                 preds = preds.reshape(n, n_rollouts * seq_len, c, *extra_dims) # (N, R*T, C, *spatial)
 
-            per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(
-                preds, targets, outputs_per_rollout=outputs_per_rollout, include_per_timestep=True, loss_metric=eval_loss_fn
+            per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(   
+                preds, 
+                targets, 
+                outputs_per_rollout=outputs_per_rollout, 
+                include_per_timestep=True, 
+                loss_metric=infer_loss_fn
             )
             
-            errors = {}
-            for metric_name, values in per_rollout_step_metrics_ic.items():
-                print(f"{metric_name} per-step (IC start): {values}")
-                errors[metric_name] = values
-            save_errors_to_csv(errors, solo_inference_dir, "results.csv")
-
             # ----------------------------------------------------------
             # Renormalise data and reconstruct residuals for plotting
             # ----------------------------------------------------------
@@ -967,36 +1028,16 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 conditioning_inputs=cond_inp_arr,
             )
 
-            log_transform_channels = data_config["log_transform_channels"]
-
-            inp_renorm = inverse_log_transform_channels(
-                inp_renorm, only_input_channel_names, log_transform_channels
-            )
-
-            tgt_renorm = inverse_log_transform_channels(
-                tgt_renorm, output_channel_names, log_transform_channels
-            )
-
-            pred_renorm = inverse_log_transform_channels(
-                pred_renorm, output_channel_names, log_transform_channels
-            )
-            
-
-            # Compute renormalized metrics: necessary for comparing performance between runs with different data preprocessing
-            per_rollout_step_metrics_ic_renorm = compute_metrics_for_n_rollouts(
-                pred_renorm, tgt_renorm, outputs_per_rollout=outputs_per_rollout, include_per_timestep=True, loss_metric=eval_loss_fn
-            )
-            
             errors = {}
-            for metric_name, values in per_rollout_step_metrics_ic_renorm.items():
-                print(f"{metric_name} per-step (IC start, renorm): {values}")
+            for metric_name, values in per_rollout_step_metrics_ic.items():
+                print(f"{metric_name} per-step (IC start): {values}")
                 errors[metric_name] = values
-            save_errors_to_csv(errors, solo_inference_dir, "results_renorm.csv")
+            save_errors_to_structured_csv(errors, solo_inference_dir, channel_names=output_channel_names, file_name="results_structured_ic_start.csv")
 
             # Infer spatial dimensionality (1D / 2D / 3D)
             ndim = pred_renorm.ndim - 3  # subtract batch, time, channel dims
 
-            stride_val = data_config.get("sequence_info", [1, 1, 1])[2]
+            stride_val = data_config.get("sequence_info")[2]
 
             plot_save_dir = os.path.join(solo_inference_dir, "inference_plots/ic_start")
 
@@ -1006,16 +1047,18 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 save_dir=plot_save_dir,
                 title=f"Per-(rollout and time) step metrics ({data_config.get('dataset_name', 'dataset')} - IC start)",
                 filename="per_step_metrics.png",
-                sequence_info=data_config.get("sequence_info", [1, 1, 1]),
+                sequence_info=data_config.get("sequence_info"),
             )
 
-            model_info_str, data_info_str, train_info_str, sched_info_str = build_info_strings(
-                                                                                            model_obj=trainer.model,
-                                                                                            data_config=data_config,
-                                                                                            model_config=model_config,
-                                                                                            train_config=train_config,
-                                                                                            scheduler_config=scheduler_config
-                                                                                        )
+            model_info_str, data_info_str, train_info_str, _ = build_info_strings(
+                                                                                    model_obj=trainer.model,
+                                                                                    data_config=data_config,
+                                                                                    model_config=model_config,
+                                                                                    train_config=train_config,
+                                                                                    scheduler_config=scheduler_config
+                                                                                )
+
+            # Create rollout sample plots, these plots start from the initial condition in the test dataset
 
             layout_config = LayoutConfig(
                 base_visual_size=3.5,
@@ -1056,18 +1099,33 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             
             plotter.plot()
 
-            # Prepare return payload for top-level multi-run plotting
-            ic_return = {
+            ic_start_stats_dict = {
                 "metrics": per_rollout_step_metrics_ic,
-                "metrics_renorm": per_rollout_step_metrics_ic_renorm,
-                "sequence_info": list(data_config.get("sequence_info", [1, 1, 1])),
+                "sequence_info": list(data_config.get("sequence_info")),
                 "output_channel_names": output_channel_names,
             }
+            runs_step_metrics = {}
+            run_label = os.path.basename(experiment_dir)
+            runs_step_metrics[run_label] = ic_start_stats_dict["metrics"]
+
+            calculate_and_save_results_all_channels(
+                runs_step_metrics=runs_step_metrics,
+                save_dir=os.path.dirname(experiment_dir),
+                output_channel_names=output_channel_names,
+                filename="rollout_metrics_ic_start_tabulated.csv"
+            )
 
         print(f"Inference completed for {os.path.basename(experiment_dir)}")
         print(f"Results saved to: {solo_inference_dir}")
 
-        return ic_return
+        # Return both if available
+        result_dict = {}
+        if random_start_stats_dict is not None:
+            result_dict["random_start"] = random_start_stats_dict
+        if ic_start_stats_dict is not None:
+            result_dict["ic_start"] = ic_start_stats_dict
+
+        return result_dict
         
     except Exception as e:
         print(f"Error processing {experiment_dir}: {str(e)}")
@@ -1139,27 +1197,20 @@ def main(cfg: DictConfig):
         print(f"  - {os.path.basename(exp_dir)}")
     
     # Process each experiment directory and collect IC-start metrics for multi-run overlay (no aggregation)
-    runs_step_metrics = {}
-    runs_step_metrics_renorm = {}
+    runs_step_metrics_random_start = {}
+    runs_step_metrics_ic_start = {}
     runs_sequence_info = {}
     run_configs = {}
-    sequence_info_ref = None
-    output_channel_names_ref = None
     
     for experiment_dir in experiment_dirs:
         res = run_inference_for_each_experiment(experiment_dir, infer_config)
-        if isinstance(res, dict) and res.get("metrics") is not None:
-            run_label = os.path.basename(experiment_dir)
-            runs_step_metrics[run_label] = res["metrics"]
-            if res.get("metrics_renorm") is not None:
-                runs_step_metrics_renorm[run_label] = res["metrics_renorm"]
-            if sequence_info_ref is None and res.get("sequence_info") is not None:
-                sequence_info_ref = res.get("sequence_info")
-            # Keep per-run sequence info for correct timestep x-axis
-            if res.get("sequence_info") is not None:
-                runs_sequence_info[run_label] = res.get("sequence_info")
-            if output_channel_names_ref is None and res.get("output_channel_names") is not None:
-                output_channel_names_ref = res.get("output_channel_names")
+        run_label = os.path.basename(experiment_dir)
+        if res.get("random_start"):
+            runs_step_metrics_random_start[run_label] = res["random_start"]["metrics"]
+            runs_sequence_info[run_label] = res["random_start"]["sequence_info"]
+        if res.get("ic_start"):
+            runs_step_metrics_ic_start[run_label] = res["ic_start"]["metrics"]
+            runs_sequence_info[run_label] = res["ic_start"]["sequence_info"]
         try:
             checkpoint_path = find_checkpoint_path(experiment_dir)
             if checkpoint_path:
@@ -1175,37 +1226,30 @@ def main(cfg: DictConfig):
 
     # Create a single overlay plot of all runs in inference_dir if IC metrics are available
     # Here the overall all-channel combinedmetrics of each run are plotted and NOT the channel-wise metrics
-    if bool(infer_config.get("infer_from_ic", False)) and len(runs_step_metrics) > 0:
+    if bool(infer_config.get("infer_from_ic")) and len(runs_step_metrics_ic_start) > 0:
         plot_multi_run_rollout_metrics(
-            runs_step_metrics=runs_step_metrics,
+            runs_step_metrics=runs_step_metrics_ic_start,
             save_dir=inference_dir,
             title="Summary Plot: per-(rollout and time) step all channels combined metrics (IC start)",
             filename="all_runs_ic_rollout_timestep_metrics.png",
-            sequence_info=sequence_info_ref if sequence_info_ref is not None else [1, 1, 1],
             runs_sequence_info=runs_sequence_info if len(runs_sequence_info) > 0 else None,
         )
 
-
-    plot_rollout_metrics_bar_chart(
-        runs_step_metrics=runs_step_metrics,
-        save_dir=inference_dir,
-        run_configs=run_configs,
-        filename="rollout_metrics_bar_chart.png"
-    )
-
-    calculate_and_save_results_all_channels(
-        runs_step_metrics=runs_step_metrics,
-        save_dir=inference_dir,
-        output_channel_names=output_channel_names_ref,
-        filename="rollout_metrics_tabulated.csv"
-    )
-
-    calculate_and_save_results_all_channels(
-        runs_step_metrics=runs_step_metrics_renorm,
-        save_dir=inference_dir,
-        output_channel_names=output_channel_names_ref,
-        filename="rollout_metrics_tabulated_renorm.csv"
-    )
+    # Bar charts for both IC-start and random-start runs
+    if len(runs_step_metrics_ic_start) > 0:
+        plot_rollout_metrics_bar_chart(
+            runs_step_metrics=runs_step_metrics_ic_start,
+            save_dir=inference_dir,
+            run_configs=run_configs,
+            filename="rollout_metrics_ic_start_bar_chart.png"
+        )
+    if len(runs_step_metrics_random_start) > 0:
+        plot_rollout_metrics_bar_chart(
+            runs_step_metrics=runs_step_metrics_random_start,
+            save_dir=inference_dir,
+            run_configs=run_configs,
+            filename="rollout_metrics_random_start_bar_chart.png"
+        )
 
     print(f"\n{'='*60}")
     print("All inference runs completed!")
