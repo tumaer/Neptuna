@@ -184,10 +184,10 @@ class Trainer(Trainer_):
         self._collect_gradients = getattr(self, '_collect_gradients', False)
         self._grad_stat_names = getattr(self, '_grad_stat_names', [])
 
-        self._weight_per_channel = self.loss_config.train_loss.train_loss_weighting_strategy.get("weight_per_channel", False)
-        self._weight_sub_components = self.loss_config.train_loss.train_loss_weighting_strategy.get("weight_sub_components", False)
-        self._loss_history_interval = self.loss_config.train_loss.train_loss_weighting_strategy.get("loss_history_interval", 1)
-        self._grad_history_interval = self.loss_config.train_loss.train_loss_weighting_strategy.get("grad_history_interval", 1)
+        self._weight_per_channel = self.train_strategy_config.curriculum[0].train_loss.train_loss_weighting_strategy.get("weight_per_channel", False)
+        self._weight_sub_components = self.train_strategy_config.curriculum[0].train_loss.train_loss_weighting_strategy.get("weight_sub_components", False)
+        self._loss_history_interval = self.train_strategy_config.curriculum[0].train_loss.train_loss_weighting_strategy.get("loss_history_interval", 1)
+        self._grad_history_interval = self.train_strategy_config.curriculum[0].train_loss.train_loss_weighting_strategy.get("grad_history_interval", 1)
 
         # Inject a reference to this Trainer into all registered callbacks so they can
         # access training context (datasets, model, args, etc.).
@@ -1556,15 +1556,23 @@ class Trainer(Trainer_):
                 loss_weighting_strategy_next_block = create_loss_weighting_strategy(train_loss_dict_next_block)
 
                 if loss_weighting_strategy_next_block is not None:
-                    use_gradients = get_loss_weighting_strategy_entry(
+                    grad_stats = get_loss_weighting_strategy_entry(
                         train_loss_dict_next_block.train_loss_weighting_strategy.type
-                    ).get("use_gradients", False)
+                    ).get("grad_stats", [])
+                    use_gradients = bool(grad_stats)
 
                     self._collect_detailed_losses = True
                     self._collect_gradients = use_gradients
 
+                    self._grad_stat_names = grad_stats
+
+                    self._weight_per_channel = train_loss_dict_next_block.train_loss_weighting_strategy.get("weight_per_channel", False)
+                    self._weight_sub_components = train_loss_dict_next_block.train_loss_weighting_strategy.get("weight_sub_components", False)
+                    self._loss_history_interval = train_loss_dict_next_block.train_loss_weighting_strategy.get("loss_history_interval", 1)
+                    self._grad_history_interval = train_loss_dict_next_block.train_loss_weighting_strategy.get("grad_history_interval", 1)
+
                     loss_stats_callback_next_block = LossStatisticsCallback(
-                        collect_train_losses=True, collect_gradients=use_gradients, trainer=self
+                        collect_train_losses=True, grad_stats=grad_stats, collect_gradients=use_gradients, trainer=self
                     )
                     loss_source = train_loss_dict_next_block.train_loss_weighting_strategy.get("loss_source", "train")
                     adaptive_weight_callback_next_block = AdaptiveWeightCallback(
@@ -1573,6 +1581,7 @@ class Trainer(Trainer_):
                         trainer=self,
                         loss_source=loss_source,
                         use_gradients=use_gradients,
+                        grad_stats=grad_stats,
                         curriculum_start_epochs=self.curriculum_start_epochs
                     )
 
@@ -1606,6 +1615,13 @@ class Trainer(Trainer_):
 
                     self._collect_detailed_losses = False
                     self._collect_gradients = False
+
+                    self._grad_stat_names = []
+
+                    self._weight_per_channel = False
+                    self._weight_sub_components = False
+                    self._loss_history_interval = 1
+                    self._grad_history_interval = 1
 
                 self.loss_fn = self.get_loss_fn(train_loss_dict_next_block)
                 self.eval_loss_fn = self.get_loss_fn(validation_loss_dict_next_block)

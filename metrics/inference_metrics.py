@@ -114,6 +114,7 @@ def compute_metrics_for_n_rollouts(
                     predictions=preds_slice,
                     labels=targets_slice,
                     return_detailed=False,
+                    input_frames=None,
                     keep_bc_dims=True
                 )
                 total_loss = (

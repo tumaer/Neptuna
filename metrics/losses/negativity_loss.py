@@ -3,7 +3,7 @@ from typing import Literal, Optional, List, Dict, Union, Tuple
 import torch
 import torch.nn as nn
 
-from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 
 
 class NegativityLoss(LossComponent):
@@ -39,7 +39,7 @@ class NegativityLoss(LossComponent):
         data_dim: int = None,
         field_names: List[str] = None,
         reduction: str = 'sum',
-        normalization: Literal['none', 'magnitude', 'variance'] = 'none',
+        normalization: Literal['none', 'range', 'variance', 'std'] = 'none',
         epsilon: float = 1e-8
     ):
         super().__init__(weight=weight, name=name, data_dim=data_dim,
@@ -55,6 +55,7 @@ class NegativityLoss(LossComponent):
         labels: torch.Tensor,
         input_frames: Optional[torch.Tensor],
         return_detailed: bool = False,
+        keep_bc_dims: bool = False,
         preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
 
@@ -78,13 +79,6 @@ class NegativityLoss(LossComponent):
 
             if base != 1.0:
                 total_loss = total_loss * base
-
-            total_loss = apply_batch_wise_normalization(
-                total_loss,
-                labels,
-                self.normalization,
-                self.epsilon
-            )
 
             if not return_detailed:
                 return total_loss

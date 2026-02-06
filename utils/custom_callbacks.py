@@ -872,6 +872,7 @@ class LossStatisticsCallback(TrainerCallback):
         if self.collect_gradients:
             self.trainer._gradient_accumulator = {}
             self.trainer._grad_stat_names = self.grad_stats
+            self.trainer._collect_gradients = True
     
     def on_epoch_end(self, args, state, control, **kwargs):
         """Transfer and aggregate losses and gradient norms at end of epoch."""
@@ -1142,7 +1143,7 @@ class AdaptiveWeightCallback(TrainerCallback):
         # Only the train loss function metrics are used for weight updates, but the loss history source can be train or eval.
         current_weights = self.trainer.loss_fn.get_loss_weight_dict()
 
-        component_names = set(current_weights.keys()) #TODO_MAX:
+        training_component_names = set(current_weights.keys()) #TODO_MAX:
         
         # Only filter if using eval losses (train losses are already filtered during collection)
         if source_label == 'train' or self.loss_source == 'train':
@@ -1159,7 +1160,7 @@ class AdaptiveWeightCallback(TrainerCallback):
         if not filtered_loss_history:
             logger.warning(
                 f"[AdaptiveWeightCallback] No matching loss components in {source_label} loss history\n"
-                f"  Loss components: {component_names}\n"
+                f"  Loss components: {training_component_names}\n"
                 f"  Available in {source_label}: {set(loss_history.keys())}"
             )
             return False

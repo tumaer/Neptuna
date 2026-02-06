@@ -1,5 +1,5 @@
 do_infer: True
-inference_directory: ./sample_inference/AB_infer_test
+inference_directory: ./sample_inference/merge_test
 dataset_directory_path: null  # if null, will use the dataset_directory_path from data_config.json inside the experiment directory.
 filter_features:
   infer_filter_frames: [null, null]

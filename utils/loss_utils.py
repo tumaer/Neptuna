@@ -157,7 +157,7 @@ def _create_loss_component(
         metric_params = OmegaConf.to_container(
             component_cfg.metric_params, resolve=True
         )
-    else:
+    else: 
         config_file = component_cfg.get("config_file", default_config)
         if config_file is not None:
             config_path = f"config/train_strategy_config/{config_file}.yaml"

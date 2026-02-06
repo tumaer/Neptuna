@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union, Callable, Literal, Any
-from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 
 import torch
 import torch.nn as nn
@@ -695,7 +695,7 @@ class PINNLoss(LossComponent):
         mask_channel: Optional[str] = None,
         mask_mode: Literal["multiply", "exclude"] = "multiply",
         # normalization of residual magnitudes
-        residual_normalization: Literal["none", "magnitude", "variance"] = "none",
+        residual_normalization: Literal['none', 'range', 'variance', 'std'] = 'none',
         # framework bits
         norm_helper: Optional["NormalizationHelper"] = None,
         weight: Union[float, "WeightSchedule"] = 1.0,
@@ -710,7 +710,7 @@ class PINNLoss(LossComponent):
         super().__init__(
             norm_helper=norm_helper,
             weight=weight,
-            name=name or "PINNResidual",
+            name=name or "PINNLoss",
             data_dim=data_dim,
             field_names=field_names,
         )
@@ -866,6 +866,7 @@ class PINNLoss(LossComponent):
         labels: torch.Tensor,
         input_frames: Optional[torch.Tensor],
         return_detailed: bool = True,
+        keep_bc_dims: bool = False,
         preserve_component_grads: bool = False
     ):
         pred = predictions
@@ -931,14 +932,6 @@ class PINNLoss(LossComponent):
             if mask is not None:  # multiply mode
                 pen = pen * mask.unsqueeze(2)
             pen_red = pen.mean(dim=spatial_dims) if spatial_dims else pen  # (B,T_eval,Ceq)
-
-        # Optional residual normalization
-        if self.residual_normalization != "none":
-            pen_red = apply_batch_wise_normalization(
-                pen_red,
-                pen_red.detach(),
-                normalization=self.residual_normalization,
-            )
 
         # Conditionally detach based on preserve_component_grads
         pen_red_for_detailed = pen_red if preserve_component_grads else pen_red.detach()

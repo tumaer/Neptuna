@@ -19,20 +19,18 @@ curriculum:
     start_epoch: 0
     train_loss:
       components:
-        - type: CompositeLoss
+        - type: L2Loss
           weight: 1.0
-          name: "SSIM_L2_Composite_train"
-          sub_components:
-            - type: SSIM
-              weight: 0.1
-              metric_params: 
-                window_size: 7
-            - type: L2Loss
-              weight: 0.9
+        - type: SSIM
+          weight: 1.0
       train_loss_weighting_strategy:
-        enabled: false  # Set to true to enable
-        type: BalancedResidualDecayRate
+        enabled: true  # Set to true to enable
+        type: GradNorm
         loss_source: 'train' # 'train' OR 'eval'
+        weight_sub_components: true
+        weight_per_channel: true
+        loss_history_interval: 50
+        grad_history_interval: 50
       
     validation_loss:
       components:
@@ -58,7 +56,7 @@ curriculum:
       train_loss_weighting_strategy:
         enabled: true  # Set to true to enable
         type: SoftAdapt
-        loss_source: 'eval' # 'train' OR 'eval'
+        loss_source: 'train' # 'train' OR 'eval'
       
     validation_loss: #TODO: Add loss components from train loss mertrics of this block in validation
       components:

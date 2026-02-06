@@ -2,10 +2,8 @@ from typing import Literal, Optional, List, Dict, Union, Tuple
 
 import torch
 import torch.nn as nn
-import matplotlib.pyplot as plt
-import numpy as np
 
-from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 
 
 class MeanRelativeError(LossComponent):
@@ -51,7 +49,7 @@ class MeanRelativeError(LossComponent):
         data_dim: int = None,
         field_names: List[str] = None,
         reduction: str = 'mean',
-        normalization: Literal['none', 'magnitude', 'variance'] = 'none',
+        normalization: Literal['none', 'range', 'variance', 'std'] = 'none',
         epsilon: float = 1e-8,
         value_thresholds: Optional[Dict[str, Optional[List[float]]]] = None,
     ):
@@ -143,6 +141,7 @@ class MeanRelativeError(LossComponent):
         labels: torch.Tensor,
         input_frames: Optional[torch.Tensor],
         return_detailed: bool = False,
+        keep_bc_dims: bool = False,
         preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
 
@@ -182,16 +181,6 @@ class MeanRelativeError(LossComponent):
 
             if base != 1.0:
                 total_loss = total_loss * base
-
-            # Note: batch-wise normalization may not make sense with thresholding
-            # since we're selecting subsets of pixels
-            if threshold_mask is None:
-                total_loss = apply_batch_wise_normalization(
-                    total_loss,
-                    labels,
-                    self.normalization,
-                    self.epsilon
-                )
 
             if not return_detailed:
                 return total_loss

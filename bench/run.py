@@ -382,7 +382,7 @@ def run(cfg):
             initial_loss_stats_callback,
             loss_source = loss_source,
             use_gradients = use_gradients,
-            curriculum_start_epochs=curriculum_start_epochs,,
+            curriculum_start_epochs=curriculum_start_epochs,
             grad_stats = grad_stats,
         )
         callbacks.append(initial_weight_callback)

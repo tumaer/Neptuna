@@ -4,7 +4,7 @@ from torch import nn
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import numpy as np
-from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 from .h1_semi_norm import spatial_gradient, spatial_gradient3d
 
 
@@ -52,7 +52,7 @@ class ShockRMSE(LossComponent):
         threshold_softness: float = 0.1,
         blur_sigma: float = 0.0,
         gradient_mode: Literal['sobel', 'diff'] = 'diff',
-        normalization: Literal['none', 'magnitude', 'variance'] = 'none',
+        normalization: Literal['none', 'range', 'variance', 'std'] = 'none',
         epsilon: float = 1e-8,
         per_channel_thresholds: Optional[Dict[str, Tuple[float, float]]] = None,
         value_range: Optional[Dict[str, Tuple[float, float]]] = None,
@@ -356,6 +356,7 @@ class ShockRMSE(LossComponent):
         labels: torch.Tensor,
         input_frames: Optional[torch.Tensor],
         return_detailed: bool = False,
+        keep_bc_dims: bool = False,
         preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
@@ -394,16 +395,8 @@ class ShockRMSE(LossComponent):
             # Fallback: no shock cells found, return zero loss
             unweighted_rmse = torch.zeros((), device=predictions.device, dtype=predictions.dtype)
         
-        # Apply per-batch normalization if requested
-        normalized_rmse = apply_batch_wise_normalization(
-            unweighted_rmse,
-            labels,
-            self.normalization,
-            self.epsilon
-        )
-        
         # Apply weight schedule
-        weighted_rmse = self.weight_schedule.base_weight * normalized_rmse
+        weighted_rmse = self.weight_schedule.base_weight * unweighted_rmse
         
         if not return_detailed:
             return weighted_rmse

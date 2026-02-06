@@ -499,7 +499,7 @@ class LossComponent(nn.Module, ABC):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-        input_frames: Optional[torch.Tensor],
+        input_frames: Optional[torch.Tensor] = None,
         return_detailed: bool = True,
         keep_bc_dims: bool = False,
         preserve_component_grads: bool = False,
@@ -563,7 +563,7 @@ class CompositeLoss(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-        input_frames: Optional[torch.Tensor],
+        input_frames: Optional[torch.Tensor] = None,
         return_detailed: bool = True,
         preserve_component_grads: bool = False,
         keep_bc_dims: bool = False
@@ -742,7 +742,7 @@ class NestedCompositeLoss(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-        input_frames: Optional[torch.Tensor],
+        input_frames: Optional[torch.Tensor] = None,
         return_detailed: bool = True,
         keep_bc_dims: bool = False,
         preserve_component_grads: bool = False
