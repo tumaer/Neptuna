@@ -73,7 +73,7 @@ from transformers.integrations.integration_utils import logger
 from omegaconf import ListConfig
 import tempfile
 # Import high-level preprocessing helper
-from utils.plot_progress import preprocess_for_plotting, build_info_strings
+from utils.plot_progress import preprocess_for_plotting, build_info_strings, strip_validation_loss
 from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
 from transformers.trainer_callback import TrainerCallback
 from transformers.trainer_callback import TrainerState
@@ -698,6 +698,8 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
                     scheduler_config=self.scheduler_config
                 )
 
+                loss_config_for_plotting = strip_validation_loss(self.train_strategy_config)
+
                 layout_config = LayoutConfig(
                     base_visual_size=3.5,
                     margin_between_plots_h=0.65,
@@ -732,7 +734,8 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
                     include_relative_error=True,
                     model_info=model_info_str,
                     data_info=data_info_str,
-                    train_info=train_info_str
+                    train_info=train_info_str,
+                    loss_config=loss_config_for_plotting
                 )
                 
                 fig_dict = plotter.plot()

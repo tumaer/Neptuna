@@ -49,7 +49,7 @@ from typing import Tuple, List, Optional
 import matplotlib.cm as cm
 from matplotlib.patches import Patch
 import math
-
+from omegaconf import OmegaConf
 
 def preprocess_for_plotting(
     inputs: np.ndarray,
@@ -1018,6 +1018,15 @@ class BasePlotter(ABC):
         # Add train config
         if self.train_info is not None:
             footer_lines.append("TRAIN CONFIG:\n" + self.train_info + "\n")
+
+        # Add train strategy config (loss config without validation_loss)
+        loss_cfg = self.metadata.get("loss_config") if isinstance(self.metadata, dict) else None
+        if loss_cfg is not None:
+            try:
+                loss_cfg_str = str(loss_cfg)
+            except Exception:
+                loss_cfg_str = repr(loss_cfg)
+            footer_lines.append("TRAIN STRATEGY CONFIG:\n" + loss_cfg_str + "\n")
         
         # Add scheduler config
         if self.scheduler_info is not None:
@@ -2695,3 +2704,31 @@ def calculate_and_save_results_all_channels(
         writer.writerows(rows)
     
     print(f"Saved rollout metrics to {out_path}")
+
+def strip_validation_loss(loss_cfg):
+    """
+    Return a loss config copy with all "validation_loss" blocks removed.
+    Handles dict/list/OmegaConf configs and nested curriculum blocks.
+    """
+    if loss_cfg is None:
+        return None
+
+    if OmegaConf.is_config(loss_cfg):
+        loss_cfg = OmegaConf.to_container(loss_cfg, resolve=True)
+
+    def _strip(obj):
+        if isinstance(obj, dict):
+            cleaned = {}
+            for key, value in obj.items():
+                if key == "validation_loss":
+                    continue
+                if key == "curriculum" and isinstance(value, list):
+                    cleaned[key] = [_strip(block) for block in value]
+                else:
+                    cleaned[key] = _strip(value)
+            return cleaned
+        if isinstance(obj, list):
+            return [_strip(item) for item in obj]
+        return obj
+
+    return _strip(loss_cfg)

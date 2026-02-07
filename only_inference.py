@@ -6,7 +6,7 @@ from utils.load_data import fetch_dataset
 from utils.plot_progress import build_info_strings
 from utils.plot_progress import preprocess_for_plotting, plot_rollout_metrics
 from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
-from utils.plot_progress import plot_rollout_metrics_bar_chart, calculate_and_save_results_all_channels
+from utils.plot_progress import plot_rollout_metrics_bar_chart, calculate_and_save_results_all_channels, strip_validation_loss
 from utils.plot_progress import plot_multi_run_rollout_metrics
 from utils.loss_utils import fetch_loss_metric, fetch_infer_loss_dict
 from metrics.inference_metrics import compute_metrics_for_n_rollouts
@@ -521,6 +521,8 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             print(f"No loss_config.json found in checkpoint: {loss_config_path}")
             print("Inference will only compute legacy L1/L2 errors")
 
+        loss_config_for_plotting = strip_validation_loss(loss_config)
+
         # Determine device once
         metric_device = torch.device("cpu")
 
@@ -947,7 +949,8 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                     include_relative_error=True,
                     model_info=model_info_str,
                     data_info=data_info_str,
-                    train_info=train_info_str
+                    train_info=train_info_str,
+                    loss_config=loss_config_for_plotting
                 )
                 
                 plotter.plot()
@@ -1111,7 +1114,8 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 include_relative_error=True,
                 model_info=model_info_str,
                 data_info=data_info_str,
-                train_info=train_info_str
+                train_info=train_info_str,
+                loss_config=loss_config_for_plotting
             )
             
             plotter.plot()
