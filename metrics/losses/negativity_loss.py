@@ -27,7 +27,6 @@ class NegativityLoss(LossComponent):
     * This is primarily a diagnostic/penalty metric.
     * The metric is non-differentiable due to the masking operation.
     * Returns the absolute value of the sum of negative values (positive number).
-    * Fast path optimized for scalar-only weight schedules.
     * Detailed metrics only computed when `return_detailed=True`.
     """
 
@@ -59,87 +58,22 @@ class NegativityLoss(LossComponent):
         preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
 
+        # Denormalize predictions/labels to physical space
+        predictions = self.norm_helper.denormalize(predictions)
+        labels = self.norm_helper.denormalize(labels)
+
         # Compute normalization factor from labels
-        label_norm = torch.abs(labels).sum()
+        if keep_bc_dims:
+            reduce_dims = [1] + list(range(3, labels.ndim))
+            label_norm = torch.abs(labels).sum(dim=reduce_dims)
+        else:
+            label_norm = torch.abs(labels).sum()
         label_norm = torch.clamp(label_norm, min=self.epsilon)
 
-        # ------------------------------------------------------------------
-        # Fast path: scalar-only schedule (no timestep/channel/component)
-        # ------------------------------------------------------------------
-        if isinstance(self.weight_schedule, WeightSchedule) and self.weight_schedule.is_scalar_only():
-            base = float(self.weight_schedule.base_weight)
-
-            # Compute negativity: sum of all negative values
-            negative_mask = predictions < 0
-            negative_values = torch.where(negative_mask, predictions, torch.zeros_like(predictions))
-            negativity_sum = torch.abs(negative_values.sum())
-
-            # Normalize by label magnitude
-            total_loss = negativity_sum / label_norm
-
-            if base != 1.0:
-                total_loss = total_loss * base
-
-            if not return_detailed:
-                return total_loss
-
-            detailed: Dict[str, torch.Tensor] = {}
-
-            # Per-timestep: sum over batch, channels, spatial dims
-            if predictions.ndim >= 2:
-                timesteps = predictions.shape[1]
-                per_timestep = []
-                
-                for t in range(timesteps):
-                    t_slice = predictions[:, t]
-                    t_mask = t_slice < 0
-                    t_negative = torch.where(t_mask, t_slice, torch.zeros_like(t_slice))
-                    t_sum = torch.abs(t_negative.sum())
-                    
-                    # Normalize by corresponding timestep label magnitude
-                    t_label_norm = torch.abs(labels[:, t]).sum()
-                    t_label_norm = torch.clamp(t_label_norm, min=self.epsilon)
-                    t_sum = t_sum / t_label_norm
-                    
-                    per_timestep.append(t_sum)
-                
-                per_timestep_tensor = torch.stack(per_timestep)
-                if base != 1.0:
-                    per_timestep_tensor = per_timestep_tensor * base
-                detailed['per_timestep'] = per_timestep_tensor if preserve_component_grads else per_timestep_tensor.detach()
-
-            # Per-channel: sum over batch, timesteps, spatial dims
-            if predictions.ndim >= 3:
-                channels = predictions.shape[2]
-                per_channel = []
-                
-                for c in range(channels):
-                    c_slice = predictions[:, :, c]
-                    c_mask = c_slice < 0
-                    c_negative = torch.where(c_mask, c_slice, torch.zeros_like(c_slice))
-                    c_sum = torch.abs(c_negative.sum())
-                    
-                    # Normalize by corresponding channel label magnitude
-                    c_label_norm = torch.abs(labels[:, :, c]).sum()
-                    c_label_norm = torch.clamp(c_label_norm, min=self.epsilon)
-                    c_sum = c_sum / c_label_norm
-                    
-                    per_channel.append(c_sum)
-                
-                per_channel_tensor = torch.stack(per_channel)
-                if base != 1.0:
-                    per_channel_tensor = per_channel_tensor * base
-                detailed['per_channel'] = per_channel_tensor if preserve_component_grads else per_channel_tensor.detach()
-
-            return total_loss, detailed
-
-        # ------------------------------------------------------------------
-        # General path: some schedule active (timestep and/or channel)
-        # ------------------------------------------------------------------
         # With weighted schedules, we weight the negative values before summing
         negative_mask = predictions < 0
         negative_values = torch.where(negative_mask, predictions, torch.zeros_like(predictions))
-        
+
         # Make values positive for weighting
         unweighted = torch.abs(negative_values)
 
@@ -148,7 +82,11 @@ class NegativityLoss(LossComponent):
         weighted = unweighted * weight_tensor
 
         # Normalize by label magnitude
-        total_loss = weighted.sum() / label_norm
+        if keep_bc_dims:
+            reduce_dims = [1] + list(range(3, weighted.ndim))
+            total_loss = self._reduce(weighted, reduce_dims) / label_norm
+        else:
+            total_loss = self._reduce(weighted) / label_norm
 
         if not return_detailed:
             return total_loss
@@ -185,3 +123,8 @@ class NegativityLoss(LossComponent):
             detailed['per_channel'] = per_channel if preserve_component_grads else per_channel.detach()
 
         return total_loss, detailed
+
+    def _reduce(self, x: torch.Tensor, dims: Optional[List[int]] = None) -> torch.Tensor:
+        if self.reduction == 'mean':
+            return x.mean(dim=dims) if dims is not None else x.mean()
+        return x.sum(dim=dims) if dims is not None else x.sum()

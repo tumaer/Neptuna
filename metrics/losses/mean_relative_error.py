@@ -24,10 +24,6 @@ class MeanRelativeError(LossComponent):
 
     Design notes
     ------------
-    * Fast path:
-        - When `weight_schedule.is_scalar_only()` is True, this reduces
-          to a plain relative error computation followed by `.mean()` and a
-          single scalar multiply.
     * General path:
         - Uses a broadcasted weight tensor from `WeightSchedule.get_weight`.
         - Adds one elementwise multiply over the loss tensor.
@@ -155,61 +151,6 @@ class MeanRelativeError(LossComponent):
         
         # Store unmasked relative error for detailed metrics
         rel_error_full = rel_error
-        
-        # ------------------------------------------------------------------
-        # Fast path: scalar-only schedule (no timestep/channel/component)
-        # ------------------------------------------------------------------
-        if isinstance(self.weight_schedule, WeightSchedule) and self.weight_schedule.is_scalar_only():
-            base = float(self.weight_schedule.base_weight)
-            
-            # Apply threshold mask if configured
-            if threshold_mask is not None:
-                rel_error_masked = rel_error[threshold_mask]
-                if rel_error_masked.numel() == 0:
-                    # No pixels satisfy threshold - return zero loss
-                    total_loss = torch.tensor(0.0, device=predictions.device)
-                    if not return_detailed:
-                        return total_loss
-                    return total_loss, {
-                        'per_timestep': torch.zeros(predictions.shape[1], device=predictions.device),
-                        'per_channel': torch.zeros(predictions.shape[2], device=predictions.device),
-                        'mask_fraction': torch.tensor(0.0, device=predictions.device)
-                    }
-                rel_error = rel_error_masked
-            
-            total_loss = rel_error.mean()
-
-            if base != 1.0:
-                total_loss = total_loss * base
-
-            if not return_detailed:
-                return total_loss
-
-            detailed: Dict[str, torch.Tensor] = {}
-
-            # Always compute detailed metrics using the full (unmasked) tensor
-            # Per-timestep: average over batch, channels, spatial dims
-            if predictions.ndim >= 2:
-                dims_to_reduce = [0] + list(range(2, rel_error_full.ndim))
-                per_timestep = rel_error_full.mean(dim=dims_to_reduce)
-                if base != 1.0:
-                    per_timestep = per_timestep * base
-                detailed['per_timestep'] = per_timestep.detach()
-
-            # Per-channel: average over batch, timesteps, spatial dims
-            if predictions.ndim >= 3:
-                dims_to_reduce = [0, 1] + list(range(3, rel_error_full.ndim))
-                per_channel = rel_error_full.mean(dim=dims_to_reduce)
-                if base != 1.0:
-                    per_channel = per_channel * base
-                detailed['per_channel'] = per_channel.detach()
-            
-            # Add mask fraction if thresholding was used
-            if threshold_mask is not None:
-                mask_fraction = threshold_mask.float().mean()
-                detailed['mask_fraction'] = mask_fraction.detach()
-
-            return total_loss, detailed
 
         # ------------------------------------------------------------------
         # General path: some schedule active (timestep and/or channel)
@@ -218,20 +159,23 @@ class MeanRelativeError(LossComponent):
 
         # Apply threshold mask if configured
         if threshold_mask is not None:
-            unweighted = unweighted[threshold_mask]
-            if unweighted.numel() == 0:
-                total_loss = torch.tensor(0.0, device=predictions.device)
-                if not return_detailed:
-                    return total_loss
-                return total_loss, {
-                    'per_timestep': torch.zeros(predictions.shape[1], device=predictions.device),
-                    'per_channel': torch.zeros(predictions.shape[2], device=predictions.device),
-                    'mask_fraction': torch.tensor(0.0, device=predictions.device)
-                }
-            
-            # With masking, we can't use weighted schedules properly
-            # so just compute mean of masked values
-            total_loss = unweighted.mean()
+            mask_float = threshold_mask.float()
+            if keep_bc_dims:
+                reduce_dims = [1] + list(range(3, unweighted.ndim))
+                mask_sum = mask_float.sum(dim=reduce_dims)
+                masked_sum = (unweighted * mask_float).sum(dim=reduce_dims)
+                total_loss = masked_sum / (mask_sum + self.epsilon)
+                total_loss = torch.where(
+                    mask_sum > self.epsilon,
+                    total_loss,
+                    torch.zeros_like(total_loss),
+                )
+            else:
+                mask_sum = mask_float.sum()
+                if mask_sum > self.epsilon:
+                    total_loss = (unweighted * mask_float).sum() / mask_sum
+                else:
+                    total_loss = torch.tensor(0.0, device=predictions.device)
             
             if not return_detailed:
                 return total_loss
@@ -241,14 +185,16 @@ class MeanRelativeError(LossComponent):
             
             if predictions.ndim >= 2:
                 dims_to_reduce = [0] + list(range(2, rel_error_full.ndim))
-                detailed['per_timestep'] = rel_error_full.mean(dim=dims_to_reduce).detach()
+                per_timestep = rel_error_full.mean(dim=dims_to_reduce)
+                detailed['per_timestep'] = per_timestep if preserve_component_grads else per_timestep.detach()
             
             if predictions.ndim >= 3:
                 dims_to_reduce = [0, 1] + list(range(3, rel_error_full.ndim))
-                detailed['per_channel'] = rel_error_full.mean(dim=dims_to_reduce).detach()
+                per_channel = rel_error_full.mean(dim=dims_to_reduce)
+                detailed['per_channel'] = per_channel if preserve_component_grads else per_channel.detach()
             
             mask_fraction = threshold_mask.float().mean()
-            detailed['mask_fraction'] = mask_fraction.detach()
+            detailed['mask_fraction'] = mask_fraction if preserve_component_grads else mask_fraction.detach()
             
             return total_loss, detailed
 
@@ -256,7 +202,11 @@ class MeanRelativeError(LossComponent):
         weight_tensor = self.weight_schedule.get_loss_weight(unweighted.shape).to(predictions.device)
         weighted = unweighted * weight_tensor
 
-        total_loss = weighted.mean()
+        if keep_bc_dims:
+            reduce_dims = [1] + list(range(3, weighted.ndim))
+            total_loss = weighted.mean(dim=reduce_dims)
+        else:
+            total_loss = weighted.mean()
 
         if not return_detailed:
             return total_loss
@@ -266,10 +216,12 @@ class MeanRelativeError(LossComponent):
         # Aggregated diagnostics (reductions over the weighted loss)
         if weighted.ndim >= 2:
             dims_to_reduce = [0] + list(range(2, weighted.ndim))
-            detailed['per_timestep'] = weighted.mean(dim=dims_to_reduce).detach()
+            per_timestep = weighted.mean(dim=dims_to_reduce)
+            detailed['per_timestep'] = per_timestep if preserve_component_grads else per_timestep.detach()
 
         if weighted.ndim >= 3:
             dims_to_reduce = [0, 1] + list(range(3, weighted.ndim))
-            detailed['per_channel'] = weighted.mean(dim=dims_to_reduce).detach()
+            per_channel = weighted.mean(dim=dims_to_reduce)
+            detailed['per_channel'] = per_channel if preserve_component_grads else per_channel.detach()
 
         return total_loss, detailed

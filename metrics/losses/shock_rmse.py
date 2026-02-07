@@ -388,13 +388,24 @@ class ShockRMSE(LossComponent):
         masked_squared_error = squared_error * mask
         
         # Compute mean over masked regions
-        mask_sum = mask.sum()
-        if mask_sum > self.epsilon:
-            unweighted_rmse = torch.sqrt(masked_squared_error.sum() / mask_sum)
+        if keep_bc_dims:
+            reduce_dims = [1] + list(range(3, masked_squared_error.ndim))
+            mask_sum = mask.sum(dim=reduce_dims)
+            mse_sum = masked_squared_error.sum(dim=reduce_dims)
+            unweighted_rmse = torch.sqrt(mse_sum / (mask_sum + self.epsilon))
+            unweighted_rmse = torch.where(
+                mask_sum > self.epsilon,
+                unweighted_rmse,
+                torch.zeros_like(unweighted_rmse),
+            )
         else:
-            # Fallback: no shock cells found, return zero loss
-            unweighted_rmse = torch.zeros((), device=predictions.device, dtype=predictions.dtype)
-        
+            mask_sum = mask.sum()
+            if mask_sum > self.epsilon:
+                unweighted_rmse = torch.sqrt(masked_squared_error.sum() / mask_sum)
+            else:
+                # Fallback: no shock cells found, return zero loss
+                unweighted_rmse = torch.zeros((), device=predictions.device, dtype=predictions.dtype)
+
         # Apply weight schedule
         weighted_rmse = self.weight_schedule.base_weight * unweighted_rmse
         
@@ -413,7 +424,7 @@ class ShockRMSE(LossComponent):
         detailed['mask_fraction'] = mask_sum_for_detailed / total_elements
         
         # Per-timestep breakdown (if mask has sufficient elements)
-        if mask_sum > self.epsilon and predictions.ndim >= 2:
+        if (mask.sum() > self.epsilon) and predictions.ndim >= 2:
             timesteps = predictions.shape[1]
             per_timestep = []
             for t in range(timesteps):
@@ -428,7 +439,7 @@ class ShockRMSE(LossComponent):
             detailed['per_timestep'] = torch.stack(per_timestep)
         
         # Per-channel breakdown (if mask has sufficient elements)
-        if mask_sum > self.epsilon and predictions.ndim >= 3:
+        if (mask.sum() > self.epsilon) and predictions.ndim >= 3:
             channels = predictions.shape[2]
             per_channel = []
             for c in range(channels):
