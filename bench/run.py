@@ -20,7 +20,7 @@ from utils.hp_optimization import trial_name_factory
 from utils.loss_utils import fetch_loss_metric, create_loss_weighting_strategy
 from utils.plot_progress import preprocess_for_plotting, plot_rollout_metrics
 from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
-from utils.plot_progress import build_info_strings
+from utils.plot_progress import build_info_strings, strip_validation_loss
 from utils.plot_progress import calculate_and_save_results_all_channels
 from utils.plot_progress import calculate_and_save_results_all_channels
 from utils.seed_utils import set_global_seed
@@ -475,6 +475,8 @@ def run(cfg):
             loss_config_path = os.path.join(checkpoint_dir, "loss_config.json")
             loss_config_ckpt = OmegaConf.load(loss_config_path) if os.path.exists(loss_config_path) else None
 
+            loss_config_for_plotting = strip_validation_loss(loss_config_ckpt)
+
             for component in loss_config_ckpt.train_loss.components:
                 if 'current_weights' in component:
                     # Extract current weights
@@ -496,7 +498,7 @@ def run(cfg):
             data_config_ckpt = OmegaConf.load(data_config_path) if os.path.exists(data_config_path) else cfg["data_config"]
 
             metric_device = torch.device("cpu")
-            train_loss_fn_inf, infer_loss_fn = build_train_and_infer_loss(
+            train_loss_fn_inf, infer_loss_fn, infer_loss_dict = build_train_and_infer_loss(
                 loss_config=loss_config_ckpt,
                 data_config=data_config_ckpt,
                 device=metric_device,
@@ -733,7 +735,8 @@ def run(cfg):
                         include_relative_error=True,
                         model_info=model_info_str,
                         data_info=data_info_str,
-                        train_info=train_info_str
+                        train_info=train_info_str,
+                        loss_config=loss_config_for_plotting
                     )
                     
                     plotter.plot()
@@ -899,7 +902,8 @@ def run(cfg):
                     include_relative_error=True,
                     model_info=model_info_str,
                     data_info=data_info_str,
-                    train_info=train_info_str
+                    train_info=train_info_str,
+                    loss_config=loss_config_for_plotting
                 )
                 
                 plotter.plot()

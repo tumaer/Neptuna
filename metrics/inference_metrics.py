@@ -73,6 +73,17 @@ def compute_metrics_for_n_rollouts(
         }
         out = metric_name_to_values[metric_key_name]
 
+        ws_top: Optional[WeightSchedule] = getattr(comp, "weight_schedule", None)
+        component_weights_top = getattr(ws_top, "component_weights", None) if ws_top is not None else None
+        use_component_weights_top = (
+            isinstance(component_weights_top, dict) and len(component_weights_top) > 0
+        )
+        component_names_top = (
+            list(component_weights_top.keys()) if use_component_weights_top else None
+        )
+        if use_component_weights_top:
+            out["component_names"] = list(component_names_top)
+
         # --------------------------------------------------
         # Helper: true per-sample evaluation by sliding over B
         # --------------------------------------------------
@@ -88,19 +99,23 @@ def compute_metrics_for_n_rollouts(
               per_sample_overall: (B,)    per-sample scalar loss
             """
             bsz = preds_slice.shape[0]
+            loss_key = comp.__class__.__name__
 
             # Overall per-sample
             per_sample_overall = torch.zeros(bsz, device=device)
+            try:
+                loss_registry_entry = get_loss_entry(loss_key)
+            except ValueError:
+                loss_registry_entry = {}
 
             # Per-channel via WeightSchedule, if available
             ws: Optional[WeightSchedule] = getattr(comp, "weight_schedule", None)
             original_channel_weights = getattr(ws, "channel_weights", None) if ws is not None else None
+            component_weights = getattr(ws, "component_weights", None) if ws is not None else None
+            use_component_weights = loss_registry_entry.get("sub_components", False)
+            component_names = list(component_weights.keys()) if use_component_weights else None
+            channel_aggregation = loss_registry_entry.get("channel_aggregation", "linear")
 
-            loss_key = comp.__class__.__name__
-            try:
-                channel_aggregation = get_loss_entry(loss_key).get("channel_aggregation", "linear")
-            except ValueError:
-                channel_aggregation = "linear"
 
             reduction = getattr(comp, "reduction", "mean")
 
@@ -123,8 +138,17 @@ def compute_metrics_for_n_rollouts(
                     else torch.tensor(total_loss, device=device)
                 )
 
+                if use_component_weights:
+                    if total_loss.ndim != 2 or total_loss.shape[1] != len(component_names):
+                        raise ValueError(
+                            "Component-wise loss output shape mismatch. "
+                            f"Expected (B, {len(component_names)}), got {tuple(total_loss.shape)}."
+                        )
+                    per_sample_channel = total_loss
+                    per_sample_overall = total_loss.mean(dim=1)
+
                 # Channel aggregation to get overall per-sample loss
-                if total_loss.ndim >= 2:
+                if total_loss.ndim >= 2 and not use_component_weights:
                     if channel_aggregation == "linear":
                         if reduction == "sum":
                             per_sample_overall = total_loss.sum(dim=1)
@@ -139,19 +163,22 @@ def compute_metrics_for_n_rollouts(
                         raise ValueError(f"Unsupported channel_aggregation: {channel_aggregation}")
 
                 # per-channel via keep_bc_dims outputs
-                if use_channel_weights:
+                if use_channel_weights and not use_component_weights:
                     per_sample_channel = total_loss
 
             # If we could not decompose channels, broadcast overall
             if per_sample_channel is None:
-                per_sample_channel = per_sample_overall[:, None].expand(-1, C)
+                metric_dim = len(component_names) if use_component_weights else C
+                per_sample_channel = per_sample_overall[:, None].expand(-1, metric_dim)
 
             return per_sample_channel, per_sample_overall
 
         # -----------------------------------------------------
         # A) Per-rollout-step stats, shape -> (R, C+1)
         # -----------------------------------------------------
-        per_sample_channel_metric = torch.zeros(B, num_rollouts, C, device=device)
+        metric_dim = len(component_names_top) if use_component_weights_top else C
+
+        per_sample_channel_metric = torch.zeros(B, num_rollouts, metric_dim, device=device)
         per_sample_overall_metric = torch.zeros(B, num_rollouts, device=device)
 
         for r in range(num_rollouts):
@@ -162,7 +189,7 @@ def compute_metrics_for_n_rollouts(
             step_targets = targets_tensor[:, t_start:t_end, ...]
 
             ch_vals, overall_vals = eval_loss_batchwise(step_preds, step_targets)
-            # ch_vals: (B, C), overall_vals: (B,)
+            # ch_vals: (B, metric_dim), overall_vals: (B,)
             per_sample_channel_metric[:, r, :] = ch_vals
             per_sample_overall_metric[:, r] = overall_vals
 
@@ -205,7 +232,7 @@ def compute_metrics_for_n_rollouts(
         # B) Optional per-timestep metrics, shape -> (T_flat, C+1)
         # -----------------------------------------------------
         if include_per_timestep:
-            per_sample_channel_t = torch.zeros(B, T_flat, C, device=device)
+            per_sample_channel_t = torch.zeros(B, T_flat, metric_dim, device=device)
             per_sample_overall_t = torch.zeros(B, T_flat, device=device)
 
             for t in range(T_flat):
@@ -248,6 +275,11 @@ def compute_metrics_for_n_rollouts(
 
             out["cumulative_timestep_mean"] = cumulative_timestep_mean.cpu().numpy()  # (T_flat, C+1)
             out["cumulative_timestep_std"] = cumulative_timestep_std.cpu().numpy()  # (T_flat, C+1)
+
+        if use_component_weights_top:
+            out["names"] = list(component_names_top)
+        else:
+            out["names"] = None
 
         return metric_name_to_values
 

@@ -101,11 +101,80 @@ class IntegralConservationRMSE(LossComponent):
         boundary_keys: Optional[Sequence[str]] = None,
         use_boundary_fluxes: bool = False,
         quantity_weights: Optional[Dict[str, float]] = None,
+        components: Optional[List[Dict[str, Union[str, float]]]] = None,
         normalization: Literal['none', 'range', 'variance', 'std'] = 'none',
-        reference_quantities: Optional[Dict[str, float]] = None,
         eps: float = 1e-8,
     ):
+        if components is not None and (conserved_keys or boundary_keys or quantity_weights):
+            raise ValueError(
+                "IntegralConservationRMSE: specify either 'components' or the "
+                "legacy conserved_keys/boundary_keys/quantity_weights, not both."
+            )
+
+        component_weights: Optional[Dict[str, float]] = None
+        component_names: Optional[List[str]] = None
+        boundary_patch_whitelist: Optional[Dict[str, Tuple[str, ...]]] = None
+
+        if components is not None:
+            if not isinstance(components, list) or len(components) == 0:
+                raise ValueError("IntegralConservationRMSE: 'components' must be a non-empty list.")
+
+            d = data_dim if data_dim is not None else 2
+            axis_names = ["x", "y", "z"][:d]
+            valid_patches = {f"{a}_{side}" for a in axis_names for side in ("min", "max")}
+
+            component_weights = {}
+            component_names = []
+            domain_keys: List[str] = []
+            boundary_keys_list: List[str] = []
+            boundary_patch_map: Dict[str, List[str]] = {}
+
+            for comp in components:
+                if "name" not in comp:
+                    raise ValueError("IntegralConservationRMSE: each component must have a 'name'.")
+                comp_name = str(comp["name"])
+                comp_weight = float(comp.get("weight", 1.0))
+
+                parts = comp_name.split("/")
+                if parts[0] == "domain" and len(parts) == 2:
+                    q_key = parts[1]
+                    if q_key not in domain_keys:
+                        domain_keys.append(q_key)
+                elif parts[0] == "boundary" and len(parts) == 3:
+                    if not use_boundary_fluxes:
+                        raise ValueError(
+                            f"IntegralConservationRMSE: boundary component '{comp_name}' requires "
+                            "use_boundary_fluxes=True."
+                        )
+                    q_key = parts[1]
+                    patch = parts[2]
+                    if patch not in valid_patches:
+                        raise ValueError(
+                            f"IntegralConservationRMSE: invalid boundary patch '{patch}' "
+                            f"for data_dim={d}. Valid: {sorted(valid_patches)}"
+                        )
+                    if q_key not in boundary_keys_list:
+                        boundary_keys_list.append(q_key)
+                    boundary_patch_map.setdefault(q_key, []).append(patch)
+                else:
+                    raise ValueError(
+                        "IntegralConservationRMSE: component name must be 'domain/<key>' or "
+                        "'boundary/<key>/<patch>'."
+                    )
+
+                component_weights[comp_name] = comp_weight
+                component_names.append(comp_name)
+
+            conserved_keys = domain_keys
+            boundary_keys = boundary_keys_list
+            boundary_patch_whitelist = {
+                k: tuple(v) for k, v in boundary_patch_map.items()
+            }
+
         # Convert quantity_weights to WeightSchedule format
+        if component_weights is not None:
+            quantity_weights = component_weights
+
         if isinstance(weight, (int, float)):
             weight = WeightSchedule(
                 base_weight=float(weight),
@@ -129,16 +198,8 @@ class IntegralConservationRMSE(LossComponent):
         self.eps = eps
         self.last_components: Dict[str, torch.Tensor] = {}
         self.normalization = normalization
-
-        ref_quantities = reference_quantities or {}
-        self.ref_rho = ref_quantities.get('density', 1.0)
-        self.ref_u = ref_quantities.get('velocity', 1.0)
-        self.ref_p = ref_quantities.get('pressure', 1.0)
-        self.ref_L = ref_quantities.get('length', 1.0)
-        self.ref_T = ref_quantities.get('temperature', 1.0)
-        self.ref_E = ref_quantities.get('energy', self.ref_p)
-
-        self.characteristic_scales = self._build_characteristic_scales()
+        self._component_names = component_names
+        self._boundary_patch_whitelist = boundary_patch_whitelist
 
         # Build registries
         self._domain_quantity_registry: Dict[str, DomainQuantity] = (
@@ -167,55 +228,6 @@ class IntegralConservationRMSE(LossComponent):
                         f"Available: {list(self._boundary_flux_registry.keys())}"
                     )
                 self.boundary_flux_quantities.append(self._boundary_flux_registry[key])
-
-    def _build_characteristic_scales(self) -> Dict[str, float]:
-        """
-        Build characteristic scales for each conserved quantity type.
-        
-        Based on dimensional analysis:
-        - mass: ρ * L^d (where d is spatial dimension)
-        - momentum: ρ * u * L^d
-        - kinetic_energy: ρ * u^2 * L^d
-        - energy: E * L^d (or p * L^d)
-        - enstrophy: (u/L)^2 * L^d = u^2 / L^(2-d)
-        - divergence: (u/L)^2 * L^d = u^2 / L^(2-d)
-        
-        For boundary fluxes (per unit time):
-        - mass flux: ρ * u * L^(d-1)
-        - momentum flux: ρ * u^2 * L^(d-1)  or  p * L^(d-1)
-        - energy flux: E * u * L^(d-1)  or  p * u * L^(d-1)
-        """
-        scales = {}
-        
-        # Get spatial dimension
-        d = self.data_dim if self.data_dim is not None else 2
-        L_d = self.ref_L ** d
-        L_d_minus_1 = self.ref_L ** (d - 1)
-        
-        # Domain quantities
-        scales["mass"] = self.ref_rho * L_d
-        scales["Px"] = self.ref_rho * self.ref_u * L_d
-        scales["Py"] = self.ref_rho * self.ref_u * L_d
-        scales["Pz"] = self.ref_rho * self.ref_u * L_d
-        scales["kinetic_energy"] = self.ref_rho * (self.ref_u ** 2) * L_d
-        scales["energy"] = self.ref_E * L_d
-        scales["enstrophy"] = (self.ref_u ** 2) / (self.ref_L ** (2 - d))
-        scales["divergence"] = (self.ref_u ** 2) / (self.ref_L ** (2 - d))
-        
-        # Boundary fluxes
-        scales["mass_flux"] = self.ref_rho * self.ref_u * L_d_minus_1
-        scales["Px_flux"] = max(
-            self.ref_rho * (self.ref_u ** 2) * L_d_minus_1,
-            self.ref_p * L_d_minus_1
-        )
-        scales["Py_flux"] = scales["Px_flux"]
-        scales["Pz_flux"] = scales["Px_flux"]
-        scales["energy_flux"] = max(
-            self.ref_E * self.ref_u * L_d_minus_1,
-            self.ref_p * self.ref_u * L_d_minus_1
-        )
-        
-        return scales
 
     def forward(
         self,
@@ -256,17 +268,51 @@ class IntegralConservationRMSE(LossComponent):
 
         # All components contain raw normalized differences
         all_components = {**domain_loss_dict, **boundary_loss_dict}
+
+        component_weight_keys = list(self.weight_schedule.component_weights.keys())
+        if component_weight_keys:
+            missing = [k for k in component_weight_keys if k not in all_components]
+            extra = [k for k in all_components.keys() if k not in self.weight_schedule.component_weights]
+            if missing or extra:
+                raise ValueError(
+                    "IntegralConservationRMSE: component weights must match outputs. "
+                    f"Missing: {missing}, Extra: {extra}"
+                )
         
         # Store detailed components (raw differences)
         self.last_components = {k: v.detach() for k, v in all_components.items()}
 
-        # Aggregate: compute per-sample MSE = sum(weighted_components^2)
+        # Keep batch and component dims (for rollout metrics)
         if keep_bc_dims:
-            total_squared = torch.zeros(
-                (predictions.shape[0],),
-                device=predictions.device,
-                dtype=predictions.dtype,
-            )
+            if component_weight_keys:
+                component_order = component_weight_keys
+            elif self._component_names is not None:
+                component_order = list(self._component_names)
+            else:
+                component_order = sorted(all_components.keys())
+
+            per_component = []
+            for name in component_order:
+                value = all_components[name]
+                if value.ndim == 0:
+                    value = value.expand(predictions.shape[0])
+                elif value.ndim != 1 or value.shape[0] != predictions.shape[0]:
+                    raise ValueError(
+                        f"IntegralConservationRMSE: component '{name}' has incompatible shape {tuple(value.shape)}."
+                    )
+
+                q_weight = self.weight_schedule.get_loss_component_weight(name)
+                q_weight_tensor = torch.tensor(
+                    q_weight,
+                    device=value.device,
+                    dtype=value.dtype,
+                )
+                weighted_value = self.weight_schedule.base_weight * torch.sqrt(q_weight_tensor) * value
+                per_component.append(weighted_value)
+
+            per_component_tensor = torch.stack(per_component, dim=1)
+
+            return per_component_tensor
         else:
             total_squared = torch.zeros((), device=predictions.device, dtype=predictions.dtype)
 
@@ -416,8 +462,9 @@ class IntegralConservationRMSE(LossComponent):
         for q in self.domain_quantities:
             if not all(f in fields for f in q.required_fields):
                 missing = [f for f in q.required_fields if f not in fields]
-                print(f"Warning: skipping '{q.name}', missing fields: {missing}")
-                continue
+                raise ValueError(
+                    f"IntegralConservationRMSE: missing fields for '{q.name}': {missing}"
+                )
 
             series = q(fields, dv)  # (B, T)
             out[q.name] = series
@@ -466,10 +513,18 @@ class IntegralConservationRMSE(LossComponent):
         for flux_quantity in self.boundary_flux_quantities:
             if not all(f in fields for f in flux_quantity.required_fields):
                 missing = [f for f in flux_quantity.required_fields if f not in fields]
-                print(f"Warning: skipping '{flux_quantity.name}', missing: {missing}")
-                continue
+                raise ValueError(
+                    f"IntegralConservationRMSE: missing fields for '{flux_quantity.name}': {missing}"
+                )
 
-            patch_fluxes = flux_quantity(fields, patches, spacings)
+            flux_patches = patches
+            if self._boundary_patch_whitelist is not None:
+                allowed = self._boundary_patch_whitelist.get(flux_quantity.name, ())
+                if allowed:
+                    allowed_set = set(allowed)
+                    flux_patches = [p for p in patches if p.name in allowed_set]
+
+            patch_fluxes = flux_quantity(fields, flux_patches, spacings)
             out[flux_quantity.name] = patch_fluxes
 
         return out
@@ -482,9 +537,9 @@ class IntegralConservationRMSE(LossComponent):
         keep_bc_dims: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
-        Compute dimensionless normalized raw difference for each quantity.
+        Compute label-normalized raw difference for each quantity.
 
-        error_normalized = (pred - true) / characteristic_scale
+        error_normalized = (pred - true) / (true + eps)
 
         Parameters
         ----------
@@ -512,18 +567,7 @@ class IntegralConservationRMSE(LossComponent):
             pred = series_pred[key]
             true = series_true[key]
 
-            diff = self._mean_diff(pred, true, keep_bc_dims=keep_bc_dims)
-            
-            # Get characteristic scale for this quantity
-            char_scale = self.characteristic_scales.get(key, 1.0)
-            char_scale_tensor = torch.tensor(
-                char_scale,
-                device=pred.device,
-                dtype=pred.dtype
-            )
-            
-            # Nondimensionalize
-            scaled = diff / (char_scale_tensor + self.eps)
+            scaled = self._mean_normalized_diff(pred, true, keep_bc_dims=keep_bc_dims)
 
             name = f"{prefix}/{key}" if prefix else key
             loss_dict[name] = scaled
@@ -537,7 +581,7 @@ class IntegralConservationRMSE(LossComponent):
         keep_bc_dims: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
-        Compute dimensionless normalized raw difference for boundary fluxes.
+        Compute label-normalized raw difference for boundary fluxes.
 
         Parameters
         ----------
@@ -557,30 +601,17 @@ class IntegralConservationRMSE(LossComponent):
             if q_key not in flux_pred or q_key not in flux_true:
                 continue
 
-            # Get characteristic scale for this flux quantity
-            flux_scale_key = f"{q_key}_flux"
-            char_scale = self.characteristic_scales.get(
-                flux_scale_key,
-                self.characteristic_scales.get(q_key, 1.0)
-            )
-
             for patch_name, true_series in flux_true[q_key].items():
                 if patch_name not in flux_pred[q_key]:
                     continue
 
                 pred_series = flux_pred[q_key][patch_name]
-                
-                diff = self._mean_diff(pred_series, true_series, keep_bc_dims=keep_bc_dims)
-                
-                # Convert scale to tensor
-                char_scale_tensor = torch.tensor(
-                    char_scale,
-                    device=pred_series.device,
-                    dtype=pred_series.dtype
+
+                scaled = self._mean_normalized_diff(
+                    pred_series,
+                    true_series,
+                    keep_bc_dims=keep_bc_dims,
                 )
-                
-                # Nondimensionalize
-                scaled = diff / (char_scale_tensor + self.eps)
 
                 name = f"boundary/{q_key}/{patch_name}"
                 loss_dict[name] = scaled
@@ -600,6 +631,22 @@ class IntegralConservationRMSE(LossComponent):
         else:
             reduce_dims = list(range(0, diff.ndim))
         return torch.mean(torch.abs(diff), dim=reduce_dims)
+
+    def _mean_normalized_diff(
+        self,
+        pred: torch.Tensor,
+        true: torch.Tensor,
+        keep_bc_dims: bool = False,
+    ) -> torch.Tensor:
+        """Compute mean absolute relative difference over all non-batch dims."""
+        diff = pred - true
+        denom = torch.abs(true)
+        rel = torch.abs(diff) / (denom + self.eps)
+        if keep_bc_dims:
+            reduce_dims = list(range(1, rel.ndim))
+        else:
+            reduce_dims = list(range(0, rel.ndim))
+        return torch.mean(rel, dim=reduce_dims)
 
 
 # ------------------------------------------------------------------

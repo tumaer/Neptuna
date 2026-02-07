@@ -772,6 +772,9 @@ class NestedCompositeLoss(LossComponent):
                     model, predictions, labels, input_frames, return_detailed=False, keep_bc_dims=keep_bc_dims, preserve_component_grads=preserve_component_grads
                 )
                 comp_detail = None
+
+            comp_weight = self.weight_schedule.get_loss_component_weight(sub_comp.name)
+            comp_loss = comp_loss * comp_weight
             
             if sub_total is None:
                 sub_total = comp_loss
@@ -788,15 +791,8 @@ class NestedCompositeLoss(LossComponent):
         if sub_total is None:
             sub_total = predictions.new_tensor(0.0)
         
-        # Apply this composite's own weight schedule
-        if self.weight_schedule.is_scalar_only():
-            # Fast path: scalar weight
-            weighted_total = sub_total * self.weight_schedule.base_weight
-        else:
-            # Full schedule path
-            weight = self.weight_schedule.get_loss_weight(predictions.shape)
-            weight = weight.to(predictions.device)
-            weighted_total = sub_total * self.weight_schedule.base_weight
+        # Apply this composite's own base weight
+        weighted_total = sub_total * self.weight_schedule.base_weight
         
         if return_detailed:
             detailed = {
