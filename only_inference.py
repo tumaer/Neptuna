@@ -253,6 +253,8 @@ def save_errors_to_structured_csv(errors, output_dir, channel_names: Optional[Li
     rows: Dict[tuple, Dict[str, float]] = {}
     all_col_names: set = set()
 
+    metric_component_order: Dict[str, List[str]] = {}
+
     for metric_name, value in errors.items():
         # Value can be:
         #   - dict from compute_metrics_for_n_rollouts
@@ -275,7 +277,17 @@ def save_errors_to_structured_csv(errors, output_dir, channel_names: Optional[Li
         if not isinstance(metrics_dict, dict):
             continue
 
+        metric_names = None
+        if isinstance(metrics_dict, dict):
+            metric_names = metrics_dict.get("names")
+            if isinstance(metric_names, list) and metric_names:
+                metric_component_order[metric_name] = metric_names
+
         for summary_kind, arr in metrics_dict.items():
+            if summary_kind == "names":
+                continue
+            if summary_kind == "component_names":
+                continue
             try:
                 np_arr = np.asarray(arr)
             except Exception:
@@ -323,9 +335,10 @@ def save_errors_to_structured_csv(errors, output_dir, channel_names: Optional[Li
 
             overall_col = f"{base}__overall"
             all_col_names.add(overall_col)
+            effective_names = metric_names if metric_names else channel_names
             for ch in range(n_channels - 1):
                 ch_label = (
-                    channel_names[ch] if channel_names is not None and ch < len(channel_names) else f"ch{ch}"
+                    effective_names[ch] if effective_names is not None and ch < len(effective_names) else f"ch{ch}"
                 )
                 ch_col = f"{base}__{ch_label}"
                 all_col_names.add(ch_col)
@@ -339,9 +352,10 @@ def save_errors_to_structured_csv(errors, output_dir, channel_names: Optional[Li
                 rows[row_key][overall_col] = float(np_arr[idx, n_channels - 1])
 
                 # per-channel columns
+                effective_names = metric_names if metric_names else channel_names
                 for ch in range(n_channels - 1):
                     ch_label = (
-                        channel_names[ch] if channel_names is not None and ch < len(channel_names) else f"ch{ch}"
+                        effective_names[ch] if effective_names is not None and ch < len(effective_names) else f"ch{ch}"
                     )
                     ch_col = f"{base}__{ch_label}"
                     rows[row_key][ch_col] = float(np_arr[idx, ch])
@@ -364,7 +378,7 @@ def save_errors_to_structured_csv(errors, output_dir, channel_names: Optional[Li
     if channel_names:
         channel_order_map = {ch: i + 1 for i, ch in enumerate(channel_names)}
 
-    def _channel_rank(channel: str):
+    def _channel_rank(channel: str, channel_order_map: Dict[str, int]):
         if channel == "overall":
             return (0, "overall")
         if channel in channel_order_map:
@@ -383,13 +397,16 @@ def save_errors_to_structured_csv(errors, output_dir, channel_names: Optional[Li
         is_cumulative = 1 if stat.startswith("cumulative_") else 0
         stat_base = stat.replace("cumulative_", "")
         stat_rank = {"mean": 0, "std": 1}.get(stat_base, 99)
-        ch_rank, _ = _channel_rank(channel)
-        # Order:
-        #   1) per-step (non-cumulative) overall group by metric (mean, std)
-        #   2) per-step per-channel groups (each channel, metrics interleaved)
-        #   3) cumulative overall group by metric
-        #   4) cumulative per-channel groups
-        return (is_cumulative, ch_rank, metric, stat_rank, stat, name)
+        component_names = metric_component_order.get(metric)
+        if component_names:
+            component_order_map = {comp: i + 1 for i, comp in enumerate(component_names)}
+            comp_rank_idx, comp_rank_name = _channel_rank(channel, component_order_map)
+            # Component-wise order: group by metric, then component, then stat
+            return (is_cumulative, 0, metric, comp_rank_idx, comp_rank_name, stat_rank, stat, name)
+
+        ch_rank_idx, ch_rank_name = _channel_rank(channel, channel_order_map)
+        # Channel-wise order (interleaved by channel across metrics)
+        return (is_cumulative, 1, ch_rank_idx, ch_rank_name, metric, stat_rank, stat, name)
 
     all_col_names_sorted = sorted(all_col_names, key=_col_key)
 

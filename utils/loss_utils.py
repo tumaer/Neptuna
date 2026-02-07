@@ -101,7 +101,7 @@ def _create_loss_component(
     loss_type = component_cfg.type
     
     # Handle nested composite
-    if loss_type == "CompositeLoss":
+    if loss_type in ("CompositeLoss", "NestedCompositeLoss"):
         name = component_cfg.get("name", "NestedComposite")
         weight = create_loss_weight_schedule(component_cfg)
         

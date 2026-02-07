@@ -84,6 +84,8 @@ LOSS_REGISTRY = {
         "class": IntegralConservationRMSE,
         "default_name": "IntegralConservationRMSE",
         "default_config": "loss_metrics/IntegralConservationRMSE/integral_conservation_rmse_default",
+        "channel_aggregation": "sqrt",
+        "sub_components": True,  # Indicates this loss decomposes as sub-components rather than channels
     },
     "RMSE": {
         "class": RMSE,

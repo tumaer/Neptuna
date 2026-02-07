@@ -1,36 +1,35 @@
-conserved_keys:
-  - mass
-  - Px
-  - Py
-  - kinetic_energy
-
-# Whether to include boundary flux metrics
 use_boundary_fluxes: true
 normalization: none
 
-boundary_keys:
-  - mass
-  - Px
-  - Py
-  - energy
+# Explicit component list with names matching loss outputs
+# Domain components: domain/<quantity>
+# Boundary components: boundary/<quantity>/<patch>
+components:
+  # Domain components
+  - name: domain/mass
+    weight: 1.0
+  - name: domain/Px
+    weight: 1.0
 
-# Optional: weight different terms relative to each other
-quantity_weights:
-  domain/mass: 1.0
-  domain/Px: 1.0
-  domain/Py: 1.0
-  domain/kinetic_energy: 1.0
-  boundary/mass: 1.0
-  boundary/Px: 1.0
-  boundary/Py: 1.0
-  boundary/energy: 1.0
 
-# We nondimensionalize the computed metrics to ensure components are O(1).
-# Suitable choices would be maximum or average field values.
-# For length, one unit is the size of one pixel.
-reference_quantities:
-  density: 1000.0
-  velocity: 1000.0
-  pressure: 1000000.0
-  length: 40
-  temperature: 100.0
+#  - name: domain/kinetic_energy
+#    weight: 1.0
+
+  # Boundary components (2D: x_min/x_max/y_min/y_max)
+#  - name: boundary/mass/x_min
+#    weight: 1.0
+#  - name: boundary/mass/x_max
+#    weight: 1.0
+#  - name: boundary/mass/y_min
+#    weight: 1.0
+#  - name: boundary/mass/y_max
+#    weight: 1.0
+
+#  - name: boundary/Px/x_min
+#    weight: 1.0
+
+#  - name: boundary/Py/x_min
+#    weight: 1.0
+
+#  - name: boundary/energy/x_min
+#    weight: 1.0
