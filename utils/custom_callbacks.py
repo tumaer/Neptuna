@@ -970,21 +970,25 @@ class LossStatisticsCallback(TrainerCallback):
             losses: Dictionary of component names to loss lists
             
         Returns:
-            Aggregated losses from all ranks (only on rank 0, empty dict on others)
+            Aggregated losses from all ranks (broadcast to all ranks)
         """
         if not dist.is_initialized():
             return losses
         
         world_size = dist.get_world_size()
         rank = dist.get_rank()
+
+        logger.info(
+            f"[LossStatisticsCallback][rank {rank}/{world_size}] Aggregating losses across ranks"
+        )
         
         # Gather all losses on rank 0
         gathered = [None] * world_size
         dist.gather_object(losses, gathered if rank == 0 else None, dst=0)
-        
+
+        combined_losses = {}
         if rank == 0:
             # Combine losses from all processes
-            combined_losses = {}
             for process_losses in gathered:
                 if process_losses is None:
                     continue
@@ -992,10 +996,76 @@ class LossStatisticsCallback(TrainerCallback):
                     if component_name not in combined_losses:
                         combined_losses[component_name] = []
                     combined_losses[component_name].extend(loss_list)
-            return combined_losses
-        else:
-            # Non-rank-0 returns empty dict
-            return {}
+
+            summary = {k: len(v) for k, v in combined_losses.items()}
+            logger.info(
+                f"[LossStatisticsCallback][rank {rank}] Combined loss counts: {summary}"
+            )
+
+        # Broadcast combined losses to all ranks so everyone is in sync
+        obj_list = [combined_losses]
+        dist.broadcast_object_list(obj_list, src=0)
+        if rank != 0:
+            recv_summary = {k: len(v) for k, v in obj_list[0].items()}
+            logger.info(
+                f"[LossStatisticsCallback][rank {rank}] Received combined loss counts: {recv_summary}"
+            )
+        return obj_list[0]
+
+    def _aggregate_distributed_grad_stats(
+        self, grad_stats: Dict[str, Dict[str, List[float]]]
+    ) -> Dict[str, Dict[str, List[float]]]:
+        """
+        Aggregate gradient statistics across all distributed processes.
+
+        Returns:
+            Aggregated grad stats from all ranks (broadcast to all ranks)
+        """
+        if not dist.is_initialized():
+            return grad_stats
+
+        world_size = dist.get_world_size()
+        rank = dist.get_rank()
+
+        logger.info(
+            f"[LossStatisticsCallback][rank {rank}/{world_size}] Aggregating gradient stats across ranks"
+        )
+
+        gathered = [None] * world_size
+        dist.gather_object(grad_stats, gathered if rank == 0 else None, dst=0)
+
+        combined: Dict[str, Dict[str, List[float]]] = {}
+        if rank == 0:
+            for process_stats in gathered:
+                if process_stats is None:
+                    continue
+                for component_name, stat_dict in process_stats.items():
+                    if component_name not in combined:
+                        combined[component_name] = {}
+                    for stat_name, values in stat_dict.items():
+                        if stat_name not in combined[component_name]:
+                            combined[component_name][stat_name] = []
+                        combined[component_name][stat_name].extend(values)
+
+            summary = {
+                comp: {stat: len(vals) for stat, vals in stats.items()}
+                for comp, stats in combined.items()
+            }
+            logger.info(
+                f"[LossStatisticsCallback][rank {rank}] Combined grad stat counts: {summary}"
+            )
+
+        obj_list = [combined]
+        dist.broadcast_object_list(obj_list, src=0)
+        if rank != 0:
+            recv_summary = {
+                comp: {stat: len(vals) for stat, vals in stats.items()}
+                for comp, stats in obj_list[0].items()
+            }
+            logger.info(
+                f"[LossStatisticsCallback][rank {rank}] Received grad stat counts: {recv_summary}"
+            )
+        return obj_list[0]
     
     def get_grad_stats_history(self, aggregate_distributed: bool = True) -> Dict[str, Dict[str, List[float]]]:
         """
@@ -1007,7 +1077,7 @@ class LossStatisticsCallback(TrainerCallback):
             Dictionary mapping component -> stat -> list of values
         """
         if aggregate_distributed and dist.is_initialized():
-            return self._aggregate_distributed_losses(self.grad_stats_history)
+            return self._aggregate_distributed_grad_stats(self.grad_stats_history)
         
         return {k: {sk: sv.copy() for sk, sv in v.items()} for k, v in self.grad_stats_history.items()}
 
@@ -1141,6 +1211,10 @@ class AdaptiveWeightCallback(TrainerCallback):
         if not loss_history:
             logger.warning(f"[AdaptiveWeightCallback] No {source_label} loss history for epoch {current_epoch}")
             return False
+
+        is_distributed = dist.is_initialized()
+        rank = dist.get_rank() if is_distributed else 0
+        world_size = dist.get_world_size() if is_distributed else 1
         
         # Get current loss weights
         # Only the train loss function metrics are used for weight updates, but the loss history source can be train or eval.
@@ -1168,17 +1242,35 @@ class AdaptiveWeightCallback(TrainerCallback):
             )
             return False
         
-        # Compute new loss weights
-        new_weights = self.loss_weighting_strategy.step(
-            epoch=current_epoch,
-            loss_history=filtered_loss_history,
-            current_weights=current_weights,
-            grad_stats_history=filtered_grad_stats_history
-        )
+        # Compute new loss weights only on rank 0, then broadcast
+        new_weights = None
+        if (not is_distributed) or rank == 0:
+            logger.info(
+                f"[AdaptiveWeightCallback][rank {rank}/{world_size}] Computing new weights for epoch {current_epoch} ({source_label})"
+            )
+            new_weights = self.loss_weighting_strategy.step(
+                epoch=current_epoch,
+                loss_history=filtered_loss_history,
+                current_weights=current_weights,
+                grad_stats_history=filtered_grad_stats_history
+            )
+
+        if is_distributed:
+            obj_list = [new_weights]
+            dist.broadcast_object_list(obj_list, src=0)
+            new_weights = obj_list[0]
+            if rank != 0:
+                logger.info(
+                    f"[AdaptiveWeightCallback][rank {rank}/{world_size}] Received new weights for epoch {current_epoch} ({source_label})"
+                )
         
         # Apply new loss weights if scheduler returned them
         if new_weights is None:
             return False
+
+        logger.info(
+            f"[AdaptiveWeightCallback][rank {rank}/{world_size}] Applying new weights for epoch {current_epoch} ({source_label})"
+        )
         
         self.trainer.loss_fn.update_loss_weights(new_weights)
         self.last_update_epoch = current_epoch
