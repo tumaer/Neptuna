@@ -84,6 +84,7 @@ from typing import Dict, List, Optional
 import torch
 from metrics.loss_weighting_strategies import LossWeightingStrategyBase
 import torch.distributed as dist
+from itertools import zip_longest
 class CallbackHandler(CallbackHandler_):
     """
     Extended callback handler with support for custom evaluation and plotting events.
@@ -950,9 +951,11 @@ class LossStatisticsCallback(TrainerCallback):
         if trainer is None or not hasattr(trainer, "log"):
             return
 
-        if dist.is_initialized() and dist.get_rank() != 0:
-            return
+        is_distributed = dist.is_initialized()
+        rank = dist.get_rank() if is_distributed else 0
 
+        # IMPORTANT: all ranks must participate in the gather_object calls below.
+        # We aggregate first on *every* rank, then only rank 0 logs to W&B.
         log_dict: Dict[str, float] = {}
 
         loss_history = self.get_loss_history(source='train', aggregate_distributed=True)
@@ -970,6 +973,9 @@ class LossStatisticsCallback(TrainerCallback):
                 values_tensor = torch.tensor(values)
                 prefix = f"grad_stats_history/{component_name}/{stat_name}"
                 log_dict[f"{prefix}"] = float(values_tensor.mean())
+        
+        if is_distributed and rank != 0:
+            return
 
         if log_dict:
             log_dict["histories/epoch"] = float(state.epoch) if state.epoch is not None else -1.0
@@ -1030,7 +1036,20 @@ class LossStatisticsCallback(TrainerCallback):
                 for component_name, loss_list in process_losses.items():
                     if component_name not in combined_losses:
                         combined_losses[component_name] = []
-                    combined_losses[component_name].extend(loss_list)
+            
+            # Interleave per-rank histories: first elements from each rank,
+            # then second elements, etc.
+            for component_name in list(combined_losses.keys()):
+                per_rank_lists = [
+                    pl.get(component_name, []) if pl is not None else []
+                    for pl in gathered
+                ]
+                interleaved = []
+                for row in zip_longest(*per_rank_lists, fillvalue=None):
+                    for v in row:
+                        if v is not None:
+                            interleaved.append(v)
+                combined_losses[component_name] = interleaved
 
             summary = {k: len(v) for k, v in combined_losses.items()}
             logger.info(
@@ -1080,7 +1099,20 @@ class LossStatisticsCallback(TrainerCallback):
                     for stat_name, values in stat_dict.items():
                         if stat_name not in combined[component_name]:
                             combined[component_name][stat_name] = []
-                        combined[component_name][stat_name].extend(values)
+            
+            # Interleave per-rank histories for each component/stat.
+            for component_name, stat_dict in list(combined.items()):
+                for stat_name in list(stat_dict.keys()):
+                    per_rank_lists = [
+                        ps.get(component_name, {}).get(stat_name, []) if ps is not None else []
+                        for ps in gathered
+                    ]
+                    interleaved = []
+                    for row in zip_longest(*per_rank_lists, fillvalue=None):
+                        for v in row:
+                            if v is not None:
+                                interleaved.append(v)
+                    combined[component_name][stat_name] = interleaved
 
             summary = {
                 comp: {stat: len(vals) for stat, vals in stats.items()}
