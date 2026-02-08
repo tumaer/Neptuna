@@ -94,6 +94,7 @@
           "hydra.output_subdir=null",
           "data_config=fluids/Aerobreakup/2d_aerobreakup_data_default.yaml",
           "model_config=UNet/unet_1M",
+          "output_log_config=wandb_log.yaml"
         ],
       "env": {
           "HYDRA_FULL_ERROR": "1",
@@ -589,7 +590,8 @@
               "hydra.run.dir=.",
               "hydra.output_subdir=null",
               "data_config=fluids/KS/1d_ks_data.yaml",
-              "model_config=FNO/default_fno"
+              "model_config=FNO/default_fno",
+              "output_log_config=wandb_log.yaml"
             ],
           "env": {
               "HYDRA_FULL_ERROR": "1",

@@ -895,6 +895,9 @@ class LossStatisticsCallback(TrainerCallback):
             self.trainer._detailed_loss_accumulator = {}
         if hasattr(self.trainer, '_gradient_accumulator'):
             self.trainer._gradient_accumulator = {}
+
+        # Log loss/grad histories to W&B (rank 0 only)
+        self._log_histories_to_wandb(state)
     
     def _transfer_losses(self):
         """Transfer loss values from GPU to CPU."""
@@ -940,6 +943,38 @@ class LossStatisticsCallback(TrainerCallback):
                     stacked = torch.stack(stat_tensors)
                     cpu_values = stacked.cpu().tolist()
                     self.grad_stats_history[component_name][stat_name].extend(cpu_values)
+
+    def _log_histories_to_wandb(self, state: TrainerState) -> None:
+        """Log loss and gradient stat histories to W&B via Trainer.log."""
+        trainer = getattr(self, "trainer", None)
+        if trainer is None or not hasattr(trainer, "log"):
+            return
+
+        if dist.is_initialized() and dist.get_rank() != 0:
+            return
+
+        log_dict: Dict[str, float] = {}
+
+        loss_history = self.get_loss_history(source='train', aggregate_distributed=True)
+        for component_name, losses in loss_history.items():
+            if not losses:
+                continue
+            loss_tensor = torch.tensor(losses)
+            log_dict[f"loss_history/{component_name}"] = float(loss_tensor.mean())
+
+        grad_stats = self.get_grad_stats_history(aggregate_distributed=True)
+        for component_name, stat_dict in grad_stats.items():
+            for stat_name, values in stat_dict.items():
+                if not values:
+                    continue
+                values_tensor = torch.tensor(values)
+                prefix = f"grad_stats_history/{component_name}/{stat_name}"
+                log_dict[f"{prefix}"] = float(values_tensor.mean())
+
+        if log_dict:
+            log_dict["histories/epoch"] = float(state.epoch) if state.epoch is not None else -1.0
+            trainer.log(log_dict)
+
     
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
         """Accumulate loss values from evaluation metrics."""
