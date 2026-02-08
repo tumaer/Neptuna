@@ -30,6 +30,7 @@ from .weighting_strategies import (
     GradNorm,
     InverseDirichlet,
     LearningRateAnnealing,
+    LogOnly,
 )
 
 __all__ = [
@@ -59,4 +60,5 @@ __all__ = [
     'GradNorm',
     'InverseDirichlet',
     'LearningRateAnnealing',
+    'LogOnly',
 ]

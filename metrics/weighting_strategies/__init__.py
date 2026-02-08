@@ -5,6 +5,7 @@ from .balanced_residual_decay_rate import BalancedResidualDecayRate
 from .grad_norm import GradNorm
 from .inverse_dirichlet import InverseDirichlet
 from .learning_rate_annealing import LearningRateAnnealing
+from .log_only import LogOnly
 
 __all__ = [
     "ReLoBRaLo",
@@ -14,4 +15,5 @@ __all__ = [
     "GradNorm",
     "InverseDirichlet",
     "LearningRateAnnealing",
+    "LogOnly",
 ]

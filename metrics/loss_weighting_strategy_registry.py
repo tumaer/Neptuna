@@ -6,6 +6,7 @@ from metrics.weighting_strategies import (
     GradNorm,
     InverseDirichlet,
     LearningRateAnnealing,
+    LogOnly,
 )
 
 # Weight scheduler registry with metadata:
@@ -50,6 +51,11 @@ WEIGHT_SCHEDULER_REGISTRY = {
         "default_name": "LearningRateAnnealing",
         "default_config": "weighting_strategies/LearningRateAnnealing/learning_rate_annealing_default",
         "grad_stats": ["norm", "max"],
+    },
+    "LogOnly": {
+        "class": LogOnly,
+        "default_name": "LogOnly",
+        "default_config": "weighting_strategies/LogOnly/log_only_default",
     },
 }
 
