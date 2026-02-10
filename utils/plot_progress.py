@@ -2602,29 +2602,52 @@ def calculate_and_save_results_all_channels(
     if not all_metric_names:
         return
     
+    def _get_metric_component_names(metric_name: str) -> list[str] | None:
+        for run_metrics in runs_step_metrics.values():
+            if metric_name not in run_metrics:
+                continue
+            stats = run_metrics.get(metric_name, {})
+            if isinstance(stats, dict):
+                names = stats.get("names") or stats.get("component_names")
+                if isinstance(names, list) and len(names) > 0:
+                    return names
+        return None
+
     # Build column headers
-    # Arrange overall metrics interleaved by metric, then channel metrics interleaved by metric
+    # Arrange overall metrics interleaved by metric, then per-component/per-channel metrics interleaved by metric
     column_headers = ["run_name"]
     # Overall columns grouped by metric
     for metric_name in all_metric_names:
         column_headers.append(f"{metric_name}_overall_mean")
         column_headers.append(f"{metric_name}_overall_std")
-    # Per-channel columns grouped by metric within each channel
-    for ch_name in output_channel_names:
-        for metric_name in all_metric_names:
-            column_headers.append(f"{metric_name}_{ch_name}_mean")
-            column_headers.append(f"{metric_name}_{ch_name}_std")
+    # Per-channel/component columns grouped by metric within each component/channel
+    for metric_name in all_metric_names:
+        component_names = _get_metric_component_names(metric_name)
+        effective_names = component_names if component_names is not None else output_channel_names
+        for name in effective_names:
+            column_headers.append(f"{metric_name}_{name}_mean")
+            column_headers.append(f"{metric_name}_{name}_std")
     
     # Collect data for the single run (expected to be exactly one)
     run_name, run_metrics = next(iter(runs_step_metrics.items()))
     row = {"run_name": run_name}
     
     for metric_name in all_metric_names:
+        metric_component_names = None
+        if metric_name in run_metrics:
+            stats = run_metrics.get(metric_name, {})
+            if isinstance(stats, dict):
+                metric_component_names = stats.get("names") or stats.get("component_names")
+                if not isinstance(metric_component_names, list):
+                    metric_component_names = None
+
+        effective_names = metric_component_names if metric_component_names is not None else output_channel_names
+
         if metric_name not in run_metrics:
             # Fill with None/empty if metric not present
             row[f"{metric_name}_overall_mean"] = None
             row[f"{metric_name}_overall_std"] = None
-            for ch_name in output_channel_names:
+            for ch_name in effective_names:
                 row[f"{metric_name}_{ch_name}_mean"] = None
                 row[f"{metric_name}_{ch_name}_std"] = None
             continue
@@ -2636,7 +2659,7 @@ def calculate_and_save_results_all_channels(
         if means is None or stds is None:
             row[f"{metric_name}_overall_mean"] = None
             row[f"{metric_name}_overall_std"] = None
-            for ch_name in output_channel_names:
+            for ch_name in effective_names:
                 row[f"{metric_name}_{ch_name}_mean"] = None
                 row[f"{metric_name}_{ch_name}_std"] = None
             continue
@@ -2665,8 +2688,8 @@ def calculate_and_save_results_all_channels(
         row[f"{metric_name}_overall_std"] = overall_pooled_std
         
         # Per-channel statistics after overall
-        for c_idx in range(min(num_channels, len(output_channel_names))):
-            ch_name = output_channel_names[c_idx]
+        for c_idx in range(min(num_channels, len(effective_names))):
+            ch_name = effective_names[c_idx]
             channel_means = means[:, c_idx]  # channel_means has shape (R,)
             channel_stds = stds[:, c_idx]    # channel_stds has shape (R,)
             
