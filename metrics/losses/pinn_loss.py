@@ -956,6 +956,133 @@ def robust_penalty(x: torch.Tensor, kind: Literal["l2", "huber"] = "l2", huber_d
     raise ValueError(f"Unknown penalty kind: {kind}")
 
 
+class ResidualMasker(nn.Module):
+    """Base class for residual masking strategies."""
+    def required_grad_fields(self) -> List[str]:
+        return []
+
+    def apply_residuals(
+        self,
+        residuals: Dict[str, torch.Tensor],
+        components: List["PDEComponent"],
+        derivs: "DerivativeCache",
+    ) -> Dict[str, torch.Tensor]:
+        return residuals
+
+    def apply_penalty(
+        self,
+        penalty: torch.Tensor,
+        eq_names: List[str],
+        components: List["PDEComponent"],
+        derivs: "DerivativeCache",
+    ) -> torch.Tensor:
+        return penalty
+
+
+class EquationWeight(ResidualMasker):
+    """Applies equation-weight masking based on velocity divergence."""
+    def __init__(self, k1: float = 0.2):
+        super().__init__()
+        self.k1 = float(k1)
+
+    def required_grad_fields(self) -> List[str]:
+        return ["Velocity_X", "Velocity_Y"]
+
+    def apply_residuals(
+        self,
+        residuals: Dict[str, torch.Tensor],
+        components: List["PDEComponent"],
+        derivs: "DerivativeCache",
+    ) -> Dict[str, torch.Tensor]:
+        if "Velocity_X" not in derivs.grads or "Velocity_Y" not in derivs.grads:
+            raise ValueError(
+                "PINNLoss: equation_weight masking requires Velocity_X and Velocity_Y gradients."
+            )
+        du_dx, _ = derivs.grads["Velocity_X"]
+        _, dv_dy = derivs.grads["Velocity_Y"]
+        div_u = du_dx + dv_dy
+
+        denom = self.k1 * (div_u.abs() - div_u) + 1.0
+        eq_weight = 1.0 / (denom + 1e-12)
+        masked = dict(residuals)
+        for comp in components:
+            if isinstance(comp, _BoundaryConditionBase):
+                continue
+            masked[comp.name] = masked[comp.name] * eq_weight
+        return masked
+
+
+class GradientAnnihilated(ResidualMasker):
+    """Applies Lambda1 weighting based on |∂x U_i| for each variable."""
+    def __init__(
+        self,
+        fields: List[str],
+        alpha: Union[List[float], Tuple[float, ...], Dict[str, float], float],
+        beta: Union[List[float], Tuple[float, ...], Dict[str, float], float],
+        eps: float = 1e-12,
+    ):
+        super().__init__()
+        self.fields = list(fields)
+        self.alpha = self._resolve_param(alpha, self.fields, "alpha")
+        self.beta = self._resolve_param(beta, self.fields, "beta")
+        self.eps = float(eps)
+
+    @staticmethod
+    def _resolve_param(
+        value: Union[List[float], Tuple[float, ...], Dict[str, float], float],
+        fields: List[str],
+        name: str,
+    ) -> List[float]:
+        if isinstance(value, dict):
+            missing = [f for f in fields if f not in value]
+            if missing:
+                raise ValueError(f"Lambda1GradMasker: {name} missing for fields {missing}.")
+            return [float(value[f]) for f in fields]
+        if isinstance(value, (list, tuple)):
+            if len(value) != len(fields):
+                raise ValueError(
+                    f"Lambda1GradMasker: {name} length {len(value)} does not match fields {len(fields)}."
+                )
+            return [float(v) for v in value]
+        return [float(value)] * len(fields)
+
+    def required_grad_fields(self) -> List[str]:
+        return list(self.fields)
+
+    def apply_penalty(
+        self,
+        penalty: torch.Tensor,
+        eq_names: List[str],
+        components: List["PDEComponent"],
+        derivs: "DerivativeCache",
+    ) -> torch.Tensor:
+        weights = []
+        for field_name, alpha_i, beta_i in zip(self.fields, self.alpha, self.beta):
+            if field_name not in derivs.grads:
+                raise ValueError(
+                    f"PINNLoss: lambda1_grad masking requires gradients for '{field_name}'."
+                )
+            grad_components = derivs.grads[field_name]
+            grad_stack = torch.stack(grad_components, dim=0)
+            g = torch.sqrt((grad_stack ** 2).sum(dim=0) + self.eps)
+            weights.append(1.0 / (1.0 + alpha_i * (g ** beta_i)))
+
+        lam = torch.stack(weights, dim=0).mean(dim=0)
+        lam = lam.clamp_min(self.eps)
+
+        factors = []
+        for comp in components:
+            factors.append(torch.ones_like(lam) if isinstance(comp, _BoundaryConditionBase) else lam)
+        factor_t = torch.stack(factors, dim=2)
+        return penalty * factor_t
+
+
+_RESIDUAL_MASK_REGISTRY: Dict[str, Callable[..., ResidualMasker]] = {
+    "EquationWeight": EquationWeight,
+    "GradientAnnihilated": GradientAnnihilated,
+}
+
+
 # ----------------------------
 # The LossComponent: PINN residual metric for AR rollouts
 # ----------------------------
@@ -979,6 +1106,15 @@ class PINNLoss(LossComponent):
         huber_delta: float = 1.0,
         # normalization of residual magnitudes
         residual_normalization: Literal['none', 'range', 'variance', 'std'] = 'none',
+        # optional residual masking
+        residual_mask: Optional[Union[
+            Literal["equation_weight", "lambda1_grad"],
+            Dict[str, Any],
+        ]] = None,
+        equation_weight_k1: float = 0.2,
+        lambda1_alpha: Optional[Union[List[float], Tuple[float, ...], Dict[str, float], float]] = None,
+        lambda1_beta: Optional[Union[List[float], Tuple[float, ...], Dict[str, float], float]] = None,
+        lambda1_fields: Optional[List[str]] = None,
         # framework bits
         norm_helper: Optional["NormalizationHelper"] = None,
         weight: Union[float, "WeightSchedule"] = 1.0,
@@ -1018,7 +1154,43 @@ class PINNLoss(LossComponent):
         self.huber_delta = float(huber_delta)
 
         self.residual_normalization = residual_normalization
+        self.residual_mask = residual_mask
+        self.equation_weight_k1 = float(equation_weight_k1)
         self.pde_params = pde_params or {}
+
+        self.residual_masker: Optional[ResidualMasker] = None
+        self.residual_mask_grad_fields: List[str] = []
+
+        mask_type = self.residual_mask.get("type")
+        if mask_type is not None:
+            mask_cfg = {k: v for k, v in self.residual_mask.items() if k != "type"}
+
+            if mask_type not in _RESIDUAL_MASK_REGISTRY:
+                raise ValueError(
+                    f"Unknown residual_mask type: {mask_type}. "
+                    f"Available: {list(_RESIDUAL_MASK_REGISTRY.keys())}"
+                )
+
+            if mask_type == "EquationWeight":
+                k1 = float(mask_cfg.get("equation_weight_k1", self.equation_weight_k1))
+                self.residual_masker = _RESIDUAL_MASK_REGISTRY[mask_type](k1=k1)
+            elif mask_type == "GradientAnnihilated":
+                alpha_cfg = mask_cfg.get("lambda1_alpha", lambda1_alpha)
+                beta_cfg = mask_cfg.get("lambda1_beta", lambda1_beta)
+                fields_cfg = mask_cfg.get("lambda1_fields", lambda1_fields)
+                if alpha_cfg is None or beta_cfg is None:
+                    raise ValueError(
+                        "PINNLoss: GradientAnnihilated masking requires lambda1_alpha and lambda1_beta."
+                    )
+                fields = fields_cfg or list(self.field_names)
+                self.residual_masker = _RESIDUAL_MASK_REGISTRY[mask_type](
+                    fields=fields,
+                    alpha=alpha_cfg,
+                    beta=beta_cfg,
+                )
+
+            if self.residual_masker is not None:
+                self.residual_mask_grad_fields = self.residual_masker.required_grad_fields()
 
         self.reference_quantities = reference_quantities or {}
         self.residual_scale_eps = float(residual_scale_eps)
@@ -1204,6 +1376,9 @@ class PINNLoss(LossComponent):
             res = comp.residual(derivs.fields_n, derivs, params={**comp.params, **pde_params})
             residuals[comp.name] = res
 
+        if self.residual_masker is not None:
+            residuals = self.residual_masker.apply_residuals(residuals, self.components, derivs)
+
         # Stack residuals into channel dim: (B,T_eval,Ceq,*spatial)
         eq_names = list(residuals.keys())
         res_stack = torch.stack([residuals[k] for k in eq_names], dim=2)
@@ -1217,6 +1392,9 @@ class PINNLoss(LossComponent):
 
         # Elementwise penalty on scaled residuals
         pen = robust_penalty(res_stack, kind=self.penalty, huber_delta=self.huber_delta)
+
+        if self.residual_masker is not None:
+            pen = self.residual_masker.apply_penalty(pen, eq_names, self.components, derivs)
 
         # Reduce over spatial dims -> (B,T_eval,Ceq)
         spatial_dims = list(range(3, pen.ndim))
@@ -1291,6 +1469,9 @@ class PINNLoss(LossComponent):
             required_time_fields.update(comp.required_time_fields)
             required_grad_fields.update(comp.required_grad_fields)
             required_laplacian_fields.update(comp.required_laplacian_fields)
+
+        if self.residual_mask_grad_fields:
+            required_grad_fields.update(self.residual_mask_grad_fields)
 
         missing = [f for f in required_fields if f not in fields_full]
         if missing:

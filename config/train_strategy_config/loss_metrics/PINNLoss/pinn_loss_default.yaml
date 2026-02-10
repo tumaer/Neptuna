@@ -26,6 +26,13 @@ components:
     weight: 1.0
     axis: 1
 
+residual_mask:
+  type: "GradientAnnihilated" #null, EquationWeight, GradientAnnihilated
+  equation_weight_k1: 10.0
+  lambda1_alpha: 1.0
+  lambda1_beta: 1.0
+
+
 dt: 1.0
 dx: 1.0
 spatial_backend: "FDSpatialDerivatives"
