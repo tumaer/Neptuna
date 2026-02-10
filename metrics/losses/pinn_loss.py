@@ -328,6 +328,7 @@ class PDEComponent(nn.Module):
     Base class for a single PDE residual component.
     """
     default_name: str = "pde_component"
+    supported_spatial_dims: Tuple[int, ...] = (1, 2, 3)
     required_fields: Tuple[str, ...] = ()
     required_time_fields: Tuple[str, ...] = ()
     required_grad_fields: Tuple[str, ...] = ()
@@ -335,8 +336,11 @@ class PDEComponent(nn.Module):
 
     def __init__(self, name: Optional[str] = None, spatial_dim: int = 2, **params: Any):
         super().__init__()
-        if spatial_dim != 2:
-            raise ValueError(f"{self.__class__.__name__} only supports spatial_dim=2, got {spatial_dim}")
+        if spatial_dim not in self.supported_spatial_dims:
+            raise ValueError(
+                f"{self.__class__.__name__} only supports spatial_dim in {self.supported_spatial_dims}, "
+                f"got {spatial_dim}"
+            )
         self.spatial_dim = spatial_dim
         self.name = name or self.default_name
         self.params = params
@@ -382,6 +386,71 @@ def _align_r_coord(
     raise ValueError(f"Unsupported r_coord shape: {tuple(r_coord.shape)}")
 
 
+def _axis_labels_from_dim(n_spatial: int) -> List[str]:
+    """
+    Return axis labels in tensor order (Z, Y, X).
+    1D -> ["x"], 2D -> ["y", "x"], 3D -> ["z", "y", "x"].
+    """
+    if n_spatial == 1:
+        return ["x"]
+    if n_spatial == 2:
+        return ["y", "x"]
+    if n_spatial == 3:
+        return ["z", "y", "x"]
+    raise ValueError(f"Unsupported spatial dim: {n_spatial}")
+
+
+def _boundary_axis_from_name(boundary: str, n_spatial: int) -> Tuple[int, str]:
+    """
+    Map boundary name to physical axis index (x=0,y=1,z=2) and side ('min'/'max').
+    """
+    boundary = boundary.lower()
+    side_map = {
+        "west": (0, "min"),
+        "east": (0, "max"),
+        "south": (1, "min"),
+        "north": (1, "max"),
+        "bottom": (2, "min"),
+        "top": (2, "max"),
+    }
+    if boundary not in side_map:
+        raise ValueError(
+            f"Unknown boundary '{boundary}'. Expected one of: {list(side_map.keys())}."
+        )
+    axis, side = side_map[boundary]
+    if axis >= n_spatial:
+        raise ValueError(
+            f"Boundary '{boundary}' is not valid for spatial_dim={n_spatial}."
+        )
+    return axis, side
+
+
+def _physical_to_tensor_axis(axis: int, n_spatial: int) -> int:
+    """
+    Convert physical axis index (x=0,y=1,z=2) to tensor spatial index.
+    Tensor spatial order is (Z, Y, X).
+    """
+    if n_spatial == 1:
+        mapping = [0]
+    elif n_spatial == 2:
+        mapping = [1, 0]
+    elif n_spatial == 3:
+        mapping = [2, 1, 0]
+    else:
+        raise ValueError(f"Unsupported spatial dim: {n_spatial}")
+    if axis < 0 or axis >= n_spatial:
+        raise ValueError(f"Axis {axis} is invalid for spatial_dim={n_spatial}.")
+    return mapping[axis]
+
+
+def _boundary_mask(field: torch.Tensor, axis_index: int, side: str) -> torch.Tensor:
+    mask = torch.zeros_like(field)
+    slc = [slice(None)] * field.ndim
+    slc[2 + axis_index] = 0 if side == "min" else -1
+    mask[tuple(slc)] = 1.0
+    return mask
+
+
 @register_pde_component("pde/unsteadyContinuity")
 class UnsteadyContinuity2D(PDEComponent):
     """
@@ -390,6 +459,7 @@ class UnsteadyContinuity2D(PDEComponent):
     Residual: rho_t + div(rho u) = 0
     """
     default_name = "continuity"
+    supported_spatial_dims = (2,)
     required_fields = ("Density", "Velocity_X", "Velocity_Y")
     required_time_fields = ("Density",)
     required_grad_fields = ("Density", "Velocity_X", "Velocity_Y")
@@ -444,6 +514,7 @@ class EulerMomentum2D(PDEComponent):
     """
     Unsteady Euler momentum residual in 2D (primitive variables).
     """
+    supported_spatial_dims = (2,)
     default_name = "momentum"
     required_fields = ("Density", "Pressure", "Velocity_X", "Velocity_Y")
     required_time_fields = ("Density", "Velocity_X", "Velocity_Y")
@@ -564,6 +635,7 @@ class VorticityConsistency2D(PDEComponent):
     Vorticity definition consistency residual in 2D.
     """
     default_name = "vorticity_consistency"
+    supported_spatial_dims = (2,)
     required_fields = ("Velocity_X", "Velocity_Y", "Vorticity")
     required_grad_fields = ("Velocity_X", "Velocity_Y")
 
@@ -591,6 +663,7 @@ class DebugSystemEq1(PDEComponent):
     Residual: rho_t + u_x + v_y
     """
     default_name = "debug_eq1"
+    supported_spatial_dims = (2,)
     required_fields = ("Density", "Velocity_X", "Velocity_Y")
     required_time_fields = ("Density",)
     required_grad_fields = ("Velocity_X", "Velocity_Y")
@@ -614,6 +687,7 @@ class DebugSystemEq2(PDEComponent):
     Residual: div(rho * u) = (rho*u)_x + (rho*v)_y
     """
     default_name = "debug_eq2"
+    supported_spatial_dims = (2,)
     required_fields = ("Density", "Velocity_X", "Velocity_Y")
     required_grad_fields = ("Density", "Velocity_X", "Velocity_Y")
 
@@ -632,6 +706,235 @@ class DebugSystemEq2(PDEComponent):
         _, dv_dy = derivs.grads["Velocity_Y"]
 
         return u * drho_dx + rho * du_dx + v * drho_dy + rho * dv_dy
+
+
+class _BoundaryConditionBase(PDEComponent):
+    supported_spatial_dims = (1, 2, 3)
+
+    def __init__(
+        self,
+        name: Optional[str] = None,
+        spatial_dim: int = 2,
+        fields: Optional[Union[str, List[str]]] = None,
+        field_names: Optional[List[str]] = None,
+        **params: Any,
+    ):
+        super().__init__(name=name, spatial_dim=spatial_dim, **params)
+        if fields is None:
+            if field_names is None:
+                raise ValueError(
+                    f"{self.__class__.__name__} requires 'fields' or 'field_names' to be provided."
+                )
+            field_list = list(field_names)
+        elif isinstance(fields, str):
+            field_list = [fields]
+        else:
+            field_list = list(fields)
+
+        if len(field_list) == 0:
+            raise ValueError(f"{self.__class__.__name__} requires at least one field.")
+
+        self.fields = field_list
+        self.required_fields = tuple(field_list)
+
+    def _value_for_field(
+        self,
+        field_name: str,
+        value: Union[float, int, List[float], Tuple[float, ...], Dict[str, float]],
+    ) -> float:
+        if isinstance(value, dict):
+            if field_name not in value:
+                raise ValueError(
+                    f"{self.__class__.__name__}: missing value for field '{field_name}' in value dict."
+                )
+            return float(value[field_name])
+        if isinstance(value, (list, tuple)):
+            idx = self.fields.index(field_name)
+            if idx >= len(value):
+                raise ValueError(
+                    f"{self.__class__.__name__}: value list length {len(value)} does not cover '{field_name}'."
+                )
+            return float(value[idx])
+        return float(value)
+
+    @staticmethod
+    def _apply_mask(residual: torch.Tensor, mask: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+        scale = mask.mean()
+        return residual * mask / (scale + eps)
+
+
+@register_pde_component("bc/dirichlet")
+class DirichletBC(_BoundaryConditionBase):
+    """
+    Dirichlet boundary condition: u = value on the specified boundary.
+    """
+    default_name = "dirichlet"
+
+    def __init__(
+        self,
+        name: Optional[str] = None,
+        spatial_dim: int = 2,
+        boundary: Optional[str] = None,
+        value: Union[float, int, List[float], Tuple[float, ...], Dict[str, float]] = 0.0,
+        fields: Optional[Union[str, List[str]]] = None,
+        field_names: Optional[List[str]] = None,
+        **params: Any,
+    ):
+        if boundary is None:
+            raise ValueError("DirichletBC requires 'boundary'.")
+        self.boundary = boundary
+        self.value = value
+        super().__init__(
+            name=name or self.default_name,
+            spatial_dim=spatial_dim,
+            fields=fields,
+            field_names=field_names,
+            **params,
+        )
+
+    def residual(
+        self,
+        fields: Dict[str, torch.Tensor],
+        derivs: DerivativeCache,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> torch.Tensor:
+        axis, side = _boundary_axis_from_name(self.boundary, self.spatial_dim)
+        axis_index = _physical_to_tensor_axis(axis, self.spatial_dim)
+
+        residuals = []
+        for field in self.fields:
+            u = fields[field]
+            target = self._value_for_field(field, self.value)
+            residuals.append(u - target)
+
+        res = torch.stack(residuals, dim=0).mean(dim=0)
+        mask = _boundary_mask(res, axis_index, side)
+        return self._apply_mask(res, mask)
+
+
+@register_pde_component("bc/neumann")
+class NeumannBC(_BoundaryConditionBase):
+    """
+    Neumann boundary condition: du/dn (or du/daxis) = value on boundary.
+    """
+    default_name = "neumann"
+
+    def __init__(
+        self,
+        name: Optional[str] = None,
+        spatial_dim: int = 2,
+        boundary: Optional[str] = None,
+        axis: Optional[int] = None,
+        value: Union[float, int, List[float], Tuple[float, ...], Dict[str, float]] = 0.0,
+        fields: Optional[Union[str, List[str]]] = None,
+        field_names: Optional[List[str]] = None,
+        **params: Any,
+    ):
+        if boundary is None and axis is None:
+            raise ValueError("NeumannBC requires either 'boundary' or 'axis'.")
+        self.boundary = boundary
+        self.axis = axis
+        self.value = value
+        super().__init__(
+            name=name or self.default_name,
+            spatial_dim=spatial_dim,
+            fields=fields,
+            field_names=field_names,
+            **params,
+        )
+        self.required_grad_fields = tuple(self.fields)
+
+    def residual(
+        self,
+        fields: Dict[str, torch.Tensor],
+        derivs: DerivativeCache,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> torch.Tensor:
+        if self.axis is None:
+            axis_grad, side = _boundary_axis_from_name(self.boundary, self.spatial_dim)
+            axis_mask = axis_grad
+        else:
+            axis_grad = int(self.axis)
+            if self.boundary is not None:
+                axis_mask, side = _boundary_axis_from_name(self.boundary, self.spatial_dim)
+            else:
+                axis_mask = axis_grad
+                side = None
+
+        axis_index_grad = _physical_to_tensor_axis(axis_grad, self.spatial_dim)
+        axis_index_mask = _physical_to_tensor_axis(axis_mask, self.spatial_dim)
+
+        residuals = []
+        for field in self.fields:
+            grad = derivs.grads[field][axis_index_grad]
+            target = self._value_for_field(field, self.value)
+            residuals.append(grad - target)
+
+        res = torch.stack(residuals, dim=0).mean(dim=0)
+
+        if self.boundary is not None:
+            if side is None:
+                _, side = _boundary_axis_from_name(self.boundary, self.spatial_dim)
+            mask = _boundary_mask(res, axis_index_mask, side)
+        else:
+            mask = _boundary_mask(res, axis_index_mask, "min") + _boundary_mask(res, axis_index_mask, "max")
+        return self._apply_mask(res, mask)
+
+
+@register_pde_component("bc/periodic")
+class PeriodicBC(_BoundaryConditionBase):
+    """
+    Periodic boundary condition: u(min) = u(max) along a given axis.
+    """
+    default_name = "periodic"
+
+    def __init__(
+        self,
+        name: Optional[str] = None,
+        spatial_dim: int = 2,
+        axis: Optional[int] = None,
+        fields: Optional[Union[str, List[str]]] = None,
+        field_names: Optional[List[str]] = None,
+        **params: Any,
+    ):
+        if axis is None:
+            raise ValueError("PeriodicBC requires 'axis'.")
+        self.axis = int(axis)
+        super().__init__(
+            name=name or self.default_name,
+            spatial_dim=spatial_dim,
+            fields=fields,
+            field_names=field_names,
+            **params,
+        )
+
+    def residual(
+        self,
+        fields: Dict[str, torch.Tensor],
+        derivs: DerivativeCache,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> torch.Tensor:
+        axis_index = _physical_to_tensor_axis(self.axis, self.spatial_dim)
+
+        residuals = []
+        for field in self.fields:
+            u = fields[field]
+            slc_min = [slice(None)] * u.ndim
+            slc_max = [slice(None)] * u.ndim
+            slc_min[2 + axis_index] = 0
+            slc_max[2 + axis_index] = -1
+            u_min = u[tuple(slc_min)]
+            u_max = u[tuple(slc_max)]
+            diff = u_min - u_max
+
+            res = torch.zeros_like(u)
+            res[tuple(slc_min)] = diff
+            res[tuple(slc_max)] = -diff
+            residuals.append(res)
+
+        res = torch.stack(residuals, dim=0).mean(dim=0)
+        mask = _boundary_mask(res, axis_index, "min") + _boundary_mask(res, axis_index, "max")
+        return self._apply_mask(res, mask)
 
 # ----------------------------
 # Robust penalty (optional)
@@ -700,6 +1003,7 @@ class PINNLoss(LossComponent):
             components=components,
             pde=pde,
             data_dim=data_dim,
+            field_names=field_names,
         )
         self.component_names = component_names
         self.ops = DifferentialOps(
@@ -761,6 +1065,7 @@ class PINNLoss(LossComponent):
         components: Optional[List[Dict[str, Any]]],
         pde: Optional[Union[str, Dict[str, Union[str, float, int]]]],
         data_dim: Optional[int],
+        field_names: Optional[List[str]],
     ) -> Tuple[List[PDEComponent], List[str], Dict[str, float]]:
         if components is None:
             components = []
@@ -789,6 +1094,7 @@ class PINNLoss(LossComponent):
         component_instances: List[PDEComponent] = []
         component_names: List[str] = []
         component_weights: Dict[str, float] = {}
+        component_name_set: set = set()
 
         for comp in components:
             if "type" not in comp:
@@ -799,6 +1105,15 @@ class PINNLoss(LossComponent):
                     f"Unknown PDE component '{comp_type}'. Available: {list(_PDE_COMPONENT_REGISTRY.keys())}"
                 )
             cfg = {k: v for k, v in comp.items() if k not in ("type", "weight")}
+            if "field" in cfg and "fields" not in cfg:
+                cfg["fields"] = cfg.pop("field")
+            if comp_type.startswith("bc/"):
+                if "fields" not in cfg and "field_names" not in cfg:
+                    if field_names is None:
+                        raise ValueError(
+                            "PINNLoss: boundary condition components require field_names."
+                        )
+                    cfg["field_names"] = field_names
             if comp_type == "pde/eulerMomentum" and "direction" in cfg:
                 raise ValueError(
                     "PINNLoss: 'pde/eulerMomentum' no longer accepts a 'direction' field. "
@@ -808,6 +1123,12 @@ class PINNLoss(LossComponent):
             if "spatial_dim" not in cfg and data_dim is not None:
                 cfg = {**cfg, "spatial_dim": data_dim}
             comp_instance = _PDE_COMPONENT_REGISTRY[comp_type](name=name, **cfg)
+            if comp_instance.name in component_name_set:
+                raise ValueError(
+                    "PINNLoss: duplicate component name '"
+                    f"{comp_instance.name}'. Use a unique 'name' for each component."
+                )
+            component_name_set.add(comp_instance.name)
             component_instances.append(comp_instance)
             component_names.append(comp_instance.name)
             component_weights[comp_instance.name] = float(comp.get("weight", 1.0))
