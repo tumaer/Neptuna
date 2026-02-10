@@ -13,6 +13,7 @@ def compute_metrics_for_n_rollouts(
     include_per_timestep: bool = False,
     compute_metrics=None,
     loss_metric: Optional[LossComponent] = None,
+    input_frames: Optional[np.ndarray] = None,
 ) -> Dict[str, Dict[str, np.ndarray]]:
 
     # --- normalization & checks ---
@@ -63,6 +64,11 @@ def compute_metrics_for_n_rollouts(
 
     preds_tensor = torch.as_tensor(preds_arr, dtype=torch.float32, device=device)
     targets_tensor = torch.as_tensor(targets_arr, dtype=torch.float32, device=device)
+    input_frames_tensor = (
+        torch.as_tensor(input_frames, dtype=torch.float32, device=device)
+        if input_frames is not None
+        else None
+    )
 
     B, T_flat, C = preds_tensor.shape[:3]
 
@@ -87,7 +93,11 @@ def compute_metrics_for_n_rollouts(
         # --------------------------------------------------
         # Helper: true per-sample evaluation by sliding over B
         # --------------------------------------------------
-        def eval_loss_batchwise(preds_slice: torch.Tensor, targets_slice: torch.Tensor):
+        def eval_loss_batchwise(
+            preds_slice: torch.Tensor,
+            targets_slice: torch.Tensor,
+            input_frames: Optional[torch.Tensor],
+        ):
             """
             Evaluate comp on each sample independently:
 
@@ -129,7 +139,7 @@ def compute_metrics_for_n_rollouts(
                     predictions=preds_slice,
                     labels=targets_slice,
                     return_detailed=False,
-                    input_frames=None,
+                    input_frames=input_frames,
                     keep_bc_dims=True
                 )
                 total_loss = (
@@ -187,8 +197,12 @@ def compute_metrics_for_n_rollouts(
 
             step_preds = preds_tensor[:, t_start:t_end, ...]
             step_targets = targets_tensor[:, t_start:t_end, ...]
+            if t_start > 0:
+                prev_frame = preds_tensor[:, t_start - 1:t_start, ...]
+            else:
+                prev_frame = input_frames_tensor
 
-            ch_vals, overall_vals = eval_loss_batchwise(step_preds, step_targets)
+            ch_vals, overall_vals = eval_loss_batchwise(step_preds, step_targets, prev_frame)
             # ch_vals: (B, metric_dim), overall_vals: (B,)
             per_sample_channel_metric[:, r, :] = ch_vals
             per_sample_overall_metric[:, r] = overall_vals
@@ -238,8 +252,12 @@ def compute_metrics_for_n_rollouts(
             for t in range(T_flat):
                 step_preds = preds_tensor[:, t : t + 1, ...]
                 step_targets = targets_tensor[:, t : t + 1, ...]
+                if t > 0:
+                    prev_frame = preds_tensor[:, t - 1:t, ...]
+                else:
+                    prev_frame = input_frames_tensor
 
-                ch_vals, overall_vals = eval_loss_batchwise(step_preds, step_targets)
+                ch_vals, overall_vals = eval_loss_batchwise(step_preds, step_targets, prev_frame)
                 per_sample_channel_t[:, t, :] = ch_vals      # (B, C)
                 per_sample_overall_t[:, t] = overall_vals    # (B,)
 

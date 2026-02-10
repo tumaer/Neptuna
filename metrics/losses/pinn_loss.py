@@ -1,21 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import warnings
 from typing import Dict, List, Optional, Tuple, Union, Callable, Literal, Any
 from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 
 import torch
 import torch.nn as nn
 
-# PDE registry local to this file
-_PDE_REGISTRY: Dict[str, Callable[..., "PDESystem"]] = {}
+# PDE component registry local to this file
+_PDE_COMPONENT_REGISTRY: Dict[str, Callable[..., "PDEComponent"]] = {}
 
 # Spatial backend registry local to this file
 _SPATIAL_BACKEND_REGISTRY: Dict[str, Callable[..., "SpatialDerivativeBackend"]] = {}
 
-def register_pde(name: str):
+def register_pde_component(name: str):
     def deco(fn):
-        _PDE_REGISTRY[name] = fn
+        _PDE_COMPONENT_REGISTRY[name] = fn
         return fn
     return deco
 
@@ -295,30 +296,8 @@ def fd_time_derivative(
 
 
 # ----------------------------
-# PDE interface (modular)
+# PDE components (modular)
 # ----------------------------
-
-class PDESystem(nn.Module):
-    """
-    A modular PDE system that produces a dict of residual components.
-
-    residuals must be shaped:
-      (B, T_eval, *spatial) for each equation, OR
-      (B, T_eval, C_eq, *spatial) if you prefer a stacked form.
-
-    We'll standardize to dict[str -> (B,T_eval,*spatial)] for clarity.
-    """
-    equation_names: List[str]
-
-    def residual(
-        self,
-        fields: Dict[str, torch.Tensor],
-        *,
-        ops: "DifferentialOps",
-        params: Optional[Dict[str, float]] = None,
-    ) -> Dict[str, torch.Tensor]:
-        raise NotImplementedError
-
 
 @dataclass
 class DifferentialOps:
@@ -344,308 +323,315 @@ class DifferentialOps:
     def laplacian(self, u: torch.Tensor) -> torch.Tensor:
         return self.spatial_backend.laplacian(u, self.dx)
 
+class PDEComponent(nn.Module):
+    """
+    Base class for a single PDE residual component.
+    """
+    default_name: str = "pde_component"
+    required_fields: Tuple[str, ...] = ()
+    required_time_fields: Tuple[str, ...] = ()
+    required_grad_fields: Tuple[str, ...] = ()
+    required_laplacian_fields: Tuple[str, ...] = ()
 
-@register_pde("EulerPrimitives2D")
-class EulerPrimitives2D(PDESystem):
-    """
-    Compressible Euler (barotropic/primitive form) in 2D with fields:
-      Density, Pressure, Velocity_X, Velocity_Y.
-    """
-    def __init__(self, spatial_dim: int = 2):
+    def __init__(self, name: Optional[str] = None, spatial_dim: int = 2, **params: Any):
         super().__init__()
         if spatial_dim != 2:
-            raise ValueError(f"EulerPrimitives2D only supports spatial_dim=2, got {spatial_dim}")
+            raise ValueError(f"{self.__class__.__name__} only supports spatial_dim=2, got {spatial_dim}")
         self.spatial_dim = spatial_dim
-        self.equation_names = ["continuity", "momentum_x", "momentum_y"]
-    
+        self.name = name or self.default_name
+        self.params = params
+
+    def residual_scale(self, refs: Dict[str, float]) -> Optional[float]:
+        return None
+
     def residual(
         self,
         fields: Dict[str, torch.Tensor],
-        *,
-        ops: DifferentialOps,
-        params: Optional[Dict[str, float]] = None,
-        prev_fields: Optional[Dict[str, torch.Tensor]] = None,
-    ) -> Dict[str, torch.Tensor]:
-        eval_time = params.get("eval_time", "interior") if params else "interior"
-
-        rho = fields["Density"]
-        p   = fields["Pressure"]
-        u   = fields["Velocity_X"]
-        v   = fields["Velocity_Y"]
-
-        prev_rho = prev_p = prev_u = prev_v = None
-        if prev_fields is not None:
-            prev_rho = prev_fields.get("Density")
-            prev_p   = prev_fields.get("Pressure")
-            prev_u   = prev_fields.get("Velocity_X")
-            prev_v   = prev_fields.get("Velocity_Y")
-
-        mom_x = rho * u
-        mom_y = rho * v
-        prev_mom_x = prev_mom_y = None
-        if prev_rho is not None and prev_u is not None and prev_v is not None:
-            prev_mom_x = prev_rho * prev_u
-            prev_mom_y = prev_rho * prev_v
-
-        rho_t, t_idx = ops.time_derivative(rho, eval_on=eval_time, prev=prev_rho)
-        momx_t, _    = ops.time_derivative(mom_x, eval_on=eval_time, prev=prev_mom_x)
-        momy_t, _    = ops.time_derivative(mom_y, eval_on=eval_time, prev=prev_mom_y)
-
-        rho_n = rho[:, t_idx]
-        p_n   = p[:, t_idx]
-        u_n   = u[:, t_idx]
-        v_n   = v[:, t_idx]
-        momx_n = mom_x[:, t_idx]
-        momy_n = mom_y[:, t_idx]
-
-        flux_rho = [rho_n * u_n, rho_n * v_n]
-        flux_mx  = [rho_n * u_n * u_n + p_n, rho_n * u_n * v_n]
-        flux_my  = [rho_n * u_n * v_n,       rho_n * v_n * v_n + p_n]
-
-        cont   = rho_t + ops.div(flux_rho)
-        mx_res = momx_t + ops.div(flux_mx)
-        my_res = momy_t + ops.div(flux_my)
-
-        return {"continuity": cont, "momentum_x": mx_res, "momentum_y": my_res}
-
-
-@register_pde("TwoPhaseProxyEulerPrimitives2D")
-class TwoPhaseProxyEulerPrimitives2D(PDESystem):
-    """
-    Proxy inviscid compressible continuity + momentum residuals in 2D primitive variables.
-
-    Intended for datasets like LIDE/SIDA where you have mixture-like:
-      - Density
-      - Pressure
-      - Velocity_X
-      - Velocity_Y
-
-    Notes:
-      * This is NOT the full multiphase Euler used by ALPACA (no alpha, no nonconservative terms).
-      * Use this as a baseline "physics consistency" residual.
-      * Supports optional axisymmetric geometry corrections via params (see below).
-
-    Params (optional):
-      - eval_time: "interior" (default) or "all"
-      - geometry: "planar" (default) or "axisymmetric"
-      - r_coord:  Tensor broadcastable to spatial grid (for axisymmetric), shape (1,1,H,W) or (B,T,H,W)
-      - eps_r: small epsilon to avoid division by zero at r=0 (default 1e-6)
-    """
-    def __init__(self, spatial_dim: int = 2):
-        super().__init__()
-        if spatial_dim != 2:
-            raise ValueError(f"TwoPhaseProxyEulerPrimitives2D only supports spatial_dim=2, got {spatial_dim}")
-        self.spatial_dim = 2
-        self.equation_names = ["continuity", "momentum_x", "momentum_y"]
-
-    def _axisym_divergence(
-        self,
-        ops,
-        flux_x: torch.Tensor,
-        flux_y: torch.Tensor,
-        *,
-        r_coord: torch.Tensor,
-        eps_r: float,
-        flux_x_is_radial: bool = True,
+        derivs: "DerivativeCache",
+        params: Optional[Dict[str, Any]] = None,
     ) -> torch.Tensor:
-        """
-        Axisymmetric divergence for 2D (r,z) data:
-          div(F) = (1/r) d_r(r F_r) + d_z(F_z)
+        raise NotImplementedError
 
-        We assume:
-          - x-direction corresponds to radial r (Velocity_X = u_r)
-          - y-direction corresponds to axial z (Velocity_Y = u_z)
 
-        If your dataset uses different conventions, swap flux components accordingly.
-        """
-        # r*F_r
-        r = r_coord.clamp_min(eps_r)
-        rFr = r * flux_x if flux_x_is_radial else flux_x
+@dataclass
+class DerivativeCache:
+    t_idx: torch.Tensor
+    fields_n: Dict[str, torch.Tensor]
+    time: Dict[str, torch.Tensor]
+    grads: Dict[str, List[torch.Tensor]]
+    laplacian: Dict[str, torch.Tensor]
 
-        # d_r(r F_r)
-        dr_rFr = ops.grad(rFr)[0]  # grad returns [d/dx, d/dy] in planar interpretation
-        # d_z(F_z)
-        dz_Fz = ops.grad(flux_y)[1]
 
-        return dr_rFr / r + dz_Fz
+def _align_r_coord(
+    r_coord: torch.Tensor,
+    t_idx: torch.Tensor,
+    target: torch.Tensor,
+) -> torch.Tensor:
+    if r_coord.ndim == 4:
+        if r_coord.shape[1] != target.shape[1]:
+            if r_coord.shape[1] > t_idx.max().item():
+                r_coord = r_coord[:, t_idx]
+            elif r_coord.shape[1] == 1:
+                r_coord = r_coord.expand(target.shape[0], target.shape[1], *r_coord.shape[-2:])
+        if r_coord.shape[0] == 1 and target.shape[0] > 1:
+            r_coord = r_coord.expand(target.shape[0], *r_coord.shape[1:])
+        return r_coord
+    if r_coord.ndim == 2:
+        r_coord = r_coord[None, None, ...].expand(target.shape[0], target.shape[1], *r_coord.shape)
+        return r_coord
+    raise ValueError(f"Unsupported r_coord shape: {tuple(r_coord.shape)}")
+
+
+@register_pde_component("pde/unsteadyContinuity")
+class UnsteadyContinuity2D(PDEComponent):
+    """
+    Unsteady continuity residual in 2D (primitive variables).
+
+    Residual: rho_t + div(rho u) = 0
+    """
+    default_name = "continuity"
+    required_fields = ("Density", "Velocity_X", "Velocity_Y")
+    required_time_fields = ("Density",)
+    required_grad_fields = ("Density", "Velocity_X", "Velocity_Y")
+
+    def residual_scale(self, refs: Dict[str, float]) -> Optional[float]:
+        ref_rho = refs.get("density", 1.0)
+        ref_u = refs.get("velocity", 1.0)
+        ref_L = refs.get("length", 1.0)
+        eps = 1e-12
+        ref_t = ref_L / max(ref_u, eps)
+        return max(ref_rho / ref_t, ref_rho * ref_u / ref_L)
 
     def residual(
         self,
         fields: Dict[str, torch.Tensor],
-        *,
-        ops,
-        params: Optional[Dict[str, float]] = None,
-        prev_fields: Optional[Dict[str, torch.Tensor]] = None,
-    ) -> Dict[str, torch.Tensor]:
+        derivs: DerivativeCache,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> torch.Tensor:
         params = params or {}
-        eval_time = params.get("eval_time", "interior")
         geometry = params.get("geometry", "planar")
         eps_r = float(params.get("eps_r", 1e-6))
 
-        rho = fields["Density"]      # (B,T,H,W)
-        p   = fields["Pressure"]     # (B,T,H,W)
-        u   = fields["Velocity_X"]   # (B,T,H,W)  (assumed u_r for axisymmetric)
-        v   = fields["Velocity_Y"]   # (B,T,H,W)  (assumed u_z for axisymmetric)
+        rho = fields["Density"]
+        u = fields["Velocity_X"]
+        v = fields["Velocity_Y"]
 
-        prev_rho = prev_p = prev_u = prev_v = None
-        if prev_fields is not None:
-            prev_rho = prev_fields.get("Density")
-            prev_p   = prev_fields.get("Pressure")
-            prev_u   = prev_fields.get("Velocity_X")
-            prev_v   = prev_fields.get("Velocity_Y")
+        rho_t = derivs.time["Density"]
 
-        # Conservative momenta
-        mom_x = rho * u
-        mom_y = rho * v
-        prev_mom_x = prev_mom_y = None
-        if prev_rho is not None and prev_u is not None and prev_v is not None:
-            prev_mom_x = prev_rho * prev_u
-            prev_mom_y = prev_rho * prev_v
+        drho_dx, drho_dy = derivs.grads["Density"]
+        du_dx, du_dy = derivs.grads["Velocity_X"]
+        dv_dx, dv_dy = derivs.grads["Velocity_Y"]
 
-        # Time derivatives (FD in time via ops)
-        rho_t, t_idx = ops.time_derivative(rho, eval_on=eval_time, prev=prev_rho)
-        momx_t, _    = ops.time_derivative(mom_x, eval_on=eval_time, prev=prev_mom_x)
-        momy_t, _    = ops.time_derivative(mom_y, eval_on=eval_time, prev=prev_mom_y)
+        div_rho_u = u * drho_dx + rho * du_dx + v * drho_dy + rho * dv_dy
 
-        # Align fields to evaluated time indices
-        rho_n = rho[:, t_idx]
-        p_n   = p[:, t_idx]
-        u_n   = u[:, t_idx]
-        v_n   = v[:, t_idx]
-        momx_n = mom_x[:, t_idx]
-        momy_n = mom_y[:, t_idx]
-
-        # Fluxes (planar form)
-        # Continuity: d_t rho + div(rho u) = 0
-        flux_rho_x = rho_n * u_n
-        flux_rho_y = rho_n * v_n
-
-        # Momentum (inviscid, conservative):
-        # d_t(rho u) + div([rho u^2 + p, rho u v]) = 0
-        # d_t(rho v) + div([rho u v, rho v^2 + p]) = 0
-        flux_mx_x  = rho_n * u_n * u_n + p_n
-        flux_mx_y  = rho_n * u_n * v_n
-        flux_my_x  = rho_n * u_n * v_n
-        flux_my_y  = rho_n * v_n * v_n + p_n
-
-        if geometry == "planar":
-            cont   = rho_t  + ops.div([flux_rho_x, flux_rho_y])
-            mx_res = momx_t + ops.div([flux_mx_x,  flux_mx_y])
-            my_res = momy_t + ops.div([flux_my_x,  flux_my_y])
-
-        elif geometry == "axisymmetric":
-            # Requires r_coord to compute (1/r) d_r(r F_r)
+        if geometry == "axisymmetric":
             if "r_coord" not in params:
                 raise ValueError(
                     "Axisymmetric geometry requires params['r_coord'] broadcastable to (B,T_eval,H,W) "
                     "or (1,1,H,W)."
                 )
-            r_coord = params["r_coord"]
-            # Make r_coord time-aligned if needed
-            if r_coord.ndim == 4:
-                # (B,T,H,W) or (1,1,H,W) -> slice time if it has T dimension
-                if r_coord.shape[1] == rho.shape[1]:
-                    r_coord = r_coord[:, t_idx]
-                elif r_coord.shape[1] in (1,):  # constant in time
-                    r_coord = r_coord.expand(rho_n.shape[0], rho_n.shape[1], *r_coord.shape[-2:])
-            elif r_coord.ndim == 2:
-                # (H,W) -> (1,1,H,W)
-                r_coord = r_coord[None, None, ...].expand(rho_n.shape[0], rho_n.shape[1], *r_coord.shape)
-            else:
-                raise ValueError(f"Unsupported r_coord shape: {tuple(r_coord.shape)}")
-
-            cont   = rho_t  + self._axisym_divergence(ops, flux_rho_x, flux_rho_y, r_coord=r_coord, eps_r=eps_r)
-            mx_res = momx_t + self._axisym_divergence(ops, flux_mx_x,  flux_mx_y,  r_coord=r_coord, eps_r=eps_r)
-            my_res = momy_t + self._axisym_divergence(ops, flux_my_x,  flux_my_y,  r_coord=r_coord, eps_r=eps_r)
-        else:
+            r_coord = _align_r_coord(params["r_coord"], derivs.t_idx, rho)
+            r = r_coord.clamp_min(eps_r)
+            div_rho_u = div_rho_u + (rho * u) / r
+        elif geometry != "planar":
             raise ValueError(f"Unknown geometry: {geometry} (expected 'planar' or 'axisymmetric')")
 
-        return {
-            "continuity": cont,
-            "momentum_x": mx_res,
-            "momentum_y": my_res,
-        }
+        return rho_t + div_rho_u
 
-@register_pde("VorticityConsistency2D")
-class VorticityConsistency2D(PDESystem):
+
+@register_pde_component("pde/eulerMomentum")
+class EulerMomentum2D(PDEComponent):
     """
-    Vorticity definition consistency residual in 2D.
-
-    Expects fields:
-      - Velocity_X : u_r (radial component)
-      - Velocity_Y : u_z (axial component)
-      - Vorticity  : omega_theta (out-of-plane vorticity for axisymmetric r-z slice)
-
-    Residual:
-      R_omega = omega - (curl u)
-
-    For planar 2D (x,y):
-      curl(u) = d/dx(v) - d/dy(u)
-
-    For axisymmetric (r,z), the theta-component of vorticity is:
-      omega_theta = d/dr(u_z) - d/dz(u_r)
-
-    With your convention:
-      Velocity_X = u_r  (radial, x)
-      Velocity_Y = u_z  (axial,  y)
-      axis is at x=0
-    we use:
-      curl = d_x(Velocity_Y) - d_y(Velocity_X)
-
-    Params (optional):
-      - geometry: "planar" (default) or "axisymmetric"
-        (for this residual the formula is the same with the stated conventions)
-      - eval_time: "interior" or "all"  (vorticity residual is time-local; we just slice to match)
+    Unsteady Euler momentum residual in 2D (primitive variables).
     """
-    def __init__(self, spatial_dim: int = 2):
-        super().__init__()
-        if spatial_dim != 2:
-            raise ValueError(f"VorticityConsistency2D only supports spatial_dim=2, got {spatial_dim}")
-        self.spatial_dim = 2
-        self.equation_names = ["vorticity_consistency"]
+    default_name = "momentum"
+    required_fields = ("Density", "Pressure", "Velocity_X", "Velocity_Y")
+    required_time_fields = ("Density", "Velocity_X", "Velocity_Y")
+    required_grad_fields = ("Density", "Pressure", "Velocity_X", "Velocity_Y")
+
+    def __init__(self, name: Optional[str] = None, spatial_dim: int = 2, direction: str = "x", **params: Any):
+        if direction not in ("x", "y"):
+            raise ValueError("EulerMomentum2D requires direction='x' or 'y'.")
+        self.direction = direction
+        super().__init__(name=name or f"momentum_{direction}", spatial_dim=spatial_dim, **params)
+
+    def residual_scale(self, refs: Dict[str, float]) -> Optional[float]:
+        ref_rho = refs.get("density", 1.0)
+        ref_u = refs.get("velocity", 1.0)
+        ref_p = refs.get("pressure", 1.0)
+        ref_L = refs.get("length", 1.0)
+        eps = 1e-12
+        ref_t = ref_L / max(ref_u, eps)
+        return max(
+            ref_rho * ref_u / ref_t,
+            ref_rho * ref_u * ref_u / ref_L,
+            ref_p / ref_L,
+        )
 
     def residual(
         self,
         fields: Dict[str, torch.Tensor],
-        *,
-        ops,
-        params: Optional[Dict[str, float]] = None,
-        prev_fields: Optional[Dict[str, torch.Tensor]] = None,
-    ) -> Dict[str, torch.Tensor]:
+        derivs: DerivativeCache,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> torch.Tensor:
         params = params or {}
-        eval_time = params.get("eval_time", "interior")
+        geometry = params.get("geometry", "planar")
+        eps_r = float(params.get("eps_r", 1e-6))
 
-        u_r = fields["Velocity_X"]   # (B,T,H,W)
-        u_z = fields["Velocity_Y"]   # (B,T,H,W)
-        omega = fields["Vorticity"]  # (B,T,H,W)
+        rho = fields["Density"]
+        p = fields["Pressure"]
+        u = fields["Velocity_X"]
+        v = fields["Velocity_Y"]
 
-        # Align time indexing with other PDE systems for consistent logging/aggregation.
-        # Since this is purely spatial, we just pick the same t_idx you would use for FD time residuals:
-        # - "interior": drop endpoints (matches center2 time derivative use elsewhere)
-        # - "all": keep all times
-        T = u_r.shape[1]
-        if eval_time == "interior":
-            if T < 3:
-                raise ValueError("Need T>=3 for eval_time='interior' time alignment.")
-            t_idx = torch.arange(1, T - 1, device=u_r.device, dtype=torch.long)
-        elif eval_time == "all":
-            t_idx = torch.arange(0, T, device=u_r.device, dtype=torch.long)
-        else:
-            raise ValueError(f"Unknown eval_time: {eval_time} (expected 'interior' or 'all')")
+        rho_t = derivs.time["Density"]
+        u_t = derivs.time["Velocity_X"]
+        v_t = derivs.time["Velocity_Y"]
 
-        u_r_n = u_r[:, t_idx]
-        u_z_n = u_z[:, t_idx]
-        omega_n = omega[:, t_idx]
+        drho_dx, drho_dy = derivs.grads["Density"]
+        du_dx, du_dy = derivs.grads["Velocity_X"]
+        dv_dx, dv_dy = derivs.grads["Velocity_Y"]
+        dp_dx, dp_dy = derivs.grads["Pressure"]
 
-        # Spatial derivatives
-        # grad returns [d/dx, d/dy] where x is radial and y is axial in your convention.
-        duz_dx = ops.grad(u_z_n)[0]  # d(u_z)/dr
-        dur_dy = ops.grad(u_r_n)[1]  # d(u_r)/dz
+        if self.direction == "x":
+            mom_t = rho_t * u + rho * u_t
+
+            dFx_dx = u * u * drho_dx + 2.0 * rho * u * du_dx + dp_dx
+            dFy_dy = u * v * drho_dy + rho * v * du_dy + rho * u * dv_dy
+
+            div_flux = dFx_dx + dFy_dy
+
+            if geometry == "axisymmetric":
+                if "r_coord" not in params:
+                    raise ValueError(
+                        "Axisymmetric geometry requires params['r_coord'] broadcastable to (B,T_eval,H,W) "
+                        "or (1,1,H,W)."
+                    )
+                r_coord = _align_r_coord(params["r_coord"], derivs.t_idx, rho)
+                r = r_coord.clamp_min(eps_r)
+                div_flux = div_flux + (rho * u * u + p) / r
+            elif geometry != "planar":
+                raise ValueError(f"Unknown geometry: {geometry} (expected 'planar' or 'axisymmetric')")
+
+            return mom_t + div_flux
+
+        mom_t = rho_t * v + rho * v_t
+
+        dFx_dx = u * v * drho_dx + rho * v * du_dx + rho * u * dv_dx
+        dFy_dy = v * v * drho_dy + 2.0 * rho * v * dv_dy + dp_dy
+
+        div_flux = dFx_dx + dFy_dy
+
+        if geometry == "axisymmetric":
+            if "r_coord" not in params:
+                raise ValueError(
+                    "Axisymmetric geometry requires params['r_coord'] broadcastable to (B,T_eval,H,W) "
+                    "or (1,1,H,W)."
+                )
+            r_coord = _align_r_coord(params["r_coord"], derivs.t_idx, rho)
+            r = r_coord.clamp_min(eps_r)
+            div_flux = div_flux + (rho * u * v) / r
+        elif geometry != "planar":
+            raise ValueError(f"Unknown geometry: {geometry} (expected 'planar' or 'axisymmetric')")
+
+        return mom_t + div_flux
+
+
+@register_pde_component("pde/eulerMomentumX")
+class EulerMomentumX2D(EulerMomentum2D):
+    """
+    Unsteady Euler momentum residual in 2D, x-direction.
+    """
+    default_name = "momentum_x"
+
+    def __init__(self, name: Optional[str] = None, spatial_dim: int = 2, **params: Any):
+        super().__init__(name=name or self.default_name, spatial_dim=spatial_dim, direction="x", **params)
+
+
+@register_pde_component("pde/eulerMomentumY")
+class EulerMomentumY2D(EulerMomentum2D):
+    """
+    Unsteady Euler momentum residual in 2D, y-direction.
+    """
+    default_name = "momentum_y"
+
+    def __init__(self, name: Optional[str] = None, spatial_dim: int = 2, **params: Any):
+        super().__init__(name=name or self.default_name, spatial_dim=spatial_dim, direction="y", **params)
+
+
+@register_pde_component("pde/vorticityConsistency")
+class VorticityConsistency2D(PDEComponent):
+    """
+    Vorticity definition consistency residual in 2D.
+    """
+    default_name = "vorticity_consistency"
+    required_fields = ("Velocity_X", "Velocity_Y", "Vorticity")
+    required_grad_fields = ("Velocity_X", "Velocity_Y")
+
+    def residual(
+        self,
+        fields: Dict[str, torch.Tensor],
+        derivs: DerivativeCache,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> torch.Tensor:
+        u_r = fields["Velocity_X"]
+        u_z = fields["Velocity_Y"]
+        omega = fields["Vorticity"]
+
+        duz_dx = derivs.grads["Velocity_Y"][0]
+        dur_dy = derivs.grads["Velocity_X"][1]
 
         curl_theta = duz_dx - dur_dy
-        res = omega_n - curl_theta
+        return omega - curl_theta
 
-        return {"vorticity_consistency": res}
+
+@register_pde_component("pde/debugSystemEq1")
+class DebugSystemEq1(PDEComponent):
+    """
+    Debug system equation 1 (uses only Density, Velocity_X, Velocity_Y).
+    Residual: rho_t + u_x + v_y
+    """
+    default_name = "debug_eq1"
+    required_fields = ("Density", "Velocity_X", "Velocity_Y")
+    required_time_fields = ("Density",)
+    required_grad_fields = ("Velocity_X", "Velocity_Y")
+
+    def residual(
+        self,
+        fields: Dict[str, torch.Tensor],
+        derivs: DerivativeCache,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> torch.Tensor:
+        rho_t = derivs.time["Density"]
+        du_dx, _ = derivs.grads["Velocity_X"]
+        _, dv_dy = derivs.grads["Velocity_Y"]
+        return rho_t + du_dx + dv_dy
+
+
+@register_pde_component("pde/debugSystemEq2")
+class DebugSystemEq2(PDEComponent):
+    """
+    Debug system equation 2 (uses only Density, Velocity_X, Velocity_Y).
+    Residual: div(rho * u) = (rho*u)_x + (rho*v)_y
+    """
+    default_name = "debug_eq2"
+    required_fields = ("Density", "Velocity_X", "Velocity_Y")
+    required_grad_fields = ("Density", "Velocity_X", "Velocity_Y")
+
+    def residual(
+        self,
+        fields: Dict[str, torch.Tensor],
+        derivs: DerivativeCache,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> torch.Tensor:
+        rho = fields["Density"]
+        u = fields["Velocity_X"]
+        v = fields["Velocity_Y"]
+
+        drho_dx, drho_dy = derivs.grads["Density"]
+        du_dx, _ = derivs.grads["Velocity_X"]
+        _, dv_dy = derivs.grads["Velocity_Y"]
+
+        return u * drho_dx + rho * du_dx + v * drho_dy + rho * dv_dy
 
 # ----------------------------
 # Robust penalty (optional)
@@ -677,23 +663,17 @@ class PINNLoss(LossComponent):
     """
     def __init__(
         self,
-        pde: Union[str, PDESystem, Dict[str, Union[str, float, int]]],
         *,
+        components: Optional[List[Dict[str, Any]]] = None,
+        pde: Optional[Union[str, Dict[str, Union[str, float, int]]]] = None,
         dt: float,
         dx: Union[float, Tuple[float, ...]],
         spatial_backend: Union[str, SpatialDerivativeBackend, Dict[str, Any]],
         time_scheme: Literal["forward1", "center2"] = "forward1",
         eval_time: Literal["interior", "all"] = "interior",
-        # weighting/aggregation
-        time_aggregation: Literal["mean", "tail_mean", "exp"] = "mean",
-        tail_fraction: float = 0.2,
-        exp_gamma: float = 2.0,
         # residual penalty
         penalty: Literal["l2", "huber"] = "l2",
         huber_delta: float = 1.0,
-        # optional masking (e.g., shock/interface mask)
-        mask_channel: Optional[str] = None,
-        mask_mode: Literal["multiply", "exclude"] = "multiply",
         # normalization of residual magnitudes
         residual_normalization: Literal['none', 'range', 'variance', 'std'] = 'none',
         # framework bits
@@ -703,7 +683,6 @@ class PINNLoss(LossComponent):
         data_dim: Optional[int] = None,
         field_names: Optional[List[str]] = None,
         pde_params: Optional[Dict[str, float]] = None,
-        compute_in_physical_space: bool = True,
         reference_quantities: Optional[Dict[str, float]] = None,
         residual_scale_eps: float = 1e-8,
     ):
@@ -717,7 +696,12 @@ class PINNLoss(LossComponent):
         if field_names is None:
             raise ValueError("PINNLoss requires field_names to map channels to PDE fields.")
 
-        self.pde = self._build_pde(pde, data_dim)
+        self.components, component_names, component_weights = self._build_components(
+            components=components,
+            pde=pde,
+            data_dim=data_dim,
+        )
+        self.component_names = component_names
         self.ops = DifferentialOps(
             dt=float(dt),
             dx=dx,
@@ -725,76 +709,110 @@ class PINNLoss(LossComponent):
             time_scheme=time_scheme,
         )
         self.eval_time = eval_time
-        self.time_aggregation = time_aggregation
-        self.tail_fraction = float(tail_fraction)
-        self.exp_gamma = float(exp_gamma)
 
         self.penalty = penalty
         self.huber_delta = float(huber_delta)
 
-        self.mask_channel = mask_channel
-        self.mask_mode = mask_mode
-
         self.residual_normalization = residual_normalization
         self.pde_params = pde_params or {}
-        self.compute_in_physical_space = compute_in_physical_space
 
         self.reference_quantities = reference_quantities or {}
         self.residual_scale_eps = float(residual_scale_eps)
-        self.residual_scales = self._build_residual_scales(self.pde, self.reference_quantities)
+        self.residual_scales = self._build_residual_scales(self.components, self.reference_quantities)
+
+        if isinstance(weight, (int, float)):
+            weight = WeightSchedule(
+                base_weight=float(weight),
+                component_weights=component_weights,
+            )
+        elif isinstance(weight, WeightSchedule) and component_weights:
+            weight.component_weights = {**weight.component_weights, **component_weights}
+
+        self.weight_schedule = weight
+
+        component_weight_keys = list(self.weight_schedule.component_weights.keys())
+        if component_weight_keys:
+            missing = [k for k in component_weight_keys if k not in self.component_names]
+            extra = [k for k in self.component_names if k not in self.weight_schedule.component_weights]
+            if missing:
+                raise ValueError(
+                    "PINNLoss: component weights must match configured components. "
+                    f"Missing: {missing}, Extra: {extra}"
+                )
 
     @staticmethod
-    def _build_residual_scales(pde: PDESystem, refs: Dict[str, float]) -> Dict[str, float]:
+    def _build_residual_scales(
+        components: List[PDEComponent],
+        refs: Dict[str, float],
+    ) -> Dict[str, float]:
         """
         Build characteristic scales for each PDE residual to make them O(1).
-        Currently implemented for EulerPrimitives2D; falls back to 1.0 otherwise.
+        Uses each component's `residual_scale()` if provided.
         """
-        if isinstance(pde, EulerPrimitives2D):
-            ref_rho = refs.get("density", 1.0)
-            ref_u = refs.get("velocity", 1.0)
-            ref_p = refs.get("pressure", 1.0)
-            ref_L = refs.get("length", 1.0)
-            eps = 1e-12
-            ref_t = ref_L / max(ref_u, eps)
+        scales: Dict[str, float] = {}
+        for comp in components:
+            scale = comp.residual_scale(refs)
+            if scale is not None:
+                scales[comp.name] = float(scale)
+        return scales
 
-            # continuity: rho_t + div(rho u)
-            cont_scale = max(ref_rho / ref_t, ref_rho * ref_u / ref_L)
-
-            # momentum: (rho u)_t + div(rho u u + p I)
-            mom_scale = max(
-                ref_rho * ref_u / ref_t,
-                ref_rho * ref_u * ref_u / ref_L,
-                ref_p / ref_L,
-            )
-            return {
-                "continuity": cont_scale,
-                "momentum_x": mom_scale,
-                "momentum_y": mom_scale,
-            }
-        # default: no scaling
-        return {}
-    
     @staticmethod
-    def _build_pde(pde_spec: Union[str, PDESystem, Dict[str, Union[str, float, int]]], data_dim: Optional[int]) -> PDESystem:
-        if isinstance(pde_spec, PDESystem):
-            return pde_spec
-        if isinstance(pde_spec, str):
-            name = pde_spec
-            cfg: Dict[str, Union[str, float, int]] = {}
-        elif isinstance(pde_spec, dict):
-            name = pde_spec.get("type", None)
-            if name is None:
-                raise ValueError("PDE dict must contain a 'type' field.")
-            cfg = {k: v for k, v in pde_spec.items() if k != "type"}
-        else:
-            raise ValueError(f"Unsupported pde spec type: {type(pde_spec)}")
+    def _build_components(
+        components: Optional[List[Dict[str, Any]]],
+        pde: Optional[Union[str, Dict[str, Union[str, float, int]]]],
+        data_dim: Optional[int],
+    ) -> Tuple[List[PDEComponent], List[str], Dict[str, float]]:
+        if components is None:
+            components = []
+            if pde is None:
+                raise ValueError("PINNLoss requires 'components' configuration.")
+            if isinstance(pde, str) and pde == "EulerPrimitives2D":
+                components = [
+                    {"type": "pde/unsteadyContinuity"},
+                    {"type": "pde/eulerMomentumX"},
+                    {"type": "pde/eulerMomentumY"},
+                ]
+            elif isinstance(pde, str) and pde in ("debugsystem", "DebugSystem2D"):
+                components = [
+                    {"type": "pde/debugSystemEq1"},
+                    {"type": "pde/debugSystemEq2"},
+                ]
+            else:
+                raise ValueError(
+                    "PINNLoss legacy 'pde' config is unsupported. "
+                    "Provide a 'components' list instead."
+                )
 
-        if name not in _PDE_REGISTRY:
-            raise ValueError(f"Unknown PDE type '{name}'. Available: {list(_PDE_REGISTRY.keys())}")
-        # Provide data_dim as default spatial_dim if not set
-        if "spatial_dim" not in cfg and data_dim is not None:
-            cfg = {**cfg, "spatial_dim": data_dim}
-        return _PDE_REGISTRY[name](**cfg)
+        if not isinstance(components, list) or len(components) == 0:
+            raise ValueError("PINNLoss: 'components' must be a non-empty list.")
+
+        component_instances: List[PDEComponent] = []
+        component_names: List[str] = []
+        component_weights: Dict[str, float] = {}
+
+        for comp in components:
+            if "type" not in comp:
+                raise ValueError("PINNLoss: each component must have a 'type'.")
+            comp_type = str(comp["type"])
+            if comp_type not in _PDE_COMPONENT_REGISTRY:
+                raise ValueError(
+                    f"Unknown PDE component '{comp_type}'. Available: {list(_PDE_COMPONENT_REGISTRY.keys())}"
+                )
+            cfg = {k: v for k, v in comp.items() if k not in ("type", "weight")}
+            if comp_type == "pde/eulerMomentum" and "direction" in cfg:
+                raise ValueError(
+                    "PINNLoss: 'pde/eulerMomentum' no longer accepts a 'direction' field. "
+                    "Use 'pde/eulerMomentumX' or 'pde/eulerMomentumY' instead."
+                )
+            name = cfg.pop("name", None)
+            if "spatial_dim" not in cfg and data_dim is not None:
+                cfg = {**cfg, "spatial_dim": data_dim}
+            comp_instance = _PDE_COMPONENT_REGISTRY[comp_type](name=name, **cfg)
+            component_instances.append(comp_instance)
+            component_names.append(comp_instance.name)
+            component_weights[comp_instance.name] = float(comp.get("weight", 1.0))
+
+        return component_instances, component_names, component_weights
 
     def _tensor_to_fields(self, pred: torch.Tensor) -> Dict[str, torch.Tensor]:
         if pred.shape[2] != len(self.field_names):
@@ -802,30 +820,6 @@ class PINNLoss(LossComponent):
                 f"pred has C={pred.shape[2]} but field_names has {len(self.field_names)} entries."
             )
         return {name: pred[:, :, i, ...] for i, name in enumerate(self.field_names)}
-
-    def _get_mask(self, fields: Dict[str, torch.Tensor], t_idx: torch.Tensor) -> Optional[torch.Tensor]:
-        if self.mask_channel is None:
-            return None
-        if self.mask_channel not in fields:
-            raise ValueError(f"mask_channel={self.mask_channel} not found in fields: {list(fields.keys())}")
-        m = fields[self.mask_channel]  # (B,T,*spatial)
-        return m[:, t_idx]             # (B,T_eval,*spatial)
-
-    def _aggregate_time(self, per_t: torch.Tensor) -> torch.Tensor:
-        if self.time_aggregation == "mean":
-            return per_t.mean()
-        T = per_t.numel()
-        if T == 0:
-            return per_t.new_tensor(0.0)
-        if self.time_aggregation == "tail_mean":
-            k = max(1, int(round(T * self.tail_fraction)))
-            return per_t[-k:].mean()
-        if self.time_aggregation == "exp":
-            w = torch.linspace(0.0, 1.0, steps=T, device=per_t.device, dtype=per_t.dtype)
-            w = torch.exp(self.exp_gamma * w)
-            w = w / (w.sum() + 1e-12)
-            return (per_t * w).sum()
-        raise ValueError(f"Unknown time_aggregation: {self.time_aggregation}")
 
     @staticmethod
     def _build_spatial_backend(
@@ -870,29 +864,24 @@ class PINNLoss(LossComponent):
         preserve_component_grads: bool = False
     ):
         pred = predictions
-        if self.compute_in_physical_space and self.norm_helper is not None:
-            pred = self.norm_helper.denormalize(pred)
+        pred = self.norm_helper.denormalize(pred)
 
         fields_full = self._tensor_to_fields(pred)
 
         # build prev_fields from last input frame
-        prev_fields = None
-        if input_frames is not None and input_frames.shape[0] == predictions.shape[0] and input_frames.shape[1] >= 1:
-            prev_fields = {}
-            if self.compute_in_physical_space and self.norm_helper is not None:
-                input_frames = self.norm_helper.denormalize(input_frames)
+        prev_fields = {}
+        if input_frames is not None:
+            input_frames = self.norm_helper.denormalize(input_frames)
             for i, name in enumerate(self.field_names):
                 prev_fields[name] = input_frames[:, -1:, i, ...]   # (B,1,*spatial)
 
         pde_params = {**self.pde_params, "eval_time": self.eval_time}
-        residuals = self.pde.residual(fields_full, ops=self.ops, params=pde_params, prev_fields=prev_fields)
+        derivs = self._compute_derivatives(fields_full, prev_fields)
 
-        # Standardize evaluation time indices by inspecting one residual
-        any_key = next(iter(residuals.keys()))
-        res0 = residuals[any_key]
-        if res0.ndim < 3:
-            raise ValueError("Residual tensors must have shape (B, T_eval, *spatial).")
-        T_eval = res0.shape[1]
+        residuals: Dict[str, torch.Tensor] = {}
+        for comp in self.components:
+            res = comp.residual(derivs.fields_n, derivs, params={**comp.params, **pde_params})
+            residuals[comp.name] = res
 
         # Stack residuals into channel dim: (B,T_eval,Ceq,*spatial)
         eq_names = list(residuals.keys())
@@ -905,33 +894,41 @@ class PINNLoss(LossComponent):
             view_shape = [1, 1, len(eq_names)] + [1] * (res_stack.ndim - 3)
             res_stack = res_stack / (scale_t.view(*view_shape) + self.residual_scale_eps)
 
-        # Infer time indices for masking (best-effort)
-        T_full = predictions.shape[1]
-        if T_eval == T_full - 2:
-            t_idx = torch.arange(1, T_full - 1, device=pred.device)
-        elif T_eval == T_full:
-            t_idx = torch.arange(0, T_full, device=pred.device)
-        elif T_eval == T_full - 1:
-            t_idx = torch.arange(0, T_full - 1, device=pred.device)
-        else:
-            t_idx = torch.arange(0, T_eval, device=pred.device)
-
-        mask = self._get_mask(fields_full, t_idx)  # (B,T_eval,*spatial) or None
-
         # Elementwise penalty on scaled residuals
         pen = robust_penalty(res_stack, kind=self.penalty, huber_delta=self.huber_delta)
 
-        # Reduce over spatial dims -> (B,T_eval,Ceq), honoring mask if exclude
+        # Reduce over spatial dims -> (B,T_eval,Ceq)
         spatial_dims = list(range(3, pen.ndim))
-        if mask is not None and self.mask_mode == "exclude":
-            weights = mask.unsqueeze(2)  # (B,T_eval,1,*spatial)
-            num = (pen * weights).sum(dim=spatial_dims)
-            denom = weights.sum(dim=spatial_dims).clamp_min(1e-8)
-            pen_red = num / denom
-        else:
-            if mask is not None:  # multiply mode
-                pen = pen * mask.unsqueeze(2)
-            pen_red = pen.mean(dim=spatial_dims) if spatial_dims else pen  # (B,T_eval,Ceq)
+        pen_red = pen.mean(dim=spatial_dims) if spatial_dims else pen  # (B,T_eval,Ceq)
+
+        # Keep batch and component dims (for rollout metrics)
+        if keep_bc_dims:
+            per_eq = pen_red.mean(dim=1)  # (B, Ceq)
+
+            if self.weight_schedule.component_weights:
+                component_order = list(self.weight_schedule.component_weights.keys())
+            else:
+                component_order = eq_names
+
+            per_component = []
+            for name in component_order:
+                if name not in eq_names:
+                    raise ValueError(
+                        f"PINNLoss: component '{name}' not found in configured equations {eq_names}."
+                    )
+                idx = eq_names.index(name)
+                value = per_eq[:, idx]
+                q_weight = self.weight_schedule.get_loss_component_weight(name)
+                q_weight_tensor = torch.tensor(
+                    q_weight,
+                    device=value.device,
+                    dtype=value.dtype,
+                )
+                weighted_value = self.weight_schedule.base_weight * q_weight_tensor * value
+                per_component.append(weighted_value)
+
+            per_component_tensor = torch.stack(per_component, dim=1)
+            return per_component_tensor
 
         # Conditionally detach based on preserve_component_grads
         pen_red_for_detailed = pen_red if preserve_component_grads else pen_red.detach()
@@ -940,28 +937,15 @@ class PINNLoss(LossComponent):
         per_equation = pen_red_for_detailed.mean(dim=(0, 1))  # (Ceq,)
         all_components = {eq_names[i]: per_equation[i] for i in range(len(eq_names))}
 
-        # WeightSchedule expects (B,T,C,...) so Ceq acts as channel
-        if self.weight_schedule.is_scalar_only():
-            # fast path: aggregate over time as configured, then apply base weight
-            per_t = pen_red.mean(dim=(0, 2))  # (T_eval,)
-            loss_unweighted = (
-                self._aggregate_time(per_t)
-                if self.time_aggregation != "mean"
-                else pen_red.mean()
-            )
-            loss = loss_unweighted * self.weight_schedule.base_weight
-            if not return_detailed:
-                return loss
-            detailed = {
-                "per_component": {name: value for name, value in all_components.items()}
-            }
-            return loss, detailed
+        component_weights = torch.tensor(
+            [self.weight_schedule.get_loss_component_weight(n) for n in eq_names],
+            device=pen_red.device,
+            dtype=pen_red.dtype,
+        ).view(1, 1, -1)
 
-        # full schedule path (per-timestep/channel weighting), uses mean over time/channels
-        w = self.weight_schedule.get_loss_weight(pen_red.shape).to(pen_red.device)  # (1,T_eval,Ceq)
-        weighted = pen_red * w
-        loss_unweighted = pen_red.mean()
-        loss_weighted = weighted.mean() * self.weight_schedule.base_weight
+        weighted = pen_red * component_weights
+        loss_weighted = weighted.mean()
+        loss_weighted = loss_weighted * self.weight_schedule.base_weight
 
         if not return_detailed:
             return loss_weighted
@@ -971,31 +955,62 @@ class PINNLoss(LossComponent):
         }
         return loss_weighted, detailed
 
+    def _compute_derivatives(
+        self,
+        fields_full: Dict[str, torch.Tensor],
+        prev_fields: Optional[Dict[str, torch.Tensor]],
+    ) -> DerivativeCache:
+        required_fields = set()
+        required_time_fields = set()
+        required_grad_fields = set()
+        required_laplacian_fields = set()
 
-# ----------------------------
-# Usage sketch (benchmark config style)
-# ----------------------------
+        for comp in self.components:
+            required_fields.update(comp.required_fields)
+            required_time_fields.update(comp.required_time_fields)
+            required_grad_fields.update(comp.required_grad_fields)
+            required_laplacian_fields.update(comp.required_laplacian_fields)
 
-"""
-# Suppose predictions are (B,T,C,H,W) with channels:
-field_names = ["rho", "mom_0", "mom_1", "E", "shock_mask"]  # example, include optional mask
-pde = CompressibleEuler(spatial_dim=2, gamma=1.4)
+        missing = [f for f in required_fields if f not in fields_full]
+        if missing:
+            raise ValueError(f"PINNLoss: missing required fields: {missing}")
 
-loss = PINNLoss(
-    pde=pde,
-    dt=dataset_dt,
-    dx=(dx, dy),
-    spatial_backend=FDSpatialDerivatives(),     # or a spectral backend you implement
-    time_scheme="center2",
-    eval_time="interior",
-    penalty="huber",
-    huber_delta=1.0,
-    mask_channel="shock_mask",
-    mask_mode="multiply",
-    residual_normalization="none",
-    weight=WeightSchedule(base_weight=1.0, timestep_weights=None, channel_weights=None),
-    norm_helper=norm_helper,
-    field_names=field_names,
-    name="pde_residual",
-)
-"""
+        t_idx: Optional[torch.Tensor] = None
+        time_derivs: Dict[str, torch.Tensor] = {}
+
+        for field in required_time_fields:
+            prev = prev_fields.get(field) if prev_fields is not None else None
+            ut, t_field = self.ops.time_derivative(
+                fields_full[field],
+                eval_on=self.eval_time,
+                prev=prev,
+            )
+            if t_idx is None:
+                t_idx = t_field
+            elif not torch.equal(t_idx, t_field):
+                raise ValueError("PINNLoss: time derivative indices are inconsistent across fields.")
+            time_derivs[field] = ut
+
+        if t_idx is None:
+            T_full = next(iter(fields_full.values())).shape[1]
+            t_idx = torch.arange(0, T_full, device=next(iter(fields_full.values())).device)
+
+        fields_n = {name: fields_full[name][:, t_idx] for name in required_fields}
+
+        grads: Dict[str, List[torch.Tensor]] = {}
+        for field in required_grad_fields:
+            g_full = self.ops.grad(fields_full[field])
+            grads[field] = [g[:, t_idx] for g in g_full]
+
+        laplacian: Dict[str, torch.Tensor] = {}
+        for field in required_laplacian_fields:
+            lap_full = self.ops.laplacian(fields_full[field])
+            laplacian[field] = lap_full[:, t_idx]
+
+        return DerivativeCache(
+            t_idx=t_idx,
+            fields_n=fields_n,
+            time=time_derivs,
+            grads=grads,
+            laplacian=laplacian,
+        )

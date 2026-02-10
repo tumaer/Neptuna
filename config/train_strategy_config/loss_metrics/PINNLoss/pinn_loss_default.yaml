@@ -1,4 +1,12 @@
-pde: 'EulerPrimitives2D'
+components:
+  - type: pde/unsteadyContinuity
+    weight: 1.0
+  - type: pde/debugSystemEq1
+    weight: 1.0
+  - type: pde/debugSystemEq2
+    weight: 1.0
+
+
 dt: 1.0
 dx: 1.0
 spatial_backend: "FDSpatialDerivatives"
