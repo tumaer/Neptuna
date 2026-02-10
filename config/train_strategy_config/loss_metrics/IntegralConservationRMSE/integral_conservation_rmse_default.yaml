@@ -10,26 +10,17 @@ components:
     weight: 1.0
   - name: domain/Px
     weight: 1.0
+  - name: boundary/mass/west
+    weight: 1.0
+  - name: boundary/mass/east
+    weight: 1.0
+  - name: boundary/mass/north
+    weight: 1.0
+  - name: boundary/mass/south
+    weight: 1.0
 
-
-#  - name: domain/kinetic_energy
+# For 3D:
+#  - name: boundary/mass/top
 #    weight: 1.0
-
-  # Boundary components (2D: x_min/x_max/y_min/y_max)
-#  - name: boundary/mass/x_min
-#    weight: 1.0
-#  - name: boundary/mass/x_max
-#    weight: 1.0
-#  - name: boundary/mass/y_min
-#    weight: 1.0
-#  - name: boundary/mass/y_max
-#    weight: 1.0
-
-#  - name: boundary/Px/x_min
-#    weight: 1.0
-
-#  - name: boundary/Py/x_min
-#    weight: 1.0
-
-#  - name: boundary/energy/x_min
+#  - name: boundary/mass/bottom
 #    weight: 1.0

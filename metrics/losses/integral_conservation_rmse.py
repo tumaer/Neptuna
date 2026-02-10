@@ -12,7 +12,7 @@ from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 @dataclass
 class BoundaryPatch:
     """Describes a boundary face on a regular Cartesian grid."""
-    name: str           # e.g. "x_min", "x_max", "y_min", "y_max"
+    name: str           # e.g. "west", "east", "south", "north"
     axis: int           # spatial axis: 0 (x), 1 (y), 2 (z)
     side: str           # "min" or "max"
     normal_sign: float  # -1.0 for min face, +1.0 for max face
@@ -120,8 +120,10 @@ class IntegralConservationRMSE(LossComponent):
                 raise ValueError("IntegralConservationRMSE: 'components' must be a non-empty list.")
 
             d = data_dim if data_dim is not None else 2
-            axis_names = ["x", "y", "z"][:d]
-            valid_patches = {f"{a}_{side}" for a in axis_names for side in ("min", "max")}
+            axis_labels = _axis_labels_from_dim(d)
+            valid_patches = {
+                _patch_name(a, side) for a in axis_labels for side in ("min", "max")
+            }
 
             component_weights = {}
             component_names = []
@@ -494,12 +496,11 @@ class IntegralConservationRMSE(LossComponent):
             spacings = [1.0] * n_spatial
 
         # Define boundary patches
-        axis_names = ["x", "y", "z"]
+        axis_labels = _axis_labels_from_dim(n_spatial)
         patches: List[BoundaryPatch] = []
-        for axis in range(n_spatial):
-            a_name = axis_names[axis]
-            patches.append(BoundaryPatch(name=f"{a_name}_min", axis=axis, side="min", normal_sign=-1.0))
-            patches.append(BoundaryPatch(name=f"{a_name}_max", axis=axis, side="max", normal_sign=+1.0))
+        for axis, a_name in enumerate(axis_labels):
+            patches.append(BoundaryPatch(name=_patch_name(a_name, "min"), axis=axis, side="min", normal_sign=-1.0))
+            patches.append(BoundaryPatch(name=_patch_name(a_name, "max"), axis=axis, side="max", normal_sign=+1.0))
 
         out: Dict[str, Dict[str, torch.Tensor]] = {}
 
@@ -646,6 +647,48 @@ class IntegralConservationRMSE(LossComponent):
 # Helper functions
 # ------------------------------------------------------------------
 
+def _axis_labels_from_dim(n_spatial: int) -> List[str]:
+    """
+    Return axis labels in tensor order (Z, Y, X).
+    1D -> ["x"], 2D -> ["y", "x"], 3D -> ["z", "y", "x"].
+    """
+    if n_spatial == 1:
+        return ["x"]
+    if n_spatial == 2:
+        return ["y", "x"]
+    if n_spatial == 3:
+        return ["z", "y", "x"]
+    raise ValueError(f"Unsupported spatial dim: {n_spatial}")
+
+
+def _patch_name(axis_label: str, side: str) -> str:
+    """
+    Convert axis + side to compass/top-bottom names.
+    x: west/east, y: south/north, z: bottom/top.
+    """
+    side_map = {
+        "x": {"min": "west", "max": "east"},
+        "y": {"min": "south", "max": "north"},
+        "z": {"min": "bottom", "max": "top"},
+    }
+    if axis_label not in side_map or side not in side_map[axis_label]:
+        raise ValueError(f"Invalid axis/side: {axis_label}/{side}")
+    return side_map[axis_label][side]
+
+
+def _vel_key_for_axis(vel_keys: Sequence[str], axis_label: str) -> str:
+    """
+    Map axis label to the corresponding velocity key.
+    vel_keys is in (x, y, z) order.
+    """
+    label_order = ("x", "y", "z")
+    key_map = {label: vel_keys[i] for i, label in enumerate(label_order[: len(vel_keys)])}
+    if axis_label not in key_map:
+        raise ValueError(
+            f"Velocity key for axis '{axis_label}' not available in {list(vel_keys)}."
+        )
+    return key_map[axis_label]
+
 def integrate_over_domain(field: torch.Tensor, dv: torch.Tensor) -> torch.Tensor:
     """
     Integrate field over domain: Q = ∫ f dV
@@ -781,60 +824,19 @@ class Enstrophy(DomainQuantity):
 class TotalEnergy(DomainQuantity):
     """
     Domain-integrated total energy: E_tot = ∫ E dV
-
-    Two modes:
-    1. If energy_key provided: directly integrate that field
-    2. Otherwise: reconstruct from primitives (ρ, p, u) using ideal gas EOS:
-       E = ρ e_internal + 0.5 ρ |u|²
-       where e_internal = p / [(γ-1) ρ]
     """
 
     def __init__(
         self,
-        energy_key: Optional[str] = "Energy",
-        density_key: str = "Density",
-        pressure_key: str = "Pressure",
-        vel_keys: Sequence[str] = ("Velocity_X", "Velocity_Y"),
-        gamma: Optional[float] = None,
+        energy_key: str = "Energy",
         name: str = "energy",
     ):
-        required = []
-        if energy_key is not None:
-            required.append(energy_key)
-        else:
-            required.extend([density_key, pressure_key, *vel_keys])
-            if gamma is None:
-                raise ValueError(
-                    "TotalEnergy: gamma must be provided when energy_key is None."
-                )
-
-        super().__init__(name=name, required_fields=required)
-
+        super().__init__(name=name, required_fields=[energy_key])
         self.energy_key = energy_key
-        self.density_key = density_key
-        self.pressure_key = pressure_key
-        self.vel_keys = tuple(vel_keys)
-        self.gamma = gamma
 
     def __call__(self, fields: Dict[str, torch.Tensor], dv: torch.Tensor) -> torch.Tensor:
-        if self.energy_key is not None:
-            E = fields[self.energy_key]
-            return integrate_over_domain(E, dv)
-
-        # Reconstruct from primitives
-        rho = fields[self.density_key]
-        p = fields[self.pressure_key]
-
-        speed_sq = 0.0
-        for vk in self.vel_keys:
-            v = fields[vk]
-            speed_sq = speed_sq + v**2
-
-        gamma = self.gamma
-        e_internal = p / ((gamma - 1.0) * rho)
-        E_density = rho * e_internal + 0.5 * rho * speed_sq
-
-        return integrate_over_domain(E_density, dv)
+        E = fields[self.energy_key]
+        return integrate_over_domain(E, dv)
 
 
 class DivergenceMeasure(DomainQuantity):
@@ -913,15 +915,17 @@ class MassFlux(BoundaryFluxQuantity):
         rho = fields[self.density_key]
         n_spatial = rho.ndim - 2
         vel_keys = self.vel_keys[:n_spatial]
+        axis_labels = _axis_labels_from_dim(n_spatial)
 
         results: Dict[str, torch.Tensor] = {}
 
         for patch in patches:
             axis = patch.axis
             dim = 2 + axis
+            axis_label = axis_labels[axis]
 
             # u·n = n_sign * u_axis  (normal aligned with axis)
-            u_axis = fields[vel_keys[axis]]
+            u_axis = fields[_vel_key_for_axis(vel_keys, axis_label)]
             un = patch.normal_sign * u_axis
 
             flux_density = rho * un
@@ -963,6 +967,7 @@ class MomentumFluxComponent(BoundaryFluxQuantity):
         super().__init__(name=name, required_fields=required)
 
         self.index = {"x": 0, "y": 1, "z": 2}[direction]
+        self.direction_label = direction
         self.density_key = density_key
         self.pressure_key = pressure_key
         self.vel_keys = tuple(vel_keys)
@@ -978,21 +983,23 @@ class MomentumFluxComponent(BoundaryFluxQuantity):
         n_spatial = rho.ndim - 2
 
         vel_keys = self.vel_keys[:n_spatial]
+        axis_labels = _axis_labels_from_dim(n_spatial)
         results: Dict[str, torch.Tensor] = {}
 
         for patch in patches:
             axis = patch.axis
             dim = 2 + axis
+            axis_label = axis_labels[axis]
 
             # u·n
-            u_axis = fields[vel_keys[axis]]
+            u_axis = fields[_vel_key_for_axis(vel_keys, axis_label)]
             un = patch.normal_sign * u_axis
 
             # u_i (component being tracked)
-            u_i = fields[vel_keys[self.index]]
+            u_i = fields[_vel_key_for_axis(vel_keys, self.direction_label)]
 
             # n_i (component of normal in direction i)
-            n_i = patch.normal_sign if self.index == axis else 0.0
+            n_i = patch.normal_sign if self.direction_label == axis_label else 0.0
 
             flux_density = rho * u_i * un + p * n_i
 
@@ -1037,13 +1044,15 @@ class EnergyFlux(BoundaryFluxQuantity):
         n_spatial = E.ndim - 2
 
         vel_keys = self.vel_keys[:n_spatial]
+        axis_labels = _axis_labels_from_dim(n_spatial)
         results: Dict[str, torch.Tensor] = {}
 
         for patch in patches:
             axis = patch.axis
             dim = 2 + axis
+            axis_label = axis_labels[axis]
 
-            u_axis = fields[vel_keys[axis]]
+            u_axis = fields[_vel_key_for_axis(vel_keys, axis_label)]
             un = patch.normal_sign * u_axis
 
             flux_density = (E + p) * un
