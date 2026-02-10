@@ -352,6 +352,7 @@ class IntegralConservationRMSE(LossComponent):
         - energy: ∫ E dV
         - enstrophy: ∫ 0.5 |ω|² dV
         - divergence: ∫ |∇·u|² dV
+        - center_of_gravity_x/y/z: ∫ x_i ρ dV / ∫ ρ dV
         """
         registry: Dict[str, DomainQuantity] = {}
 
@@ -361,12 +362,17 @@ class IntegralConservationRMSE(LossComponent):
         registry["Pz"] = MomentumComponent(direction="z")
         registry["kinetic_energy"] = KineticEnergy()
 
+        axis_labels = _axis_labels_from_dim(self.data_dim or 2)
+        for axis_label in axis_labels:
+            key = f"center_of_gravity_{axis_label}"
+            registry[key] = CenterOfGravityAxis(
+                axis_label=axis_label,
+                density_key="Density",
+                name=key,
+            )
+
         registry["energy"] = TotalEnergy(
         energy_key="Energy",
-        density_key="Density",
-        pressure_key="Pressure",
-        vel_keys=("Velocity_X", "Velocity_Y"),
-        gamma=getattr(self, "gamma", 1.4),
         name="energy",
         )
 
@@ -752,6 +758,54 @@ class TotalMass(DomainQuantity):
     ) -> torch.Tensor:
         rho = fields[self.density_key]
         return integrate_over_domain(rho, dv)
+
+
+class CenterOfGravityAxis(DomainQuantity):
+    """Center of gravity along a single axis from density: x̄_i = ∫ x_i ρ dV / ∫ ρ dV"""
+
+    def __init__(
+        self,
+        axis_label: str,
+        density_key: str = "Density",
+        name: Optional[str] = None,
+        eps: float = 1e-12,
+    ):
+        if axis_label not in ("x", "y", "z"):
+            raise ValueError(f"CenterOfGravityAxis: invalid axis '{axis_label}'.")
+        axis_name = name or f"center_of_gravity_{axis_label}"
+        super().__init__(name=axis_name, required_fields=[density_key])
+        self.axis_label = axis_label
+        self.density_key = density_key
+        self.eps = eps
+
+    def __call__(
+        self,
+        fields: Dict[str, torch.Tensor],
+        dv: torch.Tensor,
+    ) -> torch.Tensor:
+        rho = fields[self.density_key]
+        n_spatial = rho.ndim - 2
+        axis_labels = _axis_labels_from_dim(n_spatial)
+        if self.axis_label not in axis_labels:
+            raise ValueError(
+                f"CenterOfGravityAxis: axis '{self.axis_label}' not available for "
+                f"n_spatial={n_spatial}."
+            )
+
+        axis_index = axis_labels.index(self.axis_label)
+        dim = 2 + axis_index
+        size = rho.shape[dim]
+
+        coords = torch.arange(size, device=rho.device, dtype=rho.dtype)
+
+        shape = [1, 1] + [1] * n_spatial
+        shape[2 + axis_index] = size
+        coord_grid = coords.view(*shape)
+
+        weighted = rho * coord_grid
+        numerator = integrate_over_domain(weighted, dv)
+        denominator = integrate_over_domain(rho, dv)
+        return numerator / (denominator + self.eps)
 
 
 class MomentumComponent(DomainQuantity):
