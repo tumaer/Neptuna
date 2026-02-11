@@ -18,6 +18,8 @@ components:
     weight: 1.0
   - name: domain/center_of_gravity_y
     weight: 1.0
+  - name: boundary/Py/east
+    weight: 1.0
 
 # For 3D:
 #  - name: boundary/mass/top
