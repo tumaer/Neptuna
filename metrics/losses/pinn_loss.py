@@ -1453,7 +1453,6 @@ class PINNLoss(LossComponent):
 
         # Compute per-equation components (mean over batch and time)
         per_equation = pen_red_for_detailed.mean(dim=(0, 1))  # (Ceq,)
-        all_components = {eq_names[i]: per_equation[i] for i in range(len(eq_names))}
 
         component_weights = torch.tensor(
             [self.weight_schedule.get_loss_component_weight(n) for n in eq_names],
@@ -1462,6 +1461,8 @@ class PINNLoss(LossComponent):
         ).view(1, 1, -1)
 
         weighted = pen_red * component_weights
+        weighted_per_equation = weighted.mean(dim=(0, 1)) * self.weight_schedule.base_weight
+        all_components = {eq_names[i]: weighted_per_equation[i] for i in range(len(eq_names))}
         loss_weighted = weighted.mean()
         loss_weighted = loss_weighted * self.weight_schedule.base_weight
 

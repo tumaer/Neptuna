@@ -331,12 +331,20 @@ class IntegralConservationRMSE(LossComponent):
         if not return_detailed:
             return weighted_total
 
-        # Build detailed breakdown with nested structure
+        # Build detailed breakdown with weighted components
+        detailed_components: Dict[str, torch.Tensor] = {}
+        for name, value in all_components.items():
+            q_weight = self.weight_schedule.get_loss_component_weight(name)
+            q_weight_tensor = torch.tensor(
+                q_weight,
+                device=value.device,
+                dtype=value.dtype,
+            )
+            weighted_value = self.weight_schedule.base_weight * torch.sqrt(q_weight_tensor) * value
+            detailed_components[name] = weighted_value if preserve_component_grads else weighted_value.detach()
+
         detailed = {
-            "per_component": {
-                name: (value if preserve_component_grads else value.detach()) 
-                for name, value in all_components.items()
-            }
+            "per_component": detailed_components
         }
 
         return weighted_total, detailed

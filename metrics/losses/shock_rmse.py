@@ -417,6 +417,7 @@ class ShockRMSE(LossComponent):
         # Conditionally detach based on preserve_component_grads
         squared_error_for_detailed = squared_error if preserve_component_grads else squared_error.detach()
         mask_for_detailed = mask if preserve_component_grads else mask.detach()
+        weight_scalar = self.weight_schedule.base_weight
         
         # Add mask statistics
         total_elements = mask_for_detailed.numel()
@@ -435,7 +436,7 @@ class ShockRMSE(LossComponent):
                     t_rmse = torch.sqrt((t_squared_error * t_mask).sum() / t_mask_sum)
                 else:
                     t_rmse = torch.zeros((), device=predictions.device, dtype=predictions.dtype)
-                per_timestep.append(t_rmse)
+                per_timestep.append(weight_scalar * t_rmse)
             detailed['per_timestep'] = torch.stack(per_timestep)
         
         # Per-channel breakdown (if mask has sufficient elements)
@@ -450,7 +451,7 @@ class ShockRMSE(LossComponent):
                     c_rmse = torch.sqrt((c_squared_error * c_mask).sum() / c_mask_sum)
                 else:
                     c_rmse = torch.zeros((), device=predictions.device, dtype=predictions.dtype)
-                per_channel.append(c_rmse)
+                per_channel.append(weight_scalar * c_rmse)
             detailed['per_channel'] = torch.stack(per_channel)
         
         return weighted_rmse, detailed
