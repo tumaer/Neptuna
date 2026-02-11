@@ -798,13 +798,23 @@ class DirichletBC(_BoundaryConditionBase):
         derivs: DerivativeCache,
         params: Optional[Dict[str, Any]] = None,
     ) -> torch.Tensor:
+        params = params or {}
+        label_fields = params.get("label_fields")
+        if label_fields is None:
+            raise ValueError(
+                "DirichletBC requires label_fields to use boundary values from labels."
+            )
         axis, side = _boundary_axis_from_name(self.boundary, self.spatial_dim)
         axis_index = _physical_to_tensor_axis(axis, self.spatial_dim)
 
         residuals = []
         for field in self.fields:
             u = fields[field]
-            target = self._value_for_field(field, self.value)
+            if field not in label_fields:
+                raise ValueError(
+                    f"DirichletBC: label_fields missing field '{field}'."
+                )
+            target = label_fields[field]
             residuals.append(u - target)
 
         res = torch.stack(residuals, dim=0).mean(dim=0)
@@ -850,16 +860,13 @@ class NeumannBC(_BoundaryConditionBase):
         derivs: DerivativeCache,
         params: Optional[Dict[str, Any]] = None,
     ) -> torch.Tensor:
-        if self.axis is None:
+        if self.boundary is not None:
             axis_grad, side = _boundary_axis_from_name(self.boundary, self.spatial_dim)
             axis_mask = axis_grad
         else:
             axis_grad = int(self.axis)
-            if self.boundary is not None:
-                axis_mask, side = _boundary_axis_from_name(self.boundary, self.spatial_dim)
-            else:
-                axis_mask = axis_grad
-                side = None
+            axis_mask = axis_grad
+            side = None
 
         axis_index_grad = _physical_to_tensor_axis(axis_grad, self.spatial_dim)
         axis_index_mask = _physical_to_tensor_axis(axis_mask, self.spatial_dim)
@@ -1359,6 +1366,11 @@ class PINNLoss(LossComponent):
         pred = predictions
         pred = self.norm_helper.denormalize(pred)
 
+        label_fields_full: Optional[Dict[str, torch.Tensor]] = None
+        if labels is not None:
+            labels = self.norm_helper.denormalize(labels)
+            label_fields_full = self._tensor_to_fields(labels)
+
         fields_full = self._tensor_to_fields(pred)
 
         # build prev_fields from last input frame
@@ -1371,9 +1383,16 @@ class PINNLoss(LossComponent):
         pde_params = {**self.pde_params, "eval_time": self.eval_time}
         derivs = self._compute_derivatives(fields_full, prev_fields)
 
+        label_fields_n: Optional[Dict[str, torch.Tensor]] = None
+        if label_fields_full is not None:
+            label_fields_n = {name: label_fields_full[name][:, derivs.t_idx] for name in self.field_names}
+
         residuals: Dict[str, torch.Tensor] = {}
         for comp in self.components:
-            res = comp.residual(derivs.fields_n, derivs, params={**comp.params, **pde_params})
+            comp_params = {**comp.params, **pde_params}
+            if label_fields_n is not None:
+                comp_params["label_fields"] = label_fields_n
+            res = comp.residual(derivs.fields_n, derivs, params=comp_params)
             residuals[comp.name] = res
 
         if self.residual_masker is not None:

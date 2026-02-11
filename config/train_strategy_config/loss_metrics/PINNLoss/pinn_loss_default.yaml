@@ -10,17 +10,14 @@ components:
     weight: 1.0
     boundary: north
     field: "Velocity_Y"
-    value: 0.0
   - type: bc/neumann
     weight: 1.0
     boundary: east
     field: "Velocity_Y"
-    axis: 0
   - type: bc/neumann
     weight: 1.0
     boundary: east
     field: "Velocity_Y"
-    axis: 0
     name: "bc/neumann_test"
   - type: bc/periodic
     weight: 1.0
