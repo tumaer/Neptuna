@@ -98,34 +98,38 @@ class SSIM(LossComponent):
         # Get weight tensor with proper broadcasting
         weight_tensor = self.weight_schedule.get_loss_weight(original_shape).to(predictions.device)
         
-        # Apply weights to inputs (scale by sqrt to preserve SSIM properties)
-        # Since SSIM involves squared terms, scaling inputs by sqrt(w) gives
-        # final weighting of w in the squared error components
-        weight_sqrt = torch.sqrt(weight_tensor)
-        predictions_weighted = predictions * weight_sqrt
-        labels_weighted = labels * weight_sqrt
-        
         # Reshape to (B*T, C, spatial_dims...)
-        predictions_weighted = predictions_weighted.reshape(B * T, C, *spatial_dims)
-        labels_weighted = labels_weighted.reshape(B * T, C, *spatial_dims)
+        predictions_weighted = predictions.reshape(B * T, C, *spatial_dims)
+        labels_weighted = labels.reshape(B * T, C, *spatial_dims)
         
         if predictions_weighted.type() != self.gaussian_filter.gaussian_window.type():
             predictions_weighted = predictions_weighted.type_as(self.gaussian_filter.gaussian_window)
         if labels_weighted.type() != self.gaussian_filter.gaussian_window.type():
             labels_weighted = labels_weighted.type_as(self.gaussian_filter.gaussian_window)
 
-        ssim_value = self.ssim(predictions_weighted, labels_weighted, keep_bc_dims=keep_bc_dims)
+        ssim_bt_c = self.ssim(predictions_weighted, labels_weighted, keep_bc_dims=True)
+
+        # Apply weights after SSIM so weighting only affects aggregation
+        reduce_dims = tuple(list(range(3, weight_tensor.ndim)))
+        weight_tc = weight_tensor.mean(dim=reduce_dims)
+        loss_bt_c = (1.0 - ssim_bt_c).view(B,T,C) * weight_tc
+
         if keep_bc_dims:
-            # ssim_value is (B*T, C) -> reshape and aggregate over T to get (B, C)
-            ssim_value = ssim_value.view(B, T, C).mean(dim=1)
-        
-        loss = (1.0 - ssim_value) * self.weight
+            # loss_bt_c is (B*T, C) -> reshape and aggregate over T to get (B, C)
+            loss = loss_bt_c.mean(dim=1)
+        else:
+            # full reduction over batch, time, and channel
+            loss = loss_bt_c.mean()
 
         if not return_detailed:
             return loss
-        
-        # SSIM doesn't support detailed breakdown due to non-linear aggregation
-        return loss, {}
+
+        detailed: Dict[str, torch.Tensor] = {}
+
+        per_channel_loss = loss_bt_c.mean(dim=(0, 1))  # (C,)
+        detailed['per_channel'] = per_channel_loss if preserve_component_grads else per_channel_loss.detach()
+
+        return loss, detailed
 
     def ssim(self, x, y, keep_bc_dims: bool = False):
         ssim, _ = self._ssim(x, y)

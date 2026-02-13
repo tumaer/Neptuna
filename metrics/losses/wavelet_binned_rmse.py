@@ -86,54 +86,51 @@ class WaveletBinnedRMSE(LossComponent):
         # Get weight tensor with proper broadcasting
         weight_tensor = self.weight_schedule.get_loss_weight(original_shape).to(predictions.device)
         
-        # Apply weights to inputs (scale by sqrt to preserve RMSE properties)
-        weight_sqrt = torch.sqrt(weight_tensor)
-        predictions_weighted = predictions * weight_sqrt
-        labels_weighted = labels * weight_sqrt
-
         # Flatten batch/time/channel into a single leading dimension
-        if keep_bc_dims:
-            # Keep channel separate; reduce over time + spatial later
-            pred_flat = predictions_weighted.permute(0, 2, 1, *range(3, 3 + D)).reshape(B * C, T, *spatial)
-            target_flat = labels_weighted.permute(0, 2, 1, *range(3, 3 + D)).reshape(B * C, T, *spatial)
-        else:
-            N_tc = T * C
-            pred_flat = predictions_weighted.reshape(B, N_tc, *spatial)
-            target_flat = labels_weighted.reshape(B, N_tc, *spatial)
+        pred_flat = predictions.permute(0, 2, 1, *range(3, 3 + D)).reshape(B * C, T, *spatial)
+        target_flat = labels.permute(0, 2, 1, *range(3, 3 + D)).reshape(B * C, T, *spatial)
 
         if D == 1:
-            per_level_rmse = self._binned_rmse_1d(pred_flat, target_flat, keep_bc_dims=keep_bc_dims)
+            per_level_rmse = self._binned_rmse_1d(pred_flat, target_flat, keep_bc_dims=True)
         elif D == 2:
-            per_level_rmse = self._binned_rmse_2d(pred_flat, target_flat, keep_bc_dims=keep_bc_dims)
+            per_level_rmse = self._binned_rmse_2d(pred_flat, target_flat, keep_bc_dims=True)
         else:  # D == 3
-            per_level_rmse = self._binned_rmse_3d(pred_flat, target_flat, keep_bc_dims=keep_bc_dims)
+            per_level_rmse = self._binned_rmse_3d(pred_flat, target_flat, keep_bc_dims=True)
 
-        if keep_bc_dims:
-            per_level_rmse = per_level_rmse.view(B, C, -1)
+        per_level_rmse = per_level_rmse.view(B, C, -1)
+
+        # Apply weights after RMSE so weighting only affects aggregation
+        reduce_dims = tuple(range(3, weight_tensor.ndim))
+        weight_tc = weight_tensor.mean(dim=reduce_dims) if reduce_dims else weight_tensor
+        weight_bc = weight_tc.mean(dim=1)  # (B, C)
+        per_level_rmse = per_level_rmse * weight_bc[..., None] * self.weight
 
         # Aggregate across levels to get a loss
         if self.aggregate == "mean":
-            loss = per_level_rmse.mean(dim=-1) if keep_bc_dims else per_level_rmse.mean()
+            loss_bc = per_level_rmse.mean(dim=-1)
         elif self.aggregate == "sum":
-            loss = per_level_rmse.sum(dim=-1) if keep_bc_dims else per_level_rmse.sum()
+            loss_bc = per_level_rmse.sum(dim=-1)
         elif self.aggregate == "weighted":
             weights = self._get_level_weights(
                 n_levels=per_level_rmse.shape[-1],
                 device=per_level_rmse.device,
                 dtype=per_level_rmse.dtype,
             )
-            if keep_bc_dims:
-                loss = (per_level_rmse * weights).sum(dim=-1)
-            else:
-                loss = (weights * per_level_rmse).sum()
+            loss_bc = (per_level_rmse * weights).sum(dim=-1)
         else:
             raise RuntimeError(f"Unknown aggregate mode: {self.aggregate}")
+
+        loss = loss_bc if keep_bc_dims else loss_bc.mean()
 
         if not return_detailed:
             return loss
         
-        # Wavelet binned RMSE doesn't support detailed breakdown
-        return loss, {}
+        detailed: Dict[str, torch.Tensor] = {}
+
+        per_channel = loss_bc.mean(dim=0)
+        detailed['per_channel'] = per_channel if preserve_component_grads else per_channel.detach()
+
+        return loss, detailed
 
     # ------------------------------------------------------------------
     # 1D case
