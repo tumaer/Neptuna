@@ -18,7 +18,7 @@ class PearsonCorrelationLoss(LossComponent):
         name: Optional[str] = None,
         data_dim: int = None,
         field_names: List[str] = None,
-        normalization: Literal['none', 'range', 'variance', 'std'] = 'none',
+        normalization: Literal['none', 'range', 'variance', 'std', 'norm', 'root_norm'] = 'none',
         epsilon: float = 1e-8
     ):
         super().__init__(weight=weight, name=name, data_dim=data_dim, 

@@ -420,7 +420,7 @@ class NormalizationHelper(nn.Module):
             error: torch.Tensor,
             label: torch.Tensor,
             data_dim: int,
-            normalization: Literal['none', 'variance', 'std', 'range'],
+            normalization: Literal['none', 'variance', 'std', 'range', 'norm', 'root_norm'],
             epsilon: float = 1e-8
         ) -> torch.Tensor:
         """
@@ -441,6 +441,10 @@ class NormalizationHelper(nn.Module):
             max_val = torch.amax(label, dim=spatial_dims, keepdim=True)
             min_val = torch.amin(label, dim=spatial_dims, keepdim=True)
             denom = max_val - min_val
+        elif normalization == 'norm':
+            denom = torch.mean(label ** 2, dim=spatial_dims, keepdim=True)
+        elif normalization == 'root_norm':
+            denom = torch.sqrt(torch.mean(label ** 2, dim=spatial_dims, keepdim=True))
         else:
             raise ValueError(f"Unknown normalization strategy: {normalization}")
 

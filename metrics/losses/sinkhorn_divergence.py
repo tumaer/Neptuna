@@ -42,7 +42,7 @@ class SinkhornDivergence(LossComponent):
         scaling: float = 0.5,
         cost=None,
         debias: bool = True,
-        normalization: Literal['none', 'range', 'variance', 'std'] = 'none',
+        normalization: Literal['none', 'range', 'variance', 'std', 'norm', 'root_norm'] = 'none',
         epsilon: float = 1e-8,
 
         **kwargs,

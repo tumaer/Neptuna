@@ -102,7 +102,7 @@ class IntegralConservationRMSE(LossComponent):
         use_boundary_fluxes: bool = False,
         quantity_weights: Optional[Dict[str, float]] = None,
         components: Optional[List[Dict[str, Union[str, float]]]] = None,
-        normalization: Literal['none', 'range', 'variance', 'std'] = 'none',
+        normalization: Literal['none', 'range', 'variance', 'std', 'norm', 'root_norm'] = 'none',
         eps: float = 1e-8,
     ):
         if components is not None and (conserved_keys or boundary_keys or quantity_weights):
