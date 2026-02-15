@@ -147,7 +147,6 @@ def run(cfg):
         output_dir=cfg["output_log_config"]["logging"][
             "output_dir"
         ],  # add model name & timestamp
-        overwrite_output_dir=True,  # OVERWRITE if dir exists (also used for resume)
         # ------------------------------------------------------------------
         # Evaluation
         # ------------------------------------------------------------------
