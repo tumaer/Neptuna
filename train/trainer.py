@@ -2189,11 +2189,10 @@ class Trainer(Trainer_):
 
         start_time = time.time()
 
-        eval_loop = self.prediction_loop if self.args.use_legacy_prediction_loop else self.evaluation_loop
         #########################################################
         #NOTE: Main evaluation loop
         eval_loop_start_time = time.time()
-        output, input, conditioning_input = eval_loop(
+        output, input, conditioning_input = self.evaluation_loop(
             eval_dataloader,
             description="Evaluation",
             # No point gathering the predictions if there are no metrics, otherwise we defer to
