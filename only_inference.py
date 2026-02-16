@@ -729,17 +729,36 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         
         # Function to create a unique solo_inference directory
         def create_unique_inference_dir(base_dir):
-            solo_inference_dir = os.path.join(base_dir, "solo_inference")
-            if not os.path.exists(solo_inference_dir):
-                os.makedirs(solo_inference_dir)
+            def _get_rank():
+                for env_key in ("RANK", "LOCAL_RANK", "SLURM_PROCID"):
+                    if env_key in os.environ:
+                        try:
+                            return int(os.environ[env_key])
+                        except (TypeError, ValueError):
+                            return None
+                return None
+
+            def _try_mkdir(path):
+                try:
+                    os.makedirs(path)
+                    return True
+                except FileExistsError:
+                    return False
+
+            rank = _get_rank()
+            base_name = "solo_inference"
+            if rank is not None and rank > 0:
+                base_name = f"solo_inference_rank{rank}"
+
+            solo_inference_dir = os.path.join(base_dir, base_name)
+            if _try_mkdir(solo_inference_dir):
                 return solo_inference_dir
 
             # If solo_inference directory already exists, append a number to create a unique directory
             counter = 1
             while True:
                 new_dir = f"{solo_inference_dir}_{counter}"
-                if not os.path.exists(new_dir):
-                    os.makedirs(new_dir)
+                if _try_mkdir(new_dir):
                     return new_dir
                 counter += 1
 
