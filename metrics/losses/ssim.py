@@ -102,10 +102,11 @@ class SSIM(LossComponent):
         predictions_weighted = predictions.reshape(B * T, C, *spatial_dims)
         labels_weighted = labels.reshape(B * T, C, *spatial_dims)
         
-        if predictions_weighted.type() != self.gaussian_filter.gaussian_window.type():
-            predictions_weighted = predictions_weighted.type_as(self.gaussian_filter.gaussian_window)
-        if labels_weighted.type() != self.gaussian_filter.gaussian_window.type():
-            labels_weighted = labels_weighted.type_as(self.gaussian_filter.gaussian_window)
+        # Ensure filter buffers match predictions device/dtype (avoid moving predictions to CPU)
+        gaussian_window = self.gaussian_filter.gaussian_window
+        if gaussian_window.device != predictions.device or gaussian_window.dtype != predictions.dtype:
+            self.gaussian_filter = self.gaussian_filter.to(device=predictions.device, dtype=predictions.dtype)
+            gaussian_window = self.gaussian_filter.gaussian_window
 
         ssim_bt_c = self.ssim(predictions_weighted, labels_weighted, keep_bc_dims=True)
 

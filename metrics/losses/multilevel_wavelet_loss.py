@@ -91,7 +91,7 @@ class MultilevelWaveletLoss(LossComponent):
         # Apply weights after loss so weighting only affects aggregation
         reduce_dims = tuple(range(3, weight_tensor.ndim))
         weight_tc = weight_tensor.mean(dim=reduce_dims) if reduce_dims else weight_tensor
-        weight_bc = weight_tc.mean(dim=1)  # (B, C)
+        weight_bc = weight_tc.mean(dim=1)  if weight_tc.ndim > 2 else weight_tc  # (B, C)
         loss_bc = loss_bc * weight_bc
 
         if keep_bc_dims:
