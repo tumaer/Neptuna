@@ -25,6 +25,7 @@ class GradNorm(LossWeightingStrategyBase):
         use_ema_stats: bool = False,
         ema_beta: float = 0.9,
         use_smooth_l1: bool = False,  # if True, use smooth |.|; if False, pure L1 like paper
+        log_space_update: bool = False,
     ):
         super().__init__(update_frequency=update_frequency, use_gradients=use_gradients)
         self.alpha = float(alpha)
@@ -42,6 +43,7 @@ class GradNorm(LossWeightingStrategyBase):
         self.use_ema_stats = bool(use_ema_stats)
         self.ema_beta = float(ema_beta)
         self.use_smooth_l1 = bool(use_smooth_l1)
+        self.log_space_update = bool(log_space_update)
 
         # L_i(0) cache
         self.initial_loss: Dict[str, float] = {}
@@ -237,7 +239,13 @@ class GradNorm(LossWeightingStrategyBase):
                 new_w_scalars[k] = self._clip(w0)
                 continue
 
-            w_new = float(w0 - self.weight_lr * float(grad.item()))
+            if self.log_space_update:
+                u0 = float(torch.log(torch.tensor(max(w0, self.epsilon))).item())
+                grad_u = float(grad.item()) * w0
+                u_new = u0 - self.weight_lr * grad_u
+                w_new = float(torch.exp(torch.tensor(u_new)).item())
+            else:
+                w_new = float(w0 - self.weight_lr * float(grad.item()))
             new_w_scalars[k] = self._clip(w_new)
 
         # --- Renormalize so sum_i w_i = T (paper Alg. 1 spirit) --------------

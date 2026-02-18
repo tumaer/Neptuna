@@ -1,5 +1,6 @@
 alpha: 1.5
-weight_lr: 0.000025
+weight_lr: 0.001
+log_space_update: true
 min_weight: 1e-6
 max_weight: 1e6
 epsilon: 1e-12
