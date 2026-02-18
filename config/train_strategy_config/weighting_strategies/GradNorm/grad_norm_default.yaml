@@ -1,9 +1,9 @@
 alpha: 1.5
-weight_lr: 0.025
+weight_lr: 0.000025
 min_weight: 1e-6
 max_weight: 1e6
 epsilon: 1e-12
-grad_norms_are_weighted: false
+grad_norms_are_weighted: true
 freeze_reference_weight: false
 reference_key: null
 renormalize_over_all_controlled_keys: true

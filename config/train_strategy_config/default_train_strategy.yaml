@@ -1,7 +1,7 @@
 ########################################################
 # Training strategy configuration
 ########################################################
-num_train_epochs: 3
+num_train_epochs: 20
 metric_for_best_model:
   - type: L2Loss
     weight: 1.0         
@@ -21,17 +21,16 @@ curriculum:
       components:
         - type: L2Loss
           weight: 1.0
-          channel_weights: [1.0, 1.0, 1.0]
-        - type: IntegralConservationRMSE
+        - type: SSIM
           weight: 1.0
       train_loss_weighting_strategy:
         enabled: true  # Set to true to enable
         type: GradNorm
         loss_source: 'train' # 'train' OR 'eval'
-        weight_sub_components: true
-        weight_per_channel: true
-        loss_history_interval: 100
-        grad_history_interval: 100
+        weight_sub_components: false
+        weight_per_channel: false
+        loss_history_interval: 10
+        grad_history_interval: 10
       
     validation_loss:
       components:

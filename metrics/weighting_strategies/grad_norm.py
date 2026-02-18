@@ -18,7 +18,7 @@ class GradNorm(LossWeightingStrategyBase):
         min_weight: float = 1e-6,
         max_weight: float = 1e6,
         epsilon: float = 1e-12,
-        grad_norms_are_weighted: bool = False,
+        grad_norms_are_weighted: bool = True,
         freeze_reference_weight: bool = False,
         reference_key: Optional[str] = None,
         renormalize_over_all_controlled_keys: bool = True,
@@ -97,6 +97,13 @@ class GradNorm(LossWeightingStrategyBase):
             return 0.0
         return float(torch.tensor(xs, dtype=torch.float32).mean().item())
 
+    def _recover_unweighted_losses(self, losses: List[float], weight: float) -> List[float]:
+        """Recover unweighted losses from weighted loss history."""
+        if not losses:
+            return []
+        denom = max(float(weight), self.epsilon)
+        return [float(l) / denom for l in losses]
+
 
     def _choose_reference_key(self, keys: List[str]) -> Optional[str]:
         if self.reference_key is not None and self.reference_key in keys:
@@ -138,7 +145,9 @@ class GradNorm(LossWeightingStrategyBase):
         for k in keys:
             prev_w[k] = self._get_previous_weight(k, current_weights)
 
-            Li = self._mean(loss_history.get(k, []))
+            # loss_history stores weighted losses; recover unweighted losses
+            unweighted_losses = self._recover_unweighted_losses(loss_history.get(k, []), prev_w[k])
+            Li = self._mean(unweighted_losses)
             gi = self._mean(grad_norm_history.get(k, []))
 
             if self.use_ema_stats:
