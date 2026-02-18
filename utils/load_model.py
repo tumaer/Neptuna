@@ -459,6 +459,39 @@ def fetch_model(model_config: Dict,
                     )
         model = ViT(config=config)
 
+    elif model_name == "unettransformer":
+        from models.UNetTransformer.unettransformer import UNetTransformer
+        from models.UNetTransformer.unettransformer_utils import UNetTransformerConfig
+
+        config = UNetTransformerConfig(
+                    dimension=data_config['dimension'],
+                    in_channels=len(data_config['filter_features']['filter_in_channels']),
+                    out_channels=len(data_config['filter_features']['filter_out_channels']),
+                    grid_resolution=data_config['grid_resolution'], 
+                    sequence_info=data_config["sequence_info"], 
+                    latent_channels=model_config['latent_channels'],
+                    channel_multiplier=model_config['channel_multiplier'],
+                    attention_concat_all=model_config['attention_concat_all'], # True / False
+                    attention_concat_type=model_config['attention_concat_type'], 
+                    activation_fn_name=model_config['activation_fn_name'],
+                    coord_features=data_config['coord_features'],
+                    conditioning_method=data_config['conditioning_features']['conditioning_method'],
+                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['conditioning_method'] is not None else 0,
+                    conditioning_mlp=data_config['conditioning_features']['conditioning_mlp']['mlp'],
+                    conditioning_hidden_size=data_config['conditioning_features']['conditioning_mlp']['hidden_size'] if data_config['conditioning_features']['conditioning_mlp']['mlp'] else None,
+                    conditioning_activation=data_config['conditioning_features']['conditioning_mlp']['activation'],
+                    conditioning_init=data_config['conditioning_features']['conditioning_mlp']['initialization'],
+                    norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
+                    norm=model_config['norm'],
+                    num_grids=model_config['num_grids'],
+                    downsample_method=model_config['downsample_method'],
+                    window_size=model_config['window_size'],
+                    num_heads=model_config['num_heads'],
+                    attention_type=model_config['attention_type'],
+                    use_dca=model_config['use_dca'],
+                    )
+        model = UNetTransformer(config=config)
+
     else:
         raise ValueError(f"Model {model_name} is not implemented yet.") 
     
