@@ -219,7 +219,7 @@ class Trainer(Trainer_):
             )
             return loss_fn.to(device)
 
-        logger.warning("No loss_config provided, using default MSE loss")
+        logger.warning("No loss_config provided, using default MSE loss") # ? Is this true during only_inference??
         return None
 
     #custom function, not inside transformers library
