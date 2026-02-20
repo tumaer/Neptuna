@@ -223,15 +223,16 @@ class ScOTEncoder(nn.Module):
         self.config = config
         if self.config.pretrained_window_sizes is not None: # used to support pretrained window masks
             pretrained_window_sizes = config.pretrained_window_sizes
-        drop_rates_encode_decode = torch.linspace( # Create linearly increasing sequence of drop probabilities ranging from 0 to drop_path_rate
-            0, config.drop_path_rate, 2 * sum(config.depths) # twice the number of total blocks bc of encoder AND decoder
-        ) # drop_path_rate = 0.0; depths = [4, 4, 4, 4]
+        total_blocks = 2 * sum(config.depths)
+        # Alternative to torch.linspace: same linear schedule built in Python.
+        if total_blocks <= 1:
+            drop_rates_encode_decode = [0.0]
+        else:
+            step = float(config.drop_path_rate) / float(total_blocks - 1)
+            drop_rates_encode_decode = [i * step for i in range(total_blocks)]
         # 2 * (4 + 4 + 4 + 4) = 32 (total blocks in encoder AND decoder) -> array of 0s of length 32
 
-        dpr = [ # array (instead of tensor) of the encoder part of drop_rates_encode_decode
-            x.item()
-            for x in drop_rates_encode_decode[: drop_rates_encode_decode.shape[0] // 2] # only first half (encoder) for drop path rates
-        ]
+        dpr = drop_rates_encode_decode[: len(drop_rates_encode_decode) // 2]
         self.layers = nn.ModuleList(
             [
                 ScOTEncodeStage(
@@ -352,13 +353,14 @@ class ScOTDecoder(nn.Module):
         self.config = config
         if self.config.pretrained_window_sizes is not None:
             pretrained_window_sizes = config.pretrained_window_sizes # (0, 0, 0, 0)
-        drop_rates_encode_decode = torch.linspace(
-            0, config.drop_path_rate, 2 * sum(config.depths) # same as for encoder
-        )
-        dpr = [
-            x.item()
-            for x in drop_rates_encode_decode[drop_rates_encode_decode.shape[0] // 2 :] # only second parth (decoder) used for drop path rates
-        ]
+        total_blocks = 2 * sum(config.depths)
+        # Alternative to torch.linspace: same linear schedule built in Python.
+        if total_blocks <= 1:
+            drop_rates_encode_decode = [0.0]
+        else:
+            step = float(config.drop_path_rate) / float(total_blocks - 1)
+            drop_rates_encode_decode = [i * step for i in range(total_blocks)]
+        dpr = drop_rates_encode_decode[len(drop_rates_encode_decode) // 2 :]
         self.layers = nn.ModuleList(
             [
                 ScOTDecodeStage(
@@ -485,6 +487,7 @@ class ScOT(PreTrainedModel):
      
     def __init__(self, config):
         super().__init__(config)
+        super().post_init()
 
         self.dimension = config.dimension
 
@@ -552,15 +555,16 @@ class ScOT2D(PreTrainedModel):
             ]
         )
 
-    def _init_weights(self, module):
-        """Initialize the weights"""
-        if isinstance(module, (nn.Linear, nn.Conv2d)):
-            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
-            if module.bias is not None:
-                module.bias.data.zero_()
-        elif isinstance(module, nn.LayerNorm):
-            module.bias.data.zero_()
-            module.weight.data.fill_(1.0)
+    # ? Was this done in Poseidon?
+    # def _init_weights(self, module):
+    #     """Initialize the weights"""
+    #     if isinstance(module, (nn.Linear, nn.Conv2d)):
+    #         module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+    #         if module.bias is not None:
+    #             module.bias.data.zero_()
+    #     elif isinstance(module, nn.LayerNorm):
+    #         module.bias.data.zero_()
+    #         module.weight.data.fill_(1.0)
 
     def get_input_embeddings(self):
         return self.embeddings.patch_embeddings
@@ -571,6 +575,45 @@ class ScOT2D(PreTrainedModel):
         for layer, heads in reversed(heads_to_prune.items()):
             self.decoder.layers[layer].attention.prune_heads(heads)
 
+    # copied from Transformers v 4.50.2 modeling_utils.py
+    def get_head_mask(
+        self, head_mask: Optional[Tensor], num_hidden_layers: int, is_attention_chunked: bool = False
+    ) -> Tensor:
+        """
+        Prepare the head mask if needed.
+
+        Args:
+            head_mask (`torch.Tensor` with shape `[num_heads]` or `[num_hidden_layers x num_heads]`, *optional*):
+                The mask indicating if we should keep the heads or not (1.0 for keep, 0.0 for discard).
+            num_hidden_layers (`int`):
+                The number of hidden layers in the model.
+            is_attention_chunked (`bool`, *optional*, defaults to `False`):
+                Whether or not the attentions scores are computed by chunks or not.
+
+        Returns:
+            `torch.Tensor` with shape `[num_hidden_layers x batch x num_heads x seq_length x seq_length]` or list with
+            `[None]` for each layer.
+        """
+        if head_mask is not None:
+            head_mask = self._convert_head_mask_to_5d(head_mask, num_hidden_layers)
+            if is_attention_chunked is True:
+                head_mask = head_mask.unsqueeze(-1)
+        else:
+            head_mask = [None] * num_hidden_layers
+
+        return head_mask
+
+    def _convert_head_mask_to_5d(self, head_mask, num_hidden_layers):
+        """-> [num_hidden_layers x batch x num_heads x seq_length x seq_length]"""
+        if head_mask.dim() == 1:
+            head_mask = head_mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+            head_mask = head_mask.expand(num_hidden_layers, -1, -1, -1, -1)
+        elif head_mask.dim() == 2:
+            head_mask = head_mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1)  # We can specify head_mask for each layer
+        assert head_mask.dim() == 5, f"head_mask.dim != 5, instead {head_mask.dim()}"
+        head_mask = head_mask.to(dtype=self.dtype)  # switch to float if need + fp16 compatibility
+        return head_mask
+    
     def forward(
         self,
         input_data: Optional[torch.FloatTensor] = None,
