@@ -111,7 +111,9 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
         #TODO: compute_statistics_parallel doesnt provide median and iqr (on_fly_stats=True by default in parallel mode)
         #NOTE: compute only the stats for the train dataset(test data is assumed to be inside/close to the train distribution)
         stats, channel_names, _ = compute_statistics_parallel(
-            h5_paths=[os.path.join(cfg["data_config"]["dataset_directory_path"], "train.h5")],
+            h5_paths=[
+                    os.path.join(cfg["data_config"]["dataset_directory_path"], "train.h5")],
+                    # os.path.join(cfg["data_config"]["dataset_directory_path"], "OOD.h5")],
             residual_config=cfg["data_config"]["residual_config"],
             filter_groups=cfg["data_config"]["filter_features"]["train_filter_groups"] ,
             filter_frames=cfg["data_config"]["filter_features"]["train_filter_frames"],
@@ -279,6 +281,10 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
             data_config_dict = OmegaConf.to_container(cfg["data_config"], resolve=True)
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(data_config_dict, f, indent=4)
+
+            # model_config_dict = OmegaConf.to_container(cfg["model_config"], resolve=True)
+            # with open(json_path, "w", encoding="utf-8") as f:
+            #     json.dump(model_config_dict, f, indent=4)
         except Exception as exc:
             # We do not want to fail the entire run due to logging issues; print a warning instead.
             print(f"[WARNING] Failed to write data_config to {json_path}: {exc}")

@@ -81,4 +81,6 @@ def get_grid_resolution(dataset_directory_path: str) -> List[int]:
         first_group = list(f.keys())[0]
         first_field = list(f[first_group].keys())[0]
         grid_resolution = list(f[first_group][first_field].shape[2:])
+        # old_shape = f[first_group][first_field].shape
+        # grid_resolution = list(d for d in old_shape if d != 1)
     return grid_resolution
