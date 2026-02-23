@@ -21,7 +21,7 @@ pushforward_config:
 #To use mix precison training
 mix_precision_config:
   fp16: False
-  bf16: True
+  bf16: False
   tf32: False
 #number of workers for dataloader
 dataloader_num_workers: 8
