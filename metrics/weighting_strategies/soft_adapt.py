@@ -15,7 +15,7 @@ class SoftAdapt(LossWeightingStrategyBase):
         self,
         update_frequency: int = 1,
         use_gradients: bool = False,
-        temperature_T: float = 1.0,
+        temperature_T: float = 0.1,
         epsilon: float = 1e-8,
         min_weight: Optional[float] = None,
         max_weight: Optional[float] = None,
@@ -123,11 +123,19 @@ class SoftAdapt(LossWeightingStrategyBase):
         if not all_loss_keys:
             return {k: v.copy() for k, v in current_weights.items()}
 
-        # Step 1: per-epoch mean loss per key (detached scalar)
-        cur_mean: Dict[str, float] = {
-            key: self.compute_average_loss(loss_history.get(key, []))
-            for key in all_loss_keys
-        }
+        # Step 1: per-epoch mean loss per key (unweighted)
+        cur_mean: Dict[str, float] = {}
+        for key in all_loss_keys:
+            vals = loss_history.get(key, [])
+            
+            # Unweight the losses by dividing by current weight
+            curr_weight = self._get_previous_weight(key, current_weights)
+            if curr_weight > self.epsilon:
+                unweighted_vals = [v / curr_weight for v in vals]
+            else:
+                unweighted_vals = vals
+            
+            cur_mean[key] = self.compute_average_loss(unweighted_vals)
 
         # Step 2: compute deltas using previous epoch mean
         deltas: Dict[str, float] = {}

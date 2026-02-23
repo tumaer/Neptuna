@@ -107,11 +107,19 @@ class ReLoBRaLo(LossWeightingStrategyBase):
         if m == 0:
             return {k: v.copy() for k, v in current_weights.items()}
 
-        # --- Step 1: Build L_i(t) for all loss keys ---
+        # --- Step 1: Build L_i(t) for all loss keys (unweighted) ---
         L_t: Dict[str, float] = {}
         for loss_key in all_loss_keys:
             vals = loss_history.get(loss_key, [])
-            mu = self._mean_loss(vals)
+            
+            # Unweight the losses by dividing by current weight
+            curr_weight = self._get_previous_weight(loss_key, current_weights)
+            if curr_weight > self.eps:
+                unweighted_vals = [v / curr_weight for v in vals]
+            else:
+                unweighted_vals = vals
+            
+            mu = self._mean_loss(unweighted_vals)
             if mu != mu:  # NaN check
                 # No/invalid data: fallback
                 if loss_key in self._L_prev:

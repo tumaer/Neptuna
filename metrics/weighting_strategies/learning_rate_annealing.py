@@ -157,9 +157,17 @@ class LearningRateAnnealing(LossWeightingStrategyBase):
         if ref_key is None or ref_key not in grad_max_history:
             return {k: v.copy() for k, v in current_weights.items()}
 
+        # Unweight the reference gradient max values
+        ref_weight = self._get_previous_weight(ref_key, current_weights)
+        if ref_weight <= self.epsilon:
+            return {k: v.copy() for k, v in current_weights.items()}
+        
+        grad_max_ref_weighted = grad_max_history.get(ref_key, [])
+        grad_max_ref_unweighted = [g / ref_weight for g in grad_max_ref_weighted]
+        
         # Paper numerator: max_theta |∇ L_ref| (for the "current iterate")
         # Per-epoch approximation: aggregate stepwise max-theta stats within the epoch.
-        g_ref_max = self._agg_epoch(grad_max_history.get(ref_key, []))
+        g_ref_max = self._agg_epoch(grad_max_ref_unweighted)
         if g_ref_max <= self.epsilon:
             return {k: v.copy() for k, v in current_weights.items()}
 
@@ -172,8 +180,15 @@ class LearningRateAnnealing(LossWeightingStrategyBase):
                 new_weight_scalars[loss_key] = prev_w
                 continue
 
+            # Unweight the gradient mean absolute values
+            if prev_w <= self.epsilon:
+                new_weight_scalars[loss_key] = prev_w
+                continue
+            
+            g_meanabs_unweighted = [g / prev_w for g in g_meanabs_steps]
+
             # Paper denominator: mean_theta |∇ L_i|
-            g_i_meanabs = self._agg_epoch(g_meanabs_steps)
+            g_i_meanabs = self._agg_epoch(g_meanabs_unweighted)
             denom = max(float(g_i_meanabs), self.epsilon)
 
             w_hat = float(g_ref_max / denom)
