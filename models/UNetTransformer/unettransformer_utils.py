@@ -1,13 +1,13 @@
 
 import math
-from typing import List, Optional, Tuple, Union
+from typing import List, Tuple, Union
 import torch
 import torch.nn as nn
 from utils.grid_utils import twod_meshgrid
 from utils.model_utils import PretrainedConfig
 from utils import activation_func
 from utils.model_utils import CustomNorm
-from transformers.models.swinv2.modeling_swinv2 import (
+from models.ScOT.swinv2_utils import (
     Swinv2Attention,
     window_reverse,
     window_partition,

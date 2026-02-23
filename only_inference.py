@@ -1154,12 +1154,6 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         result_dict["ic_start"] = ic_start_stats_dict
 
     return result_dict
-        
-    # except Exception as e:
-    #     print(f"Error processing {experiment_dir}: {str(e)}")
-    #     import traceback
-    #     traceback.print_exc()
-
 
 @hydra.main(version_base="1.3", config_path="config/infer_config", config_name="only_inference")
 def main(cfg: DictConfig):

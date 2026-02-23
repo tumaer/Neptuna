@@ -3,10 +3,11 @@
 # Paper: https://arxiv.org/abs/2405.19101
 
 import math
-from transformers import PreTrainedModel
-from transformers.models.swinv2.modeling_swinv2 import (
-    Swinv2EncoderOutput,
-)
+from transformers.modeling_utils import PreTrainedModel
+# from transformers import PreTrainedModel
+# from transformers.models.swinv2.modeling_swinv2 import (
+#     Swinv2EncoderOutput,
+# )
 import torch
 from torch import nn, Tensor
 from typing import Optional, Union, Tuple, List
@@ -15,6 +16,42 @@ from utils.grid_utils import twod_meshgrid
 from .scot_utils import ScOTOutput, ScOTEmbeddings, ScOTPatchRecovery, ScOTPatchMerging, ScOTPatchUnmerging, ScOTLayer, ConvNeXtBlock, ResNetBlock
 from utils.model_utils import CustomNorm
 from .scot_utils import ScOTConfig
+from dataclasses import dataclass
+from .generic import ModelOutput
+@dataclass
+# Copied from transformers.models.swin.modeling_swin.SwinEncoderOutput with Swin->Swinv2
+class Swinv2EncoderOutput(ModelOutput):
+    """
+    Swinv2 encoder's outputs, with potential hidden states and attentions.
+
+    Args:
+        last_hidden_state (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
+            Sequence of hidden-states at the output of the last layer of the model.
+        hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+            Tuple of `torch.FloatTensor` (one for the output of the embeddings + one for the output of each stage) of
+            shape `(batch_size, sequence_length, hidden_size)`.
+
+            Hidden-states of the model at the output of each layer plus the initial embedding outputs.
+        attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+            Tuple of `torch.FloatTensor` (one for each stage) of shape `(batch_size, num_heads, sequence_length,
+            sequence_length)`.
+
+            Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
+            heads.
+        reshaped_hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+            Tuple of `torch.FloatTensor` (one for the output of the embeddings + one for the output of each stage) of
+            shape `(batch_size, hidden_size, height, width)`.
+
+            Hidden-states of the model at the output of each layer plus the initial embedding outputs reshaped to
+            include the spatial dimensions.
+    """
+
+    last_hidden_state: torch.FloatTensor = None
+    hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
+    attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
+    reshaped_hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
+
+
 class ScOTEncodeStage(nn.Module):
     def __init__(
         self,
@@ -477,7 +514,6 @@ class ScOTDecoder(nn.Module):
             reshaped_hidden_states=all_reshaped_hidden_states,
         )
 
-    
 
 class ScOT(PreTrainedModel):
 
@@ -555,7 +591,7 @@ class ScOT2D(PreTrainedModel):
             ]
         )
 
-    # ? Was this done in Poseidon?
+    # # ? Was this done in Poseidon?
     # def _init_weights(self, module):
     #     """Initialize the weights"""
     #     if isinstance(module, (nn.Linear, nn.Conv2d)):
@@ -575,7 +611,7 @@ class ScOT2D(PreTrainedModel):
         for layer, heads in reversed(heads_to_prune.items()):
             self.decoder.layers[layer].attention.prune_heads(heads)
 
-    # copied from Transformers v 4.50.2 modeling_utils.py
+    # ! copied from Transformers v 4.50.2 modeling_utils.py
     def get_head_mask(
         self, head_mask: Optional[Tensor], num_hidden_layers: int, is_attention_chunked: bool = False
     ) -> Tensor:
@@ -602,7 +638,7 @@ class ScOT2D(PreTrainedModel):
             head_mask = [None] * num_hidden_layers
 
         return head_mask
-
+    # ! copied from Transformers v 4.50.2 modeling_utils.py
     def _convert_head_mask_to_5d(self, head_mask, num_hidden_layers):
         """-> [num_hidden_layers x batch x num_heads x seq_length x seq_length]"""
         if head_mask.dim() == 1:

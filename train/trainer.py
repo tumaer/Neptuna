@@ -361,7 +361,7 @@ class Trainer(Trainer_):
         dataloader_key: str | None = None,
     ) -> DataLoader:
         """Create a [`~torch.utils.data.DataLoader`] from the given dataset."""
-
+        print (f"USING DATALOADER FROM 5.1.0")
         data_collator = self.data_collator # !NOTE: Using the default collator from the base class.
         ## NOTE:commented out code from the base class
         # if is_datasets_available() and isinstance(dataset, datasets.Dataset):
@@ -405,7 +405,141 @@ class Trainer(Trainer_):
                 self._eval_dataloaders = {dataloader_key: dataloader}
 
         return dataloader
+
+    # ##overrides the one in the  base class from transformers library
+    # def get_train_dataloader(self) -> DataLoader:
+    #     """
+    #     Create and return the training dataloader with custom sampling strategy.
+
+    #     Returns
+    #     -------
+    #     DataLoader
+    #         Configured training dataloader with custom sampler and collation.
+    #     """
+    #     if self.train_dataset is None:
+    #         raise ValueError("Trainer: training requires a train_dataset.")
+
+    #     train_dataset = self.train_dataset
+    #     data_collator = self.data_collator #NOTE: Using the default collator from the base class.
+        
+    #     ## NOTE:commented out code from the base class
+    #     #if is_datasets_available() and isinstance(train_dataset, datasets.Dataset):
+    #     #    train_dataset = self._remove_unused_columns(train_dataset, description="training")
+    #     #else:
+    #     #   data_collator = self._get_collator_with_removed_columns(data_collator, description="training")
+
+    #     dataloader_params = {
+    #         "batch_size": self._train_batch_size,
+    #         "collate_fn": data_collator,
+    #         "num_workers": self.args.dataloader_num_workers,
+    #         "pin_memory": self.args.dataloader_pin_memory,
+    #         "persistent_workers": self.args.dataloader_persistent_workers,
+    #     }
+
+    #     if not isinstance(train_dataset, torch.utils.data.IterableDataset):
+    #         dataloader_params["sampler"] = self._get_train_sampler() ## here we create a custom sampler inside this function, inside this function, the sampler is set to RandomSampler if accelerator_config={"use_seedable_sampler": False} 
+    #         #and if accelerator_config={"use_seedable_sampler": True} then SeedableRandomSampler (inside accelerate>data_loader.py, this SeedableRandomSampler is a subclass of RandomSampler and is required for distributed training). 
+    #         #(shuffle  CANNOT BE SET to true or false (Pytorch doesnt allow it) if a custom sampler is used..  the sampler is set to RandomSampler which will provide random indices inside __get_item__ function of the dataloader), 
+    #         # in a similar way, the _eval_sampler function has a SequentialSampler, regardless of the shuffle being true or false.
+    #         #"From pytorch documentation:  If sampler is specified, :attr:`shuffle` must not be specified."
+    #         dataloader_params["drop_last"] = self.args.dataloader_drop_last
+    #         dataloader_params["worker_init_fn"] = seed_worker
+    #         dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
+
+    #     return self.accelerator.prepare(DataLoader(train_dataset, **dataloader_params)) 
     
+    # ##overrides the one in the base class from transformers library
+    # def get_eval_dataloader(self, eval_dataset: Optional[Union[str, Dataset]] = None) -> DataLoader:
+    #     """
+    #     Returns the evaluation [`~torch.utils.data.DataLoader`].
+
+    #     Parameters
+    #     ----------
+    #         eval_dataset (`str` or `torch.utils.data.Dataset`, *optional*):
+    #             If a `str`, will use `self.eval_dataset[eval_dataset]` as the evaluation dataset. If a `Dataset`, will override `self.eval_dataset` and must implement `__len__`. If it is a [`~datasets.Dataset`], columns not accepted by the `model.forward()` method are automatically removed.
+    
+    #     Returns
+    #     -------
+    #     DataLoader
+    #         Configured evaluation dataloader with sequential sampling.
+    #     """
+    #     if eval_dataset is None and self.eval_dataset is None:
+    #         raise ValueError("Trainer: evaluation requires an eval_dataset.")
+
+    #     # If we have persistent workers, don't do a fork bomb especially as eval datasets
+    #     # don't change during training
+    #     dataloader_key = eval_dataset if isinstance(eval_dataset, str) else "eval"
+    #     if (
+    #         hasattr(self, "_eval_dataloaders")
+    #         and dataloader_key in self._eval_dataloaders
+    #         and self.args.dataloader_persistent_workers
+    #     ):
+    #         return self.accelerator.prepare(self._eval_dataloaders[dataloader_key])
+
+    #     eval_dataset = (
+    #         self.eval_dataset[eval_dataset]
+    #         if isinstance(eval_dataset, str)
+    #         else eval_dataset
+    #         if eval_dataset is not None
+    #         else self.eval_dataset
+    #     )
+    #     data_collator = self.data_collator
+
+    #     ##commented out code from the base class
+    #     # if is_datasets_available() and isinstance(eval_dataset, datasets.Dataset):
+    #     #     eval_dataset = self._remove_unused_columns(eval_dataset, description="evaluation")
+    #     # else:
+    #     #     data_collator = self._get_collator_with_removed_columns(data_collator, description="evaluation")
+
+
+
+    #     dataloader_params = {
+    #         "batch_size": self.args.eval_batch_size,
+    #         "collate_fn": data_collator,
+    #         "num_workers": self.args.dataloader_num_workers,
+    #         "pin_memory": self.args.dataloader_pin_memory,
+    #         "persistent_workers": self.args.dataloader_persistent_workers,
+
+    #     }
+
+    #     if not isinstance(eval_dataset, torch.utils.data.IterableDataset):
+    #         dataloader_params["sampler"] = self._get_eval_sampler(eval_dataset)
+    
+    #  ##overrides the one in the base class from transformers library
+    def get_test_dataloader(self, test_dataset: Dataset) -> DataLoader:
+        """
+        Returns the test [`~torch.utils.data.DataLoader`].
+
+        Subclass and override this method if you want to inject some custom behavior.
+
+        Args:
+            test_dataset (`torch.utils.data.Dataset`, *optional*):
+                The test dataset to use. If it is a [`~datasets.Dataset`], columns not accepted by the
+                `model.forward()` method are automatically removed. It must implement `__len__`.
+        """
+        data_collator = self.data_collator
+        print(f"USING DATALOADER FROM 4.50.2")
+        ##commented out code from the base class
+        # if is_datasets_available() and isinstance(test_dataset, datasets.Dataset):
+        #     test_dataset = self._remove_unused_columns(test_dataset, description="test")
+        # else:
+        #     data_collator = self._get_collator_with_removed_columns(data_collator, description="test")
+
+        dataloader_params = {
+            "batch_size": self.args.eval_batch_size,
+            "collate_fn": data_collator,
+            "num_workers": self.args.dataloader_num_workers,
+            "pin_memory": self.args.dataloader_pin_memory,
+            "persistent_workers": self.args.dataloader_persistent_workers,
+        }
+
+        if not isinstance(test_dataset, torch.utils.data.IterableDataset):
+            dataloader_params["sampler"] = self._get_eval_sampler(test_dataset)
+            dataloader_params["drop_last"] = self.args.dataloader_drop_last
+            dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
+
+        # We use the same batch_size as for eval.
+        return self.accelerator.prepare(DataLoader(test_dataset, **dataloader_params))
     ##custom function, not inside transformers library
     def _forward_model_train(self, model, inputs):
         """
@@ -1951,6 +2085,7 @@ class Trainer(Trainer_):
         # Main evaluation loop
         #########################################################
         for step, inputs in enumerate(dataloader):
+            print(f"Step {step} of {len(dataloader)}")
             # Update the observed num examples
             observed_batch_size = find_batch_size(inputs)
             if observed_batch_size is not None:

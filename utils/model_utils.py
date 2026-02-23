@@ -46,7 +46,6 @@ from typing import List, Optional, Tuple, Type, Union
 from omegaconf import OmegaConf
 from torch import nn
 import math
-import numpy as np
 from abc import abstractmethod
 
 
@@ -601,7 +600,7 @@ class AdaNorm_SE_per_param(ConditioningLayer):
         def sinusoidal_embedding(param, dim, max_period=10000):
             # Taken from https://github.com/pdearena/pdearena
             half = dim // 2
-            freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half).to(
+            freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32, device=param.device) / half).to(
                 device=param.device
             )
             args = param[:, None].float() * freqs[None, :]
@@ -658,7 +657,7 @@ class AdaNorm_LSE(ConditioningLayer):
     def conditioning_param_embedding(self, x, cond_params):
         def sinusoidal_embedding(cond_params: torch.Tensor, dim, max_period=10000):
             half = dim // 2
-            freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half).to(
+            freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32, device=cond_params.device) / half).to(
                 device=cond_params.device
             )
             args = cond_params.float() * freqs

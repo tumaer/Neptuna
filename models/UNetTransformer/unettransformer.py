@@ -1,9 +1,13 @@
 import math
+import sys
 import torch
 from torch import Tensor
 import torch.nn as nn
 from utils import activation_func
 
+OLD_TRANSFORMERS_SITE_PACKAGES = "/Users/harish/Desktop/cfd_bench/old_transformers/lib/python3.12/site-packages"
+if OLD_TRANSFORMERS_SITE_PACKAGES not in sys.path:
+    sys.path.insert(0, OLD_TRANSFORMERS_SITE_PACKAGES)
 from transformers import PreTrainedModel
 from .unettransformer_utils import ConservativeDownsampling, ECAttention, MultiHeadECA, ResidualBlockND, SEAttention, MultiHeadSEAttention, MiddleBlockND, DownsampleND, UpsampleND, UNetTransformerConfig
 from utils.grid_utils import twod_meshgrid
@@ -29,7 +33,7 @@ class UNetTransformer(PreTrainedModel):
             raise NotImplementedError(f"Activation {config.activation_fn_name} not implemented")
         
         self.unet_transformer = self.build_UNetTransformer()(config=config, activation=activation)
-       
+        self.post_init()
     def build_UNetTransformer(self):
         """Get the appropriate upsampler based on the dimension."""
         if self.config.dimension == 2:
