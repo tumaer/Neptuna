@@ -23,7 +23,9 @@ def set_global_seed(seed: int, deterministic: bool = False) -> None:
     # Configure CuDNN determinism if requested
     try:
         import torch.backends.cudnn as cudnn
+        print("inside try")
         cudnn.deterministic = deterministic
         cudnn.benchmark = not deterministic
     except Exception:
+        print("inside cry")
         pass 

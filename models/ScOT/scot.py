@@ -97,7 +97,7 @@ class ScOTEncodeStage(nn.Module):
             height_downsampled, width_downsampled = (height + 1) // 2, (width + 1) // 2
             output_dimensions = (height, width, height_downsampled, width_downsampled)# 16, 16
             hidden_states = self.downsample(
-                hidden_states_before_downsampling + inputs, input_dimensions, **kwargs
+                hidden_states_before_downsampling + inputs, input_dimensions, **kwargs # why residual connection here? or is it sth else?
             )
         else:
             output_dimensions = (height, width, height, width)

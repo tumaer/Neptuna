@@ -228,6 +228,11 @@ def run(cfg):
         rollout_steps=cfg["train_config"]["n_eval_rollouts"], output_all_steps=True
     )
 
+
+    for name, param in trainer.model.named_parameters():
+        print(name, param.requires_grad)
+
+
     # ------------------------------------------------------------------
     # Train vs HP-search
     # ------------------------------------------------------------------

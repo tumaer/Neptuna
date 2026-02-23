@@ -4,7 +4,7 @@ latent_channels: 27
 depths: [2, 4, 2] # ~1M parameters
 num_heads: [3, 6, 12]
 skip_connections: [2, 2, 0]
-window_size: [2, 7, 7] # (window_size - patch_embedding_resolution % window_size) % window_size -> padding before window-based self-attention
+window_size: [2, 8, 8] # (window_size - patch_embedding_resolution % window_size) % window_size -> padding before window-based self-attention
 mlp_ratio: 2.0
 qkv_bias: True
 hidden_dropout_prob: 0.0

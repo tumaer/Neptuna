@@ -1,6 +1,7 @@
 import math
 import torch
 from torch import nn, Tensor
+import torch.nn.init as init
 from utils.model_utils import PretrainedConfig
 from transformers import PreTrainedModel
 from typing import List, Optional, Tuple, Union
@@ -17,53 +18,14 @@ from transformers.models.swinv2.modeling_swinv2 import (
 from transformers.utils import ModelOutput
 from dataclasses import dataclass
 
-def twod_meshgrid(shape: List[int], device: torch.device) -> Tensor:
-    """Creates 2D meshgrid feature
+# TODO list: Mask Token - Head Mask - Prune Heads
+# DO NOT use ".contiguous()" often. Only use it when absolutely necessary.
+# Use [B, C, T, H, W] only if you have an Conv. layer next. Otherwise, go with [B, T, H, W, C]
 
-    Parameters
-    ----------
-    shape : List[int]
-        Tensor shape
-    device : torch.device
-        Device model is on
+# NOTE: cache masking, run on Ursell
+# NOTE: I tried caching. It happens in any instance of ScOT3DLayer. so in the first batch it will get computed and from next batched it will be reused.
+# even if I put the caching inside Attention class, since every Layer has a separet instance of the attention, it will again get computed. Global caching is not recommanded.
 
-    Returns
-    -------
-    Tensor
-        Meshgrid tensor
-    """
-    bsize, size_x, size_y = shape[0], shape[2], shape[3]
-    grid_x = torch.linspace(0, 1, size_x, dtype=torch.float32, device=device)
-    grid_y = torch.linspace(0, 1, size_y, dtype=torch.float32, device=device)
-    grid_x, grid_y = torch.meshgrid(grid_x, grid_y, indexing="ij")
-    grid_x = grid_x.unsqueeze(0).unsqueeze(0).repeat(bsize, 1, 1, 1)
-    grid_y = grid_y.unsqueeze(0).unsqueeze(0).repeat(bsize, 1, 1, 1)
-    return torch.cat((grid_x, grid_y), dim=1)
-
-def threed_meshgrid(shape: List[int], device: torch.device) -> Tensor:
-    """Creates 3D meshgrid feature
-
-    Parameters
-    ----------
-    shape : List[int]
-        Tensor shape
-    device : torch.device
-        Device model is on
-
-    Returns
-    -------
-    Tensor
-        Meshgrid tensor
-    """
-    bsize, size_x, size_y, size_z = shape[0], shape[2], shape[3], shape[4]
-    grid_x = torch.linspace(0, 1, size_x, dtype=torch.float32, device=device)
-    grid_y = torch.linspace(0, 1, size_y, dtype=torch.float32, device=device)
-    grid_z = torch.linspace(0, 1, size_z, dtype=torch.float32, device=device)
-    grid_x, grid_y, grid_z = torch.meshgrid(grid_x, grid_y, grid_z, indexing="ij")
-    grid_x = grid_x.unsqueeze(0).unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
-    grid_y = grid_y.unsqueeze(0).unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
-    grid_z = grid_z.unsqueeze(0).unsqueeze(0).repeat(bsize, 1, 1, 1, 1)
-    return torch.cat((grid_x, grid_y, grid_z), dim=1)
 
 class ResNetBlock(nn.Module):
     def __init__(self, config, input_resolution, dim):
@@ -76,9 +38,13 @@ class ResNetBlock(nn.Module):
         self.bn1 = nn.BatchNorm3d(dim)
         self.bn2 = nn.BatchNorm3d(dim)
 
-    def forward(self, x, **kwargs):
-        # batch_size, sequence_length, hidden_size = x.shape
+        # self.conv1 = nn.Conv2d(dim, dim, kernel_size=kernel_size, stride=1, padding=pad) 
+        # self.conv2 = nn.Conv2d(dim, dim, kernel_size=kernel_size, stride=1, padding=pad)
+        # self.bn1 = nn.BatchNorm2d(dim)
+        # self.bn2 = nn.BatchNorm2d(dim)
 
+    def forward(self, x, **kwargs):
+        
         input = x 
         # x = x.reshape(batch_size, self.input_resolution[0], self.input_resolution[1], self.input_resolution[2], hidden_size) 
         # x = x.permute(0, 4, 1, 2, 3).contiguous() 
@@ -110,27 +76,22 @@ class ScOT3DConfig(PretrainedConfig):
 
     def __init__(
             self,
-            image_size=(224, 224),
             patch_size=(2, 4, 4),
-            # num_channels=3,
-            # num_out_channels=1,
-            # embed_dim=96,
             depths=[2, 2, 6, 2],
             num_heads=[3, 6, 12, 24],
-            skip_connections=[True, True, True],
+            skip_connections=[True, True, True, True],
             window_size=(2, 7, 7),
             mlp_ratio=4.0,
             qkv_bias=True,
             qk_scale=None,
             hidden_dropout_prob=0.0,
             attention_probs_dropout_prob=0.0,
-            use_absolute_embeddings=False,
-            initializer_range=0.02,
+            # use_absolute_embeddings=False, # Depracting 
+            initializer_range=0.02, # a default to initialize the model weights
             layer_norm_eps=1e-5,
             p=1,  # for loss: 1 for l1, 2 for l2
             channel_slice_list_normalized_loss=None,  # if None will fall back to absolute loss otherwise normalized loss with split channels
-            residual_model="convnext",  # "convnext" or "resnet"
-            use_conditioning=False,
+            residual_model="resnet",  # "convnext" or "resnet"; Currently only ResNet
             learn_residual=False,  # learn the residual for time-dependent problems
             output_hidden_states: bool = False,
             output_attentions: bool = False,
@@ -140,11 +101,7 @@ class ScOT3DConfig(PretrainedConfig):
 
         super().__init__(**kwargs)
 
-        self.image_size = image_size #> from config
         self.patch_size = patch_size
-        # self.num_channels = num_channels #> from config
-        # self.num_out_channels = num_out_channels #> from config
-        # self.embed_dim = embed_dim #> from config
         self.depths = depths
         self.num_heads = num_heads
         self.skip_connections = skip_connections
@@ -154,13 +111,12 @@ class ScOT3DConfig(PretrainedConfig):
         self.qk_scale = qk_scale  
         self.hidden_dropout_prob = hidden_dropout_prob
         self.attention_probs_dropout_prob = attention_probs_dropout_prob
-        self.use_absolute_embeddings = use_absolute_embeddings
+        # self.use_absolute_embeddings = use_absolute_embeddings
         self.initializer_range = initializer_range
         self.layer_norm_eps = layer_norm_eps
         self.p = p
         self.channel_slice_list_normalized_loss = channel_slice_list_normalized_loss
         self.residual_model = residual_model
-        self.use_conditioning = use_conditioning
         self.learn_residual = learn_residual
         self.output_hidden_states = output_hidden_states
         self.output_attentions = output_attentions
@@ -169,21 +125,22 @@ class ScOT3DPatchEmbeddings(nn.Module):
     """
     This class turns `input_data` of shape `(batch_size, in_channels, time_frames, height, width)` into the initial
     `hidden_states` (patch embeddings) of shape `(batch_size, hidden_size, time_frames, patched_height, patched_width)` to be consumed by a
-    Transformer. >  according to the ref code. TODO: Do we need to change the order in tensor shape?
+    Transformer. 
     """
 
 
     def __init__(self, config) -> None:
         super().__init__()
 
+
+        self.config = config
         resolution, patch_size = config.grid_resolution, config.patch_size
         in_channels, hidden_size = config.in_channels, config.latent_channels # by latent I mean embed dim here
-        self.coord_features = config.coord_features # seems extra
-        self.config = config
+        # self.coord_features = config.coord_features # seems extra
+        
 
         seq_in = config.sequence_info[0]
         resolution = [seq_in, config.grid_resolution[0], config.grid_resolution[1]]
-        # resolution = resolution.append(seq_in)
 
         # Sanity check for 3D patch size
         if len(patch_size) != 3:
@@ -193,7 +150,7 @@ class ScOT3DPatchEmbeddings(nn.Module):
         # basec on Pytorch Conv3D https://docs.pytorch.org/docs/stable/generated/torch.nn.Conv3d.html
 
         self.projection = nn.Conv3d(
-            in_channels + (2 if self.coord_features else 0), 
+            in_channels, 
             hidden_size, 
             kernel_size=patch_size, 
             stride=patch_size)
@@ -211,44 +168,45 @@ class ScOT3DPatchEmbeddings(nn.Module):
         ) 
 
 
-    def maybe_pad(self, input_data, time_frames, height, width):
-        # _, _, time, H, W = input_data.size()
-        if width % self.patch_size[2] != 0:
-            pad_values = (0, self.patch_size[2] - width % self.patch_size[2])
+    def maybe_pad(self, input_data, T, H, W):
+        #  B, C, T, H, W = input_data.shape
+        pad_Tr = T % self.patch_size[0]
+        pad_Hr = H % self.patch_size[1]
+        pad_Wr = W % self.patch_size[2] 
+        pad_Tl = pad_Hl = pad_Wl = 0
+        pad_values = (pad_Wl, pad_Wr, pad_Hl, pad_Hr, pad_Tl, pad_Tr ) # (pad_last_dim_left, pad_last_dim_right, pad_2nd_last_left, pad_2nd_last_right, ...)
+
+        if any(pad != 0 for pad in pad_values):
             input_data = nn.functional.pad(input_data, pad_values)
-        if height % self.patch_size[1] != 0:
-            pad_values = (0, 0, 0, self.patch_size[1] - height % self.patch_size[1])
-            input_data = nn.functional.pad(input_data, pad_values)
-        if time_frames % self.patch_size[0] != 0:
-            pad_values = (0, 0, 0, 0, 0, self.patch_size[0] - height % self.patch_size[0])
-            input_data = nn.functional.pad(input_data, pad_values)
+
         return input_data
 
 
     def forward(self, input_data):
-        input_data = input_data.permute(0, 2, 1, 3, 4)
-        _, in_channels, time_frames,  height, width = input_data.shape # B, C, T, X, Y
+        input_data = input_data.permute(0, 2, 1, 3, 4) # B, T. C, H, W >> B, C, T, H, W ; > change the the shape from Trainer dataloader
+        _, in_channels, T,  H, W = input_data.shape 
 
 
-        if in_channels != (self.in_channels) + (2 if self.coord_features else 0):
+        if in_channels != self.in_channels:
             raise ValueError(
                 "Make sure that the channel dimension of the pixel values match with the one set in the configuration."
             )
         
         # pad the input to be divisible by self.patch_size, if needed (zero padding)
-        # input_data = self.maybe_pad(input_data, time_frames, height, width)
+        input_data = self.maybe_pad(input_data, T, H, W)
 
 
         embeddings = self.projection(input_data)    
-        _, _, T, H, W = embeddings.shape
-        output_dimensions = (T, H, W)
+        _, _, T_patch, H_patch, W_patch = embeddings.shape
+        output_dimensions = (T_patch, H_patch, W_patch)
         embeddings = embeddings.flatten(2).transpose(1, 2) # Batch, Num_patches, Hidden_size >> prepare for norm
 
         return embeddings, output_dimensions
 
 class ScOT3DEmbeddings(nn.Module):
     """
-    Construct the patch and position embeddings. Optionally, also the mask token.
+    Construct the patch and position embeddings. >> Update: Removing Options for Absolute Position Embeddings
+    Optionally, also the mask token. TDOD: check this mask
     """
 
     def __init__(self, config, use_mask_token=False):
@@ -257,12 +215,12 @@ class ScOT3DEmbeddings(nn.Module):
         self.patch_embeddings = ScOT3DPatchEmbeddings(config)   
         self.config = config
         num_patches = self.patch_embeddings.num_patches
-        if config.use_absolute_embeddings: # absolute position information into the patch embeddings (spatial structure of trajectory)
-            self.position_embeddings = nn.Parameter( # zeros of shape (1: broadcast the same positional embeddings across all inputs in the batch, number of patches, dimensionality of each token)
-                torch.zeros(1, num_patches, config.latent_channels)
-            )
-        else:
-            self.position_embeddings = None
+        # if config.use_absolute_embeddings: # absolute position information into the patch embeddings (spatial structure of trajectory)
+        #     self.position_embeddings = nn.Parameter( # zeros of shape (1: broadcast the same positional embeddings across all inputs in the batch, number of patches, dimensionality of each token)
+        #         torch.zeros(1, num_patches, config.latent_channels)
+        #     )
+        # else:
+        #     self.position_embeddings = None
 
 
         self.grid_size = self.patch_embeddings.grid_size
@@ -282,8 +240,8 @@ class ScOT3DEmbeddings(nn.Module):
                 ):
 
         embeddings, output_dimensions = self.patch_embeddings(input_data) 
-        embeddings = self.norm(embeddings) 
-        embeddings = embeddings.transpose(1, 2).view(-1, self.config.latent_channels, self.grid_size[0], self.grid_size[1], self.grid_size[2])
+        embeddings = self.norm(embeddings) # Batch, Num_patches, Hidden_size
+        # embeddings = embeddings.transpose(1, 2).view(-1, self.config.latent_channels, self.grid_size[0], self.grid_size[1], self.grid_size[2])
 
         # batch_size, seq_len, _, _, _ = embeddings.size()
         # if bool_masked_pos is not None: # None # Boolean masked positions: Indicates which patches are masked (1) and which aren't (0)
@@ -334,7 +292,7 @@ class ScOT3DPatchRecovery(nn.Module):
 
 
         self.change_T_out = nn.Conv3d(
-            in_channels=resolution[0]//patch_size[0], # 3
+            in_channels=resolution[0]//patch_size[0] + resolution[0] % patch_size[0], # 3
             out_channels=self.T_out, # 1
             kernel_size=1,
             stride=1
@@ -368,19 +326,29 @@ class ScOT3DPatchRecovery(nn.Module):
             input_data = input_data[:, :, :, :, :W]
         return input_data
 
-    def forward(self, hidden_states): # Hidden_state shape : B, C, T, H, W : 8, 27, 3, 64, 64 >> Output shape 8, 1, 1, 256, 256 (out_channel =1 and out_seq_len=1)
+    def forward(self, hidden_states, dims): # Hidden_state shape : B, C, T, H, W : 8, 27, 3, 64, 64 >> Output shape 8, 1, 1, 256, 256 (out_channel =1 and out_seq_len=1)
         # hidden_states = hidden_states.transpose(1, 2) # [16, 48, 1024]
         # hidden_states = hidden_states.reshape(
         #     hidden_states.shape[0], hidden_states.shape[1], *self.grid_size
         # ) # [16, 48, 32, 32]
 
-        hidden_states = hidden_states.permute(0, 2, 1, 3, 4).contiguous() # B, C, T, H, W >> B, T, C, H, W
-        hidden_states = self.change_T_out(hidden_states) # B, T_out, C, H, W
-        hidden_states = hidden_states.permute(0, 2, 1, 3, 4).contiguous() # B, C, T_out, H, W
 
-        output = self.projection(hidden_states)
+        # hidden_states shape: B, T*H*W, C
+        T, H, W = dims
+        B, _, C = hidden_states.shape
+
+        # hidden_states = hidden_states.permute(0, 2, 1, 3, 4).contiguous() # B, C, T, H, W >> B, T, C, H, W
+        hidden_states = hidden_states.reshape(B, T, H, W, C) # B, T, H, W, C
+        hidden_states = self.change_T_out(hidden_states) # B, T_out, C, H, W
+        # hidden_states = hidden_states.permute(0, 2, 1, 3, 4).contiguous() # B, C, T_out, H, W
+        hidden_states = hidden_states.permute(0, 4, 1, 2, 3) # B, C, T_out, H, W
+
+        output = self.projection(hidden_states) # B, C_out, T_out, H, W
         output = self.maybe_crop(output, self.resolution[1], self.resolution[2]) # check if last two dimensions have the expected dim, otherwise crop
-        return self.mixup(output)
+        output = self.mixup(output)
+        output = output.permute(0, 2, 1, 3, 4)
+
+        return output
 
 class ScOT3DPatchMerging(nn.Module):
     """
@@ -407,7 +375,7 @@ class ScOT3DPatchMerging(nn.Module):
     def maybe_pad(self, input_feature, T, H, W): # we won't pad the T dim. It is only patched in the Embedding layer. 
         should_pad = (H % 2 == 1) or (W % 2 == 1) # False
         if should_pad:
-            pad_values = (0, W % 2, 0, H % 2, 0, 0)
+            pad_values = (0, 0, 0, W % 2, 0, H % 2, 0, 0)
             input_feature = nn.functional.pad(input_feature, pad_values)
 
         return input_feature
@@ -420,39 +388,48 @@ class ScOT3DPatchMerging(nn.Module):
     ) -> torch.Tensor:
         """
         Forward function.
-        Input feature, tensor size (B, D, H, W, C). TODO: check the shape
+        Input feature, tensor size (B, D, H, W, C).
         """
 
 
-        # D, H, W = input_dimensions #32, 32
+        T, H, W = input_dimensions 
         # `dim` is height * width
-        batch_size, in_channels, T, H, W = input_feature.shape # 16, 1024, 48
+        # batch_size, in_channels, T, H, W = input_feature.shape 
+        batch_size, L, in_channels = input_feature.shape 
 
-        # input_feature = input_feature.view(batch_size, T, H, W, in_channels) # 16, 32, 32, 48
+        assert L == T * H * W, f"L={L} != T*H*W={T*H*W}"
+
+        input_feature = input_feature.reshape(batch_size, T, H, W, in_channels) 
         # pad input to be divisible by width and height, if needed
         input_feature = self.maybe_pad(input_feature, T, H, W) # here: no padding needed
         # [batch_size, T , H/2, W/2, in_channels] T is already patched.
         # splitting into 4 groups: (even rows, even cols), (odd rows, even cols), (even rows, odd cols), (odd rows, odd cols)
-        input_feature_0 = input_feature[:, :, :, 0::2, 0::2]   #0::2: starting at 0, taking every second element
+        input_feature_0 = input_feature[:, :, 0::2, 0::2, :]   #0::2: starting at 0, taking every second element
         # [batch_size, T, H/2, W/2, in_channels]
-        input_feature_1 = input_feature[:, :, :, 1::2, 0::2] 
+        input_feature_1 = input_feature[:, :, 1::2, 0::2, :] 
         # [batch_size, T, H/2, W/2, in_channels]
-        input_feature_2 = input_feature[:, :, :, 0::2, 1::2] 
+        input_feature_2 = input_feature[:, :, 0::2, 1::2, :] 
         # [batch_size, T, H/2, W/2, in_channels]
-        input_feature_3 = input_feature[:, :, :, 1::2, 1::2]
+        input_feature_3 = input_feature[:, :, 1::2, 1::2, :]
         # [batch_size, T, H/2, W/2, 4*in_channels]
         input_feature = torch.cat(
-            [input_feature_0, input_feature_1, input_feature_2, input_feature_3], 1
+            [input_feature_0, input_feature_1, input_feature_2, input_feature_3], -1
         )
-        input_feature = input_feature.permute(0, 2, 3, 4, 1).contiguous().view(
+        # input_feature = input_feature.permute(0, 2, 3, 4, 1).contiguous().view(
+        #     batch_size, -1, 4 * in_channels 
+        # )  # [batch_size, T * H/2 * W/2, 4*C]
+
+        input_feature = input_feature.reshape(
             batch_size, -1, 4 * in_channels 
         )  # [batch_size, T * H/2 * W/2, 4*C]
 
 
-        # TODO: It seems first norm and then reduction is more stable for Merging!
+        # NOTE: It seems first norm and then reduction is more stable for Merging!
         input_feature = self.norm(input_feature) 
         input_feature = self.reduction(input_feature) #  4 * dim -> 2 * dim
-        input_feature = input_feature.permute(0, 2, 1).contiguous().view(batch_size, 2*in_channels, T, H//2 , W //2)
+        # input_feature = input_feature.permute(0, 2, 1).contiguous().view(batch_size, 2*in_channels, T, H//2 , W //2)
+
+        # NOTE: input feature shape leaving downsampling is (batch_size, T * H/2 * W/2, 2*in_channels)
 
         return input_feature
         
@@ -486,29 +463,30 @@ class ScOT3DPatchUnmerging(nn.Module):
         output_dimensions: Tuple[int, int], # (8, 8)
         **kwargs
     ) -> torch.Tensor:
-        # output_height, output_width = output_dimensions # 8, 8
-        batch_size, in_channels, T, H, W = input_feature.shape # 16, 16, 384
+        T, H, W = output_dimensions 
+        # batch_size, in_channels, T, H, W = input_feature.shape 
+        batch_size, _, in_channels= input_feature.shape 
         # r = output_height / output_width # r is proportion factor
         # input_height = math.floor((seq_len * r) ** 0.5) # To calculate new height (double old one) -> sqrt(4 * area * proportion factor)
         # input_width = math.floor((seq_len / r) ** 0.5)
 
-        input_feature = input_feature.permute(0, 2, 3, 4, 1).contiguous().view(batch_size, T*H*W, in_channels)
+        # input_feature = input_feature.permute(0, 2, 3, 4, 1).contiguous().view(batch_size, T*H*W, in_channels)
+        # input_feature = input_feature.reshape(batch_size, T*H*W, in_channels)
 
         input_feature = self.upsample(input_feature) 
 
         input_feature = input_feature.reshape(
-            batch_size, T, H, W, 2, 2, in_channels //2
+            batch_size, T, H//2, W//2, 2, 2, in_channels //2
         )
-        input_feature = input_feature.permute(0, 1, 2, 4, 3, 5, 6).contiguous() 
-        input_feature = input_feature.reshape(
-            batch_size, T, 2*H, 2*W, in_channels //2
-        ) 
+        input_feature = input_feature.permute(0, 1, 2, 4, 3, 5, 6).reshape(batch_size, T, H, W, in_channels //2) 
 
-        input_feature = self.maybe_crop(input_feature, 2*H, 2*W) # crop in case the feature does not have the specified dim
+        input_feature = self.maybe_crop(input_feature, H, W) # crop in case the feature does not have the specified dim
         input_feature = input_feature.reshape(batch_size, -1, in_channels // 2) 
 
         input_feature = self.mixup(self.norm(input_feature)) 
-        input_feature = input_feature.permute(0, 2, 1).contiguous().view(batch_size, in_channels//2, T, H*2 , W*2)
+        # input_feature = input_feature.permute(0, 2, 1).contiguous().view(batch_size, in_channels//2, T, H*2 , W*2)
+
+        # input feature shape leaving upsampling is (batch_size, T * H*2 * W*2, in_channels//2)
 
 
         return input_feature
@@ -719,50 +697,7 @@ class ScOTAttention3D(nn.Module):
 
         return outputs
 
-def get_attn_mask_3d(T, H, W, window_size, shift_size, dtype, device):
 
-    """
-    creats a mask and window it according to window size and shift size
-    """
-
-    if any(i > 0 for i in shift_size):
-        img_mask = torch.zeros((1, 1, T, H, W), dtype=dtype, device=device)  # 1 1 T H W
-
-        T_slices = (
-            slice(0, -window_size[0]),
-            slice(-window_size[0], -shift_size[0]),
-            slice(-shift_size[0], None)
-        )
-        H_slices = (
-            slice(0, -window_size[1]),
-            slice(-window_size[1], -shift_size[1]),
-            slice(-shift_size[1], None)
-        )
-        W_slices = (
-            slice(0, -window_size[2]),
-            slice(-window_size[2], -shift_size[2]),
-            slice(-shift_size[2], None)
-        )
-
-        count = 0
-
-        for t in T_slices:
-            for h in H_slices:
-                for w in W_slices:
-                    img_mask[:, :, t, h, w] = count
-                    count += 1
-
-
-        mask_windows = window_partition_3d(img_mask, window_size) # nW, ws[0]*ws[1]*ws[2], 1
-        mask_windows = mask_windows.squeeze(-1)  # nW, ws[0]*ws[1]*ws[2]
-        attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
-        attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
-
-    else:
-        attn_mask = None
-
-
-    return attn_mask
 
 def window_partition_3d(input, window_size): # normally gets imported from Huggingface SwinV2 for 2D
     """
@@ -770,26 +705,44 @@ def window_partition_3d(input, window_size): # normally gets imported from Huggi
     [window count, each window element count, C or dim]
     
     Args:
-        x: (B, C, T, H, W)
+        x: (B, T, H, W, C)
         window_size (tuple[int]): window size
     Returns:
         windows: (B*num_windows, window_size*window_size, C)
     """
 
-    B, C, T, H, W = input.shape
-    input = input.permute(0, 2, 3, 4, 1).contiguous().view(B, T // window_size[0], window_size[0], H // window_size[1], window_size[1], W // window_size[2], window_size[2], C)
-    windows = input.permute(0, 1, 3, 5, 2, 4, 6, 7).contiguous().view(-1, reduce(mul, window_size), C)
+    # B, C, T, H, W = input.shape
+    B, T, H, W, C = input.shape
+    # input = input.permute(0, 2, 3, 4, 1).contiguous().view(B, T // window_size[0], window_size[0], H // window_size[1], window_size[1], W // window_size[2], window_size[2], C)
+    input = input.reshape(
+        B, 
+        T // window_size[0], window_size[0], 
+        H // window_size[1], window_size[1], 
+        W // window_size[2], window_size[2], 
+        C)
+    # windows = input.permute(0, 1, 3, 5, 2, 4, 6, 7).contiguous().view(-1, reduce(mul, window_size), C)
+    windows = input.permute(0, 1, 3, 5, 2, 4, 6, 7).reshape(-1, window_size[0]*window_size[1]*window_size[2], C)
     return windows
      
 def window_reverse_3d(windows, window_size, T, H, W):
     """
-    This function is responsible to reverse the windows back to the original shape.
+    This function is responsible to reverse the windows back to the original shape. input shape is nW*B, tW*hW*wW, C
     Returns:
         x: (B, C, T, H, W)
     """
     C = windows.shape[-1]
-    windows = windows.view(-1, T // window_size[0], H // window_size[1], W // window_size[2], window_size[0], window_size[1], window_size[2], C)
-    windows = windows.permute(0, 7, 1, 4, 2, 5, 3, 6).contiguous().view(-1, C, T, H, W)
+    # windows = windows.view(-1, T // window_size[0], H // window_size[1], W // window_size[2], window_size[0], window_size[1], window_size[2], C)
+    windows = windows.reshape(
+        -1, 
+        T // window_size[0], 
+        H // window_size[1], 
+        W // window_size[2], 
+        window_size[0], 
+        window_size[1], 
+        window_size[2], 
+        C
+        )
+    windows = windows.permute(0, 1, 4, 2, 5, 3, 6, 7).reshape(-1, T, H, W, C)
 
     return windows
 
@@ -841,6 +794,11 @@ class ScOT3DLayer(nn.Module):
         self.output = Swinv2Output(config, dim)
         self.norm_after = nn.LayerNorm(self.dim)
 
+        self.attn_mask_cache = {}
+
+
+        
+
     def set_shift_and_window_size_3d(self):
         """
         TODO: complete it.
@@ -861,13 +819,66 @@ class ScOT3DLayer(nn.Module):
             self.window_size = tuple(use_window_size)
             self.shift_size = tuple(use_shift_size)
 
+
+    def get_attn_mask_3d(self, T, H, W, window_size, shift_size, dtype, device):
+
+        """
+        creats a mask and window it according to window size and shift size
+        """
+
+        cache_key = (T, H, W, window_size, shift_size, dtype) 
+        if cache_key in self.attn_mask_cache: # {}
+            return self.attn_mask_cache[cache_key]
+
+        if any(i > 0 for i in shift_size):
+            img_mask = torch.zeros((1, T, H, W, 1), dtype=dtype, device=device)  # 1 T H W 1
+
+            T_slices = (
+                slice(0, -window_size[0]),
+                slice(-window_size[0], -shift_size[0]),
+                slice(-shift_size[0], None)
+            )
+            H_slices = (
+                slice(0, -window_size[1]),
+                slice(-window_size[1], -shift_size[1]),
+                slice(-shift_size[1], None)
+            )
+            W_slices = (
+                slice(0, -window_size[2]),
+                slice(-window_size[2], -shift_size[2]),
+                slice(-shift_size[2], None)
+            )
+
+            count = 0
+
+            for t in T_slices:
+                for h in H_slices:
+                    for w in W_slices:
+                        img_mask[:, t, h, w, :] = count
+                        count += 1
+
+
+            mask_windows = window_partition_3d(img_mask, window_size) # nW, ws[0]*ws[1]*ws[2], 1
+            mask_windows = mask_windows.squeeze(-1)  # nW, ws[0]*ws[1]*ws[2]
+            attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
+            attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
+
+        else:
+            attn_mask = None
+
+
+
+        self.attn_mask_cache[cache_key] = attn_mask
+        return attn_mask
+
+
     def maybe_pad(self, hidden_states, T, H, W):
         #  B, C, T, H, W = hidden_states.shape
         pad_Tr = (self.window_size[0] - T % self.window_size[0]) % self.window_size[0]
         pad_Hr = (self.window_size[1] - H % self.window_size[1]) % self.window_size[1] 
         pad_Wr = (self.window_size[2] - W % self.window_size[2]) % self.window_size[2] 
         pad_Tl = pad_Hl = pad_Wl = 0
-        pad_values = (pad_Wl, pad_Wr, pad_Hl, pad_Hr, pad_Tl, pad_Tr ) # (pad_last_dim_left, pad_last_dim_right, pad_2nd_last_left, pad_2nd_last_right, ...)
+        pad_values = (0, 0, pad_Wl, pad_Wr, pad_Hl, pad_Hr, pad_Tl, pad_Tr ) # (pad_last_dim_left, pad_last_dim_right, pad_2nd_last_left, pad_2nd_last_right, ...)
         hidden_states = nn.functional.pad(hidden_states, pad_values)
 
         return hidden_states, pad_values
@@ -882,23 +893,28 @@ class ScOT3DLayer(nn.Module):
         **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         
-        shortcut = hidden_states
         
-        B, C, T, H, W = hidden_states.shape
+        
+        shortcut = hidden_states # B, T*H*W, C
+        
+        B, _, C = hidden_states.shape
+        T, H, W = input_dimensions
         # window_size, shift_size = self.set_shift_and_window_size_3d((T,H,W), self.window_size, self.shift_size)
 
         # Layer norm before attention
-        hidden_states = hidden_states.flatten(2).transpose(1, 2) # shape: (B, T*H*W, C) # the correct channel dim in Decoder mode
+        # hidden_states = hidden_states.flatten(2).transpose(1, 2) # shape: (B, T*H*W, C) # the correct channel dim in Decoder mode
         hidden_states = self.norm_before(hidden_states)
-        hidden_states = hidden_states.transpose(1, 2).view(B, C, T, H, W) # shape: (B, T, H, W, C)
+        # hidden_states = hidden_states.transpose(1, 2).reshape(B, C, T, H, W) 
+        hidden_states = hidden_states.reshape(B, T, H, W, C) # shape: (B, T, H, W, C)
 
         # pad the input if needed # first place I need 3d data
         hidden_states, pad_values = self.maybe_pad(hidden_states, T, H, W)
-        _, _, Tp, Hp, Wp = hidden_states.shape
+        _, Tp, Hp, Wp, _ = hidden_states.shape
 
         # cyclic shift in-between (W-MSA and SW-MSA)
         if any(i > 0 for i in self.shift_size):
-            shifted_hidden_states = torch.roll(hidden_states, shifts=(-self.shift_size[0], -self.shift_size[1], -self.shift_size[2]), dims=(-3, -2, -1))
+            # shifted_hidden_states = torch.roll(hidden_states, shifts=(-self.shift_size[0], -self.shift_size[1], -self.shift_size[2]), dims=(-3, -2, -1))
+            shifted_hidden_states = torch.roll(hidden_states, shifts=(-self.shift_size[0], -self.shift_size[1], -self.shift_size[2]), dims=(-4, -3, -2))
         else:
             shifted_hidden_states = hidden_states
 
@@ -906,7 +922,7 @@ class ScOT3DLayer(nn.Module):
         hidden_states_windows = window_partition_3d(shifted_hidden_states, self.config.window_size) # shape: (num_windows*B, window_size*window_size, C)
 
         # Attention mask for SW-MSA
-        attn_mask = get_attn_mask_3d(Tp, Hp, Wp, self.config.window_size, self.shift_size, hidden_states.dtype, hidden_states.device)
+        attn_mask = self.get_attn_mask_3d(Tp, Hp, Wp, self.config.window_size, self.shift_size, hidden_states.dtype, hidden_states.device)
 
         # Apply attention
         attn_outputs = self.attn(
@@ -923,7 +939,8 @@ class ScOT3DLayer(nn.Module):
 
         # reverse cyclic shift if needed
         if any(i > 0 for i in self.shift_size):
-            attn_windows = torch.roll(attn_output_reverse, shifts=(self.shift_size[0], self.shift_size[1], self.shift_size[2]), dims=(-3, -2, -1))
+            # attn_windows = torch.roll(attn_output_reverse, shifts=(self.shift_size[0], self.shift_size[1], self.shift_size[2]), dims=(-3, -2, -1))
+            attn_windows = torch.roll(attn_output_reverse, shifts=(self.shift_size[0], self.shift_size[1], self.shift_size[2]), dims=(-4, -3, -2))
         else:
             attn_windows = attn_output_reverse
 
@@ -932,22 +949,27 @@ class ScOT3DLayer(nn.Module):
         if was_padded:
             attn_windows = attn_windows[
                 :,
-                :,
                 : T,
                 : H,
                 : W,
-            ].contiguous()
+                :
+            ]
 
         # Residual connection 1
+        # output = shortcut + self.drop_path(attn_windows)
+        attn_windows = attn_windows.reshape(B, T*H*W, C)
         output = shortcut + self.drop_path(attn_windows)
 
-        output = output.permute(0, 2, 3, 4, 1).contiguous()
+        # output = output.permute(0, 2, 3, 4, 1).contiguous()
+        # output = output.permute(0, 2, 3, 4, 1) it is already channel at last dim
 
 
         # Layer norm + MLP + Drop_path after attention + Residual connection 2
         output = output + self.drop_path(self.output(self.intermediate(self.norm_after(output))))
 
-        output = output.permute(0, 4, 1, 2, 3).contiguous()
+        # output = output.permute(0, 4, 1, 2, 3).contiguous()
+
+        # output shape is B, -1, C
 
         outputs = (
             (output, attn_outputs[1])
@@ -1009,7 +1031,7 @@ class ScOT3DEncoderStage(nn.Module):
             **kwargs
     ):
         T, H, W = input_dimensions
-        inputs = hidden_states
+        # inputs = hidden_states
 
         for i, block in enumerate(self.blocks):
             block_head_mask = head_mask[i] if head_mask is not None else None
@@ -1023,7 +1045,7 @@ class ScOT3DEncoderStage(nn.Module):
                 **kwargs
             )
 
-            hidden_states = block_output[0]
+            hidden_states = block_output[0] # shape: B, T*H*W, C
 
 
         hidden_states_before_downsampling = hidden_states
@@ -1034,18 +1056,19 @@ class ScOT3DEncoderStage(nn.Module):
             hidden_states = self.downsample(
                 # hidden_states_before_downsampling + inputs, # Check the existence of this addition: not originally
                 hidden_states_before_downsampling,
-                input_dimensions=input_dimensions, # why needed? no needed!!!!!!!!!
+                input_dimensions=input_dimensions, # why needed? no needed!!!!!!!!! I saw the need :) when you keep the shape as B, N, C, this is useful
                 **kwargs
             )
 
 
-            _, _, _, Hds, Wds = hidden_states.shape
+            # _, _, _, Hds, Wds = hidden_states.shape
             # output_dimensions = (T, H, W, T, Hds, Wds) # why do I need it?
-            output_dimensions = (T, Hds, Wds) # why not written like this?
+            Hds, Wds = H // 2, W // 2
+            output_dimensions = (T, H, W, T, Hds, Wds) # why not written like this?
 
         else:
             # output_dimensions = (T, H, W, T, H, W)
-            output_dimensions = (T, H, W)
+            output_dimensions = (T, H, W, T, H, W)
 
 
         stage_outputs = (
@@ -1128,13 +1151,13 @@ class ScOT3DEncoder(nn.Module):
 
         if output_hidden_states: # in this model we need explicit 3D patches.
 
-            all_hidden_states += (hidden_states,)
+            all_hidden_states += (hidden_states,) # this update shape: B, Num_patches, hidden_size
 
 
-            # B, _, C = hidden_states.shape
-            # reshaped_hidden_states = hidden_states.view(B, *input_dimensions, C)
-            # reshaped_hidden_states = reshaped_hidden_states.permute(0, 4, 1, 2, 3)
-            # all_reshaped_hidden_states += (reshaped_hidden_states,)
+            B, _, C = hidden_states.shape
+            reshaped_hidden_states = hidden_states.reshape(B, *input_dimensions, C)
+            reshaped_hidden_states = reshaped_hidden_states.permute(0, 4, 1, 2, 3)
+            all_reshaped_hidden_states += (reshaped_hidden_states,)
 
 
         for i, layer_module in enumerate(self.layers):
@@ -1152,8 +1175,8 @@ class ScOT3DEncoder(nn.Module):
 
 
 
-            hidden_states = layer_outputs[0] # shape: B, C, T, H, W = 8, 54, 3, 32, 32
-            hidden_states_before_downsampling = layer_outputs[1] # shape: B, C, T, H, W = 8, 54, 3, 64, 64
+            hidden_states = layer_outputs[0] # shape: B, T*H//2*W//2, C_prime 
+            hidden_states_before_downsampling = layer_outputs[1] # shape: B, T*H*W, C
             output_dimensions = layer_outputs[2]
             input_dimensions = (output_dimensions[-3], output_dimensions[-2], output_dimensions[-1]) 
             # input_dimensions = layer_outputs[2]
@@ -1163,11 +1186,12 @@ class ScOT3DEncoder(nn.Module):
                 all_hidden_states += (hidden_states_before_downsampling,)
 
 
-                # B, _, C = hidden_states_before_downsampling.shape
-                # reshaped_hidden_states = hidden_states_before_downsampling.view(B, *(output_dimensions[0], output_dimensions[1], output_dimensions[2]), C)
-                # reshaped_hidden_states = hidden_states_before_downsampling.view(B, *input_dimensions, C)
-                # reshaped_hidden_states = reshaped_hidden_states.permute(0, 4, 1, 2, 3)
-                # all_reshaped_hidden_states += (reshaped_hidden_states,)
+                B, _, C = hidden_states_before_downsampling.shape
+                # reshaped_hidden_states = hidden_states_before_downsampling.reshape(B, output_dimensions[0], output_dimensions[1], output_dimensions[2], C)
+                # reshaped_hidden_states = hidden_states_before_downsampling.reshape(B, *input_dimensions, C)
+                reshaped_hidden_states = hidden_states_before_downsampling.reshape(B, output_dimensions[0], output_dimensions[1], output_dimensions[2], C)
+                reshaped_hidden_states = reshaped_hidden_states.permute(0, 4, 1, 2, 3)
+                all_reshaped_hidden_states += (reshaped_hidden_states,)
 
             elif output_hidden_states and not output_hidden_states_before_downsample:
 
@@ -1241,7 +1265,7 @@ class ScOT3DDecoderStage(nn.Module):
             **kwargs
     ):
         T, H, W = input_dimensions
-        inputs = hidden_states
+        # inputs = hidden_states
 
         for i, block in enumerate(self.blocks):
             block_head_mask = head_mask[i] if head_mask is not None else None
@@ -1266,16 +1290,17 @@ class ScOT3DDecoderStage(nn.Module):
             hidden_states = self.upsample(
                 # hidden_states_before_upsampling + inputs, # Check the existence of this addition
                 hidden_states_before_upsampling,
-                output_dimensions=input_dimensions, # WILL REMOVE
+                output_dimensions=(T, H*2, W*2), 
                 **kwargs
             )
 
 
-            _, _, _, Hus, Wus = hidden_states.shape
-            output_dimensions = (T, Hus, Wus) 
+            # _, _, _, Hus, Wus = hidden_states.shape
+            Hus, Wus = H * 2, W * 2
+            output_dimensions = (T, H, W, T, Hus, Wus) 
 
         else:
-            output_dimensions = (T, H, W)
+            output_dimensions = (T, H, W, T, H, W)
 
 
         stage_outputs = (
@@ -1355,7 +1380,10 @@ class ScOT3DDecoder(nn.Module):
             **kwargs
     ):
         
-        # TODO: Do we need all_hidden_states here? it is Decoder.
+        all_hidden_states = () if output_hidden_states else None
+        all_reshaped_hidden_states = () if output_hidden_states else None
+        # all_self_attentions = () if output_attentions else None
+        all_self_attentions = None
         
 
         for i, layer_module in enumerate(self.layers):
@@ -1365,7 +1393,7 @@ class ScOT3DDecoder(nn.Module):
 
             if i!=0 and skip_states[len(skip_states) - i] is not None:
 
-                hidden_states = hidden_states + skip_states[len(skip_states) - i]
+                hidden_states = hidden_states + skip_states[len(skip_states) - i].permute(0, 2, 3, 4, 1).reshape(hidden_states.shape)
 
             layer_outputs = layer_module(
                 hidden_states=hidden_states,
@@ -1378,25 +1406,24 @@ class ScOT3DDecoder(nn.Module):
 
 
 
-            hidden_states = layer_outputs[0] # shape: B, C, T, H. W : 8, 54, 3, 32, 32
+            hidden_states = layer_outputs[0] # shape: B, C, T, H. W : 8, 54, 3, 32, 32 ; update >>>>> B, T*H*W, C
             hidden_states_before_upsampling = layer_outputs[1] # shape: B, C, T, H. W : 8, 108, 3, 16, 16
             output_dimensions = layer_outputs[2]
             input_dimensions = (output_dimensions[-3], output_dimensions[-2], output_dimensions[-1]) # T, H, W
 
-            # if output_hidden_states and output_hidden_states_before_upsample:
+            if output_hidden_states and output_hidden_states_before_upsample:
 
-            #     all_hidden_states += (hidden_states_before_upsampling,)
+                all_hidden_states += (hidden_states_before_upsampling,)
 
 
-            #     B, _, C = hidden_states_before_upsampling.shape
-            #     # reshaped_hidden_states = hidden_states_before_upsampling.view(B, *(output_dimensions[0], output_dimensions[1], output_dimensions[2]), C)
-            #     reshaped_hidden_states = hidden_states_before_upsampling.view(B, *input_dimensions, C)
-            #     reshaped_hidden_states = reshaped_hidden_states.permute(0, 4, 1, 2, 3)
-            #     all_reshaped_hidden_states += (reshaped_hidden_states,)
+                B, _, C = hidden_states_before_upsampling.shape
+                # reshaped_hidden_states = hidden_states_before_upsampling.view(B, *(output_dimensions[0], output_dimensions[1], output_dimensions[2]), C)
+                reshaped_hidden_states = hidden_states_before_upsampling.reshape(B, output_dimensions[0], output_dimensions[1], output_dimensions[2], C)
+                all_reshaped_hidden_states += (reshaped_hidden_states,)
 
-            # elif output_hidden_states and not output_hidden_states_before_upsample:
+            elif output_hidden_states and not output_hidden_states_before_upsample:
 
-            #     all_hidden_states += (hidden_states,)
+                all_hidden_states += (hidden_states,)
                 
             #     # B, _, C = hidden_states.shape
             #     # reshaped_hidden_states = hidden_states.view(B, *input_dimensions, C)
@@ -1408,10 +1435,6 @@ class ScOT3DDecoder(nn.Module):
                 all_self_attentions += layer_outputs[3:] 
 
 
-        all_hidden_states = None
-        all_reshaped_hidden_states = None
-        all_self_attentions = None
-
 
         return Swinv2EncoderOutput( # Just a return data class, Probably I can only pass last hidden state
             last_hidden_state=hidden_states,
@@ -1421,15 +1444,14 @@ class ScOT3DDecoder(nn.Module):
         )
 
 class ScOT3D(PreTrainedModel):
-    main_input_name = "input_data"
-    
 
+    main_input_name = "input_data"
     config_class = ScOT3DConfig
 
     def __init__(
             self,
             config,
-            # use_mask_token=False,
+            # use_mask_token=False, TODO: check if needed
     ):
         super().__init__(config)
 
@@ -1444,7 +1466,9 @@ class ScOT3D(PreTrainedModel):
         self.decoder = ScOT3DDecoder(config, self.embeddings.grid_size)
         self.patch_recovery = ScOT3DPatchRecovery(config)
 
-        res_model = ResNetBlock
+        res_model = ResNetBlock # Add other options if needed to this line
+
+
         self.residual_blocks = nn.ModuleList(
             [
                 (
@@ -1465,13 +1489,28 @@ class ScOT3D(PreTrainedModel):
 
     def _init_weights(self, module):
         """Initialize the weights"""
-        if isinstance(module, (nn.Linear, nn.Conv2d)):
-            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+        if isinstance(module, (nn.Linear, nn.Conv3d, nn.ConvTranspose3d)): 
+            # TODO: Should I check other init methods for Conv layers? like Kaiming or Xavier?
+            init.normal_(module.weight, mean=0.0, std=self.config.initializer_range)
             if module.bias is not None:
-                module.bias.data.zero_()
+                init.zeros_(module.bias)
+
+        # LayerNorm
         elif isinstance(module, nn.LayerNorm):
-            module.bias.data.zero_()
-            module.weight.data.fill_(1.0)
+            if module.weight is not None:
+                init.ones_(module.weight)
+            if module.bias is not None:
+                init.zeros_(module.bias)
+
+        # BatchNorm3d
+        elif isinstance(module, nn.BatchNorm3d):
+            # only if affine=True (otherwise weight/bias are None) which is True in our case
+            if module.weight is not None:
+                init.ones_(module.weight)
+            if module.bias is not None:
+                init.zeros_(module.bias)
+
+        # else: do nothing (keep PyTorch defaults)
 
     def get_input_embeddings(self):
         return self.embeddings.patch_embeddings
@@ -1479,8 +1518,8 @@ class ScOT3D(PreTrainedModel):
     def forward(
         self,
         input_data: Optional[torch.FloatTensor] = None,
-        bool_masked_pos: Optional[torch.BoolTensor] = None,
-        head_mask: Optional[torch.FloatTensor] = None,
+        # bool_masked_pos: Optional[torch.BoolTensor] = None,
+        # head_mask: Optional[torch.FloatTensor] = None,
         **kwargs
     ) -> Union[Tuple, ScOT3DOutput]:
 
@@ -1490,39 +1529,46 @@ class ScOT3D(PreTrainedModel):
         # calculate 5D tensor used by attention mechanism to selectively include / exclude attention heads
         # [batch_size, num_heads, seq_len, seq_len] -> [num_layers, batch_size, num_heads, seq_len, seq_len]
         # num_layers: different mask at each layer, batch_size: one mask per input sample, num_heads: mask per attention head, seq_len: attention query / key positions
-        head_mask = self.get_head_mask( # [None] * 8
-            head_mask, self.num_layers_encoder + self.num_layers_decoder
+        
+        
+        # head_mask = self.get_head_mask( # [None] * 8
+        #     head_mask, self.num_layers_encoder + self.num_layers_decoder
+        # )
+
+        # if isinstance(head_mask, list):
+        #     head_mask_encoder = head_mask[: self.num_layers_encoder]
+        #     head_mask_decoder = head_mask[self.num_layers_encoder :]
+        # else:
+        #     head_mask_encoder, head_mask_decoder = head_mask.split(
+        #         [self.num_layers_encoder, self.num_layers_decoder]
+            # )
+
+
+        # if self.config.coord_features: # Cancel this. I prefer Relative position embedding in Attenstion.
+        #     coord_feat = threed_meshgrid(list(input_data.shape), input_data.device)
+        #     input_data = torch.cat((input_data, coord_feat), dim=1)
+
+        embedding_output, embedd_dimensions = self.embeddings( # input from dataloader B, T_in, C, H, W
+            input_data, 
+            # bool_masked_pos=bool_masked_pos, 
+            **kwargs
         )
 
-        if isinstance(head_mask, list):
-            head_mask_encoder = head_mask[: self.num_layers_encoder]
-            head_mask_decoder = head_mask[self.num_layers_encoder :]
-        else:
-            head_mask_encoder, head_mask_decoder = head_mask.split(
-                [self.num_layers_encoder, self.num_layers_decoder]
-            )
+        # output from embedding: B, T_patch*H_patch*W_patch, hidden_size ; input_dimensions: Tp, Hp, Wp
 
-
-        if self.config.coord_features:
-            coord_feat = threed_meshgrid(list(input_data.shape), input_data.device)
-            input_data = torch.cat((input_data, coord_feat), dim=1)
-
-        embedding_output, input_dimensions = self.embeddings(
-            input_data, bool_masked_pos=bool_masked_pos, **kwargs
-        )
-
-        encoder_outputs = self.encoder( # embedding_output: torch.Size([8, 27, 3, 64, 64]) normed and re shaped
+        encoder_outputs = self.encoder( # embedding_output: torch.Size([8, 27, 3, 64, 64]) normed and re shaped # update >>> B, T*H*W, hidden_size
             embedding_output,
-            input_dimensions,
-            head_mask=head_mask_encoder,
+            input_dimensions=embedd_dimensions, # Tp, Hp, Wp
+            # head_mask=head_mask_encoder,
             output_attentions=output_attentions,
             output_hidden_states=True,
             output_hidden_states_before_downsampling=True, 
             **kwargs
         )
 
-        skip_states = list(encoder_outputs[1][1:]) # The outputs of Encoder Stage, ignore Embedding and these outputs are the ones before PatchMerging.
-
+        skip_states = list(encoder_outputs[-1][1:]) # The reshaped outputs of Encoder Stage, ignore Embedding and these outputs are the ones before PatchMerging.
+        # skip_states = list(encoder_outputs[1][1:])
+        
         for i in range(len(skip_states)):
             for block in self.residual_blocks[i]: # 2  blocks (last skip layer: identity)
                 if isinstance(block, nn.Identity):
@@ -1535,19 +1581,26 @@ class ScOT3D(PreTrainedModel):
         input_dim_y = skip_states[-1].shape[-1]
 
         decoder_output = self.decoder(
-            skip_states[-1],
+            encoder_outputs[0],
             (input_dim_t, input_dim_x, input_dim_y),
             skip_states=skip_states[:-1],
-            head_mask=head_mask_decoder,
+            # head_mask=head_mask_decoder,
             output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
+            output_hidden_states=True,
             **kwargs
         )
 
-        sequence_output = decoder_output[0] # 8, 27, 3, 64, 64
-        prediction = self.patch_recovery(sequence_output)
+        sequence_output = decoder_output[0] # 8, 27, 3, 64, 64 ; update >>> B, T*H*W, C
+        dims = tuple(decoder_output[-1][-1].shape[1:-1])
+        assert dims == embedd_dimensions, f"Decoder output dimensions {dims} do not match embedding dimensions {embedd_dimensions}"
+        prediction = self.patch_recovery(sequence_output, embedd_dimensions) # out: B, c_OUT, T_out, H, W 
 
-        prediction = prediction.permute(0, 2, 1, 3, 4).contiguous() # B, T, c_OUT, H, W
+        # prediction = prediction.permute(0, 2, 1, 3, 4) # B, T_out, c_OUT, H, W
+
+
+
+        # B, T_out, c_OUT, H, W final prediction shape
+        # TODO: IS this the right shape for prediction? yes
 
 
         return prediction
