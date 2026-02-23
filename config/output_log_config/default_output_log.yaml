@@ -4,4 +4,4 @@ logging:
   wandb: False  
   wandb_project: null
   wandb_entity: null
-  disable_progress_bar: False
+  disable_progress_bar: True
