@@ -2,6 +2,7 @@
 from omegaconf import OmegaConf
 import os
 import glob
+import atexit
 from utils.load_data import fetch_dataset
 from utils.plot_progress import build_info_strings
 from utils.plot_progress import preprocess_for_plotting, plot_rollout_metrics
@@ -1269,6 +1270,15 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
     if IS_MAIN_PROCESS:
         print(f"Inference completed for {os.path.basename(experiment_dir)}")
         print(f"Results saved to: {solo_inference_dir}")
+
+        # Clean up marker file used for pre-init distributed coordination
+        marker_path = os.path.join(experiment_dir, ".solo_inference_dir.path")
+        try:
+            if os.path.exists(marker_path):
+                os.remove(marker_path)
+        except OSError:
+            pass
+
     _dbg("leaving run_inference_for_each_experiment")
 
     # Return both if available
@@ -1280,10 +1290,22 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
 
     return result_dict
 
+def _cleanup_distributed() -> None:
+    """Best-effort teardown so distributed jobs exit without leaking resources."""
+    try:
+        if dist.is_available() and dist.is_initialized():
+            dist.destroy_process_group()
+    except Exception:
+        pass
+
+
 @hydra.main(version_base="1.3", config_path="config/infer_config", config_name="only_inference")
 def main(cfg: DictConfig):
     infer_config = cfg
-    
+
+    # Register distributed cleanup on exit to avoid NCCL warning
+    atexit.register(_cleanup_distributed)
+
     # Get all subdirectories in the inference directory
     inference_dir = infer_config.inference_directory
     if not os.path.exists(inference_dir):
