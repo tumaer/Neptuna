@@ -356,20 +356,18 @@ class Trainer(Trainer_):
         dataset: Dataset,
         description: str,
         batch_size: int,
-        sampler_fn: Callable[[Dataset], torch.utils.data.Sampler] | None = None,
+        sampler_fn: Optional[Callable[[Dataset], torch.utils.data.Sampler]] = None,
         is_training: bool = False,
-        dataloader_key: str | None = None,
+        dataloader_key: Optional[str] = None,
     ) -> DataLoader:
         """Create a [`~torch.utils.data.DataLoader`] from the given dataset."""
-        print (f"USING DATALOADER FROM 5.1.0")
-        data_collator = self.data_collator # !NOTE: Using the default collator from the base class.
+
+        data_collator = self.data_collator
         ## NOTE:commented out code from the base class
         # if is_datasets_available() and isinstance(dataset, datasets.Dataset):
         #     dataset = self._remove_unused_columns(dataset, description=description)
         # else:
         #     data_collator = self._get_collator_with_removed_columns(self.data_collator, description=description)
-        # MPS requrires forking if multiple workers are specified
-        should_fork = torch.backends.mps.is_available() and self.args.dataloader_num_workers > 1
 
         dataloader_params = {
             "batch_size": batch_size,
@@ -377,17 +375,11 @@ class Trainer(Trainer_):
             "num_workers": self.args.dataloader_num_workers,
             "pin_memory": self.args.dataloader_pin_memory,
             "persistent_workers": self.args.dataloader_persistent_workers,
-            "multiprocessing_context": "fork" if should_fork else None,
         }
 
         if not isinstance(dataset, torch.utils.data.IterableDataset):
             if sampler_fn is not None:
-                dataloader_params["sampler"] = sampler_fn(dataset) 
-                ## here we create a custom sampler inside this function, inside this function, the sampler is set to RandomSampler if accelerator_config={"use_seedable_sampler": False} 
-                ## and if accelerator_config={"use_seedable_sampler": True} then SeedableRandomSampler (inside accelerate>data_loader.py, this SeedableRandomSampler is a subclass of RandomSampler and is required for distributed training). 
-                ## (shuffle  CANNOT BE SET to true or false (Pytorch doesnt allow it) if a custom sampler is used..  the sampler is set to RandomSampler which will provide random indices inside __get_item__ function of the dataloader), 
-                ## in a similar way, the _eval_sampler function has a SequentialSampler, regardless of the shuffle being true or false.
-                ## "From pytorch documentation:  If sampler is specified, :attr:`shuffle` must not be specified."
+                dataloader_params["sampler"] = sampler_fn(dataset)
             dataloader_params["drop_last"] = self.args.dataloader_drop_last
             dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
             if is_training:
@@ -405,6 +397,60 @@ class Trainer(Trainer_):
                 self._eval_dataloaders = {dataloader_key: dataloader}
 
         return dataloader
+    # def _get_dataloader(
+    #     self,
+    #     dataset: Dataset,
+    #     description: str,
+    #     batch_size: int,
+    #     sampler_fn: Callable[[Dataset], torch.utils.data.Sampler] | None = None,
+    #     is_training: bool = False,
+    #     dataloader_key: str | None = None,
+    # ) -> DataLoader:
+    #     """Create a [`~torch.utils.data.DataLoader`] from the given dataset."""
+    #     print (f"USING DATALOADER FROM 5.1.0")
+    #     data_collator = self.data_collator # !NOTE: Using the default collator from the base class.
+    #     ## NOTE:commented out code from the base class
+    #     # if is_datasets_available() and isinstance(dataset, datasets.Dataset):
+    #     #     dataset = self._remove_unused_columns(dataset, description=description)
+    #     # else:
+    #     #     data_collator = self._get_collator_with_removed_columns(self.data_collator, description=description)
+    #     # MPS requrires forking if multiple workers are specified
+    #     should_fork = torch.backends.mps.is_available() and self.args.dataloader_num_workers > 1
+
+    #     dataloader_params = {
+    #         "batch_size": batch_size,
+    #         "collate_fn": data_collator,
+    #         "num_workers": self.args.dataloader_num_workers,
+    #         "pin_memory": self.args.dataloader_pin_memory,
+    #         "persistent_workers": self.args.dataloader_persistent_workers,
+    #         "multiprocessing_context": "fork" if should_fork else None,
+    #     }
+
+    #     if not isinstance(dataset, torch.utils.data.IterableDataset):
+    #         if sampler_fn is not None:
+    #             dataloader_params["sampler"] = sampler_fn(dataset) 
+    #             ## here we create a custom sampler inside this function, inside this function, the sampler is set to RandomSampler if accelerator_config={"use_seedable_sampler": False} 
+    #             ## and if accelerator_config={"use_seedable_sampler": True} then SeedableRandomSampler (inside accelerate>data_loader.py, this SeedableRandomSampler is a subclass of RandomSampler and is required for distributed training). 
+    #             ## (shuffle  CANNOT BE SET to true or false (Pytorch doesnt allow it) if a custom sampler is used..  the sampler is set to RandomSampler which will provide random indices inside __get_item__ function of the dataloader), 
+    #             ## in a similar way, the _eval_sampler function has a SequentialSampler, regardless of the shuffle being true or false.
+    #             ## "From pytorch documentation:  If sampler is specified, :attr:`shuffle` must not be specified."
+    #         dataloader_params["drop_last"] = self.args.dataloader_drop_last
+    #         dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
+    #         if is_training:
+    #             dataloader_params["worker_init_fn"] = partial(
+    #                 seed_worker, num_workers=self.args.dataloader_num_workers, rank=self.args.process_index
+    #             )
+
+    #     dataloader = self.accelerator.prepare(DataLoader(dataset, **dataloader_params))
+
+    #     # Store the prepared dataloader for subsequent evaluations if using persistent workers.
+    #     if dataloader_key is not None and self.args.dataloader_persistent_workers:
+    #         if hasattr(self, "_eval_dataloaders"):
+    #             self._eval_dataloaders[dataloader_key] = dataloader
+    #         else:
+    #             self._eval_dataloaders = {dataloader_key: dataloader}
+
+    #     return dataloader
 
     # ##overrides the one in the  base class from transformers library
     # def get_train_dataloader(self) -> DataLoader:
@@ -506,40 +552,40 @@ class Trainer(Trainer_):
     #         dataloader_params["sampler"] = self._get_eval_sampler(eval_dataset)
     
     #  ##overrides the one in the base class from transformers library
-    def get_test_dataloader(self, test_dataset: Dataset) -> DataLoader:
-        """
-        Returns the test [`~torch.utils.data.DataLoader`].
+    # def get_test_dataloader(self, test_dataset: Dataset) -> DataLoader:
+    #     """
+    #     Returns the test [`~torch.utils.data.DataLoader`].
 
-        Subclass and override this method if you want to inject some custom behavior.
+    #     Subclass and override this method if you want to inject some custom behavior.
 
-        Args:
-            test_dataset (`torch.utils.data.Dataset`, *optional*):
-                The test dataset to use. If it is a [`~datasets.Dataset`], columns not accepted by the
-                `model.forward()` method are automatically removed. It must implement `__len__`.
-        """
-        data_collator = self.data_collator
-        print(f"USING DATALOADER FROM 4.50.2")
-        ##commented out code from the base class
-        # if is_datasets_available() and isinstance(test_dataset, datasets.Dataset):
-        #     test_dataset = self._remove_unused_columns(test_dataset, description="test")
-        # else:
-        #     data_collator = self._get_collator_with_removed_columns(data_collator, description="test")
+    #     Args:
+    #         test_dataset (`torch.utils.data.Dataset`, *optional*):
+    #             The test dataset to use. If it is a [`~datasets.Dataset`], columns not accepted by the
+    #             `model.forward()` method are automatically removed. It must implement `__len__`.
+    #     """
+    #     data_collator = self.data_collator
+    #     print(f"USING DATALOADER FROM 4.50.2")
+    #     ##commented out code from the base class
+    #     # if is_datasets_available() and isinstance(test_dataset, datasets.Dataset):
+    #     #     test_dataset = self._remove_unused_columns(test_dataset, description="test")
+    #     # else:
+    #     #     data_collator = self._get_collator_with_removed_columns(data_collator, description="test")
 
-        dataloader_params = {
-            "batch_size": self.args.eval_batch_size,
-            "collate_fn": data_collator,
-            "num_workers": self.args.dataloader_num_workers,
-            "pin_memory": self.args.dataloader_pin_memory,
-            "persistent_workers": self.args.dataloader_persistent_workers,
-        }
+    #     dataloader_params = {
+    #         "batch_size": self.args.eval_batch_size,
+    #         "collate_fn": data_collator,
+    #         "num_workers": self.args.dataloader_num_workers,
+    #         "pin_memory": self.args.dataloader_pin_memory,
+    #         "persistent_workers": self.args.dataloader_persistent_workers,
+    #     }
 
-        if not isinstance(test_dataset, torch.utils.data.IterableDataset):
-            dataloader_params["sampler"] = self._get_eval_sampler(test_dataset)
-            dataloader_params["drop_last"] = self.args.dataloader_drop_last
-            dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
+    #     if not isinstance(test_dataset, torch.utils.data.IterableDataset):
+    #         dataloader_params["sampler"] = self._get_eval_sampler(test_dataset)
+    #         dataloader_params["drop_last"] = self.args.dataloader_drop_last
+    #         dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
 
-        # We use the same batch_size as for eval.
-        return self.accelerator.prepare(DataLoader(test_dataset, **dataloader_params))
+    #     # We use the same batch_size as for eval.
+    #     return self.accelerator.prepare(DataLoader(test_dataset, **dataloader_params))
     ##custom function, not inside transformers library
     def _forward_model_train(self, model, inputs):
         """
@@ -706,7 +752,10 @@ class Trainer(Trainer_):
 
     # Overriden from the base class in transformers library
     def training_step(
-        self, model: nn.Module, inputs: dict[str, Union[torch.Tensor, Any]], num_items_in_batch=None
+        self, 
+        model: nn.Module, 
+        inputs: dict[str, Union[torch.Tensor, Any]], 
+        num_items_in_batch=None
     ) -> torch.Tensor:
         """
         Perform a training step on a batch of inputs.
@@ -753,28 +802,51 @@ class Trainer(Trainer_):
                 self.args.torch_empty_cache_steps is not None
                 and self.state.global_step % self.args.torch_empty_cache_steps == 0
             ):
-                clear_device_cache()
+                if is_torch_xpu_available():
+                    torch.xpu.empty_cache()
+                elif is_torch_mlu_available():
+                    torch.mlu.empty_cache()
+                elif is_torch_musa_available():
+                    torch.musa.empty_cache()
+                elif is_torch_npu_available():
+                    torch.npu.empty_cache()
+                elif is_torch_mps_available():
+                    torch.mps.empty_cache()
+                elif is_torch_hpu_available():
+                    logger.warning(
+                        "`torch_empty_cache_steps` is set but HPU device/backend does not support empty_cache()."
+                    )
+                else:
+                    torch.cuda.empty_cache()
 
             kwargs = {}
 
-            # For LOMO optimizers you need to explicitly use the learnign rate
+            # For LOMO optimizers you need to explicitly use the learning rate
             if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
                 kwargs["learning_rate"] = self._get_learning_rate()
 
             if self.args.n_gpu > 1:
                 loss = loss.mean()  # mean() to average on multi-gpu parallel training
 
-            # Finally we need to normalize the loss for reporting if GA loss bug is not fixed during compute loss
-            if (not self.model_accepts_loss_kwargs or num_items_in_batch is None) and self.compute_loss_func is None:
-                # If the model does not accept loss kwargs, we need to normalize the loss by the number of gradient accumulation steps
-                loss = loss / self.current_gradient_accumulation_steps
+            if self.use_apex:
+                from apex import amp
 
-            # Turning off loss scaling w.r.t. gradient accumulation when DeepSpeed is enabled
-            # https://github.com/huggingface/transformers/pull/35808
-            if self.accelerator.distributed_type == DistributedType.DEEPSPEED:
-                kwargs["scale_wrt_gas"] = False
+                with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                    scaled_loss.backward()
+            else:
+                # Finally we need to normalize the loss for reporting if GA loss bug is not fixed during compute loss
+                if (
+                    not self.model_accepts_loss_kwargs or num_items_in_batch is None
+                ) and self.compute_loss_func is None:
+                    # If the model does not accept loss kwargs, we need to normalize the loss by the number of gradient accumulation steps
+                    loss = loss / self.current_gradient_accumulation_steps
 
-            self.accelerator.backward(loss, **kwargs)
+                # Turning off loss scaling w.r.t. gradient accumulation when DeepSpeed is enabled
+                # https://github.com/huggingface/transformers/pull/35808
+                if self.accelerator.distributed_type == DistributedType.DEEPSPEED:
+                    kwargs["scale_wrt_gas"] = False
+
+                self.accelerator.backward(loss, **kwargs)
 
             return loss.detach()
 
@@ -803,7 +875,7 @@ class Trainer(Trainer_):
         prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_features"]["filter_out_channels"]), *spatial_dims)
         return prediction
     
-    #NOTE: There are two functions for eval_loss: 
+    #NOTE: There are two functions for eval_loss (both not inside transformers library): 
     # 1) compute_eval_loss, one which computes the mse loss of each window of the batch, takes the mean across the batch and assigns the same scalar value to all entries of the batch. 
     # 2) compute_eval_without_loss, no window loss is computed, the predictions are accumulated as the batches get processed and loss is computed inside compute_metrics inside run.py
     def compute_eval_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
@@ -1090,7 +1162,9 @@ class Trainer(Trainer_):
         self._train_batch_size = batch_size
         if self.args.auto_find_batch_size:
             if self.state.train_batch_size != self._train_batch_size:
-                release_memory(self.model_wrapped)
+                from accelerate.utils import release_memory
+
+                (self.model_wrapped,) = release_memory(self.model_wrapped)
                 self.model_wrapped = self.model
 
                 # Check for DeepSpeed *after* the initial pass and modify the config
@@ -1123,15 +1197,26 @@ class Trainer(Trainer_):
             max_steps,
         ) = self.set_initial_training_values(args, train_dataloader, total_train_batch_size)
 
+        num_train_tokens = None
+        if self.args.include_tokens_per_second:
+            num_train_tokens = self.num_tokens(train_dataloader, None if epoch_based else max_steps)
+            # If going by epochs, multiply tokens linearly
+            if len_dataloader is not None and epoch_based:
+                num_train_tokens *= args.num_train_epochs
+            # Otherwise since its steps, we just multiply by grad accum
+            else:
+                num_train_tokens *= args.gradient_accumulation_steps
+
         if DebugOption.UNDERFLOW_OVERFLOW in self.args.debug:
             if self.args.n_gpu > 1:
                 # nn.DataParallel(model) replicates the model, creating new variables and module
                 # references registered here no longer work on other gpus, breaking the module
                 raise ValueError(
-                    "Currently --debug underflow_overflow is not supported under DP. Please use DDP with torchrun"
+                    "Currently --debug underflow_overflow is not supported under DP. Please use DDP"
+                    " (torchrun or torch.distributed.launch (deprecated))."
                 )
             else:
-                DebugUnderflowOverflow(self.model)
+                debug_overflow = DebugUnderflowOverflow(self.model)  # noqa
 
         delay_optimizer_creation = is_sagemaker_mp_enabled() or self.is_fsdp_xla_enabled or self.is_fsdp_enabled
 
@@ -1149,7 +1234,7 @@ class Trainer(Trainer_):
             self.optimizer, self.lr_scheduler = deepspeed_init(self, num_training_steps=max_steps)
 
         if not delay_optimizer_creation:
-            self.create_optimizer()
+            self.create_optimizer_and_scheduler(num_training_steps=max_steps)
 
         self.state = TrainerState(
             stateful_callbacks=[
@@ -1170,7 +1255,7 @@ class Trainer(Trainer_):
 
         # as the model is wrapped, don't use `accelerator.prepare`
         # this is for unhandled cases such as
-        # FSDP-XLA, SageMaker MP/DP, DataParallel
+        # FSDP-XLA, SageMaker MP/DP, DataParallel, IPEX
         use_accelerator_prepare = model is self.model
 
         if use_accelerator_prepare and self.is_fsdp_enabled:
@@ -1184,36 +1269,32 @@ class Trainer(Trainer_):
                 self._fsdp_qlora_plugin_updates()
                 if self.accelerator.mixed_precision != "fp8":
                     self.model = self.accelerator.prepare(self.model)
-            self.create_optimizer()
+            self.create_optimizer_and_scheduler(num_training_steps=max_steps)
 
         # prepare using `accelerator` prepare
         if use_accelerator_prepare:
             self.model.train()
-            if self.is_deepspeed_enabled:
-                from accelerate.utils import DummyScheduler
-
-                if isinstance(self.lr_scheduler, DummyScheduler):
-                    model, self.optimizer, self.lr_scheduler = self.accelerator.prepare(
-                        self.model, self.optimizer, self.lr_scheduler
-                    )
+            if hasattr(self.lr_scheduler, "step"):
+                if self.use_apex:
+                    model = self.accelerator.prepare(self.model)
+                else:
+                    # We should avoid accelerate preparing the model in TP case since we dont need it as it is handled by transformers from_pretrained and also it goes into DDP based preparation.
+                    if self.is_tp_enabled:
+                        self.optimizer = self.accelerator.prepare(self.optimizer)
+                    else:
+                        model, self.optimizer = self.accelerator.prepare(self.model, self.optimizer)
             else:
-                model, self.optimizer = self.accelerator.prepare(self.model, self.optimizer)
-        else:
+                # to handle cases wherein we pass "DummyScheduler" such as when it is specified in DeepSpeed config.
+                model, self.optimizer, self.lr_scheduler = self.accelerator.prepare(
+                    self.model, self.optimizer, self.lr_scheduler
+                )
+
+        elif self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
+            # In this case we are in DDP + LOMO, which should be supported
             self.optimizer = self.accelerator.prepare(self.optimizer)
-
-        # Create scheduler now that the optimizer won't change anymore
-        self.create_scheduler(num_training_steps=max_steps)
-
-        # since DataLoader was Accelerate prepared w/o a model arg in the same call, we now have to complete the DL wrapping for ALST/UlyssesSP, after model has been prepared
-        pc = getattr(self.accelerator, "parallelism_config", None)
-        if pc is not None and pc.sp_backend == "deepspeed" and pc.sp_enabled:
-            train_dataloader = self.accelerator.deepspeed_ulysses_dl_adapter(train_dataloader, model)
 
         if self.is_fsdp_enabled:
             self.model = self.model_wrapped = model
-            # Fix `got mixed torch.Tensor and DTensor` error in model.generate() for FSDP2 with LoRA
-            if hasattr(self.model, "generate"):
-                dist.fsdp.register_fsdp_forward_method(self.model, "generate")
 
         # for the rest of this function `model` is the outside model, whether it was wrapped or not
         if model is not self.model:
@@ -1255,9 +1336,9 @@ class Trainer(Trainer_):
 
         self.state.epoch = 0
         start_time = time.time()
-        self.initial_num_input_tokens_seen_for_session = self.state.num_input_tokens_seen
         epochs_trained = 0
         steps_trained_in_current_epoch = 0
+        steps_trained_progress_bar = None
 
         # Check if continuing training from a checkpoint
         if resume_from_checkpoint is not None and os.path.isfile(
@@ -1295,7 +1376,7 @@ class Trainer(Trainer_):
         self._total_loss_scalar = 0.0
         self._globalstep_last_logged = self.state.global_step
         model.zero_grad()
-        grad_norm: float | None = None
+        grad_norm: Optional[float] = None
         learning_rate = None
         self.control = self.callback_handler.on_train_begin(args, self.state, self.control)
 
@@ -1304,6 +1385,12 @@ class Trainer(Trainer_):
 
         for epoch in range(epochs_trained, num_train_epochs):
             epoch_dataloader = train_dataloader
+            if hasattr(epoch_dataloader, "set_epoch"):
+                epoch_dataloader.set_epoch(epoch)
+
+            # Reset the past mems state at the beginning of each epoch if necessary.
+            if args.past_index >= 0:
+                self._past = None
 
             steps_in_epoch = (
                 len(epoch_dataloader)
@@ -1312,21 +1399,18 @@ class Trainer(Trainer_):
             )
             self.control = self.callback_handler.on_epoch_begin(args, self.state, self.control)
 
-            step = -1
+            if epoch == epochs_trained and resume_from_checkpoint is not None and steps_trained_in_current_epoch == 0:
+                self._load_rng_state(resume_from_checkpoint)
+
             rng_to_sync = False
+            steps_skipped = 0
+            if steps_trained_in_current_epoch > 0:
+                epoch_dataloader = skip_first_batches(epoch_dataloader, steps_trained_in_current_epoch)
+                steps_skipped = steps_trained_in_current_epoch
+                steps_trained_in_current_epoch = 0
+                rng_to_sync = True
 
-            # Handle resumption from checkpoint
-            if epoch == epochs_trained and resume_from_checkpoint is not None:
-                if steps_trained_in_current_epoch > 0 and not args.ignore_data_skip:
-                    epoch_dataloader = skip_first_batches(epoch_dataloader, steps_trained_in_current_epoch)
-                    step = steps_trained_in_current_epoch - 1
-                    rng_to_sync = True
-                elif steps_trained_in_current_epoch == 0:
-                    self._load_rng_state(resume_from_checkpoint)
-
-            if hasattr(epoch_dataloader, "set_epoch"):
-                epoch_dataloader.set_epoch(epoch)
-
+            step = -1
             epoch_iterator = iter(epoch_dataloader)
             # We chunkify the epoch iterator into gradient accumulation steps `n` batches
             remainder = steps_in_epoch % args.gradient_accumulation_steps
@@ -1349,7 +1433,7 @@ class Trainer(Trainer_):
                     # Since we perform prefetching, we need to manually set sync_gradients
                     self.accelerator.gradient_state._set_sync_gradients(do_sync_step)
 
-                    if self.args.include_num_input_tokens_seen != "no":
+                    if self.args.include_num_input_tokens_seen:
                         main_input_name = getattr(self.model, "main_input_name", "input_ids")
                         if main_input_name not in inputs:
                             logger.warning(
@@ -1358,32 +1442,25 @@ class Trainer(Trainer_):
                                 "a `main_input_name` attribute to the model class you are using."
                             )
                         else:
-                            if self.args.include_num_input_tokens_seen == "non_padding":
-                                if "attention_mask" in inputs:
-                                    input_tokens = inputs["attention_mask"].sum()
-                                elif (
-                                    self.processing_class is not None
-                                    and hasattr(self.processing_class, "pad_token_id")
-                                    and self.processing_class.pad_token_id is not None
-                                ):
-                                    input_tokens = (
-                                        inputs[main_input_name] != self.processing_class.pad_token_id
-                                    ).sum()
-                                else:
-                                    logger.warning(
-                                        "Could not determine method to count non-padding tokens, falling back to counting all tokens."
-                                    )
-                                    input_tokens = inputs[main_input_name].numel()
-                            else:
-                                input_tokens = inputs[main_input_name].numel()
-
+                            input_tokens = inputs[main_input_name].numel()
                             input_tokens = torch.tensor(input_tokens, device=self.args.device, dtype=torch.int64)
                             self.state.num_input_tokens_seen += self.accelerator.gather(input_tokens).sum().item()
-
                     if rng_to_sync:
                         self._load_rng_state(resume_from_checkpoint)
                         rng_to_sync = False
-
+                    
+                    # Skip past any already trained steps if resuming training
+                    if steps_trained_in_current_epoch > 0:
+                        steps_trained_in_current_epoch -= 1
+                        if steps_trained_progress_bar is not None:
+                            steps_trained_progress_bar.update(1)
+                        if steps_trained_in_current_epoch == 0:
+                            self._load_rng_state(resume_from_checkpoint)
+                        continue
+                    elif steps_trained_progress_bar is not None:
+                        steps_trained_progress_bar.close()
+                        steps_trained_progress_bar = None
+                    
                     if step % args.gradient_accumulation_steps == 0:
                         self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
 
@@ -1421,6 +1498,14 @@ class Trainer(Trainer_):
                         if args.max_grad_norm is not None and args.max_grad_norm > 0:
                             if is_sagemaker_mp_enabled() and args.fp16:
                                 _grad_norm = self.optimizer.clip_master_grads(args.max_grad_norm)
+                            elif self.use_apex:
+                                from apex import amp
+
+                                # Revert to normal clipping otherwise, handling Apex or full precision
+                                _grad_norm = nn.utils.clip_grad_norm_(
+                                    amp.master_params(self.optimizer),
+                                    args.max_grad_norm,
+                                )
                             else:
                                 grad_norm_context = contextlib.nullcontext
                                 if self.is_tp_enabled:
@@ -1433,7 +1518,10 @@ class Trainer(Trainer_):
                                         args.max_grad_norm,
                                     )
 
-                            if self.accelerator.distributed_type == DistributedType.DEEPSPEED:
+                            if (
+                                is_accelerate_available()
+                                and self.accelerator.distributed_type == DistributedType.DEEPSPEED
+                            ):
                                 grad_norm = model.get_global_grad_norm()
                                 # In some cases the grad norm may not return a float
                                 if hasattr(grad_norm, "item"):
@@ -1464,7 +1552,7 @@ class Trainer(Trainer_):
 
                         model.zero_grad()
                         self.state.global_step += 1
-                        self.state.epoch = epoch + (step + 1) / steps_in_epoch
+                        self.state.epoch = epoch + (step + 1 + steps_skipped) / steps_in_epoch
                         self.control = self.callback_handler.on_step_end(args, self.state, self.control)
                         self._maybe_log_save_evaluate(
                             tr_loss,
@@ -1504,7 +1592,7 @@ class Trainer(Trainer_):
                 tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time, learning_rate=learning_rate
             )
 
-            # Modify the callbacks if the curriculum block changed based on the epoch
+            #! Modify the callbacks if the curriculum block changed based on the epoch (not in the base class).
             # using epoch instead of self.state.epoch because there is a possibility that self.state.epoch is fractional.
             if ((epoch + 1) in self.curriculum_start_epochs) and ((epoch + 1) < num_train_epochs):
                 next_block = self._get_train_strategy_block_for_epoch(epoch + 1)
@@ -1567,8 +1655,6 @@ class Trainer(Trainer_):
                 self.loss_fn = self.get_loss_fn(train_loss_dict_next_block)
                 self.eval_loss_fn = self.get_loss_fn(validation_loss_dict_next_block)
 
-
-
             if DebugOption.TPU_METRICS_DEBUG in self.args.debug:
                 if is_torch_xla_available():
                     # tpu-comment: Logging debug metrics for PyTorch/XLA (compile, execute times, ops, etc.)
@@ -1580,9 +1666,21 @@ class Trainer(Trainer_):
                     )
             if self.control.should_training_stop:
                 break
-
+        
+        if args.past_index and hasattr(self, "_past"):
+            # Clean the state at the end of training
+            delattr(self, "_past")
+        
         logger.info("\n\nTraining completed. Do not forget to share your model on huggingface.co/models =)\n\n")
         if args.load_best_model_at_end and self.state.best_model_checkpoint is not None:
+            # Wait for everyone to get here so we are sure the model has been saved by process 0.
+            if is_torch_xla_available():
+                xm.rendezvous("load_best_model_at_end")
+            elif args.parallel_mode == ParallelMode.DISTRIBUTED:
+                dist.barrier()
+            elif is_sagemaker_mp_enabled():
+                smp.barrier()
+
             self._load_best_model()
 
         # add remaining tr_loss
@@ -1595,6 +1693,7 @@ class Trainer(Trainer_):
             start_time,
             num_samples=num_train_samples,
             num_steps=self.state.max_steps,
+            num_tokens=num_train_tokens,
         )
         self.store_flos()
         metrics["total_flos"] = self.state.total_flos
@@ -1616,11 +1715,12 @@ class Trainer(Trainer_):
                     logger.info(f"Deleting older checkpoint [{checkpoint}] due to args.save_total_limit")
                     shutil.rmtree(checkpoint, ignore_errors=True)
         
-        # Only rank 0 runs end-of-train callbacks; others wait at barriers.
+        #! Only rank 0 runs end-of-train callbacks; others wait at barriers (! this isnot in the base class).
         self.accelerator.wait_for_everyone()
         if self.accelerator.is_main_process:
             self.control = self.callback_handler.on_train_end(args, self.state, self.control)
         self.accelerator.wait_for_everyone()
+        
         # Wait for the checkpoint to be uploaded.
         self._finish_current_push()
 
@@ -1856,7 +1956,7 @@ class Trainer(Trainer_):
             self.output_all_steps = True
     
     ##overrides the one in the base class from transformers library
-    # !still not upto date with the 5.1.0 version of the base class
+    #* introduced compute_eval_loss and compute_eval_without_loss in this function which are not in the base class.
     def prediction_step( 
         self,
         model: nn.Module,
@@ -2178,6 +2278,9 @@ class Trainer(Trainer_):
 
         # After all calls to `.gather_function`, reset to `gather_for_metrics`:
         self.gather_function = self.accelerator.gather_for_metrics
+        if args.past_index and hasattr(self, "_past"):
+            # Clean the state at the end of the evaluation loop
+            delattr(self, "_past")
 
         # Gather all remaining tensors and put them back on the CPU
         all_losses = all_losses.get_arrays() #all_losses.shape = torch.Size([B*(steps+1) , ]) 
@@ -2186,6 +2289,7 @@ class Trainer(Trainer_):
         all_inputs = all_inputs.get_arrays() #all_inputs.shape = torch.Size([B*(steps+1), input_seq_length, C_input, x_resolution, y_resolution, ...]) 
         all_conditioning_inputs = all_conditioning_inputs.get_arrays() #all_conditioning_inputs.shape = torch.Size([B*(steps+1), conditioning_seq_length, C_conditioning, x_resolution, y_resolution, ...]) 
 
+        #! not in the base class
         # Renormalize log-transformed channels in predictions and labels using log statistics to obtain log-transformed channels in physical units.
         # Then take the exponential of the log-transformed channels in physical units to obtain the channels in physical units.
         # Finally, normalize the channels in physical units using the original statistics to get the channels in normalized (physical) units.
@@ -2275,7 +2379,7 @@ class Trainer(Trainer_):
             metrics[f"{metric_key_prefix}_{key}"] = metrics.pop(key)
 
         return EvalLoopOutput(predictions=all_preds, label_ids=all_labels, metrics=metrics, num_samples=num_samples), all_inputs, all_conditioning_inputs
-        ##NOTE: all_inputs is the additional return argument compared to the evaluation_loop() function in the base class.
+        #* all_inputs and all_conditioning_inputs are the additional return arguments compared to the evaluation_loop() function in the base class.
 
     ### overrides the one in the base class from transformers library
     def evaluate(
@@ -2390,7 +2494,7 @@ class Trainer(Trainer_):
             self.state,
             self.control,
             output.metrics,
-            # NOTE: kwargs added to be used in PlotOnEvalAndSaveCallback()
+            #! kwargs added to be used in PlotOnEvalAndSaveCallback() (not in the base class).
             predictions=output.predictions,
             labels=output.label_ids,
             inputs=input,
@@ -2405,7 +2509,7 @@ class Trainer(Trainer_):
         )
 
         self._memory_tracker.stop_and_update_metrics(output.metrics)
-        #NOTE: stop training if NaN is encountered in the loss and set the control flags to False.
+        #! stop training if NaN is encountered in the loss and set the control flags to False (not in the base class).
         if self.control.should_training_stop_due_to_nan and self.state.epoch<self.train_config['num_train_epochs']:
             self.control.should_evaluate = False
             self.control.should_save = False
@@ -2489,9 +2593,6 @@ class Trainer(Trainer_):
             - metrics (`Dict[str, float]`, *optional*): The potential dictionary of metrics (if the dataset contained
               labels).
         """
-        # memory metrics - must set up as early as possible
-        self._memory_tracker.start()
-
         callbacks_backup = list(getattr(self.callback_handler, "callbacks", []))
         # Remove both HF's WandB callback and the custom one if present
         try:
@@ -2504,6 +2605,8 @@ class Trainer(Trainer_):
             pass
 
         try:
+            # memory metrics - must set up as early as possible
+            self._memory_tracker.start()
             test_dataloader = self.get_test_dataloader(test_dataset)
             start_time = time.time()
 
@@ -2511,6 +2614,8 @@ class Trainer(Trainer_):
                 test_dataloader, description="Prediction", ignore_keys=ignore_keys, metric_key_prefix=metric_key_prefix
             )
             total_batch_size = self.args.eval_batch_size * self.args.world_size
+            if f"{metric_key_prefix}_jit_compilation_time" in output.metrics:
+                start_time += output.metrics[f"{metric_key_prefix}_jit_compilation_time"]
             if f"{metric_key_prefix}_model_preparation_time" in output.metrics:
                 start_time += output.metrics[f"{metric_key_prefix}_model_preparation_time"]
             output.metrics.update(
@@ -2532,7 +2637,9 @@ class Trainer(Trainer_):
                 self.callback_handler.callbacks = callbacks_backup
 
     ### overrides the one in the base class from transformers library
-    def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time, learning_rate=None):
+    def _maybe_log_save_evaluate(
+        self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time, learning_rate=None
+        ):
         """
         Handle logging, saving, and evaluation during training with custom plotting support.
 
@@ -2580,14 +2687,14 @@ class Trainer(Trainer_):
             self.log(logs, start_time) #NOTE: logs into wandb for training
         
         metrics = None
-        # RANK = int(os.environ.get("RANK", -1))
-        # IS_MAIN_PROCESS = RANK in [-1, 0]
+        RANK = int(os.environ.get("RANK", -1))
+        IS_MAIN_PROCESS = RANK in [-1, 0]
 
         if self.control.should_evaluate:
             metrics = self._evaluate(trial, ignore_keys_for_eval) 
-            #if IS_MAIN_PROCESS:
-            logger.info(f"Model checkpointing is done based on: eval_{self.args.metric_for_best_model}")
-            ##NOTE: added predictions, labels, inputs as additional return arguments compared to the base class.
+            if IS_MAIN_PROCESS:
+                logger.info(f"Model checkpointing is done based on: eval_{self.args.metric_for_best_model}")
+            #* added predictions, labels, inputs as additional return arguments compared to the base class.
             is_new_best_metric = self._determine_best_metric(metrics=metrics, trial=trial)
 
             if self.args.save_strategy == SaveStrategy.BEST:
@@ -2620,8 +2727,8 @@ class Trainer(Trainer_):
             self._save_checkpoint(model, trial)
             self.control = self.callback_handler.on_save(self.args, self.state, self.control)
 
-        RANK = int(os.environ.get("RANK", -1))
-        if self.control.should_plot and (RANK == 0 or RANK == -1):  
+        #RANK = int(os.environ.get("RANK", -1))
+        if self.control.should_plot and (IS_MAIN_PROCESS):  
             self.control = self.callback_handler.on_plot(self.args, self.state, self.control, is_new_best_metric=is_new_best_metric)
     
     # Override the _save_checkpoint method to include loss configuration saving
@@ -2693,7 +2800,7 @@ class Trainer(Trainer_):
             except Exception as e:
                 logger.warning(f"Failed to save loss_config: {e}")
     
-    ### overrides the one in the base class from transformers library (NOTE: Not updated to 5.1.0 version of the base class)
+    ### overrides the one in the base class from transformers library (NOTE: Not updated yet to 4.56.0 version of the base class)
     def _hp_search_setup(self, trial: Union["optuna.Trial", dict[str, Any]]):
         """
         Set up hyperparameter search with nested configuration support.
@@ -2991,7 +3098,7 @@ class Trainer(Trainer_):
             # Do not interrupt hyper-parameter search if logging fails; just warn.
             logger.warning(f"Failed to save data_config.json: {exc}")
 
-    ### overrides the one in the base class from transformers library (NOTE: Not updated to 5.1.0 version of the base class)
+    ### overrides the one in the base class from transformers library (NOTE: Not updated yet to 4.56.0 version of the base class)
     def hyperparameter_search(
         self,
         hp_space: Optional[Callable[["optuna.Trial"], dict[str, float]]] = None,
