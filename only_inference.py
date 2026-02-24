@@ -621,7 +621,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
     
     # Set global seed from data_config (default 0)
     seed_value = int(data_config.get("seed", 0))
-    set_global_seed(seed_value)
+    set_global_seed(seed_value, deterministic=True)
     
     # Add the model checkpoint path to the model config
     model_config["model_checkpoint_path"] = checkpoint_path
