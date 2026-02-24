@@ -1677,7 +1677,8 @@ class Trainer(Trainer_):
             if is_torch_xla_available():
                 xm.rendezvous("load_best_model_at_end")
             elif args.parallel_mode == ParallelMode.DISTRIBUTED:
-                dist.barrier()
+                pass
+                #*dist.barrier() (!commented to avoidproblems with intel XPUs)
             elif is_sagemaker_mp_enabled():
                 smp.barrier()
 
