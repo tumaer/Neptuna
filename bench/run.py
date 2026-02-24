@@ -106,7 +106,7 @@ def cleanup_distributed(rank: int) -> None:
 
 def run(cfg):
     """Entry-point called by main.py after Hydra config is prepared."""
-    RANK = int(os.environ.get("LOCAL_RANK", -1))
+    RANK = int(os.environ.get("RANK", -1))
     IS_MAIN_PROCESS = RANK in [-1, 0]
     print(f"RANK: {RANK}")
     atexit.register(cleanup_distributed, rank=RANK)

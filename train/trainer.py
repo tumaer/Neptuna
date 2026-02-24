@@ -2050,7 +2050,7 @@ class Trainer(Trainer_):
 
         batch_size = self.args.eval_batch_size
 
-        RANK = int(os.environ.get("LOCAL_RANK", -1))
+        RANK = int(os.environ.get("RANK", -1))
         IS_MAIN_PROCESS = RANK in [-1, 0]
         if IS_MAIN_PROCESS:
             logger.info(f"\n***** Running {description} *****")
@@ -2580,7 +2580,7 @@ class Trainer(Trainer_):
             self.log(logs, start_time) #NOTE: logs into wandb for training
         
         metrics = None
-        # RANK = int(os.environ.get("LOCAL_RANK", -1))
+        # RANK = int(os.environ.get("RANK", -1))
         # IS_MAIN_PROCESS = RANK in [-1, 0]
 
         if self.control.should_evaluate:
@@ -2620,7 +2620,7 @@ class Trainer(Trainer_):
             self._save_checkpoint(model, trial)
             self.control = self.callback_handler.on_save(self.args, self.state, self.control)
 
-        RANK = int(os.environ.get("LOCAL_RANK", -1))
+        RANK = int(os.environ.get("RANK", -1))
         if self.control.should_plot and (RANK == 0 or RANK == -1):  
             self.control = self.callback_handler.on_plot(self.args, self.state, self.control, is_new_best_metric=is_new_best_metric)
     
@@ -2765,7 +2765,7 @@ class Trainer(Trainer_):
                         pass
                 setattr(self.args, final_part, value_for_args)
         #NOTE:add trial number to self.args, which will be passed to WandbCallback 
-        RANK = int(os.environ.get("LOCAL_RANK", -1))
+        RANK = int(os.environ.get("RANK", -1))
         IS_MAIN_PROCESS = RANK in [-1, 0]
 
         if hasattr(trial, "number"):

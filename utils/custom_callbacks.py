@@ -614,7 +614,7 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
         - Includes metadata like epoch, step, and performance indicators
         """
 
-        RANK = int(os.environ.get("LOCAL_RANK", -1))
+        RANK = int(os.environ.get("RANK", -1))
         IS_MAIN_PROCESS = RANK in [-1, 0]
         
         if not IS_MAIN_PROCESS:
