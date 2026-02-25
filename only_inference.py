@@ -453,7 +453,19 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         RANK = int(os.environ.get("RANK", -1))
         IS_MAIN_PROCESS = RANK in [-1, 0]
 
+    def _debug_enabled() -> bool:
+        if os.environ.get("INFERENCE_DEBUG", "").lower() in ("1", "true", "yes"):
+            return True
+        val = infer_config.get("debug", False)
+        if isinstance(val, str):
+            return val.lower() in ("1", "true", "yes")
+        return bool(val)
+
+    _DEBUG = _debug_enabled()
+
     def _dbg(message: str, main_only: bool = False):
+        if not _DEBUG:
+            return
         if main_only and not IS_MAIN_PROCESS:
             return
         print(f"[inference][rank={RANK}] {message}", flush=True)
@@ -778,6 +790,14 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 return new_dir
             counter += 1
     
+    def _write_marker_file(base_dir: str, selected_dir: str) -> None:
+        """Write marker file with solo_inference directory path for this run."""
+        marker_path = os.path.join(base_dir, ".solo_inference_dir.path")
+        temp_marker_path = f"{marker_path}.tmp"
+        with open(temp_marker_path, "w", encoding="utf-8") as marker_file:
+            marker_file.write(selected_dir)
+        os.replace(temp_marker_path, marker_path)
+
     def get_inference_dir_main_process_only(base_dir):
         # In distributed mode, create directory on rank 0 and share path with all ranks.
         if dist.is_available() and dist.is_initialized():
@@ -785,6 +805,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             dir_holder = [None]
             if dist.get_rank() == 0:
                 dir_holder[0] = create_unique_inference_dir(base_dir)
+                _write_marker_file(base_dir, dir_holder[0])
                 _dbg(f"rank0 created solo_inference directory: {dir_holder[0]}")
             dist.broadcast_object_list(dir_holder, src=0)
             _dbg(f"received distributed solo_inference directory: {dir_holder[0]}")
@@ -792,6 +813,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         
         # Before torch.distributed is initialized (e.g., early in torchrun startup),
         # coordinate with env ranks via a marker file written by rank 0.
+        marker_path = os.path.join(base_dir, ".solo_inference_dir.path")
         env_world_size = int(os.environ.get("WORLD_SIZE", "1"))
         env_rank = int(os.environ.get("RANK", "-1"))
         _dbg(
@@ -799,14 +821,10 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             f"env_world_size={env_world_size} env_rank={env_rank}"
         )
         if env_world_size > 1:
-            marker_path = os.path.join(base_dir, ".solo_inference_dir.path")
             _dbg(f"using marker path: {marker_path}")
             if env_rank == 0:
                 selected_dir = create_unique_inference_dir(base_dir)
-                temp_marker_path = f"{marker_path}.tmp"
-                with open(temp_marker_path, "w", encoding="utf-8") as marker_file:
-                    marker_file.write(selected_dir)
-                os.replace(temp_marker_path, marker_path)
+                _write_marker_file(base_dir, selected_dir)
                 _dbg(f"rank0 published solo_inference directory: {selected_dir}")
                 return selected_dir
 
@@ -826,7 +844,9 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                     )
                 time.sleep(0.1)
 
+        # Single-process mode: create dir and marker for each run
         selected_dir = create_unique_inference_dir(base_dir)
+        _write_marker_file(base_dir, selected_dir)
         _dbg(f"single-process mode selected solo_inference directory: {selected_dir}")
         return selected_dir
 
