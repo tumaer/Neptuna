@@ -79,29 +79,18 @@ def load_pretrained_model(model_config):
 def build_train_and_infer_loss(loss_config, data_config, device: torch.device):
     """
     Construct training and eval CompositeLoss from configs.
-    For inference, both are used as metrics -> keep them on CPU.
+    Device for metric computation is passed in (from infer_config.metrics_device).
     """
-    # if loss_config is None:
-    #     return None, None
-
-    # full_train_cfg = OmegaConf.create({
-    #     "loss_config": loss_config,
-    #     "data_config": data_config,
-    # })
-
-    # Always put metric losses on CPU
-    metric_device = torch.device("cpu")
-
     if loss_config is not None:
         train_loss_dict = loss_config.train_loss
-        train_loss_fn = fetch_loss_metric(data_config, train_loss_dict).to(metric_device)
+        train_loss_fn = fetch_loss_metric(data_config, train_loss_dict).to(device)
     else:
         train_loss_fn = None
 
     infer_loss_dict = fetch_infer_loss_dict(data_config)
-    infer_loss_fn = fetch_loss_metric(data_config, infer_loss_dict).to(metric_device)
+    infer_loss_fn = fetch_loss_metric(data_config, infer_loss_dict).to(device)
 
-    return train_loss_fn, infer_loss_fn
+    return train_loss_fn, infer_loss_fn, infer_loss_dict
 
 def get_trainer(
     model_config,
@@ -487,21 +476,24 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
     data_config_path = os.path.join(experiment_dir, "data_config.json")
     _dbg(f"checking data config at: {data_config_path}")
     if not os.path.exists(data_config_path):
-        print(f"Warning: data_config.json not found in {experiment_dir}. Skipping...")
+        if IS_MAIN_PROCESS:
+            print(f"Warning: data_config.json not found in {experiment_dir}. Skipping...")
         return
     
     # Find checkpoint directory
     checkpoint_path = find_checkpoint_path(experiment_dir)
     _dbg(f"resolved checkpoint_path={checkpoint_path}")
     if not checkpoint_path:
-        print(f"Warning: No checkpoint folder found in {experiment_dir}. Skipping...")
+        if IS_MAIN_PROCESS:
+            print(f"Warning: No checkpoint folder found in {experiment_dir}. Skipping...")
         return
     
     # Check if config.json exists in checkpoint
     model_config_path = os.path.join(checkpoint_path, "config.json")
     _dbg(f"checking model config at: {model_config_path}")
     if not os.path.exists(model_config_path):
-        print(f"Warning: config.json not found in {checkpoint_path}. Skipping...")
+        if IS_MAIN_PROCESS:
+            print(f"Warning: config.json not found in {checkpoint_path}. Skipping...")
         return
     
     if IS_MAIN_PROCESS:
@@ -565,15 +557,23 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
     else:
         if IS_MAIN_PROCESS:
             print(f"No loss_config.json found in checkpoint: {loss_config_path}")
-            print("Inference will only compute legacy L1/L2 errors") # ? Check this
+            print("Inference will only compute legacy L1/L2 errors")  # ? Check this
 
     loss_config_for_plotting = strip_validation_loss(loss_config)
 
-    # Determine device once
-    metric_device = torch.device("cpu")
+    # Determine metric device from infer_config.metrics_device
+    _dev_cfg = infer_config.get("metrics_device") if infer_config else None
+    if _dev_cfg is not None and str(_dev_cfg).strip():
+        metric_device = torch.device(str(_dev_cfg).strip())
+    elif hasattr(torch, "xpu") and torch.xpu.is_available():
+        metric_device = torch.device("xpu:0")
+    elif torch.cuda.is_available():
+        metric_device = torch.device("cuda:0")
+    else:
+        metric_device = torch.device("cpu")
 
     # Build loss functions
-    train_loss_fn, infer_loss_fn = build_train_and_infer_loss(
+    train_loss_fn, infer_loss_fn, _ = build_train_and_infer_loss(
         loss_config=loss_config,
         data_config=data_config,
         device=metric_device,
@@ -581,6 +581,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
 
     # Define metrics for trainer
     def compute_metrics_during_inference(eval_pred: EvalPrediction):
+        print("compute_metrics_during_inference: eval_pred is not None")
         preds = eval_pred.predictions
         (
             len_eval_dataloader,
@@ -620,6 +621,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
 
         # 1) Training (composite) loss for logging/checkpointing
         if train_loss_fn is not None:
+            print("compute_metrics_during_inference: train_loss_fn is not None")
             try:
                 with torch.no_grad():
                     composite_loss = train_loss_fn(
@@ -633,11 +635,15 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                     if torch.is_tensor(composite_loss)
                     else composite_loss
                 )
+                print("finished computing composite train loss")
             except Exception as e:
-                print(f"Failed to compute composite loss metrics: {e}")
+                if IS_MAIN_PROCESS:
+                    print(f"Failed to compute composite loss metrics: {e}")
 
         # 2) Evaluation loss components for logging
         if infer_loss_fn is not None:
+            print("compute_metrics_during_inference: infer_loss_fn is not None")
+            print("device: ", metric_device)
             try:
                 with torch.no_grad():
                     _, detailed = infer_loss_fn(
@@ -653,8 +659,10 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                         if torch.is_tensor(component_total)
                         else component_total
                     )
+                print("finished computing infer loss metrics")
             except Exception as e:
-                print(f"Failed to compute evaluation loss metrics: {e}")
+                if IS_MAIN_PROCESS:
+                    print(f"Failed to compute evaluation loss metrics: {e}")
 
         return metrics
     
@@ -683,14 +691,15 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             pass
         return str(value)
 
-    def extract_configs_from_training_args(checkpoint_path):
+    def extract_configs_from_training_args(checkpoint_path, *, _is_main: bool = True):
         training_args_path = os.path.join(checkpoint_path, "training_args.bin")
         if not os.path.exists(training_args_path):
             return None, None
         try:
             args_obj = torch.load(training_args_path, map_location="cpu", weights_only=False)
         except Exception as exc:
-            print(f"Warning: could not load {training_args_path}: {exc}")
+            if _is_main:
+                print(f"Warning: could not load {training_args_path}: {exc}")
             return None, None
 
         # Training config (best-effort reconstruction from HF TrainingArguments)
@@ -704,7 +713,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 "bf16": bool(_safe_get(args_obj, "bf16", False)),
                 "tf32": bool(_safe_get(args_obj, "tf32", False)),
             },
-            "dataloader_num_workers": int(_safe_get(args_obj, "dataloader_num_workers", 0)),
+            "dataloader_num_workers": int(_safe_get(args_obj, "dataloader_num_workers", 2)),
             "gradient_accumulation_steps": int(_safe_get(args_obj, "gradient_accumulation_steps", 1)),
             # Map HF naming to our config naming
             "eval_strategy": _enum_to_str(_safe_get(args_obj, "evaluation_strategy", "steps")),
@@ -861,14 +870,18 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
     # Check if infer_config has filter_features and override if not None
     if "filter_features" in infer_config:
         if infer_config["filter_features"].get("infer_filter_groups") is not None:
-            print(f"Original infer_filter_groups from data_config: {infer_filter_groups}")
+            if IS_MAIN_PROCESS:
+                print(f"Original infer_filter_groups from data_config: {infer_filter_groups}")
             infer_filter_groups = infer_config["filter_features"]["infer_filter_groups"]
-            print(f"** Using infer_filter_groups from inference config: {infer_filter_groups} **")
+            if IS_MAIN_PROCESS:
+                print(f"** Using infer_filter_groups from inference config: {infer_filter_groups} **")
         
         if infer_config["filter_features"].get("infer_filter_frames") is not None:
-            print(f"Original infer_filter_frames from data_config: {infer_filter_frames}")
+            if IS_MAIN_PROCESS:
+                print(f"Original infer_filter_frames from data_config: {infer_filter_frames}")
             infer_filter_frames = infer_config["filter_features"]["infer_filter_frames"]
-            print(f"** Using infer_filter_frames from inference config: {infer_filter_frames} **")
+            if IS_MAIN_PROCESS:
+                print(f"** Using infer_filter_frames from inference config: {infer_filter_frames} **")
     
 
     if infer_config["dataset_directory_path"] is not None:
@@ -909,7 +922,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
     )
     
     trainer = get_trainer(
-        model_config=model_config, 
+        model_config=model_config,
         data_config=data_config,
         output_dir=solo_inference_dir,
         train_config=train_config,
@@ -981,7 +994,8 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 targets,
                 outputs_per_rollout=outputs_per_rollout,
                 include_per_timestep=True,
-                loss_metric=infer_loss_fn
+                loss_metric=infer_loss_fn,
+                device=infer_config.get("metrics_device"),
             )
 
             # Inputs already returned by `trainer.predict`
@@ -1010,7 +1024,8 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             )
             per_step_errors = {}
             for metric_name, values in per_rollout_step_metrics_random.items():
-                print(f"{metric_name} per-step (random start): {values}")
+                if IS_MAIN_PROCESS:
+                    print(f"{metric_name} per-step (random start): {values}")
                 per_step_errors[metric_name] = values
             save_errors_to_structured_csv(per_step_errors, 
                                             solo_inference_dir, 
@@ -1092,7 +1107,8 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 ex_targets = targets[example_idx:example_idx+1]
                 
                 per_rollout_metrics_ex = compute_metrics_for_n_rollouts(
-                    ex_preds, ex_targets, outputs_per_rollout=outputs_per_rollout, loss_metric=infer_loss_fn, include_per_timestep=False
+                    ex_preds, ex_targets, outputs_per_rollout=outputs_per_rollout, loss_metric=infer_loss_fn, include_per_timestep=False,
+                    device=infer_config.get("metrics_device"),
                 )
                 ex_title = f"Per-rollout metrics ({data_config.get('dataset_name', 'dataset')} - random start, example {int(example_idx)})"
                 plot_rollout_metrics(
@@ -1167,12 +1183,13 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 extra_dims = preds.shape[4:]
                 preds = preds.reshape(n, n_rollouts * seq_len, c, *extra_dims) # (N, R*T, C, *spatial)
 
-            per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(   
-                preds, 
-                targets, 
-                outputs_per_rollout=outputs_per_rollout, 
-                include_per_timestep=True, 
-                loss_metric=infer_loss_fn
+            per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(
+                preds,
+                targets,
+                outputs_per_rollout=outputs_per_rollout,
+                include_per_timestep=True,
+                loss_metric=infer_loss_fn,
+                device=infer_config.get("metrics_device"),
             )
         
         # ----------------------------------------------------------
@@ -1196,7 +1213,8 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
 
             errors = {}
             for metric_name, values in per_rollout_step_metrics_ic.items():
-                print(f"{metric_name} per-step (IC start): {values}")
+                if IS_MAIN_PROCESS:
+                    print(f"{metric_name} per-step (IC start): {values}")
                 errors[metric_name] = values
             save_errors_to_structured_csv(errors, solo_inference_dir, channel_names=output_channel_names, file_name="results_structured_ic_start.csv")
 
@@ -1326,10 +1344,16 @@ def main(cfg: DictConfig):
     # Register distributed cleanup on exit to avoid NCCL warning
     atexit.register(_cleanup_distributed)
 
+    if dist.is_available() and dist.is_initialized():
+        IS_MAIN_PROCESS = dist.get_rank() == 0
+    else:
+        IS_MAIN_PROCESS = int(os.environ.get("RANK", -1)) in [-1, 0]
+
     # Get all subdirectories in the inference directory
     inference_dir = infer_config.inference_directory
     if not os.path.exists(inference_dir):
-        print(f"Error: Inference directory {inference_dir} does not exist!")
+        if IS_MAIN_PROCESS:
+            print(f"Error: Inference directory {inference_dir} does not exist!")
         return
     
     # Discover experiment directories supporting both flat and checkpoint_prefix layouts
@@ -1378,12 +1402,14 @@ def main(cfg: DictConfig):
     experiment_dirs = discover_experiment_dirs(inference_dir)
     
     if not experiment_dirs:
-        print(f"No experiment directories found in {inference_dir}")
+        if IS_MAIN_PROCESS:
+            print(f"No experiment directories found in {inference_dir}")
         return
-    
-    print(f"Found {len(experiment_dirs)} experiment directories:")
-    for exp_dir in experiment_dirs:
-        print(f"  - {os.path.basename(exp_dir)}")
+
+    if IS_MAIN_PROCESS:
+        print(f"Found {len(experiment_dirs)} experiment directories:")
+        for exp_dir in experiment_dirs:
+            print(f"  - {os.path.basename(exp_dir)}")
     
     # Process each experiment directory and collect IC-start metrics for multi-run overlay (no aggregation)
     runs_step_metrics_random_start = {}
@@ -1409,9 +1435,11 @@ def main(cfg: DictConfig):
                     with open(model_config_path, 'r') as f:
                         run_config = json.load(f)
                     run_configs[os.path.basename(experiment_dir)] = run_config
-                    print(f"Loaded config for {os.path.basename(experiment_dir)}")
+                    if IS_MAIN_PROCESS:
+                        print(f"Loaded config for {os.path.basename(experiment_dir)}")
         except Exception as e:
-            print(f"Error loading config for {experiment_dir}: {str(e)}")
+            if IS_MAIN_PROCESS:
+                print(f"Error loading config for {experiment_dir}: {str(e)}")
 
     # Create a single overlay plot of all runs in inference_dir if IC metrics are available
     # Here the overall all-channel combinedmetrics of each run are plotted and NOT the channel-wise metrics
@@ -1440,9 +1468,10 @@ def main(cfg: DictConfig):
             filename="rollout_metrics_random_start_bar_chart.png"
         )
 
-    print(f"\n{'='*60}")
-    print("All inference runs completed!")
-    print(f"{'='*60}")
+    if IS_MAIN_PROCESS:
+        print(f"\n{'='*60}")
+        print("All inference runs completed!")
+        print(f"{'='*60}")
 
 
 if __name__ == "__main__":

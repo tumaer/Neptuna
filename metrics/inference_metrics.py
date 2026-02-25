@@ -13,6 +13,7 @@ def compute_metrics_for_n_rollouts(
     include_per_timestep: bool = False,
     compute_metrics=None,
     loss_metric: Optional[LossComponent] = None,
+    device: Optional[str] = None,
 ) -> Dict[str, Dict[str, np.ndarray]]:
 
     # --- normalization & checks ---
@@ -57,12 +58,20 @@ def compute_metrics_for_n_rollouts(
     # ------------------------------------------------------------------
     # Compute metrics using LossComponent / CompositeLoss
     # ------------------------------------------------------------------
-    device = torch.device("cpu")
+    # Use configured device, or auto-select: cuda:0 / xpu:0 if available, else cpu
+    if device is not None and str(device).strip():
+        dev = torch.device(str(device).strip())
+    elif hasattr(torch, "xpu") and torch.xpu.is_available():
+        dev = torch.device("xpu:0")
+    elif torch.cuda.is_available():
+        dev = torch.device("cuda:0")
+    else:
+        dev = torch.device("cpu")
 
-    loss_metric = loss_metric.to(device)
+    loss_metric = loss_metric.to(dev)
 
-    preds_tensor = torch.as_tensor(preds_arr, dtype=torch.float32, device=device)
-    targets_tensor = torch.as_tensor(targets_arr, dtype=torch.float32, device=device)
+    preds_tensor = torch.as_tensor(preds_arr, dtype=torch.float32, device=dev)
+    targets_tensor = torch.as_tensor(targets_arr, dtype=torch.float32, device=dev)
 
     B, T_flat, C = preds_tensor.shape[:3]
 
@@ -102,7 +111,7 @@ def compute_metrics_for_n_rollouts(
             loss_key = comp.__class__.__name__
 
             # Overall per-sample
-            per_sample_overall = torch.zeros(bsz, device=device)
+            per_sample_overall = torch.zeros(bsz, device=dev)
             try:
                 loss_registry_entry = get_loss_entry(loss_key)
             except ValueError:
@@ -134,7 +143,7 @@ def compute_metrics_for_n_rollouts(
                 total_loss = (
                     total_loss.detach()
                     if torch.is_tensor(total_loss)
-                    else torch.tensor(total_loss, device=device)
+                    else torch.tensor(total_loss, device=dev)
                 )
 
                 if use_component_weights:
@@ -177,8 +186,8 @@ def compute_metrics_for_n_rollouts(
         # -----------------------------------------------------
         metric_dim = len(component_names_top) if use_component_weights_top else C
 
-        per_sample_channel_metric = torch.zeros(B, num_rollouts, metric_dim, device=device)
-        per_sample_overall_metric = torch.zeros(B, num_rollouts, device=device)
+        per_sample_channel_metric = torch.zeros(B, num_rollouts, metric_dim, device=dev)
+        per_sample_overall_metric = torch.zeros(B, num_rollouts, device=dev)
 
         for r in range(num_rollouts):
             t_start = r * outputs_per_rollout
@@ -231,8 +240,8 @@ def compute_metrics_for_n_rollouts(
         # B) Optional per-timestep metrics, shape -> (T_flat, C+1)
         # -----------------------------------------------------
         if include_per_timestep:
-            per_sample_channel_t = torch.zeros(B, T_flat, metric_dim, device=device)
-            per_sample_overall_t = torch.zeros(B, T_flat, device=device)
+            per_sample_channel_t = torch.zeros(B, T_flat, metric_dim, device=dev)
+            per_sample_overall_t = torch.zeros(B, T_flat, device=dev)
 
             for t in range(T_flat):
                 step_preds = preds_tensor[:, t : t + 1, ...]
