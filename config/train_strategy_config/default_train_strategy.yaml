@@ -1,7 +1,7 @@
 ########################################################
 # Training strategy configuration
 ########################################################
-num_train_epochs: 0.1
+num_train_epochs: 1
 metric_for_best_model:
   # - type: L2Loss
   #   weight: 1.0         
@@ -48,29 +48,29 @@ curriculum:
             - type: L2Loss
               weight: 0.3
 
-  - name: block_2
-    start_epoch: 0.1
-    train_loss:
-      components:
-        - type: RMSE
-          weight: 0.5
-        - type: H1SemiNorm
-          weight: 0.5
-      train_loss_weighting_strategy:
-        enabled: true  # Set to true to enable
-        type: SoftAdapt
-        loss_source: 'eval' # 'train' OR 'eval'
+  # - name: block_2
+  #   start_epoch: 2
+  #   train_loss:
+  #     components:
+  #       - type: RMSE
+  #         weight: 0.5
+  #       - type: H1SemiNorm
+  #         weight: 0.5
+  #     train_loss_weighting_strategy:
+  #       enabled: false  # Set to true to enable
+  #       type: SoftAdapt
+  #       loss_source: 'eval' # 'train' OR 'eval'
       
-    validation_loss: #TODO: Add loss components from train loss mertrics of this block in validation
-      components:
-        - type: WaveletBinnedRMSE
-          weight: 1.0
-        - type: PearsonCorrelationLoss
-          weight: 1.0
-        - type: RMSE
-          weight: 1.0
-        - type: H1SemiNorm
-          weight: 1.0
+  #   validation_loss: #TODO: Add loss components from train loss mertrics of this block in validation
+  #     components:
+  #       - type: WaveletBinnedRMSE
+  #         weight: 1.0
+  #       - type: PearsonCorrelationLoss
+  #         weight: 1.0
+  #       - type: RMSE
+  #         weight: 1.0
+  #       - type: H1SemiNorm
+  #         weight: 1.0
 
   # - name: block_3
   #   start_epoch: 4

@@ -1816,26 +1816,26 @@ class Trainer(Trainer_):
             if losses is not None:
                 all_losses.add(losses)
             if inputs_decode is not None:
-                if not self.args.batch_eval_metrics or description == "Prediction":
-                    all_inputs.add(inputs_decode)
+                #if not self.args.batch_eval_metrics or description == "Prediction":
+                all_inputs.add(inputs_decode)
             if conditioning_input_decode is not None:
-                if not self.args.batch_eval_metrics or description == "Prediction":
-                    all_conditioning_inputs.add(conditioning_input_decode)
+                #if not self.args.batch_eval_metrics or description == "Prediction":
+                all_conditioning_inputs.add(conditioning_input_decode)
             if logits is not None:
-                if not self.args.batch_eval_metrics or description == "Prediction":
-                    all_preds.add(logits)
+                #if not self.args.batch_eval_metrics or description == "Prediction":
+                all_preds.add(logits)
             if labels is not None:
-                if not self.args.batch_eval_metrics or description == "Prediction":
-                    all_labels.add(labels)
+                #if not self.args.batch_eval_metrics or description == "Prediction":
+                all_labels.add(labels)
 
             self.control = self.callback_handler.on_prediction_step(args, self.state, self.control)
 
-            if self.args.batch_eval_metrics:
-                #not implemented
-                pass
+            # if self.args.batch_eval_metrics:
+            #     #not implemented
+            #     pass
 
             # Gather all tensors and put them back on the CPU if we have done enough accumulation steps.
-            elif args.eval_accumulation_steps is not None and (step + 1) % args.eval_accumulation_steps == 0:
+            if args.eval_accumulation_steps is not None and (step + 1) % args.eval_accumulation_steps == 0:
                 all_losses.to_cpu_and_numpy()
                 all_preds.to_cpu_and_numpy()
                 all_labels.to_cpu_and_numpy()
@@ -2186,7 +2186,7 @@ class Trainer(Trainer_):
         # Main evaluation loop
         #########################################################
         for step, inputs in enumerate(dataloader):
-            print(f"Step {step} of {len(dataloader)}")
+            #print(f"Step {step} of {len(dataloader)}")
             # Update the observed num examples
             observed_batch_size = find_batch_size(inputs)
             if observed_batch_size is not None:
@@ -2216,32 +2216,32 @@ class Trainer(Trainer_):
                 #NOTE: repeat is used to ensure that each window of the batch owns the same loss value.
                 all_losses.add(losses)
             if inputs_decode is not None:
-                inputs_decode = self.accelerator.pad_across_processes(inputs_decode, dim=1, pad_index=-100)
+                #inputs_decode = self.accelerator.pad_across_processes(inputs_decode, dim=1, pad_index=-100)
                 inputs_decode = self.gather_function(inputs_decode)
-                if not self.args.batch_eval_metrics or description == "Prediction":
-                    all_inputs.add(inputs_decode)
+                #if not self.args.batch_eval_metrics or description == "Prediction":
+                all_inputs.add(inputs_decode)
             #NOTE: The following is added on top of the base class
             #########################################################
             if conditioning_input_decode is not None:
-                conditioning_input_decode = self.accelerator.pad_across_processes(conditioning_input_decode, dim=1, pad_index=-100)
+                #conditioning_input_decode = self.accelerator.pad_across_processes(conditioning_input_decode, dim=1, pad_index=-100)
                 conditioning_input_decode = self.gather_function(conditioning_input_decode)
-                if not self.args.batch_eval_metrics or description == "Prediction":
-                    all_conditioning_inputs.add(conditioning_input_decode)
+                #if not self.args.batch_eval_metrics or description == "Prediction":
+                all_conditioning_inputs.add(conditioning_input_decode)
             #########################################################
-            if labels is not None:
+            #if labels is not None:
                 # Pad labels here, preparing for preprocess_logits_for_metrics in next logits block.
-                labels = self.accelerator.pad_across_processes(labels, dim=1, pad_index=-100)
+                #labels = self.accelerator.pad_across_processes(labels, dim=1, pad_index=-100)
             if logits is not None:
-                logits = self.accelerator.pad_across_processes(logits, dim=1, pad_index=-100)
-                if self.preprocess_logits_for_metrics is not None:
-                    logits = self.preprocess_logits_for_metrics(logits, labels)
-                logits = self.gather_function(logits)
-                if not self.args.batch_eval_metrics or description == "Prediction":
-                    all_preds.add(logits)
+                #logits = self.accelerator.pad_across_processes(logits, dim=1, pad_index=-100)
+                # if self.preprocess_logits_for_metrics is not None:
+                #     logits = self.preprocess_logits_for_metrics(logits, labels)
+                gathered_logits = self.gather_function(logits)
+                #if not self.args.batch_eval_metrics or description == "Prediction":
+                all_preds.add(gathered_logits)
             if labels is not None:
-                labels = self.gather_function(labels)
-                if not self.args.batch_eval_metrics or description == "Prediction":
-                    all_labels.add(labels)
+                gathered_labels = self.gather_function(labels)
+                #if not self.args.batch_eval_metrics or description == "Prediction":
+                all_labels.add(gathered_labels)
 
             self.control = self.callback_handler.on_prediction_step(args, self.state, self.control)
 
@@ -2264,18 +2264,18 @@ class Trainer(Trainer_):
                     torch.xpu.empty_cache()
 
             # Gather all tensors and put them back on the CPU if we have done enough accumulation steps.
-            elif args.eval_accumulation_steps is not None and (step + 1) % args.eval_accumulation_steps == 0:
+            if args.eval_accumulation_steps is not None and (step + 1) % args.eval_accumulation_steps == 0:
                 all_losses.to_cpu_and_numpy()
                 all_preds.to_cpu_and_numpy()
                 all_labels.to_cpu_and_numpy()
                 all_inputs.to_cpu_and_numpy()
                 all_conditioning_inputs.to_cpu_and_numpy()
 
-                del losses, logits, labels, inputs
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                if torch.xpu.is_available():
-                    torch.xpu.empty_cache()
+                # del losses, logits, labels, inputs
+                # if torch.cuda.is_available():
+                #     torch.cuda.empty_cache()
+                # if torch.xpu.is_available():
+                #     torch.xpu.empty_cache()
 
         # After all calls to `.gather_function`, reset to `gather_for_metrics`:
         self.gather_function = self.accelerator.gather_for_metrics
@@ -2358,6 +2358,7 @@ class Trainer(Trainer_):
             metrics = self.compute_metrics(
                 EvalPrediction(predictions=all_preds, label_ids=all_labels, **eval_set_kwargs)
             )
+        
         elif metrics is None:
             metrics = {}
 
@@ -2443,6 +2444,7 @@ class Trainer(Trainer_):
         )
         # Record the wall-clock duration of the evaluation loop (in seconds)
         output.metrics[f"{metric_key_prefix}_eval_loop_time"] = round(time.time() - eval_loop_start_time, 4)
+        #print(f"eval_loop_time: {output.metrics[f'{metric_key_prefix}_eval_loop_time']}")
         #########################################################
         total_batch_size = self.args.eval_batch_size * self.args.world_size
         if f"{metric_key_prefix}_jit_compilation_time" in output.metrics:
