@@ -6,6 +6,6 @@ filter_features:
   infer_filter_frames: [null, null]
   infer_filter_groups: null
 n_infer_rollouts: 2
-n_infer_plot_examples: 1
+n_infer_plot_examples: 0
 infer_from_random_timestep: False
 infer_from_ic: True

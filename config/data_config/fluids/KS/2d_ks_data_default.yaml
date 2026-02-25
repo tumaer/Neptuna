@@ -6,7 +6,7 @@ dimension: 2
 grid_resolution: null 
 eval_groups: ['seed 000021']
 is_steady_state_prediction: False
-sequence_info: [2, 1, 10]
+sequence_info: [3, 2, 5]
 # available channels for KS: ['velocity']
 filter_features:
   train_filter_frames: null
