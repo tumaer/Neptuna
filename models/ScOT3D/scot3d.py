@@ -820,6 +820,8 @@ class ScOT3DLayer(nn.Module):
             self.shift_size = tuple(use_shift_size)
 
 
+
+    @lru_cache()
     def get_attn_mask_3d(self, T, H, W, window_size, shift_size, dtype, device):
 
         """
@@ -1544,7 +1546,8 @@ class ScOT3D(PreTrainedModel):
             # )
 
 
-        # if self.config.coord_features: # Cancel this. I prefer Relative position embedding in Attenstion.
+        # if self.config.coord_features: # Cancel this. I prefer Relative position embedding in Attenstion. # TODO: must be added. not the same as abs po embedding. that is learnable param but this is fixed. 
+                                                                                                                    # check if you need 2d or 3d meshgrid.
         #     coord_feat = threed_meshgrid(list(input_data.shape), input_data.device)
         #     input_data = torch.cat((input_data, coord_feat), dim=1)
 
