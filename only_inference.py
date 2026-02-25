@@ -454,11 +454,11 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         IS_MAIN_PROCESS = RANK in [-1, 0]
 
     def _debug_enabled() -> bool:
-        if os.environ.get("INFERENCE_DEBUG", "").lower() in ("1", "true", "yes"):
+        if os.environ.get("INFERENCE_DEBUG", "").lower() in ("1", "True", "true"):
             return True
         val = infer_config.get("debug", False)
         if isinstance(val, str):
-            return val.lower() in ("1", "true", "yes")
+            return val.lower() in ("1", "True", "true")
         return bool(val)
 
     _DEBUG = _debug_enabled()
