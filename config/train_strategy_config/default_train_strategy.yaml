@@ -2,6 +2,7 @@
 # Training strategy configuration
 ########################################################
 num_train_epochs: 1
+batch_eval_metrics: True
 metric_for_best_model:
   # - type: L2Loss
   #   weight: 1.0         

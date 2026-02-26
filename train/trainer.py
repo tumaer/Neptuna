@@ -1841,11 +1841,12 @@ class Trainer(Trainer_):
                 all_labels.to_cpu_and_numpy()
                 all_inputs.to_cpu_and_numpy()
                 all_conditioning_inputs.to_cpu_and_numpy()
-                del losses, logits, labels, inputs
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                if torch.xpu.is_available():
-                    torch.xpu.empty_cache()
+                if not self.args.batch_eval_metrics:
+                    del losses, logits, labels, inputs
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    if torch.xpu.is_available():
+                        torch.xpu.empty_cache()
 
         all_losses = all_losses.get_arrays()
         all_preds = all_preds.get_arrays()
@@ -2185,6 +2186,7 @@ class Trainer(Trainer_):
         #########################################################
         # Main evaluation loop
         #########################################################
+        #print length of dataloader
         for step, inputs in enumerate(dataloader):
             #print(f"Step {step} of {len(dataloader)}")
             # Update the observed num examples
@@ -2270,12 +2272,13 @@ class Trainer(Trainer_):
                 all_labels.to_cpu_and_numpy()
                 all_inputs.to_cpu_and_numpy()
                 all_conditioning_inputs.to_cpu_and_numpy()
-
-                # del losses, logits, labels, inputs
-                # if torch.cuda.is_available():
-                #     torch.cuda.empty_cache()
-                # if torch.xpu.is_available():
-                #     torch.xpu.empty_cache()
+        
+                if not self.args.batch_eval_metrics:
+                    del losses, logits, labels, inputs
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    if torch.xpu.is_available():
+                        torch.xpu.empty_cache()
 
         # After all calls to `.gather_function`, reset to `gather_for_metrics`:
         self.gather_function = self.accelerator.gather_for_metrics
