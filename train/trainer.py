@@ -2183,6 +2183,42 @@ class Trainer(Trainer_):
 
         # Will be useful when we have an iterable dataset so don't know its length.
         observed_num_examples = 0
+
+        #! not in the base class
+        # Renormalize log-transformed channels in predictions and labels using log statistics to obtain log-transformed channels in physical units.
+        # Then take the exponential of the log-transformed channels in physical units to obtain the channels in physical units.
+        # Finally, normalize the channels in physical units using the original statistics to get the channels in normalized (physical) units.
+        log_channels = self.data_config.get("log_transform_channels") or []
+        #if log_channels:
+        dim = self.data_config.get("dimension")
+        channel_axis = -2 if dim == 1 else (-3 if dim == 2 else -4)
+        channel_names = getattr(eval_dataset, "output_channels")
+        norm_stats = self.data_config.get("data_normalization_stats")
+        norm_strategy = self.data_config.get("data_normalization_strategy")
+        
+        def _apply_log_inverse(arr, log_channels, channel_names, norm_stats, norm_strategy, channel_axis):
+            for ch_name in log_channels:
+                if (
+                    ch_name not in channel_names
+                    or norm_stats is None
+                    or norm_strategy is None
+                ):
+                    continue
+                stats_key = f"log_{ch_name}"
+                if stats_key not in norm_stats or ch_name not in norm_stats:
+                    continue
+                ch_idx = channel_names.index(ch_name)
+                slicer = [slice(None)] * arr.ndim
+                slicer[channel_axis] = ch_idx
+                log_space = re_normalize_data(  #Ex: Here we obtain log(Density) in physical units 
+                    arr[tuple(slicer)], norm_stats[stats_key], norm_strategy
+                )
+                physical_space = torch.exp(log_space) #Ex: Here we obtain Density in physical units
+                physical_space_normalized = normalize_data(
+                    physical_space, norm_stats[ch_name], norm_strategy #Ex: Here we normalize Density 
+                )
+                arr[tuple(slicer)] = physical_space_normalized #Ex: Here we store the normalized Density
+            return arr
         #########################################################
         # Main evaluation loop
         #########################################################
@@ -2237,10 +2273,14 @@ class Trainer(Trainer_):
                 #logits = self.accelerator.pad_across_processes(logits, dim=1, pad_index=-100)
                 # if self.preprocess_logits_for_metrics is not None:
                 #     logits = self.preprocess_logits_for_metrics(logits, labels)
+                #if log_channels:
+                logits = _apply_log_inverse(logits, log_channels, channel_names, norm_stats, norm_strategy, channel_axis)
                 gathered_logits = self.gather_function(logits)
+
                 #if not self.args.batch_eval_metrics or description == "Prediction":
                 all_preds.add(gathered_logits)
             if labels is not None:
+                labels = _apply_log_inverse(labels, log_channels, channel_names, norm_stats, norm_strategy, channel_axis)
                 gathered_labels = self.gather_function(labels)
                 #if not self.args.batch_eval_metrics or description == "Prediction":
                 all_labels.add(gathered_labels)
@@ -2293,45 +2333,8 @@ class Trainer(Trainer_):
         all_inputs = all_inputs.get_arrays() #all_inputs.shape = torch.Size([B*(steps+1), input_seq_length, C_input, x_resolution, y_resolution, ...]) 
         all_conditioning_inputs = all_conditioning_inputs.get_arrays() #all_conditioning_inputs.shape = torch.Size([B*(steps+1), conditioning_seq_length, C_conditioning, x_resolution, y_resolution, ...]) 
 
-        #! not in the base class
-        # Renormalize log-transformed channels in predictions and labels using log statistics to obtain log-transformed channels in physical units.
-        # Then take the exponential of the log-transformed channels in physical units to obtain the channels in physical units.
-        # Finally, normalize the channels in physical units using the original statistics to get the channels in normalized (physical) units.
-        log_channels = self.data_config.get("log_transform_channels") or []
-        if log_channels:
-            dim = self.data_config.get("dimension")
-            channel_axis = -2 if dim == 1 else (-3 if dim == 2 else -4)
-            channel_names = getattr(eval_dataset, "output_channels")
-            norm_stats = self.data_config.get("data_normalization_stats")
-            norm_strategy = self.data_config.get("data_normalization_strategy")
-
-            def _apply_log_inverse(arr):
-                for ch_name in log_channels:
-                    if (
-                        ch_name not in channel_names
-                        or norm_stats is None
-                        or norm_strategy is None
-                    ):
-                        continue
-                    stats_key = f"log_{ch_name}"
-                    if stats_key not in norm_stats or ch_name not in norm_stats:
-                        continue
-                    ch_idx = channel_names.index(ch_name)
-                    slicer = [slice(None)] * arr.ndim
-                    slicer[channel_axis] = ch_idx
-                    log_space = re_normalize_data(  #Ex: Here we obtain log(Density) in physical units 
-                        arr[tuple(slicer)], norm_stats[stats_key], norm_strategy
-                    )
-                    physical_space = np.exp(log_space) #Ex: Here we obtain Density in physical units
-                    physical_space_normalized = normalize_data(
-                        physical_space, norm_stats[ch_name], norm_strategy #Ex: Here we normalize Density 
-                    )
-                    arr[tuple(slicer)] = physical_space_normalized #Ex: Here we store the normalized Density
-                return arr
-
-            all_preds = _apply_log_inverse(all_preds)
-            all_labels = _apply_log_inverse(all_labels)
-
+        # all_preds = _apply_log_inverse(all_preds, log_channels, channel_names, norm_stats, norm_strategy, channel_axis)
+        # all_labels = _apply_log_inverse(all_labels, log_channels, channel_names, norm_stats, norm_strategy, channel_axis)
 
         # Number of samples
         if has_length(eval_dataset):
