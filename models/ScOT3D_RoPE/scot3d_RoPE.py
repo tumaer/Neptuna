@@ -642,7 +642,9 @@ class ScOTAttention3D(nn.Module):
         # shapes: (B_, num_heads, N, head_size)
 
 
-        # cosine attention: Q · K^T 
+        # RoPE 
+
+        # attention: Q · R(n-m) . K^T 
         attention_scores = \
         nn.functional.normalize(query_layer, dim=-1) @ \
         nn.functional.normalize(key_layer, dim=-1).transpose(-2, -1).contiguous() # shape: (B_, num_heads, N, N) 
@@ -1546,8 +1548,7 @@ class ScOT3D(PreTrainedModel):
             # )
 
 
-        # if self.config.coord_features: # Cancel this. I prefer Relative position embedding in Attenstion. # TODO: must be added. not the same as abs po embedding. that is learnable param but this is fixed. 
-                                                                                                                    # check if you need 2d or 3d meshgrid.
+        # if self.config.coord_features: # Cancel this. I prefer Relative position embedding in Attenstion.
         #     coord_feat = threed_meshgrid(list(input_data.shape), input_data.device)
         #     input_data = torch.cat((input_data, coord_feat), dim=1)
 

@@ -175,9 +175,10 @@ def main() -> None:
         "--model",
         type=str,
         default=None,
+        # default="scot_rope",
         help=(
             "Filter by model name (e.g., unet, fno, resnet, dilresnet, "
-            "deeponet_cnn, deeponet_ffn, deeponet_resnet, cno, scot, vit)"
+            "deeponet_cnn, deeponet_ffn, deeponet_resnet, cno, scot, scot3d, scotrope, vit)"
         ),
     )
     args = parser.parse_args()
