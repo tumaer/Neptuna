@@ -188,6 +188,11 @@ class Trainer(Trainer_):
         self._weight_sub_components = self.train_strategy_config.curriculum[0].train_loss.train_loss_weighting_strategy.get("weight_sub_components", False)
         self._loss_history_interval = self.train_strategy_config.curriculum[0].train_loss.train_loss_weighting_strategy.get("loss_history_interval", 1)
         self._grad_history_interval = self.train_strategy_config.curriculum[0].train_loss.train_loss_weighting_strategy.get("grad_history_interval", 1)
+        
+        # Configuration for gradient statistics computation
+        self._grad_stats_last_layer_only = self.train_strategy_config.curriculum[0].train_loss.train_loss_weighting_strategy.get("grad_stats_last_layer_only", False)
+        self._grad_stats_layer_pattern = self.train_strategy_config.curriculum[0].train_loss.train_loss_weighting_strategy.get("grad_stats_layer_pattern", None)
+        self._grad_stats_num_last_params = self.train_strategy_config.curriculum[0].train_loss.train_loss_weighting_strategy.get("grad_stats_num_last_params", 2)
 
         # Inject a reference to this Trainer into all registered callbacks so they can
         # access training context (datasets, model, args, etc.).
@@ -665,6 +670,47 @@ class Trainer(Trainer_):
             self._component_losses_for_grad = {}
         self._component_losses_for_grad[component_name] = component_loss
 
+    def _get_params_for_grad_stats(self, model):
+        """
+        Get the parameters to use for gradient statistics computation.
+        
+        Returns an iterable of (name, param) tuples based on configuration:
+        - If grad_stats_last_layer_only is False: returns all parameters
+        - If grad_stats_layer_pattern is specified: returns parameters matching the pattern
+        - Otherwise: returns the last N parameters (default N=2 for weight and bias of final layer)
+        
+        Parameters
+        ----------
+        model : torch.nn.Module
+            The model whose parameters to filter.
+            
+        Returns
+        -------
+        List[Tuple[str, torch.nn.Parameter]]
+            List of (name, parameter) tuples to use for gradient statistics.
+        """
+        all_params = list(model.named_parameters())
+        
+        if not self._grad_stats_last_layer_only:
+            # Use all parameters
+            return all_params
+        
+        if self._grad_stats_layer_pattern is not None:
+            # Filter by pattern (e.g., "output", "head", "final")
+            pattern = self._grad_stats_layer_pattern.lower()
+            filtered = [(name, param) for name, param in all_params if pattern in name.lower()]
+            if filtered:
+                return filtered
+            else:
+                logger.warning(
+                    f"No parameters matched pattern '{self._grad_stats_layer_pattern}'. "
+                    f"Falling back to last {self._grad_stats_num_last_params} parameters."
+                )
+        
+        # Use last N parameters
+        n = min(self._grad_stats_num_last_params, len(all_params))
+        return all_params[-n:]
+
     def _compute_component_gradient_stats(self):
         """
         Compute gradient statistics of each component w.r.t. model parameters.
@@ -682,6 +728,9 @@ class Trainer(Trainer_):
         stat_names = set(self._grad_stat_names)
         model = self.model
 
+        # Get filtered parameters for gradient statistics
+        params_for_stats = self._get_params_for_grad_stats(model)
+        
         # Store current gradients if any exist
         saved_grads = {}
         for name, param in model.named_parameters():
@@ -702,7 +751,8 @@ class Trainer(Trainer_):
             sum_sq = 0.0
             count = 0
 
-            for param in model.parameters():
+            # Only iterate over filtered parameters for statistics
+            for name, param in params_for_stats:
                 if param.grad is None:
                     continue
                 g = param.grad.detach()

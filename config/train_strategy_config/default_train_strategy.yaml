@@ -27,6 +27,7 @@ curriculum:
         enabled: true  # Set to true to enable
         type: GradNorm
         loss_source: 'train' # 'train' OR 'eval'
+        grad_stats_last_layer_only: true
         weight_sub_components: false
         weight_per_channel: false
         loss_history_interval: 10
@@ -36,14 +37,6 @@ curriculum:
       components:
         - type: L1Loss
           weight: 1.0
-        - type: CompositeLoss
-          weight: 1.0
-          name: "SSIM_L2_Composite"
-          sub_components:
-            - type: SSIM
-              weight: 0.7
-            - type: L2Loss
-              weight: 0.3
 
   # - name: block_3
   #   start_epoch: 4
