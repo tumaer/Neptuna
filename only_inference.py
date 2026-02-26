@@ -40,6 +40,7 @@ def load_pretrained_model(model_config):
         "autodeeponet": ("models.DeepONet.deeponet", "AutoDeepONet"),
         "cno": ("models.CNO.cno", "CNO"),
         "scot": ("models.ScOT.scot", "ScOT"),
+        "scot3d": ("models.ScOT3D.scot3d", "ScOT3D"),
         "vit": ("models.ViT.vit", "ViT"),
         "transolver": ("models.Transolver.transolver", "Transolver"),
     }

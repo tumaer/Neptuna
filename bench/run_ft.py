@@ -182,8 +182,8 @@ def run(cfg):
     # checkpoint_path = "/local/disk1/MainRepos/Neptuna/FT/6_LaserDroplet_2D_UNet_06092025_115759/checkpoint-50600"
 
 
-    model_config_path = "/local/disk1/MainRepos/Neptuna/FT/6_LaserDroplet_2D_ScOT_07092025_130417/checkpoint-55200/config.json"
-    checkpoint_path = "/local/disk1/MainRepos/Neptuna/FT/6_LaserDroplet_2D_ScOT_07092025_130417/checkpoint-55200"
+    model_config_path = "/local/disk/szehisaadat/Neptuna/bash_folder/1_LaserDroplet_2D_ScOT3D_23022026_155916/checkpoint-11825/config.json"
+    checkpoint_path = "/local/disk/szehisaadat/Neptuna/bash_folder/1_LaserDroplet_2D_ScOT3D_23022026_155916/checkpoint-11825"
 
     model_config = OmegaConf.load(model_config_path)
     # Add the model checkpoint path to the model config

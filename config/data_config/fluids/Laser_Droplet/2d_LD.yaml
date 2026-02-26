@@ -1,6 +1,6 @@
 # For details on the parameters, refer to data_config-->example_data_config.yaml
 dataset_name: LaserDroplet
-dataset_directory_path: /local/disk1/szehisaadat/MainRepos/Neptuna/data/fluids/LaserDroplet/2D
+dataset_directory_path: /local/disk/szehisaadat/Neptuna/data/fluids/LaserDroplet/2D
 seed: 42
 dimension: 2
 grid_resolution: null
