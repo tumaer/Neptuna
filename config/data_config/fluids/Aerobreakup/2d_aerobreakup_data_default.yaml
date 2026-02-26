@@ -32,7 +32,7 @@ residual_config: null
   # add_predicted_value_with_raw_loss: False
 coord_features: True
 data_normalization_strategy: min_max_normalization
-log_transform_channels: ["Density"] #include the statistics for the log-transformed channels
+log_transform_channels: [] #include the statistics for the log-transformed channels
 #NOTE: Statistics are according to sequence_stride = 5 for the dataset: Aerobreakup_DPUVVoS_const_sigma
 data_normalization_stats:
   Density:
