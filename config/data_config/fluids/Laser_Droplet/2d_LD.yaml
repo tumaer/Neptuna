@@ -28,34 +28,34 @@ residual_config: null
 coord_features: False
 data_normalization_strategy: z_normalization
 #NOTE: Statistics are according to sequence_stride = 1 (modified by me manually)
-data_normalization_stats: null
-  # Density:
-  #   mean: 68.38360936384349
-  #   std: 245.4350936429061
-  #   min: 0.04555159894066888
-  #   max: 1380.3436203093477
-  # Energy:
-  #   mean: 71823126.12855597
-  #   std: 425054379.0351419
-  #   min: 101499.8765581337
-  #   max: 29859812636.182396
-  # Pressure:
-  #   mean: 7802910.558083811
-  #   std: 135631626.8532696
-  #   min: -583709208.4733415
-  #   max: 9853244989.408216
-  # Schlieren:
-  #   mean: 37274496.5067394
-  #   std: 321716335.039176
-  #   min: 0.0
-  #   max: 29785076199.65439
-  # Velocity_X:
-  #   mean: 216.2910553530565
-  #   std: 432.1946709546193
-  #   min: -1481.542705018387
-  #   max: 6834.84136030374
-  # Velocity_Y:
-  #   mean: 427.92504658368233
-  #   std: 921.6327736832579
-  #   min: -1362.6188210996552
-  #   max: 9294.149616901534
+data_normalization_stats:
+  Density:
+    mean: 67.95441809384442
+    std: 244.57315988714203
+    min: 0.04284508956123448
+    max: 1427.2889686958108
+  Energy:
+    mean: 68584806.65496126
+    std: 305666902.09644586
+    min: 101499.8765581337
+    max: 29859812636.182396
+  Pressure:
+    mean: 7080948.396527351
+    std: 98072020.67400207
+    min: -584609247.259088
+    max: 9853244989.408216
+  Schlieren:
+    mean: 37779010.432428166
+    std: 322792042.74342763
+    min: 0.0
+    max: 29785076199.65439
+  Velocity_X:
+    mean: 222.12469629090495
+    std: 439.2046025229817
+    min: -1484.035009764289
+    max: 6897.916526253297
+  Velocity_Y:
+    mean: 437.9463497449755
+    std: 935.0255611736854
+    min: -1375.342835865244
+    max: 10103.253292198731
