@@ -68,6 +68,17 @@ def get_device_string() -> str:
         return f"cuda:{idx} ({name})"
     return "cpu"
 
+
+def get_metric_device() -> torch.device:
+    """Return the best available device for metrics (XPU > CUDA > CPU)."""
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        idx = torch.xpu.current_device()
+        return torch.device(f"xpu:{idx}")
+    if torch.cuda.is_available():
+        idx = torch.cuda.current_device()
+        return torch.device(f"cuda:{idx}")
+    return torch.device("cpu")
+
 def cleanup_distributed(rank: int) -> None:
     """Best-effort teardown so distributed/XPU jobs exit cleanly."""
     global _CLEANUP_DONE
@@ -365,9 +376,10 @@ def run(cfg):
 
                     for component_name, component_detailed in detailed.items():
                         component_total = component_detailed["total"]
+                        weighted_delta = float(component_total) * batch_elements_per_device
                         self.weighted_eval_component_loss_sums_per_device[component_name] = (
                             self.weighted_eval_component_loss_sums_per_device.get(component_name, 0.0)
-                            + float(component_total) * batch_elements_per_device
+                            + weighted_delta
                         )
 
                 except Exception as e:
@@ -585,7 +597,7 @@ def run(cfg):
     )
 
     # Initialize eval_loss_fn
-    metric_device = torch.device("cuda:0")
+    metric_device = get_metric_device()
     try:
         initial_eval_loss_dict = initial_train_strategy_dict.validation_loss
         #eval_loss_dict = fetch_eval_loss_dict(cfg)
