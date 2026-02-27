@@ -312,12 +312,12 @@ def run(cfg):
                     # rank0 chunk [0:local_bs), rank1 [local_bs:2*local_bs), ...
                     start = rank * local_bs
                     valid_local = max(0, min(local_bs, remainder - start))
-                    print(f"[rank {RANK}] valid_local: {valid_local}")
+                    #print(f"[rank {RANK}] valid_local: {valid_local}")
                     preds_tensor = preds_tensor[:valid_local]
                     targets_tensor = targets_tensor[:valid_local]
             
 
-            print(f"[rank {RANK}] preds shape: {preds_tensor.shape}")
+            #print(f"[rank {RANK}] preds shape: {preds_tensor.shape}")
             batch_elements_per_device = preds_tensor.shape[0]
             self.num_elements_aggregated_in_batch_dim_per_device += batch_elements_per_device
             #if RANK == 0:
@@ -377,16 +377,16 @@ def run(cfg):
                 return {}  # don’t log partials
 
             #* last batch: return global metrics, then reset for next eval
-            dist.barrier()
+            #dist.barrier()
             # print(f"[rank {RANK}] weighted_composite_train_loss_per_batch_per_device: {self.weighted_composite_train_loss_per_batch_per_device}", flush=True)
             # dist.barrier()
             # print(f"[rank {RANK}] num_elements_aggregated_in_batch_dim_per_device: {self.num_elements_aggregated_in_batch_dim_per_device}", flush=True)
             # dist.barrier()
             if self.num_elements_aggregated_in_batch_dim_per_device > 0:
-                print(
-                    f"[rank {RANK}] local_num_windows={self.num_elements_aggregated_in_batch_dim_per_device}",
-                    flush=True,
-                )
+                # print(
+                #     f"[rank {RANK}] local_num_windows={self.num_elements_aggregated_in_batch_dim_per_device}",
+                #     flush=True,
+                # )
                 global_num_windows = torch.tensor(
                     float(self.num_elements_aggregated_in_batch_dim_per_device),
                     device=device,
@@ -394,10 +394,10 @@ def run(cfg):
                 )
                 if dist.is_available() and dist.is_initialized():
                     dist.all_reduce(global_num_windows, op=dist.ReduceOp.SUM)
-                print(
-                    f"[rank {RANK}] global_num_windows={global_num_windows.item()}",
-                    flush=True,
-                )
+                # print(
+                #     f"[rank {RANK}] global_num_windows={global_num_windows.item()}",
+                #     flush=True,
+                # )
 
                 #-------------------------------------------------------
                 if getattr(trainer, "loss_fn", None) is not None:
@@ -612,7 +612,7 @@ def run(cfg):
     if cfg["hyperparam_opt_config"]["optimize"] is False:
         start = time.time()
         device_str = get_device_string()
-        print(f"Training on device {device_str} \n", flush=True)
+        #print(f"Training on device {device_str} \n", flush=True)
         # trainer.train(resume_from_checkpoint=f"./checkpoints/KuramotoSivashinsky_2D_ScOT_09072025_074058/checkpoint-15")
         trainer.train(resume_from_checkpoint=False)
         #print(f"Total train time: {time.time() - start:.2f} s")
