@@ -1,7 +1,15 @@
 use_boundary_fluxes: true
 normalization: none
 
-# Explicit component list with names matching loss outputs
+field_keys:
+  density: Density
+  velocity_x: Velocity_X
+  velocity_y: Velocity_Y
+  velocity_z: Velocity_Z
+  pressure: Pressure
+  energy: Energy
+  vorticity: Vorticity
+
 # Domain components: domain/<quantity>
 # Boundary components: boundary/<quantity>/<patch>
 components:

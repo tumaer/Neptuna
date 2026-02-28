@@ -104,6 +104,7 @@ class IntegralConservationRMSE(LossComponent):
         components: Optional[List[Dict[str, Union[str, float]]]] = None,
         normalization: Literal['none', 'range', 'variance', 'std', 'norm', 'root_norm'] = 'none',
         eps: float = 1e-8,
+        field_keys: Optional[Dict[str, str]] = None,
     ):
         if components is not None and (conserved_keys or boundary_keys or quantity_weights):
             raise ValueError(
@@ -202,6 +203,18 @@ class IntegralConservationRMSE(LossComponent):
         self.normalization = normalization
         self._component_names = component_names
         self._boundary_patch_whitelist = boundary_patch_whitelist
+        
+        # Set up field key mappings with defaults
+        default_field_keys = {
+            'density': 'Density',
+            'velocity_x': 'Velocity_X',
+            'velocity_y': 'Velocity_Y',
+            'velocity_z': 'Velocity_Z',
+            'pressure': 'Pressure',
+            'energy': 'Energy',
+            'vorticity': 'Vorticity',
+        }
+        self.field_keys = {**default_field_keys, **(field_keys or {})}
 
         # Build registries
         self._domain_quantity_registry: Dict[str, DomainQuantity] = (
@@ -358,28 +371,40 @@ class IntegralConservationRMSE(LossComponent):
         """
         registry: Dict[str, DomainQuantity] = {}
 
-        registry["mass"] = TotalMass(density_key="Density")
-        registry["Px"] = MomentumComponent(direction="x")
-        registry["Py"] = MomentumComponent(direction="y")
-        registry["Pz"] = MomentumComponent(direction="z")
-        registry["kinetic_energy"] = KineticEnergy()
+        density_key = self.field_keys['density']
+        vel_x_key = self.field_keys['velocity_x']
+        vel_y_key = self.field_keys['velocity_y']
+        vel_z_key = self.field_keys['velocity_z']
+        energy_key = self.field_keys['energy']
+        vort_key = self.field_keys['vorticity']
+
+        registry["mass"] = TotalMass(density_key=density_key)
+        registry["Px"] = MomentumComponent(direction="x", density_key=density_key, vel_key=vel_x_key)
+        registry["Py"] = MomentumComponent(direction="y", density_key=density_key, vel_key=vel_y_key)
+        registry["Pz"] = MomentumComponent(direction="z", density_key=density_key, vel_key=vel_z_key)
+        
+        vel_keys = (vel_x_key, vel_y_key, vel_z_key)[:self.data_dim or 2]
+        registry["kinetic_energy"] = KineticEnergy(
+            density_key=density_key,
+            vel_keys=vel_keys,
+        )
 
         axis_labels = _axis_labels_from_dim(self.data_dim or 2)
         for axis_label in axis_labels:
             key = f"center_of_gravity_{axis_label}"
             registry[key] = CenterOfGravityAxis(
                 axis_label=axis_label,
-                density_key="Density",
+                density_key=density_key,
                 name=key,
             )
 
         registry["energy"] = TotalEnergy(
-        energy_key="Energy",
-        name="energy",
+            energy_key=energy_key,
+            name="energy",
         )
 
         registry["enstrophy"] = Enstrophy(
-            vort_key="Vorticity",
+            vort_key=vort_key,
             name="enstrophy",
         )
 
@@ -392,7 +417,7 @@ class IntegralConservationRMSE(LossComponent):
                 spacings = [self.dx, self.dy]
 
         registry["divergence"] = DivergenceMeasure(
-            vel_keys=("Velocity_X", "Velocity_Y"),
+            vel_keys=(vel_x_key, vel_y_key),
             spacings=spacings,
             name="divergence",
         )
@@ -410,35 +435,45 @@ class IntegralConservationRMSE(LossComponent):
         """
         registry: Dict[str, BoundaryFluxQuantity] = {}
 
-        vel_keys = ("Velocity_X", "Velocity_Y", "Velocity_Z")[:self.data_dim or 2]
-        pressure_key = "Pressure" if (self.field_names is None or "Pressure" in self.field_names) else None
+        density_key = self.field_keys['density']
+        vel_x_key = self.field_keys['velocity_x']
+        vel_y_key = self.field_keys['velocity_y']
+        vel_z_key = self.field_keys['velocity_z']
+        pressure_key = self.field_keys['pressure']
+        energy_key = self.field_keys['energy']
+        
+        vel_keys = (vel_x_key, vel_y_key, vel_z_key)[:self.data_dim or 2]
+        
+        # Check if pressure is available in field_names
+        if self.field_names is not None and pressure_key not in self.field_names:
+            pressure_key = None
 
         registry["mass"] = MassFlux(
-            density_key="Density",
+            density_key=density_key,
             vel_keys=vel_keys,
             name="mass",
         )
         registry["Px"] = MomentumFluxComponent(
             direction="x",
-            density_key="Density",
+            density_key=density_key,
             pressure_key=pressure_key,
             vel_keys=vel_keys,
         )
         registry["Py"] = MomentumFluxComponent(
             direction="y",
-            density_key="Density",
+            density_key=density_key,
             pressure_key=pressure_key,
             vel_keys=vel_keys,
         )
         registry["Pz"] = MomentumFluxComponent(
             direction="z",
-            density_key="Density",
+            density_key=density_key,
             pressure_key=pressure_key,
             vel_keys=vel_keys,
         )
         registry["energy"] = EnergyFlux(
-            energy_key="Energy",
-            pressure_key="Pressure",
+            energy_key=energy_key,
+            pressure_key=pressure_key,
             vel_keys=vel_keys,
             name="energy",
         )
