@@ -1312,9 +1312,6 @@ class AdaptiveWeightCallback(TrainerCallback):
         # Compute new loss weights only on rank 0, then broadcast
         new_weights = None
         if (not is_distributed) or rank == 0:
-            logger.info(
-                f"[AdaptiveWeightCallback][rank {rank}/{world_size}] Computing new weights for epoch {current_epoch} ({source_label})"
-            )
             new_weights = self.loss_weighting_strategy.step(
                 epoch=current_epoch,
                 loss_history=filtered_loss_history,
@@ -1326,23 +1323,13 @@ class AdaptiveWeightCallback(TrainerCallback):
             obj_list = [new_weights]
             dist.broadcast_object_list(obj_list, src=0)
             new_weights = obj_list[0]
-            if rank != 0:
-                logger.info(
-                    f"[AdaptiveWeightCallback][rank {rank}/{world_size}] Received new weights for epoch {current_epoch} ({source_label})"
-                )
         
         # Apply new loss weights if scheduler returned them
         if new_weights is None:
             return False
-
-        logger.info(
-            f"[AdaptiveWeightCallback][rank {rank}/{world_size}] Applying new weights for epoch {current_epoch} ({source_label})"
-        )
         
         self.trainer.loss_fn.update_loss_weights(new_weights)
         self.last_update_epoch = current_epoch
-        
-        logger.info(f"\nEpoch {current_epoch}: Updated loss weights (from {source_label})")
 
         # Log weights to W&B via Trainer log (if available)
         self._log_loss_weights(new_weights, current_epoch)
@@ -1385,7 +1372,7 @@ class AdaptiveWeightCallback(TrainerCallback):
                         table_rows.append({
                             'component': f"  └─ channel_{ch_idx}",
                             'weight': f"{ch_weight:.4f}",
-                            'statistics': ch_stats_str
+                            'Loss history statistics': ch_stats_str
                         })
             
             # Per-component weights if present
