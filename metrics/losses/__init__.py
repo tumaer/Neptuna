@@ -14,7 +14,7 @@ from .interface_rmse import InterfaceRMSE
 from .mean_relative_error import MeanRelativeError
 from .negativity_loss import NegativityLoss
 from .shock_rmse import ShockRMSE
-from .pinn_loss import PINNLoss
+from .pde_residual_loss import PDEResidualLoss
 
 __all__ = [
     'L1Loss',
@@ -33,5 +33,5 @@ __all__ = [
     'MeanRelativeError',
     'NegativityLoss',
     'ShockRMSE',
-    'PINNLoss',
+    'PDEResidualLoss',
 ]

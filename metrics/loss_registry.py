@@ -16,7 +16,7 @@ from metrics.losses import (
     MeanRelativeError,
     NegativityLoss,
     ShockRMSE,
-    PINNLoss,
+    PDEResidualLoss,
 )
 
 # Loss registry with metadata:
@@ -118,10 +118,10 @@ LOSS_REGISTRY = {
         "default_name": "ShockRMSE",
         "default_config": "loss_metrics/ShockRMSE/shock_rmse_default",
     },
-    "PINNLoss": {
-        "class": PINNLoss,
-        "default_name": "PINNLoss",
-        "default_config": "loss_metrics/PINNLoss/pinn_loss_default",
+    "PDEResidualLoss": {
+        "class": PDEResidualLoss,
+        "default_name": "PDEResidualLoss",
+        "default_config": "loss_metrics/PDEResidualLoss/pde_residual_loss_default",
     },
 }
 

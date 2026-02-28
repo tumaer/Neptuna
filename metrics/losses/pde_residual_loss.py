@@ -1003,7 +1003,7 @@ class EquationWeight(ResidualMasker):
     ) -> Dict[str, torch.Tensor]:
         if "Velocity_X" not in derivs.grads or "Velocity_Y" not in derivs.grads:
             raise ValueError(
-                "PINNLoss: equation_weight masking requires Velocity_X and Velocity_Y gradients."
+                "PDEResidualLoss: equation_weight masking requires Velocity_X and Velocity_Y gradients."
             )
         du_dx, _ = derivs.grads["Velocity_X"]
         _, dv_dy = derivs.grads["Velocity_Y"]
@@ -1067,7 +1067,7 @@ class GradientAnnihilated(ResidualMasker):
         for field_name, alpha_i, beta_i in zip(self.fields, self.alpha, self.beta):
             if field_name not in derivs.grads:
                 raise ValueError(
-                    f"PINNLoss: lambda1_grad masking requires gradients for '{field_name}'."
+                    f"PDEResidualLoss: lambda1_grad masking requires gradients for '{field_name}'."
                 )
             grad_components = derivs.grads[field_name]
             grad_stack = torch.stack(grad_components, dim=0)
@@ -1094,7 +1094,7 @@ _RESIDUAL_MASK_REGISTRY: Dict[str, Callable[..., ResidualMasker]] = {
 # The LossComponent: PINN residual metric for AR rollouts
 # ----------------------------
 
-class PINNLoss(LossComponent):
+class PDEResidualLoss(LossComponent):
     """
     Strong-form residual loss for grid/rollout predictions.
     """
@@ -1135,12 +1135,12 @@ class PINNLoss(LossComponent):
         super().__init__(
             norm_helper=norm_helper,
             weight=weight,
-            name=name or "PINNLoss",
+            name=name or "PDEResidualLoss",
             data_dim=data_dim,
             field_names=field_names,
         )
         if field_names is None:
-            raise ValueError("PINNLoss requires field_names to map channels to PDE fields.")
+            raise ValueError("PDEResidualLoss requires field_names to map channels to PDE fields.")
 
         self.components, component_names, component_weights = self._build_components(
             components=components,
@@ -1187,7 +1187,7 @@ class PINNLoss(LossComponent):
                 fields_cfg = mask_cfg.get("lambda1_fields", lambda1_fields)
                 if alpha_cfg is None or beta_cfg is None:
                     raise ValueError(
-                        "PINNLoss: GradientAnnihilated masking requires lambda1_alpha and lambda1_beta."
+                        "PDEResidualLoss: GradientAnnihilated masking requires lambda1_alpha and lambda1_beta."
                     )
                 fields = fields_cfg or list(self.field_names)
                 self.residual_masker = _RESIDUAL_MASK_REGISTRY[mask_type](
@@ -1219,7 +1219,7 @@ class PINNLoss(LossComponent):
             extra = [k for k in self.component_names if k not in self.weight_schedule.component_weights]
             if missing:
                 raise ValueError(
-                    "PINNLoss: component weights must match configured components. "
+                    "PDEResidualLoss: component weights must match configured components. "
                     f"Missing: {missing}, Extra: {extra}"
                 )
 
@@ -1249,7 +1249,7 @@ class PINNLoss(LossComponent):
         if components is None:
             components = []
             if pde is None:
-                raise ValueError("PINNLoss requires 'components' configuration.")
+                raise ValueError("PDEResidualLoss requires 'components' configuration.")
             if isinstance(pde, str) and pde == "EulerPrimitives2D":
                 components = [
                     {"type": "pde/unsteadyContinuity"},
@@ -1263,12 +1263,12 @@ class PINNLoss(LossComponent):
                 ]
             else:
                 raise ValueError(
-                    "PINNLoss legacy 'pde' config is unsupported. "
+                    "PDEResidualLoss legacy 'pde' config is unsupported. "
                     "Provide a 'components' list instead."
                 )
 
         if not isinstance(components, list) or len(components) == 0:
-            raise ValueError("PINNLoss: 'components' must be a non-empty list.")
+            raise ValueError("PDEResidualLoss: 'components' must be a non-empty list.")
 
         component_instances: List[PDEComponent] = []
         component_names: List[str] = []
@@ -1277,7 +1277,7 @@ class PINNLoss(LossComponent):
 
         for comp in components:
             if "type" not in comp:
-                raise ValueError("PINNLoss: each component must have a 'type'.")
+                raise ValueError("PDEResidualLoss: each component must have a 'type'.")
             comp_type = str(comp["type"])
             if comp_type not in _PDE_COMPONENT_REGISTRY:
                 raise ValueError(
@@ -1290,12 +1290,12 @@ class PINNLoss(LossComponent):
                 if "fields" not in cfg and "field_names" not in cfg:
                     if field_names is None:
                         raise ValueError(
-                            "PINNLoss: boundary condition components require field_names."
+                            "PDEResidualLoss: boundary condition components require field_names."
                         )
                     cfg["field_names"] = field_names
             if comp_type == "pde/eulerMomentum" and "direction" in cfg:
                 raise ValueError(
-                    "PINNLoss: 'pde/eulerMomentum' no longer accepts a 'direction' field. "
+                    "PDEResidualLoss: 'pde/eulerMomentum' no longer accepts a 'direction' field. "
                     "Use 'pde/eulerMomentumX' or 'pde/eulerMomentumY' instead."
                 )
             name = cfg.pop("name", None)
@@ -1304,7 +1304,7 @@ class PINNLoss(LossComponent):
             comp_instance = _PDE_COMPONENT_REGISTRY[comp_type](name=name, **cfg)
             if comp_instance.name in component_name_set:
                 raise ValueError(
-                    "PINNLoss: duplicate component name '"
+                    "PDEResidualLoss: duplicate component name '"
                     f"{comp_instance.name}'. Use a unique 'name' for each component."
                 )
             component_name_set.add(comp_instance.name)
@@ -1432,7 +1432,7 @@ class PINNLoss(LossComponent):
             for name in component_order:
                 if name not in eq_names:
                     raise ValueError(
-                        f"PINNLoss: component '{name}' not found in configured equations {eq_names}."
+                        f"PDEResidualLoss: component '{name}' not found in configured equations {eq_names}."
                     )
                 idx = eq_names.index(name)
                 value = per_eq[:, idx]
@@ -1495,7 +1495,7 @@ class PINNLoss(LossComponent):
 
         missing = [f for f in required_fields if f not in fields_full]
         if missing:
-            raise ValueError(f"PINNLoss: missing required fields: {missing}")
+            raise ValueError(f"PDEResidualLoss: missing required fields: {missing}")
 
         t_idx: Optional[torch.Tensor] = None
         time_derivs: Dict[str, torch.Tensor] = {}
@@ -1510,7 +1510,7 @@ class PINNLoss(LossComponent):
             if t_idx is None:
                 t_idx = t_field
             elif not torch.equal(t_idx, t_field):
-                raise ValueError("PINNLoss: time derivative indices are inconsistent across fields.")
+                raise ValueError("PDEResidualLoss: time derivative indices are inconsistent across fields.")
             time_derivs[field] = ut
 
         if t_idx is None:
