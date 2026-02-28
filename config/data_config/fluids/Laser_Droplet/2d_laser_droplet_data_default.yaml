@@ -6,7 +6,7 @@ dimension: 2
 grid_resolution: null
 eval_groups: null
 is_steady_state_prediction: False 
-sequence_info: [1, 1, 10]
+sequence_info: [3, 1, 10]
 # Available channels for LaserDroplet: ["Pressure", "Energy", "Density", "Velocity_X", "Velocity_Y", "Schlieren"]
 filter_features:
   train_filter_frames: null
@@ -18,15 +18,20 @@ filter_features:
 #NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels
 conditioning_features:
   conditioning_in_channels: null
-  include_conditioning_parameters: False
-  cond_method: 1
-  num_cond_params: null
+  conditioning_method: null # AdaNorm_LSE AdaNorm_SE_per_param AdaNorm_1SE AdaNorm null
+  num_cond_params: null  #for the dataset: Aerobreakup_DPUVVoS_const_sigma, the number of conditioning parameters is 5 : Mas, rhogas, pgas, ugas, We
   parameter_min_max_stats: null
+  conditioning_mlp:
+    mlp: False
+    hidden_size: null
+    activation: gelu
+    initialization: null
 residual_config: null
   # add_base_value_with_raw_loss: True
   # add_predicted_value_with_diff_loss: False
   # add_predicted_value_with_raw_loss: False
 coord_features: True
+log_transform_channels: []
 data_normalization_strategy: z_normalization
 #NOTE: Statistics are according to sequence_stride = 10
 data_normalization_stats:
