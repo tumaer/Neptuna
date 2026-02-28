@@ -1,7 +1,7 @@
 # FILE: metrics/loss_registry.py
 from metrics.losses import (
-    L1Loss,
-    L2Loss,
+    MAE,
+    MSE,
     SSIM,
     MSSSIM,
     PearsonCorrelationLoss,
@@ -24,16 +24,16 @@ from metrics.losses import (
 #  - default_name: fallback name if not provided in YAML
 #  - default_config: fallback config_file (relative path under config/loss_config)
 LOSS_REGISTRY = {
-    "L2Loss": {
-        "class": L2Loss,
-        "default_name": "L2Loss",
-        "default_config": "loss_metrics/L2_Loss/l2_loss_default",
+    "MSE": {
+        "class": MSE,
+        "default_name": "MSE",
+        "default_config": "loss_metrics/mse/mse_default",
         "channel_aggregation": "linear",
     },
-    "L1Loss": {
-        "class": L1Loss,
-        "default_name": "L1Loss",
-        "default_config": "loss_metrics/L1_Loss/l1_loss_default",
+    "MAE": {
+        "class": MAE,
+        "default_name": "MAE",
+        "default_config": "loss_metrics/mae/mae_default",
         "channel_aggregation": "linear",
     },
     "SSIM": {

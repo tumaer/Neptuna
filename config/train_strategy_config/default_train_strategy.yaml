@@ -3,7 +3,7 @@
 ########################################################
 num_train_epochs: 20
 metric_for_best_model:
-  - type: L2Loss
+  - type: MSE
     weight: 1.0         
   # - type: CompositeLoss
   #   weight: 1.0
@@ -11,7 +11,7 @@ metric_for_best_model:
   #   sub_components:
   #     - type: SSIM
   #       weight: 0.7
-  #     - type: L2Loss
+  #     - type: MSE
   #       weight: 0.3
 
 curriculum:
@@ -19,7 +19,7 @@ curriculum:
     start_epoch: 0
     train_loss:
       components:
-        - type: L2Loss
+        - type: MSE
           weight: 1.0
         - type: SSIM
           weight: 1.0
@@ -35,7 +35,7 @@ curriculum:
       
     validation_loss:
       components:
-        - type: L1Loss
+        - type: MAE
           weight: 1.0
 
   # - name: block_3
@@ -83,6 +83,6 @@ curriculum:
 #   sub_components:
 #     - type: SSIM
 #       weight: 0.7
-#     - type: L2Loss
+#     - type: MSE
 #       weight: 0.3
 

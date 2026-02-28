@@ -6,9 +6,9 @@ import torch.nn as nn
 from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 
 
-class L2Loss(LossComponent):
+class MAE(LossComponent):
     """
-    L2 (mean squared error) loss between predictions and labels.
+    L1 (mean absolute error) loss between predictions and labels.
 
     Features:
       * Optional scalar, per-timestep, and per-channel weighting through
@@ -33,7 +33,6 @@ class L2Loss(LossComponent):
                 - These diagnostics are computed from the weighted error tensor and
                     are independent of `keep_bc_dims`.
     """
-
     def __init__(
         self,
         norm_helper: NormalizationHelper, 
@@ -47,12 +46,10 @@ class L2Loss(LossComponent):
     ):
         super().__init__(weight=weight, name=name, data_dim=data_dim, 
                          field_names=field_names, norm_helper=norm_helper)
-        if reduction not in ('mean', 'sum'):
-            raise ValueError(f"Unsupported reduction: {reduction}")
         self.reduction = reduction
-        self.epsilon = epsilon
         self.normalization = normalization
-
+        self.epsilon = epsilon
+    
     def forward(
         self,
         model: nn.Module,
@@ -64,8 +61,8 @@ class L2Loss(LossComponent):
         preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
 
-        # Compute element-wise squared error
-        unweighted = (predictions - labels) ** 2
+        # Compute element-wise absolute error
+        unweighted = torch.abs(predictions - labels)
 
         # Normalize error if specified
         unweighted = self.norm_helper.normalize_error(
@@ -75,39 +72,40 @@ class L2Loss(LossComponent):
                 self.normalization,
                 self.epsilon
             )
-
+        
         # Get broadcastable weight tensor
         weight_tensor = self.weight_schedule.get_loss_weight(unweighted.shape).to(predictions.device)
         
         # Apply weights
         weighted = unweighted * weight_tensor
-
+        
         # Keep batch and channel dims (for rollout metrics)
         if keep_bc_dims:
             reduce_dims = [1] + list(range(3, weighted.ndim))
             total_loss = self._reduce(weighted, reduce_dims)
         else:
             total_loss = self._reduce(weighted)
-
+        
         # Return single scalar (or tensor) loss
         if not return_detailed:
             return total_loss
-
+        
         # ========================================================
         # Build detailed breakdown (for logging/loss weighting)
         # ========================================================
         detailed: Dict[str, torch.Tensor] = {}
-
+        
         # Per-timestep
         dims_to_reduce = [0] + list(range(2, weighted.ndim))
         per_timestep = self._reduce(weighted, dims_to_reduce)
         detailed['per_timestep'] = per_timestep if preserve_component_grads else per_timestep.detach()
-
+        
         # Per-channel
         dims_to_reduce = [0, 1] + list(range(3, weighted.ndim))
         per_channel = self._reduce(weighted, dims_to_reduce)
         detailed['per_channel'] = per_channel if preserve_component_grads else per_channel.detach()
-
+        
+        # Return scalar loss and detailed breakdown dict
         return total_loss, detailed
     
     def _reduce(self, x: torch.Tensor, dims: Optional[List[int]] = None) -> torch.Tensor:
@@ -115,4 +113,3 @@ class L2Loss(LossComponent):
         if self.reduction == 'mean':
             return x.mean(dim=dims) if dims is not None else x.mean()
         return x.sum(dim=dims) if dims is not None else x.sum()
-    

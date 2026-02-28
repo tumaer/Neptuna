@@ -90,13 +90,13 @@ class LossWeightingStrategyBase(ABC):
         Parse a hierarchical loss key into components.
         
         Args:
-            key: Loss component key (e.g., 'L2Loss', 'L2Loss/channel_0', 'RMSE/domain/mass')
+            key: Loss component key (e.g., 'MSE', 'MSE/channel_0', 'RMSE/domain/mass')
             
         Returns:
             Tuple of (base_name, sub_component_name, channel_idx)
             Examples:
-                'L2Loss' -> ('L2Loss', None, None)
-                'L2Loss/channel_0' -> ('L2Loss', None, 0)
+                'MSE' -> ('MSE', None, None)
+                'MSE/channel_0' -> ('MSE', None, 0)
                 'RMSE/domain/mass' -> ('RMSE', 'domain/mass', None)
         """
         if '/' not in key:
@@ -127,7 +127,7 @@ class LossWeightingStrategyBase(ABC):
         Returns:
             Grouped dictionary:
             {
-                'L2Loss': {
+                'MSE': {
                     'base': [loss_values],
                     'channels': {0: [losses], 1: [losses], ...},
                 },

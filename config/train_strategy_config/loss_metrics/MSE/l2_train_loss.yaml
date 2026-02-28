@@ -1,4 +1,3 @@
-# L2Loss specific parameters
 reduction: sum
 epsilon: 1e-8
 normalization: none

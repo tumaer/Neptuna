@@ -1,5 +1,5 @@
-from .l1_loss import L1Loss
-from .l2_loss import L2Loss
+from .mae import MAE
+from .mse import MSE
 from .ssim import SSIM
 from .ms_ssim import MSSSIM
 from .pearson_correlation_loss import PearsonCorrelationLoss
@@ -17,8 +17,8 @@ from .shock_rmse import ShockRMSE
 from .pde_residual_loss import PDEResidualLoss
 
 __all__ = [
-    'L1Loss',
-    'L2Loss',
+    'MAE',
+    'MSE',
     'SSIM',
     'MSSSIM',
     'PearsonCorrelationLoss',

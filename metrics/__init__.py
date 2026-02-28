@@ -3,8 +3,8 @@ from .loss_framework import (
     CompositeLoss,
 )
 from .losses import (
-    L1Loss,
-    L2Loss,
+    MAE,
+    MSE,
     SSIM,
     MSSSIM,
     PearsonCorrelationLoss,
@@ -36,8 +36,8 @@ from .weighting_strategies import (
 __all__ = [
     'LossComponent',
     'CompositeLoss',
-    'L1Loss',
-    'L2Loss',
+    'MAE',
+    'MSE',
     'SSIM',
     'MSSSIM',
     'PearsonCorrelationLoss',
