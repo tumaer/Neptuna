@@ -259,6 +259,7 @@ def run(cfg):
         ddp_find_unused_parameters=False,
         batch_eval_metrics=use_batch_eval_metrics,
         dataloader_drop_last=False,
+        #ddp_backend="xccl",
     )
 
     # ------------------------------------------------------------------
@@ -624,7 +625,7 @@ def run(cfg):
     if cfg["hyperparam_opt_config"]["optimize"] is False:
         start = time.time()
         device_str = get_device_string()
-        #print(f"Training on device {device_str} \n", flush=True)
+        print(f"Training on device {device_str} \n", flush=True)
         # trainer.train(resume_from_checkpoint=f"./checkpoints/KuramotoSivashinsky_2D_ScOT_09072025_074058/checkpoint-15")
         trainer.train(resume_from_checkpoint=False)
         #print(f"Total train time: {time.time() - start:.2f} s")

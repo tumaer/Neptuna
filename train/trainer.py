@@ -2111,6 +2111,15 @@ class Trainer(Trainer_):
         EvalLoopOutput
             Evaluation results including predictions, labels, and metrics.
         """
+        RANK = int(os.environ.get("RANK", -1))
+        IS_MAIN_PROCESS = RANK in [-1, 0]
+
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            torch.xpu.empty_cache()
+            #print("XPU cache emptied before evaluation, rank: ", RANK, flush=True)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            #print("CUDA cache emptied before evaluation, rank: ", RANK, flush=True)
         args = self.args
 
         prediction_loss_only = prediction_loss_only if prediction_loss_only is not None else args.prediction_loss_only
@@ -2152,8 +2161,6 @@ class Trainer(Trainer_):
 
         batch_size = self.args.eval_batch_size
 
-        RANK = int(os.environ.get("RANK", -1))
-        IS_MAIN_PROCESS = RANK in [-1, 0]
         if IS_MAIN_PROCESS:
             logger.info(f"\n***** Running {description} *****")
             if has_length(dataloader):
@@ -2189,7 +2196,6 @@ class Trainer(Trainer_):
         # Then take the exponential of the log-transformed channels in physical units to obtain the channels in physical units.
         # Finally, normalize the channels in physical units using the original statistics to get the channels in normalized (physical) units.
         log_channels = self.data_config.get("log_transform_channels") or []
-        #if log_channels:
         dim = self.data_config.get("dimension")
         channel_axis = -2 if dim == 1 else (-3 if dim == 2 else -4)
         channel_names = getattr(eval_dataset, "output_channels")
