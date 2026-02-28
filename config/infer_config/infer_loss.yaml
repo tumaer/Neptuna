@@ -6,4 +6,4 @@ loss:
     - type: RMSE
       weight: 0.22
       name: VRMSE
-      config_file: loss_metrics/RMSE/vrmse
+      config_file: vrmse

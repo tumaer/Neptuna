@@ -475,6 +475,7 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
         try:
             registry_entry = get_loss_entry(loss_type)
             default_config = registry_entry["default_config"]
+            config_base_path = registry_entry["config_path"]
         except (KeyError, ValueError):
             # Loss type not in registry or no default config
             return
@@ -489,7 +490,7 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
         # Load defaults (if available)
         defaults_metric = OmegaConf.create({})
         if config_file is not None:
-            config_path = f"config/train_strategy_config/{config_file}.yaml"
+            config_path = f"config/train_strategy_config/{config_base_path}{config_file}.yaml"
             if os.path.exists(config_path):
                 try:
                     defaults_metric = OmegaConf.load(config_path)
