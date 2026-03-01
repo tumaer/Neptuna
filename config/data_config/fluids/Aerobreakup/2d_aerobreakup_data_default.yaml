@@ -1,6 +1,6 @@
 # For details on the parameters, refer to data_config-->example_data_config.yaml
 dataset_name: Aerobreakup
-dataset_directory_path: /local/disk/hramachandran/work/cfd_bench/data/fluids/Aerobreakup_2c_DPUVVoS/2D
+dataset_directory_path: ./data/fluids/Aerobreakup_DPUVVoS_const_sigma/2D
 seed: 42
 dimension: 2
 grid_resolution: null

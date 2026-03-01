@@ -995,7 +995,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 outputs_per_rollout=outputs_per_rollout,
                 include_per_timestep=True,
                 loss_metric=infer_loss_fn,
-                device=infer_config.get("metrics_device"),,
+                device=infer_config.get("metrics_device"),
                 input_frames=inputs
             )
 

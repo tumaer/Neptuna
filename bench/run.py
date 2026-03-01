@@ -351,6 +351,7 @@ def run(cfg):
                             model=None,
                             predictions=preds_tensor,#.to(device),
                             labels=targets_tensor,#.to(device),
+                            input_frames=None,
                             return_detailed=False,  # scalar only
                         )
 
@@ -373,6 +374,7 @@ def run(cfg):
                             model=None,
                             predictions=preds_tensor,#.to(device),
                             labels=targets_tensor,#.to(device),
+                            input_frames=None,
                             return_detailed=True,
                         )
 
