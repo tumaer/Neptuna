@@ -3,6 +3,7 @@ debug: True  # Set true or use INFERENCE_DEBUG=1 to enable _dbg prints
 metrics_device: cuda:0 # Device for rollout metric computation (e.g. cuda:0, xpu:0, cpu). Null = auto (cuda:0/xpu:0 if available, else cpu)
 inference_directory: /local/disk/hramachandran/work/cfd_bench/interesting_cases_swin_2
 dataset_directory_path: null  # if null, will use the dataset_directory_path from data_config.json inside the experiment directory.
+metrics_batch_size: 4
 filter_features:
   infer_filter_frames: [null, null]
   infer_filter_groups: null
