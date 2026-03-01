@@ -836,7 +836,8 @@ def run(cfg):
                     outputs_per_rollout=outputs_per_rollout, 
                     include_per_timestep=True,
                     loss_metric=infer_loss_fn,
-                    input_frames=inputs
+                    input_frames=inputs,
+                    metric_batch_size=cfg["infer_config"].get("metrics_batch_size"),
                 )
 
                 # Inputs already returned by `trainer.predict`
@@ -945,7 +946,8 @@ def run(cfg):
                         outputs_per_rollout=outputs_per_rollout,
                         loss_metric=infer_loss_fn,
                         include_per_timestep=False,
-                        input_frames=inp_arr[example_idx:example_idx+1]
+                        input_frames=inp_arr[example_idx:example_idx+1],
+                        metric_batch_size=cfg["infer_config"].get("metrics_batch_size"),
                     )
                     ex_title = f"Per-rollout metrics ({cfg['data_config'].get('dataset_name', 'dataset')} - random start, example {int(example_idx)})"
                     plot_rollout_metrics(
@@ -1011,7 +1013,8 @@ def run(cfg):
                     outputs_per_rollout=outputs_per_rollout,
                     include_per_timestep=True, 
                     loss_metric=infer_loss_fn,
-                    input_frames=inp_arr
+                    input_frames=inp_arr,
+                    metric_batch_size=cfg["infer_config"].get("metrics_batch_size"),
                 )
 
                 # ----------------------------------------------------------

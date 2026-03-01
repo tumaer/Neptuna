@@ -1,4 +1,5 @@
 do_infer: False
+metrics_batch_size: null  # Null = process all windows at once during rollout metric aggregation
 filter_features:
   infer_filter_frames: [null, null]
   infer_filter_groups: null

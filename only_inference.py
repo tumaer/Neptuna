@@ -996,7 +996,8 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 include_per_timestep=True,
                 loss_metric=infer_loss_fn,
                 device=infer_config.get("metrics_device"),
-                input_frames=inputs
+                input_frames=inputs,
+                metric_batch_size=infer_config.get("metrics_batch_size"),
             )
 
             # Inputs already returned by `trainer.predict`
@@ -1115,6 +1116,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                     include_per_timestep=False,
                     input_frames=inp_arr[example_idx:example_idx+1],
                     device=infer_config.get("metrics_device"),
+                    metric_batch_size=infer_config.get("metrics_batch_size"),
                 )
                 ex_title = f"Per-rollout metrics ({data_config.get('dataset_name', 'dataset')} - random start, example {int(example_idx)})"
                 plot_rollout_metrics(
@@ -1197,6 +1199,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 loss_metric=infer_loss_fn,
                 input_frames=inp_arr,
                 device=infer_config.get("metrics_device"),
+                metric_batch_size=infer_config.get("metrics_batch_size"),
             )
         
         # ----------------------------------------------------------
