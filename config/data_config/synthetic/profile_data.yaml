@@ -1,25 +1,25 @@
 # For details on the parameters, refer to data_config-->example_data_config.yaml
-dataset_name: KuramotoSivashinsky
+dataset_name: ProfileData
 seed: 42
-dataset_directory_path: ./data/fluids/KS/2D
+dataset_directory_path: ./data
 dimension: 2
 grid_resolution: null 
-eval_groups: ['seed 000021']
-is_steady_state_prediction: False
-sequence_info: [3, 2, 5]
-# available channels for KS: ['velocity']
+eval_groups: null
+is_steady_state_prediction: False 
+sequence_info: [1, 1, 1]
+# available: ['density','schlieren','velocity'] OR ['density','schlieren','velocity_0','velocity_1']
 filter_features:
   train_filter_frames: null
   train_filter_groups: null
   infer_filter_frames: null
   infer_filter_groups: null
-  filter_in_channels: null
-  filter_out_channels: null
+  filter_in_channels: ['density'] # , 'pressure', 'velocityX', 'velocityY']
+  filter_out_channels: ['density'] #, 'pressure', 'velocityX', 'velocityY']
 #NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels
 conditioning_features:
   conditioning_in_channels: null
   conditioning_method: null # AdaNorm_LSE AdaNorm_SE_per_param AdaNorm_1SE AdaNorm null
-  num_cond_params: null
+  num_cond_params: 1
   parameter_min_max_stats: null
   conditioning_mlp:
     mlp: False
@@ -27,17 +27,9 @@ conditioning_features:
     activation: gelu
     initialization: null
 residual_config: null
-  # add_base_value_with_raw_loss: True
-  # add_predicted_value_with_diff_loss: False
+  # add_base_value_with_raw_loss: False
+  # add_predicted_value_with_diff_loss: True
   # add_predicted_value_with_raw_loss: False
+data_normalization_stats: null
+data_normalization_strategy: "z_normalization"
 coord_features: True
-log_transform_channels: []
-data_normalization_strategy: z_normalization
-data_normalization_stats:
-  velocity:
-    mean: -9.146939914775821e-10
-    std: 0.20220512526714063
-    min: -1.0
-    max: 1.0
-    median: -0.0015945577761158347
-    iqr: 0.25578096881508827

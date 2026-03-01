@@ -32,7 +32,7 @@ class H2SemiNorm(LossComponent):
         field_names: List[str] = None,
         mode: Literal['sobel', 'diff'] = 'diff',
         reduction: str = 'mean',
-        normalization: Literal['none', 'range', 'variance', 'std'] = 'none',
+        normalization: Literal['none', 'range', 'variance', 'std', 'norm', 'root_norm'] = 'none',
         epsilon: float = 1e-8
     ):
         super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_helper=norm_helper)

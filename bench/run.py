@@ -69,6 +69,17 @@ def get_device_string() -> str:
         return f"cuda:{idx} ({name})"
     return "cpu"
 
+
+def get_metric_device() -> torch.device:
+    """Return the best available device for metrics (XPU > CUDA > CPU)."""
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        idx = torch.xpu.current_device()
+        return torch.device(f"xpu:{idx}")
+    if torch.cuda.is_available():
+        idx = torch.cuda.current_device()
+        return torch.device(f"cuda:{idx}")
+    return torch.device("cpu")
+
 def cleanup_distributed(rank: int) -> None:
     """Best-effort teardown so distributed/XPU jobs exit cleanly."""
     global _CLEANUP_DONE
@@ -107,7 +118,7 @@ def cleanup_distributed(rank: int) -> None:
 
 def run(cfg):
     """Entry-point called by main.py after Hydra config is prepared."""
-    RANK = int(os.environ.get("LOCAL_RANK", -1))
+    RANK = int(os.environ.get("RANK", -1))
     IS_MAIN_PROCESS = RANK in [-1, 0]
     print(f"RANK: {RANK}")
     atexit.register(cleanup_distributed, rank=RANK)
@@ -138,6 +149,8 @@ def run(cfg):
         if cfg["output_log_config"]["logging"]["wandb_offline"]:
             os.environ["WANDB_MODE"] = "offline"
 
+    use_batch_eval_metrics = cfg["train_strategy_config"].get("batch_eval_metrics", False)
+
     # ------------------------------------------------------------------
     # Build TrainingArguments
     # ------------------------------------------------------------------
@@ -148,7 +161,6 @@ def run(cfg):
         output_dir=cfg["output_log_config"]["logging"][
             "output_dir"
         ],  # add model name & timestamp
-        overwrite_output_dir=True,  # OVERWRITE if dir exists (also used for resume)
         # ------------------------------------------------------------------
         # Evaluation
         # ------------------------------------------------------------------
@@ -246,6 +258,9 @@ def run(cfg):
             else "none"
         ),
         ddp_find_unused_parameters=False,
+        batch_eval_metrics=use_batch_eval_metrics,
+        dataloader_drop_last=False,
+        #ddp_backend="xccl",
     )
 
     # ------------------------------------------------------------------
@@ -264,6 +279,179 @@ def run(cfg):
     def model_init():
         return fetch_model(cfg["model_config"], cfg["data_config"])
 
+    class StreamingMetrics:
+        def __init__(self):
+            self.reset()
+
+        def reset(self):
+            self.num_elements_aggregated_in_batch_dim_per_device = 0
+            self.weighted_composite_train_loss_per_batch_per_device = 0
+            self.weighted_eval_component_loss_sums_per_device = {}
+            self.metrics = {}
+
+        def __call__(self, eval_pred: EvalPrediction, compute_result: bool = False):
+            # Called every eval batch when batch_eval_metrics=True
+            device = eval_pred.predictions.device
+            #print(f"[StreamingMetrics] device: {device}")
+            preds = eval_pred.predictions
+            (
+                len_eval_dataloader,
+                num_eval_rollouts,
+                label_seq_length,
+                channel_dim,
+                *spatial,
+            ) = preds.shape
+            
+            # Flatten rollouts into time dimension
+            preds_tensor = preds.reshape(
+                len_eval_dataloader,
+                num_eval_rollouts * label_seq_length,
+                channel_dim,
+                *spatial,
+            ).detach()#.to(device)
+            targets_tensor = eval_pred.label_ids.detach()
+
+            if compute_result:
+                gs = trainer.accelerator.gradient_state
+                remainder = gs.remainder  # valid global samples in last logical batch
+
+                # Accelerate behavior: only trim when remainder > 0.
+                # remainder == -1 (e.g. drop_last=True / unknown length) => no trim.
+                if remainder > 0:
+                    local_bs = preds_tensor.shape[0]
+                    rank = trainer.accelerator.process_index
+
+                    # global gathered order is rank-concatenated:
+                    # rank0 chunk [0:local_bs), rank1 [local_bs:2*local_bs), ...
+                    start = rank * local_bs
+                    valid_local = max(0, min(local_bs, remainder - start))
+                    #print(f"[rank {RANK}] valid_local: {valid_local}")
+                    preds_tensor = preds_tensor[:valid_local]
+                    targets_tensor = targets_tensor[:valid_local]
+            
+
+            #print(f"[rank {RANK}] preds shape: {preds_tensor.shape}")
+            batch_elements_per_device = preds_tensor.shape[0]
+            self.num_elements_aggregated_in_batch_dim_per_device += batch_elements_per_device
+            #if RANK == 0:
+            
+            # dist.barrier()
+            # print(f"[rank {RANK}] shape={tuple(preds_tensor.shape)} "
+            #     f"min={preds_tensor.min().item()} max={preds_tensor.max().item()} mean={preds_tensor.float().mean().item()}",
+            #     flush=True)
+            # dist.barrier()
+
+            # 1. Create an additional composite_train_loss metric using the metrics from train_loss block.
+            # "Can" be used for checkpointing.
+            if batch_elements_per_device > 0 and getattr(trainer, "loss_fn", None) is not None:
+                try:
+                    with torch.no_grad():
+                        train_loss_fn = trainer.loss_fn.to(device)
+                        composite_train_loss_per_device = train_loss_fn(
+                            model=None,
+                            predictions=preds_tensor,#.to(device),
+                            labels=targets_tensor,#.to(device),
+                            return_detailed=False,  # scalar only
+                        )
+
+                        self.weighted_composite_train_loss_per_batch_per_device += (
+                            composite_train_loss_per_device * batch_elements_per_device
+                        )
+                        
+                    #metrics["composite_train_loss"] = float(composite_train_loss_per_device)
+
+                except Exception as e:
+                    print("[compute_metrics] composite_train_loss failed:", repr(e))
+
+            # 2. Evaluation loss metrics (for logging), cached on trainer
+            eval_loss_fn = getattr(trainer, "eval_loss_fn", None)
+            if batch_elements_per_device > 0 and eval_loss_fn is not None:
+                try:
+                    with torch.no_grad():
+                        eval_loss_fn = eval_loss_fn.to(device)
+                        _, detailed = eval_loss_fn(
+                            model=None,
+                            predictions=preds_tensor,#.to(device),
+                            labels=targets_tensor,#.to(device),
+                            return_detailed=True,
+                        )
+
+                    for component_name, component_detailed in detailed.items():
+                        component_total = component_detailed["total"]
+                        weighted_delta = float(component_total) * batch_elements_per_device
+                        self.weighted_eval_component_loss_sums_per_device[component_name] = (
+                            self.weighted_eval_component_loss_sums_per_device.get(component_name, 0.0)
+                            + weighted_delta
+                        )
+
+                except Exception as e:
+                    print("[compute_metrics] eval_loss_fn failed:", repr(e))
+
+            if not compute_result:
+                return {}  # don’t log partials
+
+            #* last batch: return global metrics, then reset for next eval
+            #dist.barrier()
+            # print(f"[rank {RANK}] weighted_composite_train_loss_per_batch_per_device: {self.weighted_composite_train_loss_per_batch_per_device}", flush=True)
+            # dist.barrier()
+            # print(f"[rank {RANK}] num_elements_aggregated_in_batch_dim_per_device: {self.num_elements_aggregated_in_batch_dim_per_device}", flush=True)
+            # dist.barrier()
+            if self.num_elements_aggregated_in_batch_dim_per_device > 0:
+                # print(
+                #     f"[rank {RANK}] local_num_windows={self.num_elements_aggregated_in_batch_dim_per_device}",
+                #     flush=True,
+                # )
+                global_num_windows = torch.tensor(
+                    float(self.num_elements_aggregated_in_batch_dim_per_device),
+                    device=device,
+                    dtype=torch.float64,
+                )
+                if dist.is_available() and dist.is_initialized():
+                    dist.all_reduce(global_num_windows, op=dist.ReduceOp.SUM)
+                # print(
+                #     f"[rank {RANK}] global_num_windows={global_num_windows.item()}",
+                #     flush=True,
+                # )
+
+                #-------------------------------------------------------
+                if getattr(trainer, "loss_fn", None) is not None:
+
+                    global_weighted_composite_train_loss_sum = torch.tensor(
+                        float(self.weighted_composite_train_loss_per_batch_per_device),
+                        device=device,
+                        dtype=torch.float64,
+                    )
+                    if dist.is_available() and dist.is_initialized():
+                        dist.all_reduce(global_weighted_composite_train_loss_sum, op=dist.ReduceOp.SUM)
+
+                    self.metrics["composite_train_loss"] = (
+                        global_weighted_composite_train_loss_sum / global_num_windows
+                    ).item()
+
+                if eval_loss_fn is not None:
+                    for (
+                        component_name,
+                        weighted_component_sum_per_device,
+                    ) in self.weighted_eval_component_loss_sums_per_device.items():
+
+                        global_component_weighted_sum = torch.tensor(
+                            float(weighted_component_sum_per_device),
+                            device=device,
+                            dtype=torch.float64,
+                        )
+                        if dist.is_available() and dist.is_initialized():
+                            dist.all_reduce(global_component_weighted_sum, op=dist.ReduceOp.SUM)
+                        self.metrics[component_name] = (
+                            global_component_weighted_sum / global_num_windows
+                        ).item()
+
+            
+            metrics_to_return = dict(self.metrics)
+            self.reset()
+            return metrics_to_return
+    
+    streaming_metrics = StreamingMetrics()
+
     def compute_metrics(eval_pred: EvalPrediction):
         preds = eval_pred.predictions
         (
@@ -281,11 +469,12 @@ def run(cfg):
             channel_dim,
             *spatial,
         )
+        #print(f"[rank {RANK}] preds shape: {preds.shape}")
         targets = eval_pred.label_ids
 
         metrics: dict[str, float] = {}
 
-        device = getattr(trainer, "metric_device", torch.device("cpu"))
+        device = torch.device("cpu") #getattr(trainer, "metric_device", torch.device("cpu"))
 
         if isinstance(preds, np.ndarray):
             preds_tensor = torch.from_numpy(preds).float()
@@ -350,7 +539,7 @@ def run(cfg):
 
             except Exception as e:
                 print("[compute_metrics] eval_loss_fn failed:", repr(e))
-
+        #print(f"[rank {RANK}] metrics: {metrics}")
         return metrics
 
     # Curriculum start epochs (shared helper from Trainer module)
@@ -389,6 +578,8 @@ def run(cfg):
     else:
         initial_weight_callback = None
 
+    trainer_compute_metrics = streaming_metrics if use_batch_eval_metrics else compute_metrics
+
     trainer = Trainer(
         model_config=cfg["model_config"],
         data_config=cfg["data_config"],
@@ -403,7 +594,7 @@ def run(cfg):
         args=training_args,
         train_dataset=train_ds,
         eval_dataset=eval_ds,
-        compute_metrics=compute_metrics,
+        compute_metrics=trainer_compute_metrics,
         callbacks=callbacks if callbacks else None,
     )
 
@@ -412,7 +603,7 @@ def run(cfg):
     )
 
     # Initialize eval_loss_fn
-    metric_device = torch.device("cpu")
+    metric_device = get_metric_device()
     try:
         initial_eval_loss_dict = initial_train_strategy_dict.validation_loss
         #eval_loss_dict = fetch_eval_loss_dict(cfg)

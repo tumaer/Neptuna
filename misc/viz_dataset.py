@@ -41,6 +41,12 @@ Example Usage:
         --data-config config/data_config/fluids/Laser_Droplet/2d_laser_droplet_data_default.yaml \
         --normalize --norm-strategy z_normalization
 
+    # Plot only selected datasets (channels)
+    python viz_dataset.py --h5-path data/train.h5 --channels "Velocity_X" "Velocity_Y" "Density" "Pressure"
+
+    # Plot only specific channel indices (e.g. 0 and 2) for multi-channel datasets
+    python viz_dataset.py --h5-path data/train.h5 --channel-indices 0 2
+
 Dependencies:
     - h5py: HDF5 file handling
     - matplotlib: Plotting and visualization
@@ -104,6 +110,17 @@ def parse_args():
         Available placeholders: {t} (timestep), {g} (group), {proj} (projection), {slice} (slice index)
         Example: --title "CFD Simulation - Group {g}, t={t}"
         Example: --title "Pressure Field at t={t} - {proj} view"
+    
+    **Channel / dataset selection:**
+    --channels : list of str, optional
+        Only plot these dataset names (channel names). If omitted, all datasets
+        in each group are plotted.
+        Example: --channels velocity pressure
+    
+    --channel-indices : list of int, optional
+        Only plot these channel indices (0-based) for multi-channel datasets.
+        If omitted, all channels are plotted. Ignored for single-channel datasets.
+        Example: --channel-indices 0 2
     
     **Group Selection (mutually exclusive):**
     --groups : list of str
@@ -201,7 +218,12 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Visualise all timesteps of a randomly chosen group inside a train.h5 file."
     )
-    parser.add_argument("--h5-path", dest="h5_path", help="Path to the .h5 file")
+    parser.add_argument(
+        "--h5-path",
+        dest="h5_path",
+        required=True,
+        help="Path to the .h5 file (required).",
+    )
     parser.add_argument(
         "--out",
         default="trajectory_frames",
@@ -247,9 +269,11 @@ def parse_args():
     group_sel = parser.add_mutually_exclusive_group()
     group_sel.add_argument(
         "--groups",
+        "--group",
         nargs="+",
         metavar="GROUP",
-        help="Name(s) of one or more groups in the HDF5 file to process.",
+        dest="groups",
+        help="Name(s) of one or more groups in the HDF5 file to process (--group is an alias).",
     )
     group_sel.add_argument(
         "--all",
@@ -297,6 +321,22 @@ def parse_args():
         choices=["z_normalization", "min_max_normalization", "robust_normalization"],
         default=None,
         help="Override normalization strategy. If omitted, uses strategy from the YAML.",
+    )
+    parser.add_argument(
+        "--channels",
+        nargs="+",
+        metavar="NAME",
+        default=None,
+        help="Only plot these dataset names (e.g. velocity, pressure). If omitted, plot all datasets.",
+    )
+    parser.add_argument(
+        "--channel-indices",
+        dest="channel_indices",
+        nargs="+",
+        type=int,
+        metavar="IDX",
+        default=None,
+        help="Only plot these channel indices (0-based) for multi-channel datasets. If omitted, plot all channels.",
     )
     return parser.parse_args()
 
@@ -467,6 +507,7 @@ def plot_timestep(
     group_name: str | None = None,
     volume_proj: str = "slice",
     slice_index: int | None = None,
+    channel_indices: list[int] | None = None,
 ):
     """
     Create and save a visualization for a single timestep.
@@ -493,6 +534,9 @@ def plot_timestep(
         Method for 3D volume projection: 'slice', 'max', or 'iso'.
     slice_index : int, optional
         Index of slice to show for 'slice' projection (defaults to middle).
+    channel_indices : list of int, optional
+        If provided, only plot these channel indices (0-based) for multi-channel
+        datasets. If None, plot all channels.
         
     Notes
     -----
@@ -532,7 +576,15 @@ def plot_timestep(
             return arr.shape[1] if arr.shape[1] <= 3 else 1
         return 1
 
-    n_plots = sum(n_channels(arr) for arr in datasets.values())
+    def channels_to_plot(n_ch: int) -> list[int]:
+        """Return channel indices to plot for a dataset with n_ch channels."""
+        if channel_indices is None:
+            return list(range(n_ch))
+        return [c for c in channel_indices if 0 <= c < n_ch]
+
+    n_plots = sum(
+        len(channels_to_plot(n_channels(arr))) for arr in datasets.values()
+    )
     ncols = int(np.ceil(np.sqrt(n_plots)))  # square-ish layout
     nrows = int(np.ceil(n_plots / ncols))
 
@@ -544,7 +596,8 @@ def plot_timestep(
 
     for dset_name, arr in datasets.items():
         n_ch = n_channels(arr)
-        for ch in range(n_ch):
+        ch_list = channels_to_plot(n_ch)
+        for ch in ch_list:
             ax = next(axes_iter)
             plot_counter += 1
             # Extract the frame/volume for plotting
@@ -795,8 +848,11 @@ def main():
             # Validate the requested group names exist in the file
             missing = [g for g in args.groups if g not in f]
             if missing:
+                available = list(f.keys())
                 raise ValueError(
-                    f"Requested group(s) not found in file: {', '.join(missing)}"
+                    "Requested group(s) not found in file: "
+                    f"{', '.join(missing)}. "
+                    f"\n Available groups:\n  " + "\n  ".join(available)
                 )
             group_names = args.groups
         else:  # --random or default behaviour
@@ -807,6 +863,14 @@ def main():
 
         for group_name in group_names:
             datasets, n_timesteps = load_group_datasets(f[group_name])
+            if args.channels is not None:
+                missing = [c for c in args.channels if c not in datasets]
+                if missing:
+                    raise ValueError(
+                        f"Requested channel(s) not found in group '{group_name}': {', '.join(missing)}. "
+                        f"\n Available channels:\n  " + "\n  ".join(datasets.keys())
+                    )
+                datasets = {k: v for k, v in datasets.items() if k in args.channels}
             if args.normalize and norm_stats is not None:
                 datasets_proc = normalize_datasets(datasets, norm_stats, norm_strategy)
                 title_tpl = args.title or "{g} (norm: {proj})"
@@ -843,6 +907,7 @@ def main():
                     group_name=group_name,
                     volume_proj=args.volume_proj,
                     slice_index=args.slice_index,
+                    channel_indices=args.channel_indices,
                 )
                 frame_paths.append(out_file)
 

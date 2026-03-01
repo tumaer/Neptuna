@@ -4,6 +4,25 @@ loss:
     # - type: RMSE
     #   weight: 1.0
     - type: RMSE
-      weight: 0.22
+      weight: 1.0
       name: VRMSE
-      config_file: vrmse
+      config_file: loss_metrics/RMSE/vrmse
+    - type: L2Loss
+      weight: 1.0
+    - type: PearsonCorrelationLoss
+      weight: 1.0
+    - type: H1SemiNorm
+      weight: 1.0
+    - type: H2SemiNorm
+      weight: 1.0
+    - type: MultilevelWaveletLoss
+      weight: 1.0
+    - type: WaveletBinnedRMSE
+      weight: 1.0
+    # - type: InterfaceRMSE
+    #   weight: 1.0
+    - type: SSIM
+      weight: 1.0
+    # - type: IntegralConservationRMSE
+    #   weight: 1.0
+    #   name: IntegralConservationRMSE

@@ -9,9 +9,12 @@
         "name": "Only Inference",
         "type": "debugpy",
         "request": "launch",
-        "justMyCode": true,
+        "justMyCode": false,
         "program": "only_inference.py", 
         "console": "integratedTerminal",
+        "env": {
+          "HYDRA_FULL_ERROR": "1"
+        }
     },
 
     {
@@ -30,6 +33,24 @@
           }
 
   },
+
+  {
+    "name": "scot debug 2D_KS",
+    "type": "debugpy",
+    "request": "launch",
+    "program": "main.py",
+    "console": "integratedTerminal",
+    "justMyCode": true,
+    "args": [
+        "data_config=fluids/KS/2d_ks_data_default.yaml",
+        "model_config=ScOT/scot_1M"
+      ],
+    "env": {
+        "HYDRA_FULL_ERROR": "1",
+        "HYDRA_MAIN_DISABLE_RUN": "1"
+        }
+
+},
 
   {
     "name": "Loss debug 3D_KS",
@@ -83,6 +104,26 @@
   },
 
     {
+      "name": "train 2D_Aerobreakup_ScoT",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "main.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+          "hydra.run.dir=.",
+          "hydra.output_subdir=null",
+          "data_config=fluids/Aerobreakup/2d_aerobreakup_data_default.yaml",
+          "model_config=ScOT/scot_1M",
+        ],
+      "env": {
+          "HYDRA_FULL_ERROR": "1",
+          "HYDRA_MAIN_DISABLE_RUN": "1",
+          "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "2.0"   // “-1” disables the warning entirely
+          }
+
+    },
+    {
       "name": "train 2D_Aerobreakup_UNet",
       "type": "debugpy",
       "request": "launch",
@@ -124,6 +165,26 @@
 
     },
     {
+      "name": "train 2D_Aerobreakup_UNeTransformer",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "main.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+          "hydra.run.dir=.",
+          "hydra.output_subdir=null",
+          "data_config=fluids/Aerobreakup/2d_aerobreakup_data_default.yaml",
+          "model_config=UNetTransformer/unettransformer_1M",
+        ],
+      "env": {
+          "HYDRA_FULL_ERROR": "1",
+          "HYDRA_MAIN_DISABLE_RUN": "1",
+          "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "2.0"   // “-1” disables the warning entirely
+          }
+
+    },
+    {
       "name": "train 2D_Laser_Droplet_UNet",
       "type": "debugpy",
       "request": "launch",
@@ -135,6 +196,28 @@
           "hydra.output_subdir=null",
           "data_config=fluids/Laser_Droplet/2d_laser_droplet_data_default.yaml",
           "model_config=UNet/default_unet",
+        ],
+      "env": {
+          "HYDRA_FULL_ERROR": "1",
+          "HYDRA_MAIN_DISABLE_RUN": "1",
+          "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "2.0"   // “-1” disables the warning entirely
+          }
+
+    },
+
+    {
+      "name": "train 2D_Laser_Droplet_Scot3d",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "main.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+          "hydra.run.dir=.",
+          "hydra.output_subdir=null",
+          "data_config=fluids/Laser_Droplet/2d_laser_droplet_data_default.yaml",
+          "data_config.dataset_directory_path=/Users/harish/Desktop/iclr26_bench/data/fluids/LD_single_group_ID",
+          "model_config=ScOT3D/scot3d_1M",
         ],
       "env": {
           "HYDRA_FULL_ERROR": "1",

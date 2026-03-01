@@ -1,38 +1,80 @@
 ########################################################
 # Training strategy configuration
 ########################################################
-num_train_epochs: 20
+num_train_epochs: 1
+batch_eval_metrics: True
 metric_for_best_model:
-  - type: MSE
-    weight: 1.0         
-  # - type: CompositeLoss
-  #   weight: 1.0
-  #   name: "SSIM_L2_Composite"
-  #   sub_components:
-  #     - type: SSIM
-  #       weight: 0.7
-  #     - type: MSE
-  #       weight: 0.3
+  # - type: L2Loss
+  #   weight: 1.0         
+  - type: CompositeLoss
+    weight: 1.0
+    name: "SSIM_L2_Composite"
+    sub_components:
+      - type: SSIM
+        weight: 0.7
+      - type: L2Loss
+        weight: 0.3
 
 curriculum:
   - name: block_1
     start_epoch: 0
     train_loss:
       components:
-        - type: MSE
+        - type: CompositeLoss
           weight: 1.0
+          name: "SSIM_L2_Composite_train"
+          sub_components:
+            - type: SSIM
+              weight: 0.1
+              metric_params: 
+                window_size: 7
+            - type: L2Loss
+              weight: 0.9
+              channel_weights: [0.34, 0.52, 0.78]
       train_loss_weighting_strategy:
-        enabled: true  # Set to true to enable
         type: GradNorm
         grad_stats_last_layer_only: true
         weight_sub_components: false
         weight_per_channel: false
         loss_history_interval: 10
         grad_history_interval: 10
+      
     validation_loss:
       components:
-        - type: MAE
+        - type: L1Loss
           weight: 1.0
+        - type: CompositeLoss
+          weight: 1.0
+          name: "SSIM_L2_Composite"
+          sub_components:
+            - type: SSIM
+              weight: 0.7
+            - type: L2Loss
+              weight: 0.3
+
+  # - name: block_2
+  #   start_epoch: 2
+  #   train_loss:
+  #     components:
+  #       - type: RMSE
+  #         weight: 0.5
+  #       - type: H1SemiNorm
+  #         weight: 0.5
+  #     train_loss_weighting_strategy:
+  #       enabled: false  # Set to true to enable
+  #       type: SoftAdapt
+  #       loss_source: 'eval' # 'train' OR 'eval'
+      
+  #   validation_loss: #TODO: Add loss components from train loss mertrics of this block in validation
+  #     components:
+  #       - type: WaveletBinnedRMSE
+  #         weight: 1.0
+  #       - type: PearsonCorrelationLoss
+  #         weight: 1.0
+  #       - type: RMSE
+  #         weight: 1.0
+  #       - type: H1SemiNorm
+  #         weight: 1.0
 
   # - name: block_3
   #   start_epoch: 4

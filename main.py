@@ -8,7 +8,7 @@ import os
 def main(cfg: DictConfig):
     """Hydra entry-point – patches the config then delegates to bench.run.run."""
     
-    RANK = int(os.environ.get("LOCAL_RANK", -1))
+    RANK = int(os.environ.get("RANK", -1))
     IS_MAIN_PROCESS = RANK in [-1, 0]
 
     cfg = prepare_config(cfg)

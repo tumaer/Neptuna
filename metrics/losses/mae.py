@@ -41,7 +41,7 @@ class MAE(LossComponent):
         data_dim: int = None,
         field_names: List[str] = None,
         reduction: str = 'mean',
-        normalization: Literal['none', 'range', 'variance', 'std'] = 'none',
+        normalization: Literal['none', 'range', 'variance', 'std', 'norm', 'root_norm'] = 'none',
         epsilon: float = 1e-8
     ):
         super().__init__(weight=weight, name=name, data_dim=data_dim, 

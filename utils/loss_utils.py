@@ -253,7 +253,7 @@ def _override_loss_weights_recursively(component_cfg, num_channels: int):
             _override_loss_weights_recursively(sub_component, num_channels)
 
 
-def fetch_infer_loss_dict(cfg):
+def fetch_infer_loss_dict(data_cfg):
     """
     Loads infer loss config and overrides timestep_weights and channel_weights.
     Inference requires the loss object to be initialized with per-channel and timestep
@@ -262,19 +262,11 @@ def fetch_infer_loss_dict(cfg):
     eval_loss_config_path = "./config/infer_config/infer_loss.yaml" #TODO: avoid hardcoding "infer_loss.yaml".
     eval_loss_cfg = OmegaConf.load(eval_loss_config_path)
 
-    num_channels = len(cfg.data_config.filter_features.filter_out_channels)
+    num_channels = len(data_cfg.filter_features.filter_out_channels)
     
     for component in eval_loss_cfg.loss.components:
         _override_loss_weights_recursively(component, num_channels)
     
     return eval_loss_cfg.loss
-
-#TODO: remove this
-# def fetch_train_loss_dict(cfg):
-#     return cfg.loss_config.train_loss
-
-# #TODO: remove this
-# def fetch_eval_loss_dict(cfg):
-#     return cfg.loss_config.validation_loss
 
     
