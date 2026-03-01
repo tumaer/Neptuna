@@ -942,65 +942,65 @@ class Trainer(Trainer_):
             with self.compute_loss_context_manager():
                 loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
 
-        should_collect_grads = (
-            self._collect_gradients and 
-            self.state.global_step % self._grad_history_interval == 0
-        )
+            should_collect_grads = (
+                self._collect_gradients and 
+                self.state.global_step % self._grad_history_interval == 0
+            )
 
-        # Added: (Not in base class) compute component gradient stats if needed
-        if should_collect_grads:
-            self._compute_component_gradient_stats()
+            # Added: (Not in base class) compute component gradient stats if needed
+            if should_collect_grads:
+                self._compute_component_gradient_stats()
 
-        del inputs
-        if (
-            self.args.torch_empty_cache_steps is not None
-            and self.state.global_step % self.args.torch_empty_cache_steps == 0
-        ):
-            if is_torch_xpu_available():
-                torch.xpu.empty_cache()
-            elif is_torch_mlu_available():
-                torch.mlu.empty_cache()
-            elif is_torch_musa_available():
-                torch.musa.empty_cache()
-            elif is_torch_npu_available():
-                torch.npu.empty_cache()
-            elif is_torch_mps_available():
-                torch.mps.empty_cache()
-            elif is_torch_hpu_available():
-                logger.warning(
-                    "`torch_empty_cache_steps` is set but HPU device/backend does not support empty_cache()."
-                )
-            else:
-                torch.cuda.empty_cache()
-
-        kwargs = {}
-
-        # For LOMO optimizers you need to explicitly use the learning rate
-        if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
-            kwargs["learning_rate"] = self._get_learning_rate()
-
-        if self.args.n_gpu > 1:
-            loss = loss.mean()  # mean() to average on multi-gpu parallel training
-
-        if self.use_apex:
-            from apex import amp
-
-            with amp.scale_loss(loss, self.optimizer) as scaled_loss:
-                scaled_loss.backward()
-        else:
-            # Finally we need to normalize the loss for reporting if GA loss bug is not fixed during compute loss
+            del inputs
             if (
-                not self.model_accepts_loss_kwargs or num_items_in_batch is None
-            ) and self.compute_loss_func is None:
-                # If the model does not accept loss kwargs, we need to normalize the loss by the number of gradient accumulation steps
-                loss = loss / self.current_gradient_accumulation_steps
+                self.args.torch_empty_cache_steps is not None
+                and self.state.global_step % self.args.torch_empty_cache_steps == 0
+            ):
+                if is_torch_xpu_available():
+                    torch.xpu.empty_cache()
+                elif is_torch_mlu_available():
+                    torch.mlu.empty_cache()
+                elif is_torch_musa_available():
+                    torch.musa.empty_cache()
+                elif is_torch_npu_available():
+                    torch.npu.empty_cache()
+                elif is_torch_mps_available():
+                    torch.mps.empty_cache()
+                elif is_torch_hpu_available():
+                    logger.warning(
+                        "`torch_empty_cache_steps` is set but HPU device/backend does not support empty_cache()."
+                    )
+                else:
+                    torch.cuda.empty_cache()
 
-            # Turning off loss scaling w.r.t. gradient accumulation when DeepSpeed is enabled
-            # https://github.com/huggingface/transformers/pull/35808
-            if self.accelerator.distributed_type == DistributedType.DEEPSPEED:
-                kwargs["scale_wrt_gas"] = False
+            kwargs = {}
 
-            self.accelerator.backward(loss, **kwargs)
+            # For LOMO optimizers you need to explicitly use the learning rate
+            if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
+                kwargs["learning_rate"] = self._get_learning_rate()
+
+            if self.args.n_gpu > 1:
+                loss = loss.mean()  # mean() to average on multi-gpu parallel training
+
+            if self.use_apex:
+                from apex import amp
+
+                with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                    scaled_loss.backward()
+            else:
+                # Finally we need to normalize the loss for reporting if GA loss bug is not fixed during compute loss
+                if (
+                    not self.model_accepts_loss_kwargs or num_items_in_batch is None
+                ) and self.compute_loss_func is None:
+                    # If the model does not accept loss kwargs, we need to normalize the loss by the number of gradient accumulation steps
+                    loss = loss / self.current_gradient_accumulation_steps
+
+                # Turning off loss scaling w.r.t. gradient accumulation when DeepSpeed is enabled
+                # https://github.com/huggingface/transformers/pull/35808
+                if self.accelerator.distributed_type == DistributedType.DEEPSPEED:
+                    kwargs["scale_wrt_gas"] = False
+
+                self.accelerator.backward(loss, **kwargs)
 
             return loss.detach()
 

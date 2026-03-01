@@ -3,11 +3,9 @@
 ########################################################
 num_train_epochs: 2
 batch_eval_metrics: True
-metric_for_best_model:
-  # - type: MSE
-  #   weight: 1.0         
+metric_for_best_model:     
   - type: MSE
-    weight: 1.0
+
 
 curriculum:
   - name: block_1
@@ -15,9 +13,7 @@ curriculum:
     train_loss:
       components:
         - type: MSE
-          weight: 1.0
         - type: MAE
-          weight: 1.0
       train_loss_weighting_strategy:
         enabled: true  # Set to true to enable
         type: GradNorm
@@ -30,7 +26,6 @@ curriculum:
     validation_loss:
       components:
         - type: RMSE
-          weight: 1.0
 
   # - name: block_2
   #   start_epoch: 2
@@ -153,3 +148,6 @@ curriculum:
 # - type: MSE
 #   weight: 1.0
 #   channel_weights: [1.0, 1.0, 1.0]
+
+# Note: if you want to compute and log per-component or per-channel losses and gradient stats without 
+# applying adaptive weighting, you can set enabled: true with type: LogOnly (leaves the weights unchanged)

@@ -54,6 +54,13 @@ class ResidualBasedAttention(LossWeightingStrategyBase):
         except Exception:
             return float("nan")
 
+    def _recover_unweighted_losses(self, losses: List[float], weight: float) -> List[float]:
+        """Recover unweighted losses from weighted loss history."""
+        if not losses:
+            return []
+        denom = max(float(weight), self.eps)
+        return [float(l) / denom for l in losses]
+
     def compute_statistics(self, values: List[float]) -> Optional[Dict[str, float]]:
         if not values:
             return None
@@ -65,7 +72,7 @@ class ResidualBasedAttention(LossWeightingStrategyBase):
             "count": int(t.numel()),
         }
 
-    def _loss_stat(self, loss_history: Dict[str, List[float]], key: str) -> float:
+    def _loss_stat(self, loss_history: Dict[str, List[float]], key: str, current_weights: Dict[str, Dict]) -> float:
         """
         Returns a nonnegative scalar summary of the component loss over the epoch.
         Assumes losses are >= 0 (MSE-style). Clamps negative due to numeric noise.
@@ -74,7 +81,11 @@ class ResidualBasedAttention(LossWeightingStrategyBase):
         if not hist:
             return 0.0
 
-        stats = self.compute_statistics(hist)
+        # Recover unweighted losses
+        prev_w = self._get_previous_weight(key, current_weights)
+        unweighted_hist = self._recover_unweighted_losses(hist, prev_w)
+
+        stats = self.compute_statistics(unweighted_hist)
         if stats is None:
             return 0.0
 
@@ -122,7 +133,7 @@ class ResidualBasedAttention(LossWeightingStrategyBase):
         # 1) Compute residual-magnitude proxies R_c (from loss summaries)
         residual_proxy: Dict[str, float] = {}
         for k in all_keys:
-            loss_stat = self._loss_stat(loss_history, k)
+            loss_stat = self._loss_stat(loss_history, k, current_weights)
             residual_proxy[k] = float(self._residual_proxy_from_loss(loss_stat))
 
         # 2) Normalize by max proxy across components (analogue of max_i |r_i|)

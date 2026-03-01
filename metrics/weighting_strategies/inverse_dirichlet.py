@@ -81,6 +81,13 @@ class InverseDirichlet(LossWeightingStrategyBase):
     def _clip(self, x: float) -> float:
         return max(self.min_weight, min(self.max_weight, x))
 
+    def _recover_unweighted_losses(self, losses: List[float], weight: float) -> List[float]:
+        """Recover unweighted losses from weighted loss history."""
+        if not losses:
+            return []
+        denom = max(float(weight), self.epsilon)
+        return [float(l) / denom for l in losses]
+
     def _moment_stats(self, xs: List[float]) -> Dict[str, float]:
         if not xs:
             return {"mean": 0.0, "second": 0.0, "var": 0.0}

@@ -53,6 +53,13 @@ class BalancedResidualDecayRate(LossWeightingStrategyBase):
     def _clip(self, x: float) -> float:
         return max(self.min_weight, min(self.max_weight, x))
 
+    def _recover_unweighted_losses(self, losses: List[float], weight: float) -> List[float]:
+        """Recover unweighted losses from weighted loss history."""
+        if not losses:
+            return []
+        denom = max(float(weight), self.epsilon)
+        return [float(l) / denom for l in losses]
+
     def compute_statistics(self, losses: List[float]) -> Optional[Dict[str, float]]:
         """Mean/std/count for a list of scalar losses (fallback path only)."""
         if not losses:
@@ -96,7 +103,12 @@ class BalancedResidualDecayRate(LossWeightingStrategyBase):
         for loss_key, losses in loss_history.items():
             if not losses:
                 continue
-            stats = self.compute_statistics(losses)
+            
+            # Recover unweighted losses
+            prev_w = self._get_previous_weight(loss_key, current_weights)
+            unweighted_losses = self._recover_unweighted_losses(losses, prev_w)
+            
+            stats = self.compute_statistics(unweighted_losses)
             if stats is None:
                 continue
             L = max(float(stats["mean"]), 0.0)
