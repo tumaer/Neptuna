@@ -139,6 +139,7 @@ LOSS_REGISTRY = {
         "default_name": "PDEResidualLoss",
         "config_path": "loss_metrics/PDEResidualLoss/",
         "default_config": "pde_residual_loss_default",
+        "sub_components": True,
     },
 }
 
