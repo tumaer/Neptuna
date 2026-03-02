@@ -551,14 +551,24 @@ class ScOTAttention3D(nn.Module):
         )  # shape: [1, 2*Wt - 1, 2*Wh - 1, 2*Ww - 1, 3]
 
         # normalize to -1, 1
-        if pretrained_window_size > 0:
-            relative_coords_table[:, :, :, :, 0] /= pretrained_window_size - 1
-            relative_coords_table[:, :, :, :, 1] /= pretrained_window_size - 1
-            relative_coords_table[:, :, :, :, 2] /= pretrained_window_size - 1
-        elif self.window_size:
-            relative_coords_table[:, :, :, :, 0] /= self.window_size[0] - 1
-            relative_coords_table[:, :, :, :, 1] /= self.window_size[1] - 1
-            relative_coords_table[:, :, :, :, 2] /= self.window_size[2] - 1
+        # if pretrained_window_size > 0:
+        #     relative_coords_table[:, :, :, :, 0] /= pretrained_window_size - 1
+        #     relative_coords_table[:, :, :, :, 1] /= pretrained_window_size - 1
+        #     relative_coords_table[:, :, :, :, 2] /= pretrained_window_size - 1
+        # elif self.window_size:
+        #     relative_coords_table[:, :, :, :, 0] /= self.window_size[0] - 1
+        #     relative_coords_table[:, :, :, :, 1] /= self.window_size[1] - 1
+        #     relative_coords_table[:, :, :, :, 2] /= self.window_size[2] - 1
+
+        pws = self.pretrained_window_size
+        if isinstance(pws, (list, tuple)) and len(pws) >= 3 and all(v > 0 for v in pws[:3]):
+            relative_coords_table[..., 0] /= (pws[0] - 1)
+            relative_coords_table[..., 1] /= (pws[1] - 1)
+            relative_coords_table[..., 2] /= (pws[2] - 1)
+        else:
+            relative_coords_table[..., 0] /= (self.window_size[0] - 1)
+            relative_coords_table[..., 1] /= (self.window_size[1] - 1)
+            relative_coords_table[..., 2] /= (self.window_size[2] - 1)
 
 
         relative_coords_table *= 8  # normalize to -8, 8
@@ -600,7 +610,7 @@ class ScOTAttention3D(nn.Module):
         relative_coords[:, :, 0] *= (2 * self.window_size[1] - 1) * (2 * self.window_size[2] - 1)
         relative_coords[:, :, 1] *= (2 * self.window_size[2] - 1)
         relative_position_index = relative_coords.sum(-1)  # Wd*Wh*Ww, Wd*Wh*Ww
-        self.register_buffer("relative_position_index", relative_position_index)
+        self.register_buffer("relative_position_index", relative_position_index, persistent=False)
 
 
         self.query = nn.Linear(self.all_head_size, self.all_head_size, bias=config.qkv_bias)
@@ -636,6 +646,9 @@ class ScOTAttention3D(nn.Module):
         
         B_, N, C = hidden_states.shape # B_: num_windows * batch_size, N: Wt*Wh*Ww, C: hidden size (dim)
 
+        device = hidden_states.device
+        dtype  = hidden_states.dtype
+
         key_layer = self.transpose_for_scores(self.key(hidden_states))
         value_layer = self.transpose_for_scores(self.value(hidden_states))
         query_layer = self.transpose_for_scores(self.query(hidden_states))
@@ -654,11 +667,15 @@ class ScOTAttention3D(nn.Module):
 
 
         # step 4 from Init
-        relative_position_bias_table = self.continuous_position_bias_mlp(self.relative_coords_table).view(
+        relative_coords_table = self.relative_coords_table.to(device=device)
+        relative_position_index = self.relative_position_index.to(device=device)
+
+        relative_position_bias_table = self.continuous_position_bias_mlp(relative_coords_table).view(
             -1, self.num_attention_heads
         ) # shape: [(2*Wt-1)*(2*Wh-1)*(2*Ww-1), num_heads]
 
-        relative_position_bias = relative_position_bias_table[self.relative_position_index.view(-1)].view(
+        
+        relative_position_bias = relative_position_bias_table[relative_position_index.view(-1)].view(
             N, N, -1
         ) # shape: [Wt*Wh*Ww, Wt*Wh*Ww, num_heads]
 
@@ -673,6 +690,7 @@ class ScOTAttention3D(nn.Module):
 
         if attention_mask is not None: # TODO: check
             # Apply the attention mask is (precomputed for all layers in Swinv2Model forward() function)
+            attention_mask = attention_mask.to(device=device, dtype=dtype)
             mask_shape = attention_mask.shape[0]
             attention_scores = attention_scores.view(
                 B_ // mask_shape, mask_shape, self.num_attention_heads, N, N
@@ -821,16 +839,18 @@ class ScOT3DLayer(nn.Module):
 
 
 
-    @lru_cache()
+    # @lru_cache()
     def get_attn_mask_3d(self, T, H, W, window_size, shift_size, dtype, device):
 
         """
         creats a mask and window it according to window size and shift size
         """
 
-        cache_key = (T, H, W, window_size, shift_size, dtype) 
+        cache_key = (T, H, W, window_size, shift_size, dtype, str(device)) 
         if cache_key in self.attn_mask_cache: # {}
-            return self.attn_mask_cache[cache_key]
+            # return self.attn_mask_cache[cache_key]
+            cached = self.attn_mask_cache[cache_key]
+            return None if cached is None else cached.to(device=device, dtype=dtype)
 
         if any(i > 0 for i in shift_size):
             img_mask = torch.zeros((1, T, H, W, 1), dtype=dtype, device=device)  # 1 T H W 1
@@ -867,6 +887,11 @@ class ScOT3DLayer(nn.Module):
 
         else:
             attn_mask = None
+
+
+
+        if attn_mask is not None:
+            attn_mask = attn_mask.to(device=device, dtype=dtype)
 
 
 
@@ -921,10 +946,10 @@ class ScOT3DLayer(nn.Module):
             shifted_hidden_states = hidden_states
 
         # partition windows
-        hidden_states_windows = window_partition_3d(shifted_hidden_states, self.config.window_size) # shape: (num_windows*B, window_size*window_size, C)
+        hidden_states_windows = window_partition_3d(shifted_hidden_states, self.window_size) # shape: (num_windows*B, window_size*window_size, C)
 
         # Attention mask for SW-MSA
-        attn_mask = self.get_attn_mask_3d(Tp, Hp, Wp, self.config.window_size, self.shift_size, hidden_states.dtype, hidden_states.device)
+        attn_mask = self.get_attn_mask_3d(Tp, Hp, Wp, self.window_size, self.shift_size, hidden_states.dtype, hidden_states.device)
 
         # Apply attention
         attn_outputs = self.attn(
