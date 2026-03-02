@@ -1,11 +1,10 @@
 ########################################################
 # Training strategy configuration
 ########################################################
-num_train_epochs: 2
+num_train_epochs: 5
 batch_eval_metrics: True
 metric_for_best_model:     
   - type: MSE
-
 
 curriculum:
   - name: block_1
@@ -28,7 +27,7 @@ curriculum:
         - type: RMSE
 
   - name: block_2
-    start_epoch: 3
+    start_epoch: 2
     train_loss:
       components:
         - type: H1SemiNorm
@@ -44,7 +43,7 @@ curriculum:
           sub_components:
             - type: SSIM
               weight: 0.7
-            - type: L2Loss
+            - type: MSE
               weight: 0.3
   
   

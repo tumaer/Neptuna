@@ -138,7 +138,7 @@ class StreamingMetrics:
             global_num_windows = torch.tensor(
                 float(self.num_elements_aggregated_in_batch_dim_per_device),
                 device=device,
-                dtype=torch.float64,
+                dtype=torch.float32,
             )
             if dist.is_available() and dist.is_initialized():
                 dist.all_reduce(global_num_windows, op=dist.ReduceOp.SUM)
@@ -153,7 +153,7 @@ class StreamingMetrics:
                 global_weighted_composite_train_loss_sum = torch.tensor(
                     float(self.weighted_composite_train_loss_per_batch_per_device),
                     device=device,
-                    dtype=torch.float64,
+                    dtype=torch.float32,
                 )
                 if dist.is_available() and dist.is_initialized():
                     dist.all_reduce(global_weighted_composite_train_loss_sum, op=dist.ReduceOp.SUM)
@@ -171,7 +171,7 @@ class StreamingMetrics:
                     global_component_weighted_sum = torch.tensor(
                         float(weighted_component_sum_per_device),
                         device=device,
-                        dtype=torch.float64,
+                        dtype=torch.float32,
                     )
                     if dist.is_available() and dist.is_initialized():
                         dist.all_reduce(global_component_weighted_sum, op=dist.ReduceOp.SUM)

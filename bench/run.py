@@ -405,8 +405,6 @@ def run(cfg):
     else:
         initial_weight_callback = None
 
-    trainer_compute_metrics = streaming_metrics if use_batch_eval_metrics else compute_metrics
-
     trainer = Trainer(
         model_config=cfg["model_config"],
         data_config=cfg["data_config"],
@@ -421,12 +419,13 @@ def run(cfg):
         args=training_args,
         train_dataset=train_ds,
         eval_dataset=eval_ds,
-        compute_metrics=trainer_compute_metrics,
+        #compute_metrics=trainer_compute_metrics,
         callbacks=callbacks if callbacks else None,
     )
 
     streaming_metrics = StreamingMetrics(trainer=trainer, mode="eval")
-
+    trainer.compute_metrics = streaming_metrics if use_batch_eval_metrics else compute_metrics
+    
     trainer.set_eval_or_test_rollout_steps(
         rollout_steps=cfg["train_config"]["n_eval_rollouts"], output_all_steps=True
     )
