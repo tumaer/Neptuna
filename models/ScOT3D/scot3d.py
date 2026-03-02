@@ -6,6 +6,7 @@ from utils.model_utils import PretrainedConfig
 from transformers import PreTrainedModel
 from typing import List, Optional, Tuple, Union
 from transformers.pytorch_utils import meshgrid
+from utils.grid_utils import twod_meshgrid_3d
 from functools import reduce, lru_cache
 from operator import mul
 from transformers.models.swinv2.modeling_swinv2 import (
@@ -136,7 +137,7 @@ class ScOT3DPatchEmbeddings(nn.Module):
         self.config = config
         resolution, patch_size = config.grid_resolution, config.patch_size
         in_channels, hidden_size = config.in_channels, config.latent_channels # by latent I mean embed dim here
-        # self.coord_features = config.coord_features # seems extra
+        self.coord_features = config.coord_features # seems extra
         
 
         seq_in = config.sequence_info[0]
@@ -150,7 +151,7 @@ class ScOT3DPatchEmbeddings(nn.Module):
         # basec on Pytorch Conv3D https://docs.pytorch.org/docs/stable/generated/torch.nn.Conv3d.html
 
         self.projection = nn.Conv3d(
-            in_channels, 
+            in_channels + (2 if self.coord_features else 0), 
             hidden_size, 
             kernel_size=patch_size, 
             stride=patch_size)
@@ -187,7 +188,7 @@ class ScOT3DPatchEmbeddings(nn.Module):
         _, in_channels, T,  H, W = input_data.shape 
 
 
-        if in_channels != self.in_channels:
+        if in_channels != self.in_channels + (2 if self.coord_features else 0):
             raise ValueError(
                 "Make sure that the channel dimension of the pixel values match with the one set in the configuration."
             )
@@ -1571,10 +1572,10 @@ class ScOT3D(PreTrainedModel):
             # )
 
 
-        # if self.config.coord_features: # Cancel this. I prefer Relative position embedding in Attenstion. # TODO: must be added. not the same as abs po embedding. that is learnable param but this is fixed. 
-                                                                                                                    # check if you need 2d or 3d meshgrid.
-        #     coord_feat = threed_meshgrid(list(input_data.shape), input_data.device)
-        #     input_data = torch.cat((input_data, coord_feat), dim=1)
+        if self.config.coord_features: # Cancel this. I prefer Relative position embedding in Attenstion. # TODO: must be added. not the same as abs po embedding. that is learnable param but this is fixed. 
+                                                                                                          # check if you need 2d or 3d meshgrid.
+            coord_feat = twod_meshgrid_3d(list(input_data.shape), input_data.device)
+            input_data = torch.cat((input_data, coord_feat), dim=2)
 
         embedding_output, embedd_dimensions = self.embeddings( # input from dataloader B, T_in, C, H, W
             input_data, 
