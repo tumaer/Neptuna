@@ -1,7 +1,7 @@
 ########################################################
 # Training strategy configuration
 ########################################################
-num_train_epochs: 1
+num_train_epochs: 10
 batch_eval_metrics: True
 metric_for_best_model:
   # - type: L2Loss
@@ -49,6 +49,28 @@ curriculum:
             - type: L2Loss
               weight: 0.3
 
+  - name: block_2
+    start_epoch: 3
+    train_loss:
+      components:
+        - type: H1SemiNorm
+          weight: 0.5
+
+    validation_loss:
+      components:
+        - type: H2SemiNorm
+          weight: 1.0
+        - type: CompositeLoss
+          weight: 1.0
+          name: "SSIM_L2_Composite"
+          sub_components:
+            - type: SSIM
+              weight: 0.7
+            - type: L2Loss
+              weight: 0.3
+  
+  
+  
   # - name: block_2
   #   start_epoch: 2
   #   train_loss:
