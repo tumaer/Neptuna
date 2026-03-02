@@ -1,8 +1,6 @@
-update_frequency: 1
-lookback_window: 5
-temperature: 1.0
+temperature_T: 1.0
 epsilon: 1e-8
-min_weight: 0.01
-max_weight: 100.0
-normalize_weights: True
-use_exponential: False
+min_weight: null
+max_weight: null
+normalize_to_num_components: False
+keep_previous_until_ready: True

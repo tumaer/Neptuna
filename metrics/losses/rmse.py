@@ -63,8 +63,10 @@ class RMSE(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
+        input_frames: Optional[torch.Tensor],
         return_detailed: bool = False,
-        keep_bc_dims: bool = False
+        keep_bc_dims: bool = False,
+        preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
 
         # Compute element-wise squared error
@@ -107,14 +109,17 @@ class RMSE(LossComponent):
         # ========================================================
         detailed: Dict[str, torch.Tensor] = {}
 
+        # Conditionally detach based on preserve_component_grads
+        weighted_sq_for_detailed = weighted_sq if preserve_component_grads else weighted_sq.detach()
+
         # Per-timestep
-        dims_to_reduce = [0] + list(range(2, weighted_sq.ndim))
+        dims_to_reduce = [0] + list(range(2, weighted_sq_for_detailed.ndim))
         per_timestep_mse = self._reduce(weighted_sq, dims_to_reduce)
         detailed['per_timestep'] = torch.sqrt(per_timestep_mse + self.epsilon).detach()
 
         # Per-channel
-        dims_to_reduce = [0, 1] + list(range(3, weighted_sq.ndim))
-        per_channel_mse = self._reduce(weighted_sq, dims_to_reduce)
+        dims_to_reduce = [0, 1] + list(range(3, weighted_sq_for_detailed.ndim))
+        per_channel_mse = self._reduce(weighted_sq_for_detailed, dims_to_reduce)
         detailed['per_channel'] = torch.sqrt(per_channel_mse + self.epsilon).detach()
 
         # Return scalar loss and detailed breakdown dict

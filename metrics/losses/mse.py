@@ -6,7 +6,7 @@ import torch.nn as nn
 from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 
 
-class L2Loss(LossComponent):
+class MSE(LossComponent):
     """
     L2 (mean squared error) loss between predictions and labels.
 
@@ -58,8 +58,10 @@ class L2Loss(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
+        input_frames: Optional[torch.Tensor],
         return_detailed: bool = False,
-        keep_bc_dims: bool = False
+        keep_bc_dims: bool = False,
+        preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
 
         # Compute element-wise squared error
@@ -98,11 +100,13 @@ class L2Loss(LossComponent):
 
         # Per-timestep
         dims_to_reduce = [0] + list(range(2, weighted.ndim))
-        detailed['per_timestep'] = self._reduce(weighted, dims_to_reduce).detach()
+        per_timestep = self._reduce(weighted, dims_to_reduce)
+        detailed['per_timestep'] = per_timestep if preserve_component_grads else per_timestep.detach()
 
         # Per-channel
         dims_to_reduce = [0, 1] + list(range(3, weighted.ndim))
-        detailed['per_channel'] = self._reduce(weighted, dims_to_reduce).detach()
+        per_channel = self._reduce(weighted, dims_to_reduce)
+        detailed['per_channel'] = per_channel if preserve_component_grads else per_channel.detach()
 
         return total_loss, detailed
     

@@ -3,6 +3,10 @@ from metrics.weighting_strategies import (
     ResidualBasedAttention,
     SoftAdapt,
     BalancedResidualDecayRate,
+    GradNorm,
+    InverseDirichlet,
+    LearningRateAnnealing,
+    LogOnly,
 )
 
 # Weight scheduler registry with metadata:
@@ -29,7 +33,29 @@ WEIGHT_SCHEDULER_REGISTRY = {
         "class": BalancedResidualDecayRate,
         "default_name": "BalancedResidualDecayRate",
         "default_config": "weighting_strategies/BalancedResidualDecayRate/balanced_residual_decay_rate_default",
-        "use_gradients": False,
+    },
+    "GradNorm": {
+        "class": GradNorm,
+        "default_name": "GradNorm",
+        "default_config": "weighting_strategies/GradNorm/grad_norm_default",
+        "grad_stats": ["norm"],
+    },
+    "InverseDirichlet": {
+        "class": InverseDirichlet,
+        "default_name": "InverseDirichlet",
+        "default_config": "weighting_strategies/InverseDirichlet/inverse_dirichlet_default",
+        "grad_stats": ["var"],
+    },
+    "LearningRateAnnealing": {
+        "class": LearningRateAnnealing,
+        "default_name": "LearningRateAnnealing",
+        "default_config": "weighting_strategies/LearningRateAnnealing/learning_rate_annealing_default",
+        "grad_stats": ["norm", "max"],
+    },
+    "LogOnly": {
+        "class": LogOnly,
+        "default_name": "LogOnly",
+        "default_config": "weighting_strategies/LogOnly/log_only_default",
     },
 }
 

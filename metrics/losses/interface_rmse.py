@@ -97,8 +97,10 @@ class InterfaceRMSE(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
+        input_frames: Optional[torch.Tensor],
         return_detailed: bool = False,
-        keep_bc_dims: bool = False
+        keep_bc_dims: bool = False,
+        preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         Compute interface RMSE loss.

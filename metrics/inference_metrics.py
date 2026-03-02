@@ -14,6 +14,8 @@ def compute_metrics_for_n_rollouts(
     compute_metrics=None,
     loss_metric: Optional[LossComponent] = None,
     device: Optional[str] = None,
+    input_frames: Optional[np.ndarray] = None,
+    metric_batch_size: Optional[int] = None,
 ) -> Dict[str, Dict[str, np.ndarray]]:
 
     # --- normalization & checks ---
@@ -58,6 +60,9 @@ def compute_metrics_for_n_rollouts(
     # ------------------------------------------------------------------
     # Compute metrics using LossComponent / CompositeLoss
     # ------------------------------------------------------------------
+    if loss_metric is None:
+        raise ValueError("loss_metric must be provided for rollout metric computation.")
+
     # Use configured device, or auto-select: cuda:0 / xpu:0 if available, else cpu
     if device is not None and str(device).strip():
         dev = torch.device(str(device).strip())
@@ -70,10 +75,13 @@ def compute_metrics_for_n_rollouts(
 
     loss_metric = loss_metric.to(dev)
 
-    preds_tensor = torch.as_tensor(preds_arr, dtype=torch.float32, device=dev)
-    targets_tensor = torch.as_tensor(targets_arr, dtype=torch.float32, device=dev)
-
-    B, T_flat, C = preds_tensor.shape[:3]
+    B, T_flat, C = preds_arr.shape[:3]
+    if metric_batch_size is None:
+        batch_size_for_metrics = B
+    else:
+        batch_size_for_metrics = int(metric_batch_size)
+        if batch_size_for_metrics < 1:
+            raise ValueError("metric_batch_size must be >= 1 when provided.")
 
     def _compute_for_single_component(comp: LossComponent) -> Dict[str, Dict[str, np.ndarray]]:
         metric_key_name = comp.name if getattr(comp, "name", None) else "loss_error"
@@ -96,7 +104,11 @@ def compute_metrics_for_n_rollouts(
         # --------------------------------------------------
         # Helper: true per-sample evaluation by sliding over B
         # --------------------------------------------------
-        def eval_loss_batchwise(preds_slice: torch.Tensor, targets_slice: torch.Tensor):
+        def eval_loss_batchwise(
+            preds_slice: torch.Tensor,
+            targets_slice: torch.Tensor,
+            input_frames: Optional[torch.Tensor],
+        ):
             """
             Evaluate comp on each sample independently:
 
@@ -138,6 +150,7 @@ def compute_metrics_for_n_rollouts(
                     predictions=preds_slice,
                     labels=targets_slice,
                     return_detailed=False,
+                    input_frames=input_frames,
                     keep_bc_dims=True
                 )
                 total_loss = (
@@ -182,97 +195,177 @@ def compute_metrics_for_n_rollouts(
             return per_sample_channel, per_sample_overall
 
         # -----------------------------------------------------
-        # A) Per-rollout-step stats, shape -> (R, C+1)
+        # A) Per-rollout-step stats, shape -> (R, metric_dim+1)
         # -----------------------------------------------------
         metric_dim = len(component_names_top) if use_component_weights_top else C
 
-        per_sample_channel_metric = torch.zeros(B, num_rollouts, metric_dim, device=dev)
-        per_sample_overall_metric = torch.zeros(B, num_rollouts, device=dev)
+        per_step_channel_sum = torch.zeros(num_rollouts, metric_dim, device=dev)
+        per_step_channel_sumsq = torch.zeros(num_rollouts, metric_dim, device=dev)
+        per_step_overall_sum = torch.zeros(num_rollouts, device=dev)
+        per_step_overall_sumsq = torch.zeros(num_rollouts, device=dev)
 
-        for r in range(num_rollouts):
-            t_start = r * outputs_per_rollout
-            t_end = (r + 1) * outputs_per_rollout
+        cumulative_rollout_channel_sum = torch.zeros(num_rollouts, metric_dim, device=dev)
+        cumulative_rollout_channel_sumsq = torch.zeros(num_rollouts, metric_dim, device=dev)
+        cumulative_rollout_overall_sum = torch.zeros(num_rollouts, device=dev)
+        cumulative_rollout_overall_sumsq = torch.zeros(num_rollouts, device=dev)
 
-            step_preds = preds_tensor[:, t_start:t_end, ...]
-            step_targets = targets_tensor[:, t_start:t_end, ...]
+        if include_per_timestep:
+            per_t_channel_sum = torch.zeros(T_flat, metric_dim, device=dev)
+            per_t_channel_sumsq = torch.zeros(T_flat, metric_dim, device=dev)
+            per_t_overall_sum = torch.zeros(T_flat, device=dev)
+            per_t_overall_sumsq = torch.zeros(T_flat, device=dev)
 
-            ch_vals, overall_vals = eval_loss_batchwise(step_preds, step_targets)
-            # ch_vals: (B, metric_dim), overall_vals: (B,)
-            per_sample_channel_metric[:, r, :] = ch_vals
-            per_sample_overall_metric[:, r] = overall_vals
+            cumulative_t_channel_sum = torch.zeros(T_flat, metric_dim, device=dev)
+            cumulative_t_channel_sumsq = torch.zeros(T_flat, metric_dim, device=dev)
+            cumulative_t_overall_sum = torch.zeros(T_flat, device=dev)
+            cumulative_t_overall_sumsq = torch.zeros(T_flat, device=dev)
 
-        # std over batch, as in legacy implementation
-        per_step_channel_mean = per_sample_channel_metric.mean(dim=0)            # (N,R,C) --> (R, C)
-        per_step_channel_std = per_sample_channel_metric.std(dim=0, unbiased=False) # (N,R,C) --> (R, C)
-        per_step_overall_mean = per_sample_overall_metric.mean(dim=0)           # (N,R) --> (R,)
-        per_step_overall_std = per_sample_overall_metric.std(dim=0, unbiased=False) # (N,R) --> (R,)
+        num_samples = 0
 
-        per_step_mean = torch.cat(
-            [per_step_channel_mean, per_step_overall_mean[:, None]], dim=-1
-        )
-        per_step_std = torch.cat(
-            [per_step_channel_std, per_step_overall_std[:, None]], dim=-1
-        )
+        for b_start in range(0, B, batch_size_for_metrics):
+            b_end = min(B, b_start + batch_size_for_metrics)
+            bsz = b_end - b_start
+            num_samples += bsz
+
+            preds_batch = torch.as_tensor(preds_arr[b_start:b_end], dtype=torch.float32, device=dev)
+            targets_batch = torch.as_tensor(targets_arr[b_start:b_end], dtype=torch.float32, device=dev)
+            input_frames_batch = (
+                torch.as_tensor(input_frames[b_start:b_end], dtype=torch.float32, device=dev)
+                if input_frames is not None
+                else None
+            )
+
+            per_sample_channel_metric = torch.zeros(bsz, num_rollouts, metric_dim, device=dev)
+            per_sample_overall_metric = torch.zeros(bsz, num_rollouts, device=dev)
+
+            for r in range(num_rollouts):
+                t_start = r * outputs_per_rollout
+                t_end = (r + 1) * outputs_per_rollout
+
+                step_preds = preds_batch[:, t_start:t_end, ...]
+                step_targets = targets_batch[:, t_start:t_end, ...]
+                if t_start > 0:
+                    prev_frame = preds_batch[:, t_start - 1:t_start, ...]
+                else:
+                    prev_frame = input_frames_batch
+
+                ch_vals, overall_vals = eval_loss_batchwise(step_preds, step_targets, prev_frame)
+                per_sample_channel_metric[:, r, :] = ch_vals
+                per_sample_overall_metric[:, r] = overall_vals
+
+            per_step_channel_sum += per_sample_channel_metric.sum(dim=0)
+            per_step_channel_sumsq += (per_sample_channel_metric ** 2).sum(dim=0)
+            per_step_overall_sum += per_sample_overall_metric.sum(dim=0)
+            per_step_overall_sumsq += (per_sample_overall_metric ** 2).sum(dim=0)
+
+            cumulative_channel_per_sample = torch.cumsum(per_sample_channel_metric, dim=1)
+            cumulative_overall_per_sample = torch.cumsum(per_sample_overall_metric, dim=1)
+
+            cumulative_rollout_channel_sum += cumulative_channel_per_sample.sum(dim=0)
+            cumulative_rollout_channel_sumsq += (cumulative_channel_per_sample ** 2).sum(dim=0)
+            cumulative_rollout_overall_sum += cumulative_overall_per_sample.sum(dim=0)
+            cumulative_rollout_overall_sumsq += (cumulative_overall_per_sample ** 2).sum(dim=0)
+
+            if include_per_timestep:
+                per_sample_channel_t = torch.zeros(bsz, T_flat, metric_dim, device=dev)
+                per_sample_overall_t = torch.zeros(bsz, T_flat, device=dev)
+
+                for t in range(T_flat):
+                    step_preds = preds_batch[:, t : t + 1, ...]
+                    step_targets = targets_batch[:, t : t + 1, ...]
+                    if t > 0:
+                        prev_frame = preds_batch[:, t - 1:t, ...]
+                    else:
+                        prev_frame = input_frames_batch
+
+                    ch_vals, overall_vals = eval_loss_batchwise(step_preds, step_targets, prev_frame)
+                    per_sample_channel_t[:, t, :] = ch_vals
+                    per_sample_overall_t[:, t] = overall_vals
+
+                per_t_channel_sum += per_sample_channel_t.sum(dim=0)
+                per_t_channel_sumsq += (per_sample_channel_t ** 2).sum(dim=0)
+                per_t_overall_sum += per_sample_overall_t.sum(dim=0)
+                per_t_overall_sumsq += (per_sample_overall_t ** 2).sum(dim=0)
+
+                cumulative_channel_per_sample_t = torch.cumsum(per_sample_channel_t, dim=1)
+                cumulative_overall_per_sample_t = torch.cumsum(per_sample_overall_t, dim=1)
+
+                cumulative_t_channel_sum += cumulative_channel_per_sample_t.sum(dim=0)
+                cumulative_t_channel_sumsq += (cumulative_channel_per_sample_t ** 2).sum(dim=0)
+                cumulative_t_overall_sum += cumulative_overall_per_sample_t.sum(dim=0)
+                cumulative_t_overall_sumsq += (cumulative_overall_per_sample_t ** 2).sum(dim=0)
+
+            del preds_batch, targets_batch, input_frames_batch
+            del per_sample_channel_metric, per_sample_overall_metric
+            if include_per_timestep:
+                del per_sample_channel_t, per_sample_overall_t
+
+        if num_samples == 0:
+            raise ValueError("No samples available for metric aggregation.")
+
+        num_samples_f = float(num_samples)
+
+        per_step_channel_mean = per_step_channel_sum / num_samples_f
+        per_step_channel_var = torch.clamp(per_step_channel_sumsq / num_samples_f - per_step_channel_mean ** 2, min=0.0)
+        per_step_channel_std = torch.sqrt(per_step_channel_var)
+        per_step_overall_mean = per_step_overall_sum / num_samples_f
+        per_step_overall_var = torch.clamp(per_step_overall_sumsq / num_samples_f - per_step_overall_mean ** 2, min=0.0)
+        per_step_overall_std = torch.sqrt(per_step_overall_var)
+
+        per_step_mean = torch.cat([per_step_channel_mean, per_step_overall_mean[:, None]], dim=-1)
+        per_step_std = torch.cat([per_step_channel_std, per_step_overall_std[:, None]], dim=-1)
 
         out["per_rollout_step_mean"] = per_step_mean.cpu().numpy()
         out["per_rollout_step_std"] = per_step_std.cpu().numpy()
 
-        # cumulative over rollout steps (R), N is the number of windows, C is the number of channels
-        cumulative_channel_per_sample = torch.cumsum(per_sample_channel_metric, dim=1)  # (N, R, C) --> (N, R, C)  (cumulative sum over rollout steps)
-        cumulative_overall_per_sample = torch.cumsum(per_sample_overall_metric, dim=1)  # (N, R) --> (N, R)  (cumulative sum over rollout steps)
-
-        cumulative_channel_mean = cumulative_channel_per_sample.mean(dim=0)             # (N, R, C) --> (R, C)
-        cumulative_channel_std = cumulative_channel_per_sample.std(dim=0, unbiased=False) # (N, R, C) --> (R, C)
-        cumulative_overall_mean = cumulative_overall_per_sample.mean(dim=0)             # (N, R) --> (R,)
-        cumulative_overall_std = cumulative_overall_per_sample.std(dim=0, unbiased=False) # (N, R) --> (R,)
-
-        cumulative_mean = torch.cat(
-            [cumulative_channel_mean, cumulative_overall_mean[:, None]], dim=-1
+        cumulative_channel_mean = cumulative_rollout_channel_sum / num_samples_f
+        cumulative_channel_var = torch.clamp(
+            cumulative_rollout_channel_sumsq / num_samples_f - cumulative_channel_mean ** 2,
+            min=0.0,
         )
-        cumulative_std = torch.cat(
-            [cumulative_channel_std, cumulative_overall_std[:, None]], dim=-1
+        cumulative_channel_std = torch.sqrt(cumulative_channel_var)
+        cumulative_overall_mean = cumulative_rollout_overall_sum / num_samples_f
+        cumulative_overall_var = torch.clamp(
+            cumulative_rollout_overall_sumsq / num_samples_f - cumulative_overall_mean ** 2,
+            min=0.0,
         )
+        cumulative_overall_std = torch.sqrt(cumulative_overall_var)
+
+        cumulative_mean = torch.cat([cumulative_channel_mean, cumulative_overall_mean[:, None]], dim=-1)
+        cumulative_std = torch.cat([cumulative_channel_std, cumulative_overall_std[:, None]], dim=-1)
 
         out["cumulative_rollout_step_mean"] = cumulative_mean.cpu().numpy()
         out["cumulative_rollout_step_std"] = cumulative_std.cpu().numpy()
 
         # -----------------------------------------------------
-        # B) Optional per-timestep metrics, shape -> (T_flat, C+1)
+        # B) Optional per-timestep metrics, shape -> (T_flat, metric_dim+1)
         # -----------------------------------------------------
         if include_per_timestep:
-            per_sample_channel_t = torch.zeros(B, T_flat, metric_dim, device=dev)
-            per_sample_overall_t = torch.zeros(B, T_flat, device=dev)
+            per_t_channel_mean = per_t_channel_sum / num_samples_f
+            per_t_channel_var = torch.clamp(per_t_channel_sumsq / num_samples_f - per_t_channel_mean ** 2, min=0.0)
+            per_t_channel_std = torch.sqrt(per_t_channel_var)
+            per_t_overall_mean = per_t_overall_sum / num_samples_f
+            per_t_overall_var = torch.clamp(per_t_overall_sumsq / num_samples_f - per_t_overall_mean ** 2, min=0.0)
+            per_t_overall_std = torch.sqrt(per_t_overall_var)
 
-            for t in range(T_flat):
-                step_preds = preds_tensor[:, t : t + 1, ...]
-                step_targets = targets_tensor[:, t : t + 1, ...]
+            per_timestep_mean = torch.cat([per_t_channel_mean, per_t_overall_mean[:, None]], dim=-1)
+            per_timestep_std = torch.cat([per_t_channel_std, per_t_overall_std[:, None]], dim=-1)
 
-                ch_vals, overall_vals = eval_loss_batchwise(step_preds, step_targets)
-                per_sample_channel_t[:, t, :] = ch_vals      # (B, C)
-                per_sample_overall_t[:, t] = overall_vals    # (B,)
+            out["per_timestep_mean"] = per_timestep_mean.cpu().numpy()
+            out["per_timestep_std"] = per_timestep_std.cpu().numpy()
 
-            per_t_channel_mean = per_sample_channel_t.mean(dim=0)             # (N, T_flat, C) --> (T_flat, C)
-            per_t_channel_std = per_sample_channel_t.std(dim=0, unbiased=False) # (N, T_flat, C) --> (T_flat, C)
-            per_t_overall_mean = per_sample_overall_t.mean(dim=0)            # (N, T_flat) --> (T_flat,)
-            per_t_overall_std = per_sample_overall_t.std(dim=0, unbiased=False) # (N, T_flat) --> (T_flat,)
-
-            per_timestep_mean = torch.cat(
-                [per_t_channel_mean, per_t_overall_mean[:, None]], dim=-1
+            cumulative_t_channel_mean = cumulative_t_channel_sum / num_samples_f
+            cumulative_t_channel_var = torch.clamp(
+                cumulative_t_channel_sumsq / num_samples_f - cumulative_t_channel_mean ** 2,
+                min=0.0,
             )
-            per_timestep_std = torch.cat(
-                [per_t_channel_std, per_t_overall_std[:, None]], dim=-1
+            cumulative_t_channel_std = torch.sqrt(cumulative_t_channel_var)
+            cumulative_t_overall_mean = cumulative_t_overall_sum / num_samples_f
+            cumulative_t_overall_var = torch.clamp(
+                cumulative_t_overall_sumsq / num_samples_f - cumulative_t_overall_mean ** 2,
+                min=0.0,
             )
-
-            out["per_timestep_mean"] = per_timestep_mean.cpu().numpy()  # (T_flat, C+1)
-            out["per_timestep_std"] = per_timestep_std.cpu().numpy()  # (T_flat, C+1)
-
-            cumulative_channel_per_sample_t = torch.cumsum(per_sample_channel_t, dim=1)  # (N, T_flat, C) --> (N, T_flat, C)  (cumulative sum over timesteps)
-            cumulative_overall_per_sample_t = torch.cumsum(per_sample_overall_t, dim=1)  # (N, T_flat) --> (N, T_flat)  (cumulative sum over timesteps)
-
-            cumulative_t_channel_mean = cumulative_channel_per_sample_t.mean(dim=0)      # (N, T_flat, C) --> (T_flat, C)
-            cumulative_t_channel_std = cumulative_channel_per_sample_t.std(dim=0, unbiased=False) # (N, T_flat, C) --> (T_flat, C)
-            cumulative_t_overall_mean = cumulative_overall_per_sample_t.mean(dim=0)      # (N, T_flat) --> (T_flat,)
-            cumulative_t_overall_std = cumulative_overall_per_sample_t.std(dim=0, unbiased=False) # (N, T_flat) --> (T_flat,)
+            cumulative_t_overall_std = torch.sqrt(cumulative_t_overall_var)
 
             cumulative_timestep_mean = torch.cat(
                 [cumulative_t_channel_mean, cumulative_t_overall_mean[:, None]], dim=-1
@@ -281,8 +374,8 @@ def compute_metrics_for_n_rollouts(
                 [cumulative_t_channel_std, cumulative_t_overall_std[:, None]], dim=-1
             )
 
-            out["cumulative_timestep_mean"] = cumulative_timestep_mean.cpu().numpy()  # (T_flat, C+1)
-            out["cumulative_timestep_std"] = cumulative_timestep_std.cpu().numpy()  # (T_flat, C+1)
+            out["cumulative_timestep_mean"] = cumulative_timestep_mean.cpu().numpy()
+            out["cumulative_timestep_std"] = cumulative_timestep_std.cpu().numpy()
 
         if use_component_weights_top:
             out["names"] = list(component_names_top)

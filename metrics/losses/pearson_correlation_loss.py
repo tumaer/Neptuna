@@ -31,8 +31,10 @@ class PearsonCorrelationLoss(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
+        input_frames: Optional[torch.Tensor],
         return_detailed: bool = False,
-        keep_bc_dims: bool = False
+        keep_bc_dims: bool = False,
+        preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         # Shape: (batch, frames, channels, *spatial_dims)
         # Compute correlation per (batch, frame, channel) across spatial points
@@ -77,12 +79,15 @@ class PearsonCorrelationLoss(LossComponent):
         # Build detailed breakdown
         detailed = {}
         
+        # Conditionally detach based on preserve_component_grads
+        weighted_for_detailed = weighted if preserve_component_grads else weighted.detach()
+        
         # Per-timestep: average over batch and channels
         # Shape: (frames,)
-        detailed['per_timestep'] = weighted.mean(dim=(0, 2)).detach()
+        detailed['per_timestep'] = weighted_for_detailed.mean(dim=(0, 2))
         
         # Per-channel: average over batch and frames
         # Shape: (channels,)
-        detailed['per_channel'] = weighted.mean(dim=(0, 1)).detach()
+        detailed['per_channel'] = weighted_for_detailed.mean(dim=(0, 1))
         
         return total_loss, detailed

@@ -1,135 +1,186 @@
-from typing import Dict, List, Optional
+from __future__ import annotations
+
+from typing import Dict, List, Optional, Any, Tuple
 from ..loss_weighting_strategies import LossWeightingStrategyBase
+import math
 import torch
 
 
 class BalancedResidualDecayRate(LossWeightingStrategyBase):
     """
-    Self-adaptive weights based on balanced residual decay rate (RDR). 
-    
-    Based on Chen et al. (2024) "Self-adaptive weights based on balanced residual 
-    decay rate for physics-informed neural networks and deep operator networks" 
-    https://arxiv.org/abs/2407.01613
+    Component-wise BRDR weighting.
+
+    Based on the pointwise BRDR from Chen et al. (2024); the major differences are:
+      - weights are updated per-epoch (not per-iteration), and
+      - weights exist for loss components (not per collocation point).
     """
 
     def __init__(
         self,
         update_frequency: int = 1,
         use_gradients: bool = False,
-        alpha: float = 0.9,
+        beta_c: float = 0.9,
+        beta_w: float = 0.9,
+        bias_correction: bool = True,
+        use_effective_smoothing_for_skips: bool = True,
         min_weight: float = 0.01,
         max_weight: float = 100.0,
-        temperature: float = 1.0,  # kept for API compatibility
-        epsilon: float = 1e-8
+        epsilon: float = 1e-8,
     ):
-        """
-        Args:
-            update_frequency: Update weights every N epochs
-            alpha: Momentum factor (used as beta for EMA of both r4-hat and weights)
-            min_weight: Clip lower bound (safety; not essential to BRDR)
-            max_weight: Clip upper bound (safety; not essential to BRDR)
-            temperature: Unused (kept to preserve constructor compatibility)
-            epsilon: Numerical stability
-        """
         super().__init__(update_frequency, use_gradients)
-        self.alpha = float(alpha)
+        self.beta_c = float(beta_c)
+        self.beta_w = float(beta_w)
+        self.bias_correction = bool(bias_correction)
+        self.use_effective_smoothing_for_skips = bool(use_effective_smoothing_for_skips)
+
         self.min_weight = float(min_weight)
         self.max_weight = float(max_weight)
-        self.temperature = float(temperature)
         self.epsilon = float(epsilon)
 
-        # EMA of the 4th-moment proxy per component: \hat{r4}
-        self.ema_r4: Dict[str, float] = {}
+        # EMA state of component 4th-moment (m4)
+        self.ema_m4: Dict[str, float] = {}
+
+        # For effective smoothing when some components are absent in an epoch
+        self.last_update_epoch: Dict[str, int] = {}
+
+        # "Epoch counter" for bias correction term (1 - beta_c^t)
+        self.epoch_counter: int = 0
+
+    # ------------------------------
+    # Helpers
+    # ------------------------------
+
+    def _clip(self, x: float) -> float:
+        return max(self.min_weight, min(self.max_weight, x))
+
+    def _recover_unweighted_losses(self, losses: List[float], weight: float) -> List[float]:
+        """Recover unweighted losses from weighted loss history."""
+        if not losses:
+            return []
+        denom = max(float(weight), self.epsilon)
+        return [float(l) / denom for l in losses]
 
     def compute_statistics(self, losses: List[float]) -> Optional[Dict[str, float]]:
-        """Compute mean/std/count for a list of scalar losses."""
+        """Mean/std/count for a list of scalar losses (fallback path only)."""
         if not losses:
             return None
         t = torch.tensor(losses, dtype=torch.float32)
         return {
             "mean": float(t.mean()),
             "std": float(t.std(unbiased=False)) if t.numel() > 1 else 0.0,
-            "count": int(t.numel())
+            "count": int(t.numel()),
         }
 
-    def _clip(self, x: float) -> float:
-        return max(self.min_weight, min(self.max_weight, x))
+
+    # ------------------------------
+    # Core BRDR update
+    # ------------------------------
 
     def compute_new_weights(
         self,
         loss_history: Dict[str, List[float]],
-        current_weights: Dict[str, Dict]
+        current_weights: Dict[str, Dict],
+        grad_norm_history: Optional[Dict[str, List[float]]] = None,
     ) -> Dict[str, Dict]:
         """
-        Compute new component weights using component-wise BRDR.
+        Args:
+            loss_history:
+                Historical scalar losses by component key. Used ONLY as a fallback
+                when component_moments is not provided.
 
-        Steps:
-          1) For each component i:
-               L_i := mean loss over current epoch
-               r2_i := L_i
-               r4_i := L_i^2
-               ema_r4_i <- alpha * ema_r4_i + (1-alpha) * r4_i
-               irdr_i := r2_i / sqrt(ema_r4_i + eps)
-
-          2) Mean-normalize:
-               w_ref_i := irdr_i / mean(irdr)
-
-          3) Momentum update weights:
-               w_i <- alpha * w_i_prev + (1-alpha) * w_ref_i
-
-          4) (Optional safety) clip to [min_weight, max_weight]
+            current_weights:
+                Hierarchical dict of current weights.
         """
-        new_weights: Dict[str, Dict] = {}
-        component_names = list(current_weights.keys())
+        # Internal epoch counter
+        self.epoch_counter += 1
+        t = self.epoch_counter
 
-        # --- Step 1: compute irdr per component (from scalar losses) ---
-        irdr: Dict[str, float] = {}
-        for name in component_names:
-            if name not in loss_history or not loss_history[name]:
-                new_weights[name] = current_weights[name].copy()
+        # --- Step 1: compute c_k (IRDR proxy) for each loss_key ---
+        # c_k = m2_k / (sqrt(EMA(m4_k)_corr) + eps)
+        c: Dict[str, float] = {}
+        counts: Dict[str, float] = {}
+
+        for loss_key, losses in loss_history.items():
+            if not losses:
                 continue
-
-            stats = self.compute_statistics(loss_history[name])
+            
+            # Recover unweighted losses
+            prev_w = self._get_previous_weight(loss_key, current_weights)
+            unweighted_losses = self._recover_unweighted_losses(losses, prev_w)
+            
+            stats = self.compute_statistics(unweighted_losses)
             if stats is None:
-                new_weights[name] = current_weights[name].copy()
                 continue
+            L = max(float(stats["mean"]), 0.0)
+            # Approximation: treat L as m2, and L^2 as m4.
+            m2 = L
+            m4 = L * L
+            cnt = float(stats["count"])
 
-            L = float(stats["mean"])
-            L = max(L, 0.0)
+            # Handle skipping: effective smoothing if component wasn't updated for some epochs
+            if self.use_effective_smoothing_for_skips:
+                last_e = self.last_update_epoch.get(loss_key, t)
+                delta = max(1, t - last_e)
+                beta_c_eff = self.beta_c ** delta
+                beta_w_eff = self.beta_w ** delta
+            else:
+                beta_c_eff = self.beta_c
+                beta_w_eff = self.beta_w
+                delta = 1
 
-            r2 = L
-            r4 = L * L
+            self.last_update_epoch[loss_key] = t
 
-            prev_ema = self.ema_r4.get(name, r4)
-            ema = self.alpha * prev_ema + (1.0 - self.alpha) * r4
-            self.ema_r4[name] = float(ema)
+            # EMA update for m4
+            prev_ema = self.ema_m4.get(loss_key, m4)
+            ema = beta_c_eff * prev_ema + (1.0 - beta_c_eff) * m4
+            self.ema_m4[loss_key] = float(ema)
 
-            denom = float(torch.sqrt(torch.tensor(ema + self.epsilon)))
-            irdr[name] = float(r2 / denom) if denom > 0.0 else 0.0
+            # Bias correction (epoch-level)
+            if self.bias_correction:
+                denom_m4 = ema / max(1.0 - (self.beta_c ** t), self.epsilon)
+            else:
+                denom_m4 = ema
 
-        if not irdr:
+            denom = math.sqrt(max(denom_m4, 0.0)) + self.epsilon
+            c_val = (m2 / denom) if denom > 0.0 else 0.0
+
+            # Store
+            c[loss_key] = float(c_val)
+            counts[loss_key] = float(max(cnt, 1.0))
+
+            # Store beta_w_eff for this key to use in the weight update
+
+        if not c:
             return {k: v.copy() for k, v in current_weights.items()}
 
-        # --- Step 2: mean-normalize to get reference weights (mean(w_ref)=1) ---
-        mean_irdr = sum(irdr.values()) / max(len(irdr), 1)
-        if mean_irdr <= self.epsilon:
-            w_ref = {k: 1.0 for k in irdr.keys()}
+        # --- Step 2: normalization ---
+        # Paper normalizes by mean(c) over sampled points; here we normalize over components.
+        # Optional: count-weighted mean to avoid tiny components dominating.
+        total_cnt = sum(counts.values())
+        if total_cnt <= self.epsilon:
+            mean_c = sum(c.values()) / max(len(c), 1)
         else:
-            w_ref = {k: (v / mean_irdr) for k, v in irdr.items()}
+            mean_c = sum(c[k] * counts[k] for k in c.keys()) / total_cnt
 
-        # --- Step 3: momentum update weights (EMA) ---
-        for name, wref in w_ref.items():
-            prev_w = float(current_weights[name].get("base_weight", 1.0))
-            w_new = self.alpha * prev_w + (1.0 - self.alpha) * float(wref)
-            w_new = self._clip(w_new)
+        if mean_c <= self.epsilon:
+            w_ref = {k: 1.0 for k in c.keys()}
+        else:
+            w_ref = {k: (v / mean_c) for k, v in c.items()}
 
-            updated = current_weights[name].copy()
-            updated["base_weight"] = w_new
-            new_weights[name] = updated
+        # --- Step 3: EMA update weights with beta_w (or beta_w_eff) + clip ---
+        new_weight_scalars: Dict[str, float] = {}
 
-        # --- Fill any untouched components with existing weights ---
-        for name in component_names:
-            if name not in new_weights:
-                new_weights[name] = current_weights[name].copy()
+        for loss_key, w_target in w_ref.items():
+            prev_w = self._get_previous_weight(loss_key, current_weights)
 
-        return new_weights
+            if self.use_effective_smoothing_for_skips:
+                last_e = self.last_update_epoch.get(loss_key, t)
+                beta_w_eff = self.beta_w
+            else:
+                beta_w_eff = self.beta_w
+
+            w_new = beta_w_eff * prev_w + (1.0 - beta_w_eff) * float(w_target)
+            new_weight_scalars[loss_key] = self._clip(float(w_new))
+
+        # --- Step 4: reconstruct hierarchical dict ---
+        return self._reconstruct_weight_dict(new_weight_scalars, current_weights)

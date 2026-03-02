@@ -140,6 +140,7 @@ def _create_loss_component(
     loss_class = registry_entry["class"]
     default_name = registry_entry["default_name"]
     default_config = registry_entry["default_config"]
+    config_base_path = registry_entry["config_path"]
     
     name = component_cfg.get("name", default_name)
     weight = create_loss_weight_schedule(component_cfg)
@@ -157,10 +158,10 @@ def _create_loss_component(
         metric_params = OmegaConf.to_container(
             component_cfg.metric_params, resolve=True
         )
-    else:
+    else: 
         config_file = component_cfg.get("config_file", default_config)
         if config_file is not None:
-            config_path = f"config/train_strategy_config/{config_file}.yaml"
+            config_path = f"config/train_strategy_config/{config_base_path}{config_file}.yaml"
             try:
                 metric_config = OmegaConf.load(config_path)
                 metric_params = OmegaConf.to_container(metric_config, resolve=True)

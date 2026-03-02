@@ -249,8 +249,10 @@ class IntegralConservationRMSE(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
+        input_frames: Optional[torch.Tensor],
         return_detailed: bool = False,
-        keep_bc_dims: bool = False
+        keep_bc_dims: bool = False,
+        preserve_component_grads: bool = False,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         # Denormalize fields
         pred_fields = self.norm_helper.denormalize_to_fields(predictions)
@@ -351,8 +353,21 @@ class IntegralConservationRMSE(LossComponent):
         if not return_detailed:
             return weighted_total
 
-        # Build detailed breakdown (raw differences)
-        detailed = {name: value.detach() for name, value in all_components.items()}
+        # Build detailed breakdown with weighted components
+        detailed_components: Dict[str, torch.Tensor] = {}
+        for name, value in all_components.items():
+            q_weight = self.weight_schedule.get_loss_component_weight(name)
+            q_weight_tensor = torch.tensor(
+                q_weight,
+                device=value.device,
+                dtype=value.dtype,
+            )
+            weighted_value = self.weight_schedule.base_weight * torch.sqrt(q_weight_tensor) * value
+            detailed_components[name] = weighted_value if preserve_component_grads else weighted_value.detach()
+
+        detailed = {
+            "per_component": detailed_components
+        }
 
         return weighted_total, detailed
 

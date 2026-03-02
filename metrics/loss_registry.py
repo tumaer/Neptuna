@@ -1,7 +1,7 @@
 # FILE: metrics/loss_registry.py
 from metrics.losses import (
-    L1Loss,
-    L2Loss,
+    MAE,
+    MSE,
     SSIM,
     MSSSIM,
     PearsonCorrelationLoss,
@@ -13,6 +13,10 @@ from metrics.losses import (
     IntegralConservationRMSE,
     RMSE,
     InterfaceRMSE,
+    MeanRelativeError,
+    NegativityLoss,
+    ShockRMSE,
+    PDEResidualLoss,
 )
 
 # Loss registry with metadata:
@@ -20,84 +24,122 @@ from metrics.losses import (
 #  - default_name: fallback name if not provided in YAML
 #  - default_config: fallback config_file (relative path under config/loss_config)
 LOSS_REGISTRY = {
-    "L2Loss": {
-        "class": L2Loss,
-        "default_name": "L2Loss",
-        "default_config": "loss_metrics/L2_Loss/l2_loss_default",
+    "MSE": {
+        "class": MSE,
+        "default_name": "MSE",
+        "config_path": "loss_metrics/MSE/",
+        "default_config": "mse_default",
         "channel_aggregation": "linear",
     },
-    "L1Loss": {
-        "class": L1Loss,
-        "default_name": "L1Loss",
-        "default_config": "loss_metrics/L1_Loss/l1_loss_default",
+    "MAE": {
+        "class": MAE,
+        "default_name": "MAE",
+        "config_path": "loss_metrics/MAE/",
+        "default_config": "mae_default",
         "channel_aggregation": "linear",
     },
     "SSIM": {
         "class": SSIM,
         "default_name": "SSIM",
-        "default_config": "loss_metrics/SSIM/ssim_default",
+        "config_path": "loss_metrics/SSIM/",
+        "default_config": "ssim_default",
         "channel_aggregation": "linear",
     },
     "MSSSIM": {
         "class": MSSSIM,
         "default_name": "MSSSIM",
-        "default_config": "loss_metrics/MSSSIM/msssim_default",
+        "config_path": "loss_metrics/MSSSIM/",
+        "default_config": "msssim_default",
         "channel_aggregation": "linear",
     },
     "PearsonCorrelationLoss": {
         "class": PearsonCorrelationLoss,
         "default_name": "PearsonCorrelationLoss",
-        "default_config": "loss_metrics/PearsonCorrelationLoss/pearson_correlation_loss_default",
+        "config_path": "loss_metrics/PearsonCorrelationLoss/",
+        "default_config": "pearson_correlation_loss_default",
         "channel_aggregation": "linear",
     },
     "SinkhornDivergence": {
         "class": SinkhornDivergence,
         "default_name": "SinkhornDivergence",
-        "default_config": "loss_metrics/SinkhornDivergence/sinkhorn_divergence_default",
+        "config_path": "loss_metrics/SinkhornDivergence/",
+        "default_config": "sinkhorn_divergence_default",
         "channel_aggregation": "linear",
     },
     "H1SemiNorm": {
         "class": H1SemiNorm,
         "default_name": "H1SemiNorm",
-        "default_config": "loss_metrics/H1SemiNorm/h1_semi_norm_default",
+        "config_path": "loss_metrics/H1SemiNorm/",
+        "default_config": "h1_semi_norm_default",
         "channel_aggregation": "linear",
     },
     "H2SemiNorm": {
         "class": H2SemiNorm,
         "default_name": "H2SemiNorm",
-        "default_config": "loss_metrics/H2SemiNorm/h2_semi_norm_default",
+        "config_path": "loss_metrics/H2SemiNorm/",
+        "default_config": "h2_semi_norm_default",
         "channel_aggregation": "linear",
     },
     "MultilevelWaveletLoss": {
         "class": MultilevelWaveletLoss,
         "default_name": "MultilevelWaveletLoss",
-        "default_config": "loss_metrics/MultilevelWaveletLoss/multilevel_wavelet_loss_default",
+        "config_path": "loss_metrics/MultilevelWaveletLoss/",
+        "default_config": "multilevel_wavelet_loss_default",
         "channel_aggregation": "linear",
     },
     "WaveletBinnedRMSE": {
         "class": WaveletBinnedRMSE,
         "default_name": "WaveletBinnedRMSE",
-        "default_config": "loss_metrics/WaveletBinnedRMSE/wavelet_binned_rmse_default",
+        "config_path": "loss_metrics/WaveletBinnedRMSE/",
+        "default_config": "wavelet_binned_rmse_default",
         "channel_aggregation": "linear",
     },
     "IntegralConservationRMSE": {
         "class": IntegralConservationRMSE,
         "default_name": "IntegralConservationRMSE",
-        "default_config": "loss_metrics/IntegralConservationRMSE/integral_conservation_rmse_default",
+        "config_path": "loss_metrics/IntegralConservationRMSE/",
+        "default_config": "integral_conservation_rmse_default",
         "channel_aggregation": "sqrt",
         "sub_components": True,  # Indicates this loss decomposes as sub-components rather than channels
     },
     "RMSE": {
         "class": RMSE,
         "default_name": "RMSE",
-        "default_config": "loss_metrics/RMSE/rmse_default",
+        "config_path": "loss_metrics/RMSE/",
+        "default_config": "rmse_default",
         "channel_aggregation": "sqrt",
     },
     "InterfaceRMSE": {
         "class": InterfaceRMSE,
         "default_name": "InterfaceRMSE",
-        "default_config": "loss_metrics/InterfaceRMSE/interface_rmse_default",
+        "config_path": "loss_metrics/InterfaceRMSE/",
+        "default_config": "interface_rmse_default",
         "channel_aggregation": "sqrt",
+    },
+    "MeanRelativeError": {
+        "class": MeanRelativeError,
+        "default_name": "MeanRelativeError",
+        "config_path": "loss_metrics/MeanRelativeError/",
+        "default_config": "mean_relative_error_default",
+    },
+    "NegativityLoss": {
+        "class": NegativityLoss,
+        "default_name": "NegativityLoss",
+        "config_path": "loss_metrics/NegativityLoss/",
+        "default_config": "negativity_loss_default",
+    },
+    "ShockRMSE": {
+        "class": ShockRMSE,
+        "default_name": "ShockRMSE",
+        "config_path": "loss_metrics/ShockRMSE/",
+        "default_config": "shock_rmse_default",
+    },
+    "PDEResidualLoss": {
+        "class": PDEResidualLoss,
+        "default_name": "PDEResidualLoss",
+        "config_path": "loss_metrics/PDEResidualLoss/",
+        "default_config": "pde_residual_loss_default",
+        "sub_components": True,
     },
 }
 

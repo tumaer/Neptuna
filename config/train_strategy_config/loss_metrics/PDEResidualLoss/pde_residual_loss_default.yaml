@@ -1,0 +1,42 @@
+components:
+  - type: pde/unsteadyContinuity
+    weight: 1.0
+  - type: pde/debugSystemEq1
+    weight: 1.0
+  - type: pde/debugSystemEq2
+    weight: 1.0
+  #NEW: BCs
+  - type: bc/dirichlet
+    weight: 1.0
+    boundary: north
+    field: "Velocity_Y"
+  - type: bc/neumann
+    weight: 1.0
+    boundary: east
+    field: "Velocity_Y"
+  - type: bc/neumann
+    weight: 1.0
+    boundary: east
+    field: "Velocity_Y"
+    name: "bc/neumann_test"
+  - type: bc/periodic
+    weight: 1.0
+    axis: 1
+
+residual_mask:
+  type: "GradientAnnihilated" #null, EquationWeight, GradientAnnihilated
+  equation_weight_k1: 10.0
+  lambda1_alpha: 1.0
+  lambda1_beta: 1.0
+
+
+dt: 1.0
+dx: 1.0
+spatial_backend: "FDSpatialDerivatives"
+
+reference_quantities:
+  density: 1000.0
+  velocity: 100.0
+  pressure: 100000.0
+  length: 100.0
+residual_scale_eps: 1e-8
