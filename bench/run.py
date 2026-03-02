@@ -403,7 +403,7 @@ def run(cfg):
                 global_num_windows = torch.tensor(
                     float(self.num_elements_aggregated_in_batch_dim_per_device),
                     device=device,
-                    dtype=torch.float64,
+                    dtype=torch.float32,
                 )
                 if dist.is_available() and dist.is_initialized():
                     dist.all_reduce(global_num_windows, op=dist.ReduceOp.SUM)
@@ -418,7 +418,7 @@ def run(cfg):
                     global_weighted_composite_train_loss_sum = torch.tensor(
                         float(self.weighted_composite_train_loss_per_batch_per_device),
                         device=device,
-                        dtype=torch.float64,
+                        dtype=torch.float32,
                     )
                     if dist.is_available() and dist.is_initialized():
                         dist.all_reduce(global_weighted_composite_train_loss_sum, op=dist.ReduceOp.SUM)
@@ -436,7 +436,7 @@ def run(cfg):
                         global_component_weighted_sum = torch.tensor(
                             float(weighted_component_sum_per_device),
                             device=device,
-                            dtype=torch.float64,
+                            dtype=torch.float32,
                         )
                         if dist.is_available() and dist.is_initialized():
                             dist.all_reduce(global_component_weighted_sum, op=dist.ReduceOp.SUM)
@@ -626,7 +626,7 @@ def run(cfg):
         start = time.time()
         device_str = get_device_string()
         print(f"Training on device {device_str} \n", flush=True)
-        # trainer.train(resume_from_checkpoint=f"./checkpoints/KuramotoSivashinsky_2D_ScOT_09072025_074058/checkpoint-15")
+        #trainer.train(resume_from_checkpoint=f"/Users/harish/Desktop/cfd_bench/checkpoints/KuramotoSivashinsky_2D_ScOT_02032026_083134/checkpoint-15")
         trainer.train(resume_from_checkpoint=False)
         #print(f"Total train time: {time.time() - start:.2f} s")
 
