@@ -10,6 +10,7 @@ from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
 from utils.plot_progress import plot_rollout_metrics_bar_chart, calculate_and_save_results_all_channels, strip_validation_loss
 from utils.plot_progress import plot_multi_run_rollout_metrics
 from utils.loss_utils import fetch_loss_metric, fetch_infer_loss_dict
+from bench.runner_utils import StreamingMetrics
 from metrics.inference_metrics import compute_metrics_for_n_rollouts
 from transformers.trainer import EvalPrediction
 from transformers import TrainingArguments
@@ -144,6 +145,7 @@ def get_trainer(
     # Seed from data config (default 0)
     seed_value = int(data_config.get("seed", 0))
 
+    use_batch_eval_metrics = infer_config.get("batch_eval_metrics", True)
     # Use train_batch_size for per_device_eval_batch_size
     args = TrainingArguments(
         output_dir=output_dir,
@@ -166,6 +168,7 @@ def get_trainer(
         fp16=mp_flags["fp16"],
         bf16=mp_flags["bf16"],
         tf32=mp_flags["tf32"],
+        batch_eval_metrics=use_batch_eval_metrics,
     )
 
     # Load pretrained model using the generic factory function
@@ -930,9 +933,13 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         infer_config=infer_config,
         output_log_config=output_log_config,
         loss_config=loss_config,
-        compute_metrics=compute_metrics_during_inference,
+        #compute_metrics=streaming_metrics,
     )
     _dbg("trainer initialized for inference")
+
+    trainer.infer_loss_fn = infer_loss_fn  # attach to trainer for use in StreamingMetrics
+    streaming_metrics = StreamingMetrics(trainer=trainer, mode="infer")
+    trainer.compute_metrics = streaming_metrics
 
     random_start_stats_dict = None
     ic_start_stats_dict = None

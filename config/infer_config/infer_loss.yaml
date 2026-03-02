@@ -6,8 +6,8 @@ loss:
     - type: RMSE
       weight: 1.0
       name: VRMSE
-      config_file: loss_metrics/RMSE/vrmse
-    - type: L2Loss
+      config_file: vrmse
+    - type: MSE
       weight: 1.0
     - type: PearsonCorrelationLoss
       weight: 1.0
