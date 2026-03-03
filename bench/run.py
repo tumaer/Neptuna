@@ -629,7 +629,6 @@ def run(cfg):
                 loss_metric=infer_loss_fn,
                 include_per_timestep=True,
                 device=cfg["infer_config"].get("metrics_device"),
-                metric_batch_size=None,
                 base_metrics=streaming_metrics,
             )
             
