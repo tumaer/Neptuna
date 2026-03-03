@@ -11,7 +11,7 @@ from utils.plot_progress import plot_rollout_metrics_bar_chart, calculate_and_sa
 from utils.plot_progress import plot_multi_run_rollout_metrics
 from utils.loss_utils import fetch_loss_metric, fetch_infer_loss_dict
 from bench.runner_utils import StreamingMetrics
-from metrics.inference_metrics import compute_metrics_for_n_rollouts
+from metrics.inference_metrics import compute_metrics_for_n_rollouts, StreamingRolloutMetrics
 from transformers.trainer import EvalPrediction
 from transformers import TrainingArguments
 from train.trainer import Trainer
@@ -938,8 +938,32 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
     _dbg("trainer initialized for inference")
 
     trainer.infer_loss_fn = infer_loss_fn  # attach to trainer for use in StreamingMetrics
-    streaming_metrics = StreamingMetrics(trainer=trainer, mode="infer")
-    trainer.compute_metrics = streaming_metrics
+    base_streaming_metrics = StreamingMetrics(trainer=trainer, mode="infer")
+    trainer.compute_metrics = StreamingRolloutMetrics(
+        loss_metric=infer_loss_fn,
+        include_per_timestep=True,
+        device=infer_config.get("metrics_device"),
+        metric_batch_size=infer_config.get("metrics_batch_size"),
+        base_metrics=base_streaming_metrics,
+    )
+
+    def _extract_rollout_metrics(metrics_dict: Dict):
+        out = {}
+        if not isinstance(metrics_dict, dict):
+            return out
+        # Preferred format from StreamingRolloutMetrics
+        nested = metrics_dict.get("rollout_metrics")
+        if isinstance(nested, dict):
+            for k, v in nested.items():
+                if isinstance(v, dict) and "per_rollout_step_mean" in v:
+                    out[k] = v
+            if out:
+                return out
+        # Backward-compatible fallback (legacy flat format)
+        for k, v in metrics_dict.items():
+            if isinstance(v, dict) and "per_rollout_step_mean" in v:
+                out[k] = v
+        return out
 
     random_start_stats_dict = None
     ic_start_stats_dict = None
@@ -978,6 +1002,8 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             for key, value in predictions_obj.metrics.items():
                 if key.endswith(("runtime", "samples_per_second", "steps_per_second", "model_preparation_time", "jit_compilation_time")):
                     continue
+                if isinstance(value, dict):
+                    continue
                 print(f"{key}: {value}")
                 overall_errors["random_start_"+key] = value
             save_overall_errors_to_csv(overall_errors, solo_inference_dir)
@@ -996,16 +1022,12 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
 
             targets = predictions_obj.label_ids  # Expected shape: (N, R*T, C, *spatial)
 
-            per_rollout_step_metrics_random = compute_metrics_for_n_rollouts(
-                preds,
-                targets,
-                outputs_per_rollout=outputs_per_rollout,
-                include_per_timestep=True,
-                loss_metric=infer_loss_fn,
-                device=infer_config.get("metrics_device"),
-                input_frames=inputs,
-                metric_batch_size=infer_config.get("metrics_batch_size"),
-            )
+            per_rollout_step_metrics_random = _extract_rollout_metrics(predictions_obj.metrics)
+            if not per_rollout_step_metrics_random:
+                raise RuntimeError(
+                    "Streaming rollout metrics were not returned from Trainer.inference_loop. "
+                    "Please verify batch_eval_metrics=True and StreamingRolloutMetrics wiring."
+                )
 
             # Inputs already returned by `trainer.predict`
             inp_arr = inputs  # Shape: (N, T_in, C_in, *spatial)
@@ -1182,6 +1204,8 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             for key, value in predictions_obj.metrics.items():
                 if key.endswith(("runtime", "samples_per_second", "steps_per_second", "model_preparation_time", "jit_compilation_time")):
                     continue
+                if isinstance(value, dict):
+                    continue
                 print(f"{key}: {value}")
                 errors["ic_start_"+key] = value
             save_overall_errors_to_csv(errors, solo_inference_dir)
@@ -1198,16 +1222,12 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 extra_dims = preds.shape[4:]
                 preds = preds.reshape(n, n_rollouts * seq_len, c, *extra_dims) # (N, R*T, C, *spatial)
 
-            per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(
-                preds,
-                targets,
-                outputs_per_rollout=outputs_per_rollout,
-                include_per_timestep=True,
-                loss_metric=infer_loss_fn,
-                input_frames=inp_arr,
-                device=infer_config.get("metrics_device"),
-                metric_batch_size=infer_config.get("metrics_batch_size"),
-            )
+            per_rollout_step_metrics_ic = _extract_rollout_metrics(predictions_obj.metrics)
+            if not per_rollout_step_metrics_ic:
+                raise RuntimeError(
+                    "Streaming rollout metrics were not returned from Trainer.inference_loop. "
+                    "Please verify batch_eval_metrics=True and StreamingRolloutMetrics wiring."
+                )
         
         # ----------------------------------------------------------
         # Renormalise data and reconstruct residuals for plotting

@@ -1,6 +1,8 @@
 import numpy as np
 import torch
 from typing import Iterable, Dict, Optional
+from collections.abc import Mapping
+import torch.distributed as dist
 
 from metrics.loss_framework import LossComponent, WeightSchedule, CompositeLoss
 from metrics.loss_registry import get_loss_entry
@@ -393,3 +395,231 @@ def compute_metrics_for_n_rollouts(
         return all_metrics
     else:
         return _compute_for_single_component(loss_metric)
+
+
+class StreamingRolloutMetrics:
+    """
+    Streaming variant of `compute_metrics_for_n_rollouts` designed for
+    `batch_eval_metrics=True` execution inside `Trainer.inference_loop`.
+
+    It aggregates first and second moments per rollout/timestep over batches,
+    then computes final mean/std only at `compute_result=True`.
+    """
+
+    def __init__(
+        self,
+        loss_metric: LossComponent,
+        include_per_timestep: bool = True,
+        device: Optional[str] = None,
+        metric_batch_size: Optional[int] = None,
+        base_metrics=None,
+    ):
+        if loss_metric is None:
+            raise ValueError("loss_metric must be provided for StreamingRolloutMetrics.")
+
+        self.loss_metric = loss_metric
+        self.include_per_timestep = bool(include_per_timestep)
+        self.device = device
+        self.metric_batch_size = metric_batch_size
+        self.base_metrics = base_metrics
+        self.reset()
+
+    def reset(self):
+        self._num_samples = 0.0
+        self._sum = {}
+        self._sumsq = {}
+        self._names = {}
+
+    def _infer_input_frames(self, maybe_inputs):
+        if maybe_inputs is None:
+            return None
+        if isinstance(maybe_inputs, Mapping):
+            for key in ("input_data", "inputs", "input_ids"):
+                if key in maybe_inputs:
+                    return maybe_inputs[key]
+            return None
+        return maybe_inputs
+
+    def _to_numpy(self, x):
+        if x is None:
+            return None
+        if isinstance(x, np.ndarray):
+            return x
+        if torch.is_tensor(x):
+            return x.detach().float().cpu().numpy()
+        return np.asarray(x)
+
+    def _trim_last_step_for_remainder(self, preds, labels, input_frames, compute_result, eval_pred):
+        """
+        Match Accelerate's remainder semantics on the last logical step.
+        """
+        if not compute_result:
+            return preds, labels, input_frames
+
+        trainer = getattr(self.base_metrics, "trainer", None)
+        if trainer is None:
+            return preds, labels, input_frames
+
+        gs = trainer.accelerator.gradient_state
+        remainder = gs.remainder
+        if remainder <= 0:
+            return preds, labels, input_frames
+
+        local_bs = preds.shape[0]
+        rank = trainer.accelerator.process_index
+        start = rank * local_bs
+        valid_local = max(0, min(local_bs, remainder - start))
+
+        preds = preds[:valid_local]
+        labels = labels[:valid_local]
+        if input_frames is not None:
+            input_frames = input_frames[:valid_local]
+        return preds, labels, input_frames
+
+    def _accumulate_metric_block(self, metric_name, metric_values, batch_n: int):
+        if metric_name not in self._sum:
+            self._sum[metric_name] = {}
+            self._sumsq[metric_name] = {}
+
+        for summary_kind, arr in metric_values.items():
+            if summary_kind in ("names", "component_names"):
+                self._names[(metric_name, summary_kind)] = arr
+                continue
+
+            arr_np = np.asarray(arr, dtype=np.float64)
+            if arr_np.ndim != 2:
+                continue
+
+            mean = arr_np
+            std = metric_values.get(summary_kind.replace("_mean", "_std"), None)
+            if summary_kind.endswith("_std"):
+                continue
+
+            if std is None:
+                continue
+
+            std_np = np.asarray(std, dtype=np.float64)
+            if std_np.shape != mean.shape:
+                continue
+
+            batch_sum = batch_n * mean
+            batch_sumsq = batch_n * (std_np ** 2 + mean ** 2)
+
+            if summary_kind not in self._sum[metric_name]:
+                self._sum[metric_name][summary_kind] = batch_sum
+                self._sumsq[metric_name][summary_kind] = batch_sumsq
+            else:
+                self._sum[metric_name][summary_kind] += batch_sum
+                self._sumsq[metric_name][summary_kind] += batch_sumsq
+
+    def __call__(self, eval_pred, compute_result: bool = False):
+        base_out = {}
+        if self.base_metrics is not None:
+            base_out = self.base_metrics(eval_pred, compute_result=compute_result) or {}
+
+        preds = eval_pred.predictions
+        labels = eval_pred.label_ids
+
+        preds_np = self._to_numpy(preds)
+        labels_np = self._to_numpy(labels)
+        input_frames = self._infer_input_frames(getattr(eval_pred, "inputs", None))
+        input_frames_np = self._to_numpy(input_frames)
+
+        if preds_np is None or labels_np is None:
+            return base_out
+
+        # Expect logits shape (B, R, T, C, ...) and labels shape (B, R*T, C, ...)
+        if preds_np.ndim >= 5:
+            b, r, t, c = preds_np.shape[:4]
+            extra = preds_np.shape[4:]
+            outputs_per_rollout = t
+            preds_flat = preds_np.reshape(b, r * t, c, *extra)
+        elif preds_np.ndim >= 3:
+            outputs_per_rollout = 1
+            preds_flat = preds_np
+        else:
+            return base_out
+
+        labels_flat = labels_np
+
+        preds_flat, labels_flat, input_frames_np = self._trim_last_step_for_remainder(
+            preds_flat, labels_flat, input_frames_np, compute_result, eval_pred
+        )
+
+        if preds_flat.shape[0] == 0:
+            return base_out if not compute_result else base_out
+
+        batch_metrics = compute_metrics_for_n_rollouts(
+            preds=preds_flat,
+            targets=labels_flat,
+            outputs_per_rollout=outputs_per_rollout,
+            include_per_timestep=self.include_per_timestep,
+            loss_metric=self.loss_metric,
+            device=self.device,
+            input_frames=input_frames_np,
+            metric_batch_size=None,
+        )
+
+        batch_n = int(preds_flat.shape[0])
+        self._num_samples += float(batch_n)
+
+        for metric_name, metric_values in batch_metrics.items():
+            if isinstance(metric_values, dict):
+                self._accumulate_metric_block(metric_name, metric_values, batch_n=batch_n)
+
+        if not compute_result:
+            return base_out
+
+        if self._num_samples <= 0:
+            out = dict(base_out)
+            self.reset()
+            return out
+
+        # Reduce across distributed ranks.
+        reduce_device = None
+        try:
+            if torch.is_tensor(eval_pred.predictions):
+                reduce_device = eval_pred.predictions.device
+        except Exception:
+            reduce_device = None
+        if reduce_device is None:
+            reduce_device = torch.device("cpu")
+
+        n_tensor = torch.tensor(self._num_samples, dtype=torch.float64, device=reduce_device)
+        if dist.is_available() and dist.is_initialized():
+            dist.all_reduce(n_tensor, op=dist.ReduceOp.SUM)
+        global_n = float(n_tensor.item())
+
+        final_rollout_metrics = {}
+        for metric_name, metric_sum_dict in self._sum.items():
+            final_rollout_metrics[metric_name] = {}
+            for summary_kind, local_sum in metric_sum_dict.items():
+                local_sumsq = self._sumsq[metric_name][summary_kind]
+
+                sum_tensor = torch.as_tensor(local_sum, dtype=torch.float64, device=reduce_device)
+                sumsq_tensor = torch.as_tensor(local_sumsq, dtype=torch.float64, device=reduce_device)
+
+                if dist.is_available() and dist.is_initialized():
+                    dist.all_reduce(sum_tensor, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(sumsq_tensor, op=dist.ReduceOp.SUM)
+
+                mean = sum_tensor / global_n
+                var = torch.clamp(sumsq_tensor / global_n - mean ** 2, min=0.0)
+                std = torch.sqrt(var)
+
+                final_rollout_metrics[metric_name][summary_kind] = mean.cpu().numpy()
+                std_key = summary_kind.replace("_mean", "_std")
+                final_rollout_metrics[metric_name][std_key] = std.cpu().numpy()
+
+            names_val = self._names.get((metric_name, "names"), None)
+            comp_names_val = self._names.get((metric_name, "component_names"), None)
+            final_rollout_metrics[metric_name]["names"] = names_val
+            if comp_names_val is not None:
+                final_rollout_metrics[metric_name]["component_names"] = comp_names_val
+
+        out = dict(base_out)
+        # Keep base streaming metrics and rollout metrics in separate namespaces
+        # to avoid key collisions (e.g. scalar "l2" vs rollout dict "l2").
+        out["rollout_metrics"] = final_rollout_metrics
+        self.reset()
+        return out
