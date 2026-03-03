@@ -117,7 +117,7 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
             residual_config=cfg["data_config"]["residual_config"],
             filter_groups=cfg["data_config"]["filter_features"]["train_filter_groups"] ,
             filter_frames=cfg["data_config"]["filter_features"]["train_filter_frames"],
-            frame_stride=cfg["data_config"]["sequence_info"][2],
+            frame_stride=1,
             on_fly_stats=True,
             num_workers=4,
             log_transform_channels=cfg["data_config"]["log_transform_channels"],
