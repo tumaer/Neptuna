@@ -3,7 +3,7 @@ import os
 import atexit
 from transformers import TrainingArguments
 from train.trainer import Trainer, compute_curriculum_start_epochs
-from metrics.inference_metrics import compute_metrics_for_n_rollouts
+from metrics.inference_metrics import compute_metrics_for_n_rollouts, StreamingRolloutMetrics
 from metrics.loss_weighting_strategy_registry import get_loss_weighting_strategy_entry
 from transformers.trainer import EvalPrediction
 from utils.load_model import fetch_model
@@ -475,6 +475,23 @@ def run(cfg):
         if cfg["infer_config"]["do_infer"]:
             print("Running inference...")
 
+            def _extract_rollout_metrics(metrics_dict: dict):
+                out = {}
+                if not isinstance(metrics_dict, dict):
+                    return out
+                nested = metrics_dict.get("rollout_metrics")
+                if isinstance(nested, dict):
+                    for k, v in nested.items():
+                        if isinstance(v, dict) and "per_rollout_step_mean" in v:
+                            out[k] = v
+                    if out:
+                        return out
+                # Backward-compatible fallback
+                for k, v in metrics_dict.items():
+                    if isinstance(v, dict) and "per_rollout_step_mean" in v:
+                        out[k] = v
+                return out
+
             def _find_checkpoint_path(base_dir: str) -> str | None:
                 ckpts = glob.glob(os.path.join(base_dir, "checkpoint-*"))
                 if not ckpts:
@@ -607,7 +624,14 @@ def run(cfg):
                 return metrics
 
             streaming_metrics = StreamingMetrics(trainer=trainer, mode="infer")
-            trainer.compute_metrics = streaming_metrics
+            trainer.args.batch_eval_metrics = True
+            trainer.compute_metrics = StreamingRolloutMetrics(
+                loss_metric=infer_loss_fn,
+                include_per_timestep=True,
+                device=cfg["infer_config"].get("metrics_device"),
+                metric_batch_size=None,
+                base_metrics=streaming_metrics,
+            )
             
             direct_inference_dir = os.path.join(checkpoint_parent_dir, "direct_inference")
             inference_dir = os.path.join(direct_inference_dir, "inference_plots")
@@ -640,6 +664,8 @@ def run(cfg):
                     # omit throughput-style metrics
                     if key.endswith(("runtime", "samples_per_second", "steps_per_second")):
                         continue
+                    if isinstance(value, dict):
+                        continue
                     print(f"{key}: {value}")
                     overall_errors["random_start_"+key] = value
                 save_overall_errors_to_csv(overall_errors, direct_inference_dir)
@@ -657,15 +683,12 @@ def run(cfg):
 
                 targets = predictions_obj.label_ids  # Expected shape: (N, R*T, C, *spatial)
                 
-                per_rollout_step_metrics_random = compute_metrics_for_n_rollouts(
-                    preds, 
-                    targets, 
-                    outputs_per_rollout=outputs_per_rollout, 
-                    include_per_timestep=True,
-                    loss_metric=infer_loss_fn,
-                    input_frames=inputs,
-                    metric_batch_size=cfg["infer_config"].get("metrics_batch_size"),
-                )
+                per_rollout_step_metrics_random = _extract_rollout_metrics(predictions_obj.metrics)
+                if not per_rollout_step_metrics_random:
+                    raise RuntimeError(
+                        "Streaming rollout metrics were not returned from Trainer.inference_loop. "
+                        "Please verify batch_eval_metrics=True and StreamingRolloutMetrics wiring."
+                    )
 
                 # Inputs already returned by `trainer.predict`
                 inp_arr = inputs  # Shape: (N, T_in, C_in, *spatial)
@@ -774,7 +797,6 @@ def run(cfg):
                         loss_metric=infer_loss_fn,
                         include_per_timestep=False,
                         input_frames=inp_arr[example_idx:example_idx+1],
-                        metric_batch_size=cfg["infer_config"].get("metrics_batch_size"),
                     )
                     ex_title = f"Per-rollout metrics ({cfg['data_config'].get('dataset_name', 'dataset')} - random start, example {int(example_idx)})"
                     plot_rollout_metrics(
@@ -817,6 +839,8 @@ def run(cfg):
                 for key, value in predictions_obj.metrics.items():
                     if key.endswith(("runtime", "samples_per_second", "steps_per_second")):
                         continue
+                    if isinstance(value, dict):
+                        continue
                     print(f"{key}: {value}")
                     errors["ic_start_"+key] = value
                 save_overall_errors_to_csv(errors, direct_inference_dir)
@@ -833,16 +857,13 @@ def run(cfg):
                     extra_dims = preds.shape[4:]
                     preds = preds.reshape(n, n_rollouts * seq_len, c, *extra_dims)
 
-                # Compute per-rollout errors (mean across batch) before plotting
-                per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(
-                    preds, 
-                    targets, 
-                    outputs_per_rollout=outputs_per_rollout,
-                    include_per_timestep=True, 
-                    loss_metric=infer_loss_fn,
-                    input_frames=inp_arr,
-                    metric_batch_size=cfg["infer_config"].get("metrics_batch_size"),
-                )
+                # Read per-rollout errors from streaming metrics computed inside inference_loop
+                per_rollout_step_metrics_ic = _extract_rollout_metrics(predictions_obj.metrics)
+                if not per_rollout_step_metrics_ic:
+                    raise RuntimeError(
+                        "Streaming rollout metrics were not returned from Trainer.inference_loop. "
+                        "Please verify batch_eval_metrics=True and StreamingRolloutMetrics wiring."
+                    )
 
                 # ----------------------------------------------------------
                 # Renormalise data and reconstruct residuals for plotting
