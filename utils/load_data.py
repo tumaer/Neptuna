@@ -71,12 +71,16 @@ os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 import h5py
 from torch.utils.data import Dataset
 from typing import Optional, List, Tuple
+from omegaconf import ListConfig
 import numpy as np
 import torch
 import random
 import warnings
 import re  # For extracting numeric substrings from group tokens
 from utils.compute_stats import normalize_data
+
+_GROUP_PARAM_NUM_RE = re.compile(r"[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?")
+_EPS = 1e-12
 
 #NOTE: This function is not used in the current implementation.
 def build_eval_groups_extremes(filtered_groups, eval_split_ratio):
@@ -664,6 +668,9 @@ def fetch_dataset(dataset_name: str,
             Number of rollouts to be performed during testing
         - include_conditioning_parameters : bool, default=False
             Whether to extract conditioning parameters from group names
+        - conditioning_parameter_names : list[str], optional
+            If set, extract and normalize only the selected parameter keys
+            (e.g. ["Mas", "ugas", "We"])
     
     Returns
     -------
@@ -815,7 +822,11 @@ def fetch_dataset(dataset_name: str,
             )
             return infer_dataset
 
-def _parse_group_name_to_params(group_name: str) -> List[object]:
+def _parse_group_name_to_params(
+    group_name: str,
+    selected_param_names: Optional[List[str]] = None,
+    return_indices: bool = False,
+) -> List[object] | Tuple[List[object], List[int]]:
     """Extract numeric parameter values from an HDF5 *group name*.
 
     Group names are expected to follow a *key+value* convention where each
@@ -829,33 +840,699 @@ def _parse_group_name_to_params(group_name: str) -> List[object]:
         Re1e4_Ma0p8_Alpha30  -> [1e4, 0.8, 30]
 
     The function extracts the *first* numeric substring from every token and
-    converts it to ``int`` when possible, otherwise to ``float``.  Tokens
+    converts it to ``int`` when possible, otherwise to ``float``. Tokens
     without a numeric part are ignored.
+
+    If ``selected_param_names`` is provided, only the matching parameter keys
+    are returned in the same order as requested. Matching is case-insensitive
+    and must be exact.
+
+    When ``return_indices=True``, the function additionally returns the
+    original positional indices (based on parsed token order), useful for
+    indexing ``parameter_min_max_stats``.
+
+    A leading numeric-only token (e.g. ``001`` in
+    ``001_Mas1.4_We1200``) is treated as an ID prefix and ignored.
     """
 
     tokens = group_name.split("_")
-    values: List[object] = []
-
-    # Regex capturing signed ints/floats incl. scientific notation
-    num_re = re.compile(r"[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?")
+    if tokens and re.fullmatch(r"\d+", tokens[0]):
+        tokens = tokens[1:]
+    parsed_pairs: List[Tuple[str, object]] = []
 
     for tok in tokens:
-        m = num_re.search(tok)
+        m = _GROUP_PARAM_NUM_RE.search(tok)
         if not m:
             # No numeric substring – skip this token
             continue
 
+        key = tok[:m.start()]
         num_str = m.group(0)
 
         # Prefer integer conversion when no decimal point nor exponent present
         if re.fullmatch(r"[-+]?\d+", num_str):
-            values.append(int(num_str))
+            parsed_pairs.append((key, int(num_str)))
         else:
-            values.append(float(num_str))
+            parsed_pairs.append((key, float(num_str)))
 
-    return values
+    selected_values: List[object] = []
+    selected_indices: List[int] = []
+
+    if selected_param_names is None:
+        for idx, (_, val) in enumerate(parsed_pairs):
+            selected_values.append(val)
+            selected_indices.append(idx)
+    else:
+        parsed_lower = [(k.lower(), v) for k, v in parsed_pairs]
+        for req_name in selected_param_names:
+            req_key = req_name.lower()
+            match_idx = None
+            match_val = None
+
+            # exact match of the key is required.
+            for i, (param_key, param_val) in enumerate(parsed_lower):
+                if param_key == req_key:
+                    match_idx = i
+                    match_val = param_val
+                    break
+
+            if match_idx is not None:
+                selected_values.append(match_val)
+                selected_indices.append(match_idx)
+            else:
+                raise KeyError(
+                    f"Conditioning parameter '{req_name}' was not found in group name '{group_name}'."
+                )
+
+    if return_indices:
+        return selected_values, selected_indices
+    return selected_values
 
 class TransientDataset(Dataset):
+    """
+    PyTorch Dataset for transient (time-series) scientific data.
+    
+    This dataset handles time-series data stored in HDF5 format, providing
+    flexible temporal sequence extraction, multi-channel support, and
+    advanced features for scientific machine learning including residual
+    learning and conditioning parameter extraction.
+    
+    Parameters
+    ----------
+    dataset_name : str
+        Identifier for the dataset (used for logging and debugging).
+    h5file_path : str
+        Path to the HDF5 file containing the data.
+    mode : str
+        Dataset mode: "train", "eval", or "test".
+    index_map : List[Tuple[str, int, int]]
+        List of (group_name, start_idx, end_idx) tuples defining valid
+        temporal sequences for this dataset split.
+    filter_in_channels : List[str]
+        Input channel names to load from the HDF5 file.
+    conditioning_in_channels : List[str]
+        Channels that do not get predicted (used for conditioning the model)
+    filter_out_channels : List[str]
+        Output channel names to load from the HDF5 file.
+    sequence_info : List[int], default=[1, 1, 1]
+        [input_seq_len, label_seq_len, stride] configuration.
+    data_normalization_stats : dict
+        Pre-computed statistics for data normalization.
+    data_normalization_strategy : str
+        Normalization method ("z_normalization", "min_max_normalization", "robust_normalization", "none").
+    **kwargs : dict
+        Additional configuration options including:
+        - residual_config: Configuration for residual learning modes
+        - include_conditioning_parameters: Whether to extract parameters from group names
+        
+    Attributes
+    ----------
+    mode : str
+        Dataset mode (train/eval/test).
+    dataset_name : str
+        Dataset identifier.
+    h5file_path : str
+        Path to HDF5 data file.
+    index_map : List[Tuple[str, int, int]]
+        Temporal sequence definitions.
+    input_channels : List[str]
+        Input channel names.
+    output_channels : List[str]
+        Output channel names.
+    conditioning_in_channels : List[str]
+        Conditioning channel names.
+    input_seq_len : int
+        Length of input sequences.
+    label_seq_len : int
+        Length of output sequences.
+    stride : int
+        Temporal stride for sequence sampling.
+    residual_config : dict
+        Residual learning configuration.
+    include_conditioning_parameters : bool
+        Whether to extract conditioning parameters.
+        
+    Methods
+    -------
+    __len__()
+        Return the number of temporal sequences in the dataset.
+    __getitem__(idx)
+        Load and return a single temporal sequence sample.
+        
+    Notes
+    -----
+    Channel Naming:
+    - Single-component fields: Use dataset name directly (e.g., "pressure")
+    - Multi-component fields: Use "fieldname_component" (e.g., "velocity_0")
+    
+    Sample Structure:
+    Each sample returned by __getitem__ contains:
+    - "group": Group name for identification
+    - "input_data": Input sequences [T_in, C_in, H, W, ...]
+    - "label_including_rollouts": Output sequences [T_out, C_out, H, W, ...]
+    - "conditioning_input_data": Conditioning sequences (if applicable)
+    - "conditioning_parameters": Extracted parameters (if enabled)
+    """
+    
+    def __init__(self, 
+                 dataset_name: str,
+                 h5file_path: str,
+                 mode: str, #train, test, eval
+                 index_map: List[Tuple[str, int]],  # List of (group_name, start_idx) tuples
+                 filter_in_channels: List, #specific input channels
+                 conditioning_in_channels: List, #specific conditioning channels
+                 filter_out_channels: List, #specific output channels
+                 sequence_info: Optional[list] = [1, 1, 1], #sequence_info[0]: input_seq_len, sequence_info[1]: label_seq_len, 
+                                                           #sequence_info[2]: stride
+                 data_normalization_stats: dict = None,
+                 data_normalization_strategy: str = None,
+                 **kwargs
+                 ):
+        """
+        Initialize the TransientDataset.
+        
+        Sets up the dataset with comprehensive validation of parameters and
+        configuration of temporal sequence handling, channel management,
+        and normalization strategies.
+        
+        Raises
+        ------
+        AssertionError
+            If required parameters are missing or invalid configurations are detected.
+        UserWarning
+            If input and output channel counts differ (may be intentional).
+        """
+        super().__init__()
+        
+        assert mode in ["train", "eval", "infer"]
+        assert index_map is not None, "index_map must be provided"
+        assert filter_in_channels is not None and len(filter_in_channels) > 0, "filter_in_channels must be provided and non-empty"
+        assert filter_out_channels is not None and len(filter_out_channels) > 0, "filter_out_channels must be provided and non-empty"
+        
+        self.mode = mode
+        self.dataset_name = dataset_name
+        self.h5file_path = h5file_path
+        self.data_normalization_stats = data_normalization_stats
+        self.data_normalization_strategy = data_normalization_strategy
+        self.index_map = index_map #NOTE: this is a list of (group_name, start_idx, end_idx) tuples and depends on the train/eval/test mode
+        self.input_channels = filter_in_channels
+        self.conditioning_in_channels = conditioning_in_channels
+        self.output_channels = filter_out_channels
+        self.log_transform_channels = kwargs["log_transform_channels"]
+        self.include_conditioning_parameters = kwargs.get("include_conditioning_parameters", False)
+        self.parameter_min_max_stats = kwargs.get("parameter_min_max_stats", None)
+        self.conditioning_parameter_names = kwargs.get("conditioning_parameter_names")
+        self._h5 = None
+        if self.conditioning_parameter_names is not None:
+            if not isinstance(self.conditioning_parameter_names, (list, ListConfig)) or not all(isinstance(x, str) for x in self.conditioning_parameter_names):
+                raise TypeError("conditioning_parameter_names must be a list of strings or null.")
+            self.conditioning_parameter_names = list(self.conditioning_parameter_names)
+        
+        if len(self.input_channels) != len(self.output_channels):
+            warnings.warn("Number of input and label channels are different")
+
+        self.input_seq_len = sequence_info[0] 
+        self.label_seq_len = sequence_info[1] 
+        self.stride = sequence_info[2]
+
+        self._log_transform_set = set(self.log_transform_channels)
+        # Cache per-sample temporal indices to avoid rebuilding ranges in __getitem__.
+        self._index_items = []
+        for group_name, start_idx, end_idx in self.index_map:
+            input_idx = np.arange(
+                start_idx,
+                start_idx + (self.input_seq_len * self.stride),
+                self.stride,
+                dtype=np.int64,
+            )
+            label_idx = np.arange(
+                start_idx + (self.input_seq_len * self.stride),
+                end_idx + 1,
+                self.stride,
+                dtype=np.int64,
+            )
+            self._index_items.append((group_name, input_idx, label_idx))
+
+        # Cache channel transformation plan to reduce string/dict work in __getitem__.
+        self._input_plan = []
+        for channel in self.input_channels:
+            do_log = channel in self._log_transform_set
+            do_norm = "mask" not in channel.lower()
+            norm_key = f"log_{channel}" if do_log else channel
+            self._input_plan.append((channel, do_log, do_norm, norm_key))
+
+        self._output_plan = []
+        for channel in self.output_channels:
+            do_log = channel in self._log_transform_set
+            norm_key = f"log_{channel}" if do_log else channel
+            self._output_plan.append((channel, do_log, norm_key))
+
+        self._group_to_cond_tensor = {}
+        if self.include_conditioning_parameters:
+            unique_groups = {group_name for group_name, _, _ in self.index_map}
+            for group_name in unique_groups:
+                raw_params, raw_param_indices = _parse_group_name_to_params(
+                    group_name,
+                    selected_param_names=self.conditioning_parameter_names,
+                    return_indices=True,
+                )
+                norm_params = []
+                for val, param_idx in zip(raw_params, raw_param_indices):
+                    stats_i = self.parameter_min_max_stats.get(param_idx)
+                    norm_params.append((val - stats_i["min"]) / (stats_i["max"] - stats_i["min"] + _EPS))
+                self._group_to_cond_tensor[group_name] = torch.tensor(norm_params, dtype=torch.float32)
+            # Validate that all normalized conditioning parameters are in [0, 1].
+            out_of_range_groups = []
+            for group_name, cond_tensor in self._group_to_cond_tensor.items():
+                if torch.any((cond_tensor < 0) | (cond_tensor > 1)):
+                    out_of_range_groups.append(group_name)
+            if out_of_range_groups:
+                raise ValueError(
+                    "All values inside _group_to_cond_tensor must be between 0 and 1. "
+                    f"Found out-of-range values for groups: {out_of_range_groups[:5]}"
+                )
+    def __len__(self):
+        """
+        Return the number of temporal sequences in the dataset.
+        
+        Returns
+        -------
+        int
+            Number of valid temporal sequences available for training/validation/testing.
+        """
+        return len(self.index_map) #idx in __getitem__ is generated between 0 and len(self.index_map)-1
+
+    def _get_h5(self):
+        if self._h5 is None:
+            self._h5 = h5py.File(self.h5file_path, "r")
+        return self._h5
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_h5"] = None
+        return state
+
+    def __del__(self):
+        h5_file = getattr(self, "_h5", None)
+        if h5_file is not None:
+            try:
+                h5_file.close()
+            except Exception:
+                pass
+
+    def __getitem__(self, idx):
+        group_name, input_indices, label_indices = self._index_items[idx]
+        group = self._get_h5()[group_name]
+
+        input_chunks = []
+        for channel, do_log, do_norm, norm_key in self._input_plan:
+            if channel not in group:
+                raise KeyError(f"Channel '{channel}' not found in the HDF5 group '{group_name}'.")
+
+            input_seq_per_channel = group[channel][input_indices]
+            if do_log:
+                input_seq_per_channel = np.log(input_seq_per_channel)
+            if do_norm:
+                input_seq_per_channel = normalize_data(
+                    input_seq_per_channel,
+                    self.data_normalization_stats[norm_key],
+                    self.data_normalization_strategy,
+                )
+            input_chunks.append(input_seq_per_channel)
+
+        label_chunks = []
+        for channel, do_log, norm_key in self._output_plan:
+            if channel not in group:
+                raise KeyError(f"Channel '{channel}' not found in the HDF5 group '{group_name}'.")
+
+            label_seq_per_channel = group[channel][label_indices]
+            if do_log:
+                label_seq_per_channel = np.log(label_seq_per_channel)
+            label_seq_per_channel = normalize_data(
+                label_seq_per_channel,
+                self.data_normalization_stats[norm_key],
+                self.data_normalization_strategy,
+            )
+            label_chunks.append(label_seq_per_channel)
+
+        # inputs are the input sequences for all channels, shape = [input_seq_len, C_total, X_res, Y_res, Z_res] where: C_total = sum(C_channel) for all channels
+        # labels are the label sequences for all channels, shape = [label_seq_len, C_total, X_res, Y_res, Z_res]
+        inputs = np.concatenate(input_chunks, axis=1)
+        labels = np.concatenate(label_chunks, axis=1)
+            
+        # ------------------------------------------------------------------
+        # Assemble the sample dictionary.
+        # ------------------------------------------------------------------
+
+        sample = {
+            "group": group_name,
+            "input_data": torch.from_numpy(inputs.astype(np.float32, copy=False)),
+            "label_including_rollouts": torch.from_numpy(labels.astype(np.float32, copy=False)),
+        }
+
+        if self.include_conditioning_parameters:
+            sample["conditioning_parameters"] = self._group_to_cond_tensor[group_name]
+
+        return  sample
+
+class SteadyStateDataset(Dataset):
+    """
+    PyTorch Dataset for steady-state scientific data.
+    
+    This dataset handles steady-state (single time-step) data stored in HDF5
+    format, designed for direct input-output mapping problems such as
+    geometry-to-flow prediction, parameter-to-solution mapping, and other
+    non-temporal scientific computing applications.
+    
+    The dataset provides:
+    - Single-frame data loading with multi-channel support
+    - Multi-component field handling with automatic channel expansion
+    - Comprehensive data normalization
+    - Conditioning parameter extraction from group names
+    - Flexible input-output channel mapping
+    
+    Parameters
+    ----------
+    dataset_name : str
+        Identifier for the dataset (used for logging and debugging).
+    h5file_path : str
+        Path to the HDF5 file containing the data.
+    mode : str
+        Dataset mode: "train", "eval", or "test".
+    index_map : List[str]
+        List of group names defining the dataset split.
+    filter_in_channels : List[str]
+        Input channel names to load from the HDF5 file.
+    conditioning_in_channels : List[str]
+        Subset of input channels used for conditioning. NOTE: conditioning channels are not predicted
+    filter_out_channels : List[str]
+        Output channel names to load from the HDF5 file.
+    data_normalization_stats : dict
+        Pre-computed statistics for data normalization.
+    data_normalization_strategy : str
+        Normalization method ("z_normalization", "min_max_normalization", etc.).
+    **kwargs : dict
+        Additional configuration options including:
+        - include_conditioning_parameters: Whether to extract parameters from group names
+        
+    Attributes
+    ----------
+    mode : str
+        Dataset mode (train/eval/test).
+    dataset_name : str
+        Dataset identifier.
+    h5file_path : str
+        Path to HDF5 data file.
+    index_map : List[str]
+        Group names for this dataset split.
+    input_channels : List[str]
+        Input channel names.
+    output_channels : List[str]
+        Output channel names.
+    conditioning_in_channels : List[str]
+        Conditioning channel names.
+    include_conditioning_parameters : bool
+        Whether to extract conditioning parameters.
+        
+    Methods
+    -------
+    __len__()
+        Return the number of groups in the dataset.
+    __getitem__(idx)
+        Load and return a single steady-state sample.
+        
+    Notes
+    -----
+    Data Structure:
+    - Each group contains steady-state data (single time frame)
+    - Input and output channels can be completely different
+    - Common use case: geometry/boundary conditions → flow solution
+    
+    Sample Structure:
+    Each sample returned by __getitem__ contains:
+    - "group": Group name for identification
+    - "input_data": Input data [1, C_in, H, W, ...]
+    - "label_including_rollouts": Output data [1, C_out, H, W, ...]
+    - "conditioning_input_data": Conditioning data (if applicable)
+    - "conditioning_parameters": Extracted parameters (if enabled)
+    
+    The leading dimension of 1 maintains consistency with the transient
+    dataset interface where the first dimension represents time steps.
+    """
+    
+    def __init__(self, 
+                 dataset_name: str,
+                 h5file_path: str,
+                 mode: str, #train, test, eval
+                 index_map: List[str],  # List of group_names
+                 filter_in_channels: List, #specific input channels
+                 conditioning_in_channels: List, #specific conditioning channels
+                 filter_out_channels: List, #specific output channels
+                 data_normalization_stats: dict = None,
+                 data_normalization_strategy: str = None,
+                 **kwargs
+                 ):
+        """
+        Initialize the SteadyStateDataset.
+        
+        Sets up the dataset with validation of parameters and configuration
+        of channel management and normalization strategies for steady-state
+        data processing.
+        
+        Raises
+        ------
+        AssertionError
+            If required parameters are missing or invalid.
+        UserWarning
+            If input and output channel counts differ (often expected for steady-state).
+        """
+        super().__init__()
+        #NOTE: It is possible that the self.input_channels and self.output_channels are completely different
+        # For example, in the case of steady state prediction, the input_channels could be the binary mask and the output could be the steady state density and velocity 
+        assert mode in ["train", "eval", "infer"]
+        assert index_map is not None, "index_map must be provided"
+        assert filter_in_channels is not None and len(filter_in_channels) > 0, "filter_in_channels must be provided and non-empty"
+        assert filter_out_channels is not None and len(filter_out_channels) > 0, "filter_out_channels must be provided and non-empty"
+        
+        self.mode = mode
+        self.dataset_name = dataset_name
+        self.h5file_path = h5file_path
+        self.data_normalization_stats = data_normalization_stats
+        self.data_normalization_strategy = data_normalization_strategy
+        self.index_map = index_map #NOTE: this is a list of group_names
+        self.input_channels = filter_in_channels
+        self.conditioning_in_channels = conditioning_in_channels
+        self.output_channels = filter_out_channels
+        _inc_params = kwargs.get("include_conditioning_parameters", False)
+        if not isinstance(_inc_params, bool):
+            raise TypeError(
+                f"include_conditioning_parameters must be a boolean (True/False), got {type(_inc_params).__name__}: {_inc_params}"
+            )
+        self.include_conditioning_parameters = _inc_params
+        self.parameter_min_max_stats = kwargs["parameter_min_max_stats"]
+        self.conditioning_parameter_names = kwargs.get("conditioning_parameter_names")
+        if self.conditioning_parameter_names is not None:
+            if not isinstance(self.conditioning_parameter_names, (list, ListConfig)) or not all(isinstance(x, str) for x in self.conditioning_parameter_names):
+                raise TypeError("conditioning_parameter_names must be a list of strings or null.")
+            self.conditioning_parameter_names = list(self.conditioning_parameter_names)
+
+        if len(self.input_channels) != len(self.output_channels):
+            warnings.warn("Number of input and label channels are different")
+
+    def __len__(self):
+        """
+        Return the number of groups in the dataset.
+        
+        Returns
+        -------
+        int
+            Number of groups available for training/evaluation.
+        """
+        return len(self.index_map)
+
+    def __getitem__(self, idx):
+        """
+        Load and return a single steady-state sample.
+        
+        This method handles the complete data loading pipeline for steady-state
+        data including:
+        1. Group selection based on index map
+        2. Single-frame data extraction (first time step)
+        3. Multi-component field handling and channel expansion
+        4. Data normalization
+        5. Conditioning parameter extraction
+        
+        Parameters
+        ----------
+        idx : int
+            Index of the group to load (0 <= idx < len(dataset)).
+            
+        Returns
+        -------
+        dict
+            Sample dictionary containing:
+            - "group" : str
+                Group name for identification and conditioning
+            - "input_data" : torch.Tensor
+                Input data with shape [1, C_in, H, W, ...]
+            - "label_including_rollouts" : torch.Tensor
+                Output data with shape [1, C_out, H, W, ...]
+            - "conditioning_input_data" : torch.Tensor, optional
+                Conditioning data with shape [1, C_cond, H, W, ...]
+            - "conditioning_parameters" : List[object], optional
+                Extracted parameters from group name
+                
+        Notes
+        -----
+        Data Processing:
+        - Always uses the first (index 0) time frame from each dataset
+        - Adds leading time dimension for consistency with transient interface
+        - Handles both single-component and multi-component fields
+        - Automatic component extraction for multi-component channels (e.g., "velocity_0")
+        - Separate handling of conditioning vs. regular input channels
+        - Mask channels skip normalization to preserve binary values
+        """
+        group_name = self.index_map[idx]
+        with h5py.File(self.h5file_path, 'r') as f:
+            group = f[group_name]
+            # Separate containers for normal input/label channels and conditioning channels
+            input_chunks = []               # data for non-conditioning input channels
+            label_chunks = []               # data for non-conditioning output channels
+            conditioning_input_chunks = []  # data for conditioning input channels
+
+            for channel in self.input_channels:
+                is_conditioning = channel in self.conditioning_in_channels if self.conditioning_in_channels is not None else False
+                # Resolve the dataset name and, if needed, the component index (e.g. "velocity_0" -> dataset "velocity", comp_idx 0)
+                if channel in group:
+                    channel_name = channel
+                    component_idx = None  # use full vector/scalar stored in dataset
+                else:
+                    # Attempt to parse names like "velocity_0", "vorticity_1", ...
+                    if "_" in channel:
+                        base_name, suffix = channel.rsplit("_", 1)
+                        if base_name in group and suffix.isdigit():
+                            channel_name = base_name
+                            component_idx = int(suffix)
+                        else:
+                            raise KeyError(f"Channel '{channel}' could not be resolved in the HDF5 group '{group_name}'.")
+                    else:
+                        raise KeyError(f"Channel '{channel}' not found in the HDF5 group '{group_name}'.")
+                     
+                # For steady-state we always use the first (and only) frame
+                input_data = group[channel_name][0]
+
+                # Slice out the requested component (if any) while keeping a singleton channel dimension
+                if component_idx is not None:
+                    input_data = input_data[component_idx:component_idx + 1]
+
+                # Add a leading time dimension so the final shape is [T, C, H, W, ...]
+                input_seq_per_channel = input_data[np.newaxis, ...]
+
+                # Apply log normalization if configured; otherwise skip masks
+                if channel in self.log_transform_channels:
+                    input_seq_per_channel = np.log(input_seq_per_channel)
+                    input_seq_per_channel = normalize_data(
+                        input_seq_per_channel,
+                        self.data_normalization_stats.get(f"log_{channel}"),
+                        self.data_normalization_strategy,
+                    )
+                elif "mask" not in channel.lower():
+                    input_seq_per_channel = normalize_data(
+                        input_seq_per_channel,
+                        self.data_normalization_stats[channel],
+                        self.data_normalization_strategy,
+                    )
+
+                # Append to the appropriate container
+                if is_conditioning:
+                    conditioning_input_chunks.append(input_seq_per_channel)
+                else:
+                    input_chunks.append(input_seq_per_channel)
+
+            # Process output channels
+            for channel in self.output_channels:
+                # Resolve the dataset name and, if needed, the component index (e.g. "velocity_0" -> dataset "velocity", comp_idx 0)
+                if channel in group:
+                    channel_name = channel
+                    component_idx = None  # use full vector/scalar stored in dataset
+                else:
+                    # Attempt to parse names like "velocity_0", "vorticity_1", ...
+                    if "_" in channel:
+                        base_name, suffix = channel.rsplit("_", 1)
+                        if base_name in group and suffix.isdigit():
+                            channel_name = base_name
+                            component_idx = int(suffix)
+                        else:
+                            raise KeyError(f"Channel '{channel}' could not be resolved in the HDF5 group '{group_name}'.")
+                    else:
+                        raise KeyError(f"Channel '{channel}' not found in the HDF5 group '{group_name}'.")
+
+                # For steady-state we always fetch the first (and only) frame
+                label_data = group[channel_name][0]
+
+                # Slice out the requested component (if any) while keeping a singleton channel dimension
+                if component_idx is not None:
+                    label_data = label_data[component_idx:component_idx + 1]
+
+                # Add a leading time dimension so the final shape is [T, C, H, W, ...]
+                label_seq_per_channel = label_data[np.newaxis, ...]
+
+                if channel in self.log_transform_channels:
+                    label_seq_per_channel = np.log(label_seq_per_channel)
+                    label_seq_per_channel = normalize_data(
+                        label_seq_per_channel,
+                        self.data_normalization_stats.get(f"log_{channel}"),
+                        self.data_normalization_strategy,
+                    )
+                else:
+                    label_seq_per_channel = normalize_data(
+                        label_seq_per_channel,
+                        self.data_normalization_stats[channel],
+                        self.data_normalization_strategy,
+                    )
+
+                # append to non-conditioning label list
+                label_chunks.append(label_seq_per_channel)
+            
+            inputs = np.concatenate(input_chunks, axis=1)
+            labels = np.concatenate(label_chunks, axis=1)
+
+            # Build conditioning input tensor only if such channels exist
+            conditioning_inputs = None
+            if self.conditioning_in_channels is not None and len(conditioning_input_chunks) > 0:
+                conditioning_inputs = np.concatenate(conditioning_input_chunks, axis=1)
+
+        sample = {
+            "group": group_name,
+            "input_data": torch.from_numpy(inputs).float(),
+            "label_including_rollouts": torch.from_numpy(labels).float(),
+        }
+
+        if self.include_conditioning_parameters:
+            raw_params, raw_param_indices = _parse_group_name_to_params(
+                group_name,
+                selected_param_names=self.conditioning_parameter_names,
+                return_indices=True,
+            )
+            #normalize the conditioning parameters using min-max strategy
+            norm_params = []
+            for val, param_idx in zip(raw_params, raw_param_indices):
+                stats_i = self.parameter_min_max_stats.get(param_idx)
+                if stats_i is not None:
+                    denom = stats_i["max"] - stats_i["min"] + 1e-12
+                    norm_val = (val - stats_i["min"]) / denom
+                    norm_params.append(norm_val)
+                else:
+                    norm_params.append(val)
+            sample["conditioning_parameters"] = torch.tensor(norm_params, dtype=torch.float32)
+
+        if conditioning_inputs is not None:
+            sample["conditioning_input_data"] = torch.from_numpy(conditioning_inputs).float()
+
+        return  sample
+
+
+class TransientDatasetWithConditioningChannels(Dataset):
     """
     PyTorch Dataset for transient (time-series) scientific data.
     
@@ -994,6 +1671,11 @@ class TransientDataset(Dataset):
         self.include_conditioning_parameters = _inc_params
         # Parameter normalisation ranges (optional)
         self.parameter_min_max_stats = kwargs["parameter_min_max_stats"]
+        self.conditioning_parameter_names = kwargs.get("conditioning_parameter_names")
+        if self.conditioning_parameter_names is not None:
+            if not isinstance(self.conditioning_parameter_names, (list, ListConfig)) or not all(isinstance(x, str) for x in self.conditioning_parameter_names):
+                raise TypeError("conditioning_parameter_names must be a list of strings or null.")
+            self.conditioning_parameter_names = list(self.conditioning_parameter_names)
         
         self.residual_config = kwargs["residual_config"]
         if self.residual_config is not None:
@@ -1224,338 +1906,15 @@ class TransientDataset(Dataset):
         }
 
         if self.include_conditioning_parameters:
-            raw_params = _parse_group_name_to_params(group_name)
-            #normalize the conditioning parameters using min-max strategy
-            norm_params = []
-            for i, val in enumerate(raw_params):
-                stats_i = self.parameter_min_max_stats.get(i)
-                if stats_i is not None:
-                    denom = stats_i["max"] - stats_i["min"] + 1e-12
-                    norm_val = (val - stats_i["min"]) / denom
-                    norm_params.append(norm_val)
-                else:
-                    norm_params.append(val)
-            sample["conditioning_parameters"] = torch.tensor(norm_params, dtype=torch.float32)
-
-        if conditioning_inputs is not None:
-            sample["conditioning_input_data"] = torch.from_numpy(conditioning_inputs).float()
-
-        return  sample
-
-class SteadyStateDataset(Dataset):
-    """
-    PyTorch Dataset for steady-state scientific data.
-    
-    This dataset handles steady-state (single time-step) data stored in HDF5
-    format, designed for direct input-output mapping problems such as
-    geometry-to-flow prediction, parameter-to-solution mapping, and other
-    non-temporal scientific computing applications.
-    
-    The dataset provides:
-    - Single-frame data loading with multi-channel support
-    - Multi-component field handling with automatic channel expansion
-    - Comprehensive data normalization
-    - Conditioning parameter extraction from group names
-    - Flexible input-output channel mapping
-    
-    Parameters
-    ----------
-    dataset_name : str
-        Identifier for the dataset (used for logging and debugging).
-    h5file_path : str
-        Path to the HDF5 file containing the data.
-    mode : str
-        Dataset mode: "train", "eval", or "test".
-    index_map : List[str]
-        List of group names defining the dataset split.
-    filter_in_channels : List[str]
-        Input channel names to load from the HDF5 file.
-    conditioning_in_channels : List[str]
-        Subset of input channels used for conditioning. NOTE: conditioning channels are not predicted
-    filter_out_channels : List[str]
-        Output channel names to load from the HDF5 file.
-    data_normalization_stats : dict
-        Pre-computed statistics for data normalization.
-    data_normalization_strategy : str
-        Normalization method ("z_normalization", "min_max_normalization", etc.).
-    **kwargs : dict
-        Additional configuration options including:
-        - include_conditioning_parameters: Whether to extract parameters from group names
-        
-    Attributes
-    ----------
-    mode : str
-        Dataset mode (train/eval/test).
-    dataset_name : str
-        Dataset identifier.
-    h5file_path : str
-        Path to HDF5 data file.
-    index_map : List[str]
-        Group names for this dataset split.
-    input_channels : List[str]
-        Input channel names.
-    output_channels : List[str]
-        Output channel names.
-    conditioning_in_channels : List[str]
-        Conditioning channel names.
-    include_conditioning_parameters : bool
-        Whether to extract conditioning parameters.
-        
-    Methods
-    -------
-    __len__()
-        Return the number of groups in the dataset.
-    __getitem__(idx)
-        Load and return a single steady-state sample.
-        
-    Notes
-    -----
-    Data Structure:
-    - Each group contains steady-state data (single time frame)
-    - Input and output channels can be completely different
-    - Common use case: geometry/boundary conditions → flow solution
-    
-    Sample Structure:
-    Each sample returned by __getitem__ contains:
-    - "group": Group name for identification
-    - "input_data": Input data [1, C_in, H, W, ...]
-    - "label_including_rollouts": Output data [1, C_out, H, W, ...]
-    - "conditioning_input_data": Conditioning data (if applicable)
-    - "conditioning_parameters": Extracted parameters (if enabled)
-    
-    The leading dimension of 1 maintains consistency with the transient
-    dataset interface where the first dimension represents time steps.
-    """
-    
-    def __init__(self, 
-                 dataset_name: str,
-                 h5file_path: str,
-                 mode: str, #train, test, eval
-                 index_map: List[str],  # List of group_names
-                 filter_in_channels: List, #specific input channels
-                 conditioning_in_channels: List, #specific conditioning channels
-                 filter_out_channels: List, #specific output channels
-                 data_normalization_stats: dict = None,
-                 data_normalization_strategy: str = None,
-                 **kwargs
-                 ):
-        """
-        Initialize the SteadyStateDataset.
-        
-        Sets up the dataset with validation of parameters and configuration
-        of channel management and normalization strategies for steady-state
-        data processing.
-        
-        Raises
-        ------
-        AssertionError
-            If required parameters are missing or invalid.
-        UserWarning
-            If input and output channel counts differ (often expected for steady-state).
-        """
-        super().__init__()
-        #NOTE: It is possible that the self.input_channels and self.output_channels are completely different
-        # For example, in the case of steady state prediction, the input_channels could be the binary mask and the output could be the steady state density and velocity 
-        assert mode in ["train", "eval", "infer"]
-        assert index_map is not None, "index_map must be provided"
-        assert filter_in_channels is not None and len(filter_in_channels) > 0, "filter_in_channels must be provided and non-empty"
-        assert filter_out_channels is not None and len(filter_out_channels) > 0, "filter_out_channels must be provided and non-empty"
-        
-        self.mode = mode
-        self.dataset_name = dataset_name
-        self.h5file_path = h5file_path
-        self.data_normalization_stats = data_normalization_stats
-        self.data_normalization_strategy = data_normalization_strategy
-        self.index_map = index_map #NOTE: this is a list of group_names
-        self.input_channels = filter_in_channels
-        self.conditioning_in_channels = conditioning_in_channels
-        self.output_channels = filter_out_channels
-        _inc_params = kwargs.get("include_conditioning_parameters", False)
-        if not isinstance(_inc_params, bool):
-            raise TypeError(
-                f"include_conditioning_parameters must be a boolean (True/False), got {type(_inc_params).__name__}: {_inc_params}"
+            raw_params, raw_param_indices = _parse_group_name_to_params(
+                group_name,
+                selected_param_names=self.conditioning_parameter_names,
+                return_indices=True,
             )
-        self.include_conditioning_parameters = _inc_params
-        self.parameter_min_max_stats = kwargs["parameter_min_max_stats"]
-
-        if len(self.input_channels) != len(self.output_channels):
-            warnings.warn("Number of input and label channels are different")
-
-    def __len__(self):
-        """
-        Return the number of groups in the dataset.
-        
-        Returns
-        -------
-        int
-            Number of groups available for training/evaluation.
-        """
-        return len(self.index_map)
-
-    def __getitem__(self, idx):
-        """
-        Load and return a single steady-state sample.
-        
-        This method handles the complete data loading pipeline for steady-state
-        data including:
-        1. Group selection based on index map
-        2. Single-frame data extraction (first time step)
-        3. Multi-component field handling and channel expansion
-        4. Data normalization
-        5. Conditioning parameter extraction
-        
-        Parameters
-        ----------
-        idx : int
-            Index of the group to load (0 <= idx < len(dataset)).
-            
-        Returns
-        -------
-        dict
-            Sample dictionary containing:
-            - "group" : str
-                Group name for identification and conditioning
-            - "input_data" : torch.Tensor
-                Input data with shape [1, C_in, H, W, ...]
-            - "label_including_rollouts" : torch.Tensor
-                Output data with shape [1, C_out, H, W, ...]
-            - "conditioning_input_data" : torch.Tensor, optional
-                Conditioning data with shape [1, C_cond, H, W, ...]
-            - "conditioning_parameters" : List[object], optional
-                Extracted parameters from group name
-                
-        Notes
-        -----
-        Data Processing:
-        - Always uses the first (index 0) time frame from each dataset
-        - Adds leading time dimension for consistency with transient interface
-        - Handles both single-component and multi-component fields
-        - Automatic component extraction for multi-component channels (e.g., "velocity_0")
-        - Separate handling of conditioning vs. regular input channels
-        - Mask channels skip normalization to preserve binary values
-        """
-        group_name = self.index_map[idx]
-        with h5py.File(self.h5file_path, 'r') as f:
-            group = f[group_name]
-            # Separate containers for normal input/label channels and conditioning channels
-            input_chunks = []               # data for non-conditioning input channels
-            label_chunks = []               # data for non-conditioning output channels
-            conditioning_input_chunks = []  # data for conditioning input channels
-
-            for channel in self.input_channels:
-                is_conditioning = channel in self.conditioning_in_channels if self.conditioning_in_channels is not None else False
-                # Resolve the dataset name and, if needed, the component index (e.g. "velocity_0" -> dataset "velocity", comp_idx 0)
-                if channel in group:
-                    channel_name = channel
-                    component_idx = None  # use full vector/scalar stored in dataset
-                else:
-                    # Attempt to parse names like "velocity_0", "vorticity_1", ...
-                    if "_" in channel:
-                        base_name, suffix = channel.rsplit("_", 1)
-                        if base_name in group and suffix.isdigit():
-                            channel_name = base_name
-                            component_idx = int(suffix)
-                        else:
-                            raise KeyError(f"Channel '{channel}' could not be resolved in the HDF5 group '{group_name}'.")
-                    else:
-                        raise KeyError(f"Channel '{channel}' not found in the HDF5 group '{group_name}'.")
-                     
-                # For steady-state we always use the first (and only) frame
-                input_data = group[channel_name][0]
-
-                # Slice out the requested component (if any) while keeping a singleton channel dimension
-                if component_idx is not None:
-                    input_data = input_data[component_idx:component_idx + 1]
-
-                # Add a leading time dimension so the final shape is [T, C, H, W, ...]
-                input_seq_per_channel = input_data[np.newaxis, ...]
-
-                # Apply log normalization if configured; otherwise skip masks
-                if channel in self.log_transform_channels:
-                    input_seq_per_channel = np.log(input_seq_per_channel)
-                    input_seq_per_channel = normalize_data(
-                        input_seq_per_channel,
-                        self.data_normalization_stats.get(f"log_{channel}"),
-                        self.data_normalization_strategy,
-                    )
-                elif "mask" not in channel.lower():
-                    input_seq_per_channel = normalize_data(
-                        input_seq_per_channel,
-                        self.data_normalization_stats[channel],
-                        self.data_normalization_strategy,
-                    )
-
-                # Append to the appropriate container
-                if is_conditioning:
-                    conditioning_input_chunks.append(input_seq_per_channel)
-                else:
-                    input_chunks.append(input_seq_per_channel)
-
-            # Process output channels
-            for channel in self.output_channels:
-                # Resolve the dataset name and, if needed, the component index (e.g. "velocity_0" -> dataset "velocity", comp_idx 0)
-                if channel in group:
-                    channel_name = channel
-                    component_idx = None  # use full vector/scalar stored in dataset
-                else:
-                    # Attempt to parse names like "velocity_0", "vorticity_1", ...
-                    if "_" in channel:
-                        base_name, suffix = channel.rsplit("_", 1)
-                        if base_name in group and suffix.isdigit():
-                            channel_name = base_name
-                            component_idx = int(suffix)
-                        else:
-                            raise KeyError(f"Channel '{channel}' could not be resolved in the HDF5 group '{group_name}'.")
-                    else:
-                        raise KeyError(f"Channel '{channel}' not found in the HDF5 group '{group_name}'.")
-
-                # For steady-state we always fetch the first (and only) frame
-                label_data = group[channel_name][0]
-
-                # Slice out the requested component (if any) while keeping a singleton channel dimension
-                if component_idx is not None:
-                    label_data = label_data[component_idx:component_idx + 1]
-
-                # Add a leading time dimension so the final shape is [T, C, H, W, ...]
-                label_seq_per_channel = label_data[np.newaxis, ...]
-
-                if channel in self.log_transform_channels:
-                    label_seq_per_channel = np.log(label_seq_per_channel)
-                    label_seq_per_channel = normalize_data(
-                        label_seq_per_channel,
-                        self.data_normalization_stats.get(f"log_{channel}"),
-                        self.data_normalization_strategy,
-                    )
-                else:
-                    label_seq_per_channel = normalize_data(
-                        label_seq_per_channel,
-                        self.data_normalization_stats[channel],
-                        self.data_normalization_strategy,
-                    )
-
-                # append to non-conditioning label list
-                label_chunks.append(label_seq_per_channel)
-            
-            inputs = np.concatenate(input_chunks, axis=1)
-            labels = np.concatenate(label_chunks, axis=1)
-
-            # Build conditioning input tensor only if such channels exist
-            conditioning_inputs = None
-            if self.conditioning_in_channels is not None and len(conditioning_input_chunks) > 0:
-                conditioning_inputs = np.concatenate(conditioning_input_chunks, axis=1)
-
-        sample = {
-            "group": group_name,
-            "input_data": torch.from_numpy(inputs).float(),
-            "label_including_rollouts": torch.from_numpy(labels).float(),
-        }
-
-        if self.include_conditioning_parameters:
-            raw_params = _parse_group_name_to_params(group_name)
             #normalize the conditioning parameters using min-max strategy
             norm_params = []
-            for i, val in enumerate(raw_params):
-                stats_i = self.parameter_min_max_stats.get(i)
+            for val, param_idx in zip(raw_params, raw_param_indices):
+                stats_i = self.parameter_min_max_stats.get(param_idx)
                 if stats_i is not None:
                     denom = stats_i["max"] - stats_i["min"] + 1e-12
                     norm_val = (val - stats_i["min"]) / denom
@@ -1568,6 +1927,7 @@ class SteadyStateDataset(Dataset):
             sample["conditioning_input_data"] = torch.from_numpy(conditioning_inputs).float()
 
         return  sample
+
 
 ####testing the dataloader
 if __name__ == "__main__":

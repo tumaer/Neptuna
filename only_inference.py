@@ -908,6 +908,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                                             conditioning_in_channels=data_config["conditioning_features"]["conditioning_in_channels"],
                                             include_conditioning_parameters=False if data_config["conditioning_features"]["conditioning_method"] is None else True,
                                             parameter_min_max_stats=data_config["conditioning_features"]["parameter_min_max_stats"],
+                                            conditioning_parameter_names=data_config["conditioning_features"].get("conditioning_parameter_names", None),
                                             data_normalization_stats=data_config["data_normalization_stats"],
                                             data_normalization_strategy=data_config["data_normalization_strategy"],
                                             is_steady_state_prediction=data_config["is_steady_state_prediction"],

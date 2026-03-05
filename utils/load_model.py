@@ -1,6 +1,29 @@
 from typing import Dict
-
+from omegaconf import ListConfig
 from utils.model_utils import build_conditioning_method
+
+
+def _resolve_num_cond_params(data_config: Dict) -> int:
+    conditioning_cfg = data_config.get("conditioning_features", {})
+    cond_method = conditioning_cfg.get("conditioning_method")
+    if cond_method is None:
+        return 0
+
+    selected_names = conditioning_cfg.get("conditioning_parameter_names")
+    if selected_names is not None:
+        if not isinstance(selected_names, (list, ListConfig)) or not all(isinstance(x, str) for x in selected_names):
+            raise TypeError("conditioning_parameter_names must be a list of strings or null.")
+        return len(selected_names)
+
+    param_stats = conditioning_cfg.get("parameter_min_max_stats")
+    if param_stats is not None:
+        return len(param_stats)
+
+    raise ValueError(
+        "Could not determine number of conditioning parameters. "
+        "Set conditioning_features.conditioning_parameter_names or conditioning_features.parameter_min_max_stats, "
+        "or disable conditioning_method."
+    )
 
 def fetch_model(model_config: Dict,
                 data_config: Dict):
@@ -121,6 +144,7 @@ def fetch_model(model_config: Dict,
     avoiding unnecessary imports for unused models.
     """
     model_name = model_config['model_name'].lower()
+    num_cond_params = _resolve_num_cond_params(data_config)
 
     if model_name == "fno":
         from models.FNO.fno import FNO
@@ -142,7 +166,7 @@ def fetch_model(model_config: Dict,
                     activation_fn_name=model_config['activation_fn_name'],
                     coord_features=data_config['coord_features'],
                     conditioning_method=data_config['conditioning_features']['conditioning_method'],
-                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['conditioning_method'] is not None else 0,
+                    num_cond_params=num_cond_params,
                     conditioning_mlp=data_config['conditioning_features']['conditioning_mlp']['mlp'],
                     conditioning_hidden_size=data_config['conditioning_features']['conditioning_mlp']['hidden_size'] if data_config['conditioning_features']['conditioning_mlp']['mlp'] else None,
                     conditioning_activation=data_config['conditioning_features']['conditioning_mlp']['activation'],
@@ -172,7 +196,7 @@ def fetch_model(model_config: Dict,
                     activation_fn_name=model_config['activation_fn_name'],
                     coord_features=data_config['coord_features'],
                     conditioning_method=data_config['conditioning_features']['conditioning_method'],
-                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['conditioning_method'] is not None else 0,
+                    num_cond_params=num_cond_params,
                     conditioning_mlp=data_config['conditioning_features']['conditioning_mlp']['mlp'],
                     conditioning_hidden_size=data_config['conditioning_features']['conditioning_mlp']['hidden_size'] if data_config['conditioning_features']['conditioning_mlp']['mlp'] else None,
                     conditioning_activation=data_config['conditioning_features']['conditioning_mlp']['activation'],
@@ -204,7 +228,7 @@ def fetch_model(model_config: Dict,
                     activation_fn_name=model_config['activation_fn_name'],
                     coord_features=data_config['coord_features'],
                     conditioning_method=data_config['conditioning_features']['conditioning_method'],
-                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['conditioning_method'] is not None else 0,
+                    num_cond_params=num_cond_params,
                     conditioning_mlp=data_config['conditioning_features']['conditioning_mlp']['mlp'],
                     conditioning_hidden_size=data_config['conditioning_features']['conditioning_mlp']['hidden_size'] if data_config['conditioning_features']['conditioning_mlp']['mlp'] else None,
                     conditioning_activation=data_config['conditioning_features']['conditioning_mlp']['activation'],
@@ -229,7 +253,7 @@ def fetch_model(model_config: Dict,
                     activation_fn_name=model_config['activation_fn_name'],
                     coord_features=data_config['coord_features'],
                     conditioning_method=data_config['conditioning_features']['conditioning_method'],
-                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['conditioning_method'] is not None else 0,
+                    num_cond_params=num_cond_params,
                     conditioning_mlp=data_config['conditioning_features']['conditioning_mlp']['mlp'],
                     conditioning_hidden_size=data_config['conditioning_features']['conditioning_mlp']['hidden_size'] if data_config['conditioning_features']['conditioning_mlp']['mlp'] else None,
                     conditioning_activation=data_config['conditioning_features']['conditioning_mlp']['activation'],
@@ -258,7 +282,7 @@ def fetch_model(model_config: Dict,
                     activation_fn_name=model_config['activation_fn_name'],
                     coord_features=data_config['coord_features'],
                     conditioning_method=data_config['conditioning_features']['conditioning_method'],
-                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['conditioning_method'] is not None else 0,
+                    num_cond_params=num_cond_params,
                     conditioning_mlp=data_config['conditioning_features']['conditioning_mlp']['mlp'],
                     conditioning_hidden_size=data_config['conditioning_features']['conditioning_mlp']['hidden_size'] if data_config['conditioning_features']['conditioning_mlp']['mlp'] else None,
                     conditioning_activation=data_config['conditioning_features']['conditioning_mlp']['activation'],
@@ -285,7 +309,7 @@ def fetch_model(model_config: Dict,
                     activation_fn_name=model_config['activation_fn_name'],
                     coord_features=data_config['coord_features'],
                     conditioning_method=data_config['conditioning_features']['conditioning_method'],
-                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['conditioning_method'] is not None else 0,
+                    num_cond_params=num_cond_params,
                     conditioning_mlp=data_config['conditioning_features']['conditioning_mlp']['mlp'],
                     conditioning_hidden_size=data_config['conditioning_features']['conditioning_mlp']['hidden_size'] if data_config['conditioning_features']['conditioning_mlp']['mlp'] else None,
                     conditioning_activation=data_config['conditioning_features']['conditioning_mlp']['activation'],
@@ -315,7 +339,7 @@ def fetch_model(model_config: Dict,
                     activation_fn_name=model_config['activation_fn_name'],
                     coord_features=data_config['coord_features'],
                     conditioning_method=data_config['conditioning_features']['conditioning_method'],
-                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['conditioning_method'] is not None else 0,
+                    num_cond_params=num_cond_params,
                     conditioning_mlp=data_config['conditioning_features']['conditioning_mlp']['mlp'],
                     conditioning_hidden_size=data_config['conditioning_features']['conditioning_mlp']['hidden_size'] if data_config['conditioning_features']['conditioning_mlp']['mlp'] else None,
                     conditioning_activation=data_config['conditioning_features']['conditioning_mlp']['activation'],
@@ -345,7 +369,7 @@ def fetch_model(model_config: Dict,
                     num_blocks= model_config['num_blocks'],
                     coord_features=data_config['coord_features'],
                     conditioning_method=data_config['conditioning_features']['conditioning_method'],
-                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['conditioning_method'] is not None else 0,
+                    num_cond_params=num_cond_params,
                     conditioning_mlp=data_config['conditioning_features']['conditioning_mlp']['mlp'],
                     conditioning_hidden_size=data_config['conditioning_features']['conditioning_mlp']['hidden_size'] if data_config['conditioning_features']['conditioning_mlp']['mlp'] else None,
                     conditioning_activation=data_config['conditioning_features']['conditioning_mlp']['activation'],
@@ -371,7 +395,7 @@ def fetch_model(model_config: Dict,
                     latent_channels=model_config['latent_channels'],
                     coord_features=data_config['coord_features'],
                     conditioning_method=data_config['conditioning_features']['conditioning_method'],
-                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['conditioning_method'] is not None else 0,
+                    num_cond_params=num_cond_params,
                     conditioning_mlp=data_config['conditioning_features']['conditioning_mlp']['mlp'],
                     conditioning_hidden_size=data_config['conditioning_features']['conditioning_mlp']['hidden_size'] if data_config['conditioning_features']['conditioning_mlp']['mlp'] else None,
                     conditioning_activation=data_config['conditioning_features']['conditioning_mlp']['activation'],
@@ -415,7 +439,7 @@ def fetch_model(model_config: Dict,
                     output_attentions=False,
                     coord_features=data_config['coord_features'],
                     conditioning_method=data_config['conditioning_features']['conditioning_method'],
-                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['conditioning_method'] is not None else 0,
+                    num_cond_params=num_cond_params,
                     conditioning_mlp=data_config['conditioning_features']['conditioning_mlp']['mlp'],
                     conditioning_hidden_size=data_config['conditioning_features']['conditioning_mlp']['hidden_size'] if data_config['conditioning_features']['conditioning_mlp']['mlp'] else None,
                     conditioning_activation=data_config['conditioning_features']['conditioning_mlp']['activation'],
@@ -458,7 +482,7 @@ def fetch_model(model_config: Dict,
                     output_attentions=False,
                     coord_features=data_config['coord_features'],
                     conditioning_method=data_config['conditioning_features']['conditioning_method'],
-                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['conditioning_method'] is not None else 0,
+                    num_cond_params=num_cond_params,
                     conditioning_mlp=data_config['conditioning_features']['conditioning_mlp']['mlp'],
                     conditioning_hidden_size=data_config['conditioning_features']['conditioning_mlp']['hidden_size'] if data_config['conditioning_features']['conditioning_mlp']['mlp'] else None,
                     conditioning_activation=data_config['conditioning_features']['conditioning_mlp']['activation'],
@@ -492,7 +516,7 @@ def fetch_model(model_config: Dict,
                     output_hidden_states=False,
                     output_attentions=False,
                     conditioning_method=data_config['conditioning_features']['conditioning_method'],
-                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['conditioning_method'] is not None else 0,
+                    num_cond_params=num_cond_params,
                     conditioning_mlp=data_config['conditioning_features']['conditioning_mlp']['mlp'],
                     conditioning_hidden_size=data_config['conditioning_features']['conditioning_mlp']['hidden_size'] if data_config['conditioning_features']['conditioning_mlp']['mlp'] else None,
                     conditioning_activation=data_config['conditioning_features']['conditioning_mlp']['activation'],
@@ -519,7 +543,7 @@ def fetch_model(model_config: Dict,
                     activation_fn_name=model_config['activation_fn_name'],
                     coord_features=data_config['coord_features'],
                     conditioning_method=data_config['conditioning_features']['conditioning_method'],
-                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['conditioning_method'] is not None else 0,
+                    num_cond_params=num_cond_params,
                     conditioning_mlp=data_config['conditioning_features']['conditioning_mlp']['mlp'],
                     conditioning_hidden_size=data_config['conditioning_features']['conditioning_mlp']['hidden_size'] if data_config['conditioning_features']['conditioning_mlp']['mlp'] else None,
                     conditioning_activation=data_config['conditioning_features']['conditioning_mlp']['activation'],

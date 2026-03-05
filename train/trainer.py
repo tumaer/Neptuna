@@ -360,6 +360,7 @@ class Trainer(Trainer_):
             conditioning_in_channels=self.data_config["conditioning_features"]["conditioning_in_channels"],
             include_conditioning_parameters=self.data_config["conditioning_features"]["include_conditioning_parameters"],
             parameter_min_max_stats=self.data_config["conditioning_features"]["parameter_min_max_stats"],
+            conditioning_parameter_names=self.data_config["conditioning_features"].get("conditioning_parameter_names", None),
             filter_out_channels=self.data_config["filter_features"]["filter_out_channels"],
             data_normalization_stats=self.data_config["data_normalization_stats"],
             data_normalization_strategy=self.data_config["data_normalization_strategy"],
