@@ -31,6 +31,7 @@ import h5py
 import time
 
 
+
 def compute_curriculum_start_epochs(train_strategy_config) -> list:
     """
     Compute and validate the list of curriculum start epochs from the strategy config.
@@ -123,6 +124,7 @@ class Trainer(Trainer_):
         #self.original_label_seq_len = self.data_config.sequence_info[1] #number of predicted timesteps from the model (#no rollout timesteps considered)
         
         self.get_prediction_loss_for_eval_windows = False #TODO: Find a way to not hardcode this.
+        self.num_epochs_between_eval = max(1, int(self.train_config.get("num_epochs_between_eval", 1)))
 
         self.residual_config = self.data_config["residual_config"]
 
@@ -408,195 +410,7 @@ class Trainer(Trainer_):
                 self._eval_dataloaders = {dataloader_key: dataloader}
 
         return dataloader
-    # def _get_dataloader(
-    #     self,
-    #     dataset: Dataset,
-    #     description: str,
-    #     batch_size: int,
-    #     sampler_fn: Callable[[Dataset], torch.utils.data.Sampler] | None = None,
-    #     is_training: bool = False,
-    #     dataloader_key: str | None = None,
-    # ) -> DataLoader:
-    #     """Create a [`~torch.utils.data.DataLoader`] from the given dataset."""
-    #     print (f"USING DATALOADER FROM 5.1.0")
-    #     data_collator = self.data_collator # !NOTE: Using the default collator from the base class.
-    #     ## NOTE:commented out code from the base class
-    #     # if is_datasets_available() and isinstance(dataset, datasets.Dataset):
-    #     #     dataset = self._remove_unused_columns(dataset, description=description)
-    #     # else:
-    #     #     data_collator = self._get_collator_with_removed_columns(self.data_collator, description=description)
-    #     # MPS requrires forking if multiple workers are specified
-    #     should_fork = torch.backends.mps.is_available() and self.args.dataloader_num_workers > 1
 
-    #     dataloader_params = {
-    #         "batch_size": batch_size,
-    #         "collate_fn": data_collator,
-    #         "num_workers": self.args.dataloader_num_workers,
-    #         "pin_memory": self.args.dataloader_pin_memory,
-    #         "persistent_workers": self.args.dataloader_persistent_workers,
-    #         "multiprocessing_context": "fork" if should_fork else None,
-    #     }
-
-    #     if not isinstance(dataset, torch.utils.data.IterableDataset):
-    #         if sampler_fn is not None:
-    #             dataloader_params["sampler"] = sampler_fn(dataset) 
-    #             ## here we create a custom sampler inside this function, inside this function, the sampler is set to RandomSampler if accelerator_config={"use_seedable_sampler": False} 
-    #             ## and if accelerator_config={"use_seedable_sampler": True} then SeedableRandomSampler (inside accelerate>data_loader.py, this SeedableRandomSampler is a subclass of RandomSampler and is required for distributed training). 
-    #             ## (shuffle  CANNOT BE SET to true or false (Pytorch doesnt allow it) if a custom sampler is used..  the sampler is set to RandomSampler which will provide random indices inside __get_item__ function of the dataloader), 
-    #             ## in a similar way, the _eval_sampler function has a SequentialSampler, regardless of the shuffle being true or false.
-    #             ## "From pytorch documentation:  If sampler is specified, :attr:`shuffle` must not be specified."
-    #         dataloader_params["drop_last"] = self.args.dataloader_drop_last
-    #         dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
-    #         if is_training:
-    #             dataloader_params["worker_init_fn"] = partial(
-    #                 seed_worker, num_workers=self.args.dataloader_num_workers, rank=self.args.process_index
-    #             )
-
-    #     dataloader = self.accelerator.prepare(DataLoader(dataset, **dataloader_params))
-
-    #     # Store the prepared dataloader for subsequent evaluations if using persistent workers.
-    #     if dataloader_key is not None and self.args.dataloader_persistent_workers:
-    #         if hasattr(self, "_eval_dataloaders"):
-    #             self._eval_dataloaders[dataloader_key] = dataloader
-    #         else:
-    #             self._eval_dataloaders = {dataloader_key: dataloader}
-
-    #     return dataloader
-
-    # ##overrides the one in the  base class from transformers library
-    # def get_train_dataloader(self) -> DataLoader:
-    #     """
-    #     Create and return the training dataloader with custom sampling strategy.
-
-    #     Returns
-    #     -------
-    #     DataLoader
-    #         Configured training dataloader with custom sampler and collation.
-    #     """
-    #     if self.train_dataset is None:
-    #         raise ValueError("Trainer: training requires a train_dataset.")
-
-    #     train_dataset = self.train_dataset
-    #     data_collator = self.data_collator #NOTE: Using the default collator from the base class.
-        
-    #     ## NOTE:commented out code from the base class
-    #     #if is_datasets_available() and isinstance(train_dataset, datasets.Dataset):
-    #     #    train_dataset = self._remove_unused_columns(train_dataset, description="training")
-    #     #else:
-    #     #   data_collator = self._get_collator_with_removed_columns(data_collator, description="training")
-
-    #     dataloader_params = {
-    #         "batch_size": self._train_batch_size,
-    #         "collate_fn": data_collator,
-    #         "num_workers": self.args.dataloader_num_workers,
-    #         "pin_memory": self.args.dataloader_pin_memory,
-    #         "persistent_workers": self.args.dataloader_persistent_workers,
-    #     }
-
-    #     if not isinstance(train_dataset, torch.utils.data.IterableDataset):
-    #         dataloader_params["sampler"] = self._get_train_sampler() ## here we create a custom sampler inside this function, inside this function, the sampler is set to RandomSampler if accelerator_config={"use_seedable_sampler": False} 
-    #         #and if accelerator_config={"use_seedable_sampler": True} then SeedableRandomSampler (inside accelerate>data_loader.py, this SeedableRandomSampler is a subclass of RandomSampler and is required for distributed training). 
-    #         #(shuffle  CANNOT BE SET to true or false (Pytorch doesnt allow it) if a custom sampler is used..  the sampler is set to RandomSampler which will provide random indices inside __get_item__ function of the dataloader), 
-    #         # in a similar way, the _eval_sampler function has a SequentialSampler, regardless of the shuffle being true or false.
-    #         #"From pytorch documentation:  If sampler is specified, :attr:`shuffle` must not be specified."
-    #         dataloader_params["drop_last"] = self.args.dataloader_drop_last
-    #         dataloader_params["worker_init_fn"] = seed_worker
-    #         dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
-
-    #     return self.accelerator.prepare(DataLoader(train_dataset, **dataloader_params)) 
-    
-    # ##overrides the one in the base class from transformers library
-    # def get_eval_dataloader(self, eval_dataset: Optional[Union[str, Dataset]] = None) -> DataLoader:
-    #     """
-    #     Returns the evaluation [`~torch.utils.data.DataLoader`].
-
-    #     Parameters
-    #     ----------
-    #         eval_dataset (`str` or `torch.utils.data.Dataset`, *optional*):
-    #             If a `str`, will use `self.eval_dataset[eval_dataset]` as the evaluation dataset. If a `Dataset`, will override `self.eval_dataset` and must implement `__len__`. If it is a [`~datasets.Dataset`], columns not accepted by the `model.forward()` method are automatically removed.
-    
-    #     Returns
-    #     -------
-    #     DataLoader
-    #         Configured evaluation dataloader with sequential sampling.
-    #     """
-    #     if eval_dataset is None and self.eval_dataset is None:
-    #         raise ValueError("Trainer: evaluation requires an eval_dataset.")
-
-    #     # If we have persistent workers, don't do a fork bomb especially as eval datasets
-    #     # don't change during training
-    #     dataloader_key = eval_dataset if isinstance(eval_dataset, str) else "eval"
-    #     if (
-    #         hasattr(self, "_eval_dataloaders")
-    #         and dataloader_key in self._eval_dataloaders
-    #         and self.args.dataloader_persistent_workers
-    #     ):
-    #         return self.accelerator.prepare(self._eval_dataloaders[dataloader_key])
-
-    #     eval_dataset = (
-    #         self.eval_dataset[eval_dataset]
-    #         if isinstance(eval_dataset, str)
-    #         else eval_dataset
-    #         if eval_dataset is not None
-    #         else self.eval_dataset
-    #     )
-    #     data_collator = self.data_collator
-
-    #     ##commented out code from the base class
-    #     # if is_datasets_available() and isinstance(eval_dataset, datasets.Dataset):
-    #     #     eval_dataset = self._remove_unused_columns(eval_dataset, description="evaluation")
-    #     # else:
-    #     #     data_collator = self._get_collator_with_removed_columns(data_collator, description="evaluation")
-
-
-
-    #     dataloader_params = {
-    #         "batch_size": self.args.eval_batch_size,
-    #         "collate_fn": data_collator,
-    #         "num_workers": self.args.dataloader_num_workers,
-    #         "pin_memory": self.args.dataloader_pin_memory,
-    #         "persistent_workers": self.args.dataloader_persistent_workers,
-
-    #     }
-
-    #     if not isinstance(eval_dataset, torch.utils.data.IterableDataset):
-    #         dataloader_params["sampler"] = self._get_eval_sampler(eval_dataset)
-    
-    #  ##overrides the one in the base class from transformers library
-    # def get_test_dataloader(self, test_dataset: Dataset) -> DataLoader:
-    #     """
-    #     Returns the test [`~torch.utils.data.DataLoader`].
-
-    #     Subclass and override this method if you want to inject some custom behavior.
-
-    #     Args:
-    #         test_dataset (`torch.utils.data.Dataset`, *optional*):
-    #             The test dataset to use. If it is a [`~datasets.Dataset`], columns not accepted by the
-    #             `model.forward()` method are automatically removed. It must implement `__len__`.
-    #     """
-    #     data_collator = self.data_collator
-    #     print(f"USING DATALOADER FROM 4.50.2")
-    #     ##commented out code from the base class
-    #     # if is_datasets_available() and isinstance(test_dataset, datasets.Dataset):
-    #     #     test_dataset = self._remove_unused_columns(test_dataset, description="test")
-    #     # else:
-    #     #     data_collator = self._get_collator_with_removed_columns(data_collator, description="test")
-
-    #     dataloader_params = {
-    #         "batch_size": self.args.eval_batch_size,
-    #         "collate_fn": data_collator,
-    #         "num_workers": self.args.dataloader_num_workers,
-    #         "pin_memory": self.args.dataloader_pin_memory,
-    #         "persistent_workers": self.args.dataloader_persistent_workers,
-    #     }
-
-    #     if not isinstance(test_dataset, torch.utils.data.IterableDataset):
-    #         dataloader_params["sampler"] = self._get_eval_sampler(test_dataset)
-    #         dataloader_params["drop_last"] = self.args.dataloader_drop_last
-    #         dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
-
-    #     # We use the same batch_size as for eval.
-    #     return self.accelerator.prepare(DataLoader(test_dataset, **dataloader_params))
     ##custom function, not inside transformers library
     def _forward_model_train(self, model, inputs):
         """
@@ -1533,10 +1347,10 @@ class Trainer(Trainer_):
         grad_norm: Optional[float] = None
         learning_rate = None
         self.control = self.callback_handler.on_train_begin(args, self.state, self.control)
-
+        
         if args.eval_on_start:
             self._evaluate(trial, ignore_keys_for_eval, skip_scheduler=True)
-
+        
         for epoch in range(epochs_trained, num_train_epochs):
             epoch_dataloader = train_dataloader
             if hasattr(epoch_dataloader, "set_epoch"):
@@ -1551,6 +1365,7 @@ class Trainer(Trainer_):
                 if len_dataloader is not None
                 else args.max_steps * args.gradient_accumulation_steps
             )
+            
             self.control = self.callback_handler.on_epoch_begin(args, self.state, self.control)
 
             if epoch == epochs_trained and resume_from_checkpoint is not None and steps_trained_in_current_epoch == 0:
@@ -1574,165 +1389,198 @@ class Trainer(Trainer_):
             total_updates = steps_in_epoch // args.gradient_accumulation_steps + int(
                 remainder < args.gradient_accumulation_steps
             )
-            for _ in range(total_updates):
-                update_step += 1
-                num_batches = args.gradient_accumulation_steps if update_step != (total_updates - 1) else remainder
-                batch_samples, num_items_in_batch = self.get_batch_samples(epoch_iterator, num_batches, args.device)
-                # Store the number of batches for current gradient accumulation
-                # This is used to correctly scale the loss when the last accumulation step has fewer batches
-                self.current_gradient_accumulation_steps = len(batch_samples)
-                for i, inputs in enumerate(batch_samples):
-                    step += 1
-                    do_sync_step = (step + 1) % args.gradient_accumulation_steps == 0 or (step + 1) == steps_in_epoch
-                    # Since we perform prefetching, we need to manually set sync_gradients
-                    self.accelerator.gradient_state._set_sync_gradients(do_sync_step)
+            def trace_handler(p):
+                print(p.key_averages().table(sort_by="self_cuda_time_total", row_limit=30))
+                p.export_chrome_trace("./trace.json")
 
-                    if self.args.include_num_input_tokens_seen:
-                        main_input_name = getattr(self.model, "main_input_name", "input_ids")
-                        if main_input_name not in inputs:
-                            logger.warning(
-                                "Tried to track the number of tokens seen, however the current model is "
-                                "not configured properly to know what item is the input. To fix this, add "
-                                "a `main_input_name` attribute to the model class you are using."
-                            )
-                        else:
-                            input_tokens = inputs[main_input_name].numel()
-                            input_tokens = torch.tensor(input_tokens, device=self.args.device, dtype=torch.int64)
-                            self.state.num_input_tokens_seen += self.accelerator.gather(input_tokens).sum().item()
-                    if rng_to_sync:
-                        self._load_rng_state(resume_from_checkpoint)
-                        rng_to_sync = False
-                    
-                    # Skip past any already trained steps if resuming training
-                    if steps_trained_in_current_epoch > 0:
-                        steps_trained_in_current_epoch -= 1
-                        if steps_trained_progress_bar is not None:
-                            steps_trained_progress_bar.update(1)
-                        if steps_trained_in_current_epoch == 0:
-                            self._load_rng_state(resume_from_checkpoint)
-                        continue
-                    elif steps_trained_progress_bar is not None:
-                        steps_trained_progress_bar.close()
-                        steps_trained_progress_bar = None
-                    
-                    if step % args.gradient_accumulation_steps == 0:
-                        self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
+            profile_training_cfg = self.train_config.get("profile_training", {})
+            profile_training_enabled = bool(profile_training_cfg.get("enabled", False))
+            profile_wait = int(profile_training_cfg.get("wait", 0))
+            profile_warmup = int(profile_training_cfg.get("warmup", 150))
+            profile_active = int(profile_training_cfg.get("active_steps", 30))
+            profile_repeat = int(profile_training_cfg.get("repeat", 1))
+            profiler_context = (
+                torch.profiler.profile(
+                    activities=[torch.profiler.ProfilerActivity.CPU, 
+                                torch.profiler.ProfilerActivity.CUDA, 
+                                torch.profiler.ProfilerActivity.XPU], 
+                    record_shapes=False, 
+                    schedule=torch.profiler.schedule(
+                        wait=profile_wait,
+                        warmup=profile_warmup,
+                        active=profile_active,
+                        repeat=profile_repeat,
+                    ),
+                    on_trace_ready=trace_handler,
+                    profile_memory=True,
+                    with_stack=True
+                )
+                if profile_training_enabled
+                else contextlib.nullcontext()
+            )
 
-                    # We explicitly want to avoid relying on `accelerator.accumulate` for generation training
-                    context = (
-                        functools.partial(self.accelerator.no_sync, model=model)
-                        if i != len(batch_samples) - 1
-                        and self.accelerator.distributed_type != DistributedType.DEEPSPEED
-                        else contextlib.nullcontext
-                    )
-                    with context():
-                        tr_loss_step = self.training_step(model, inputs, num_items_in_batch)
+            with profiler_context as prof:
+                for _ in range(total_updates):
+                    update_step += 1
+                    num_batches = args.gradient_accumulation_steps if update_step != (total_updates - 1) else remainder
+                    batch_samples, num_items_in_batch = self.get_batch_samples(epoch_iterator, num_batches, args.device)
+                    # Store the number of batches for current gradient accumulation
+                    # This is used to correctly scale the loss when the last accumulation step has fewer batches
+                    self.current_gradient_accumulation_steps = len(batch_samples)
+                    for i, inputs in enumerate(batch_samples):
+                        step += 1
+                        do_sync_step = (step + 1) % args.gradient_accumulation_steps == 0 or (step + 1) == steps_in_epoch
+                        # Since we perform prefetching, we need to manually set sync_gradients
+                        self.accelerator.gradient_state._set_sync_gradients(do_sync_step)
 
-                    if (
-                        args.logging_nan_inf_filter
-                        and not is_torch_xla_available()
-                        and (torch.isnan(tr_loss_step) or torch.isinf(tr_loss_step))
-                    ):
-                        # if loss is nan or inf simply add the average of previous logged losses
-                        tr_loss = tr_loss + tr_loss / (1 + self.state.global_step - self._globalstep_last_logged)
-                    else:
-                        if tr_loss.device != tr_loss_step.device:
-                            raise ValueError(
-                                f"Calculated loss must be on the original device: {tr_loss.device} but device in use is {tr_loss_step.device}"
-                            )
-                        tr_loss = tr_loss + tr_loss_step
-
-                    self.current_flos += float(self.floating_point_ops(inputs))
-
-                    if do_sync_step:
-                        # Since we perform prefetching, we need to manually set sync_gradients to True
-                        self.accelerator.gradient_state._set_sync_gradients(True)
-
-                        # Gradient clipping
-                        if args.max_grad_norm is not None and args.max_grad_norm > 0:
-                            if is_sagemaker_mp_enabled() and args.fp16:
-                                _grad_norm = self.optimizer.clip_master_grads(args.max_grad_norm)
-                            elif self.use_apex:
-                                from apex import amp
-
-                                # Revert to normal clipping otherwise, handling Apex or full precision
-                                _grad_norm = nn.utils.clip_grad_norm_(
-                                    amp.master_params(self.optimizer),
-                                    args.max_grad_norm,
+                        if self.args.include_num_input_tokens_seen:
+                            main_input_name = getattr(self.model, "main_input_name", "input_ids")
+                            if main_input_name not in inputs:
+                                logger.warning(
+                                    "Tried to track the number of tokens seen, however the current model is "
+                                    "not configured properly to know what item is the input. To fix this, add "
+                                    "a `main_input_name` attribute to the model class you are using."
                                 )
                             else:
-                                grad_norm_context = contextlib.nullcontext
-                                if self.is_tp_enabled:
-                                    from torch.distributed._tensor.experimental import implicit_replication
+                                input_tokens = inputs[main_input_name].numel()
+                                input_tokens = torch.tensor(input_tokens, device=self.args.device, dtype=torch.int64)
+                                self.state.num_input_tokens_seen += self.accelerator.gather(input_tokens).sum().item()
+                        if rng_to_sync:
+                            self._load_rng_state(resume_from_checkpoint)
+                            rng_to_sync = False
+                        
+                        # Skip past any already trained steps if resuming training
+                        if steps_trained_in_current_epoch > 0:
+                            steps_trained_in_current_epoch -= 1
+                            if steps_trained_progress_bar is not None:
+                                steps_trained_progress_bar.update(1)
+                            if steps_trained_in_current_epoch == 0:
+                                self._load_rng_state(resume_from_checkpoint)
+                            continue
+                        elif steps_trained_progress_bar is not None:
+                            steps_trained_progress_bar.close()
+                            steps_trained_progress_bar = None
+                        
+                        if step % args.gradient_accumulation_steps == 0:
+                            self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
 
-                                    grad_norm_context = implicit_replication
-                                with grad_norm_context():
-                                    _grad_norm = self.accelerator.clip_grad_norm_(
-                                        model.parameters(),
+                        # We explicitly want to avoid relying on `accelerator.accumulate` for generation training
+                        context = (
+                            functools.partial(self.accelerator.no_sync, model=model)
+                            if i != len(batch_samples) - 1
+                            and self.accelerator.distributed_type != DistributedType.DEEPSPEED
+                            else contextlib.nullcontext
+                        )
+                        with context():
+                            tr_loss_step = self.training_step(model, inputs, num_items_in_batch)
+
+                        if (
+                            args.logging_nan_inf_filter
+                            and not is_torch_xla_available()
+                            and (torch.isnan(tr_loss_step) or torch.isinf(tr_loss_step))
+                        ):
+                            # if loss is nan or inf simply add the average of previous logged losses
+                            tr_loss = tr_loss + tr_loss / (1 + self.state.global_step - self._globalstep_last_logged)
+                        else:
+                            if tr_loss.device != tr_loss_step.device:
+                                raise ValueError(
+                                    f"Calculated loss must be on the original device: {tr_loss.device} but device in use is {tr_loss_step.device}"
+                                )
+                            tr_loss = tr_loss + tr_loss_step
+
+                        self.current_flos += float(self.floating_point_ops(inputs))
+
+                        if do_sync_step:
+                            # Since we perform prefetching, we need to manually set sync_gradients to True
+                            self.accelerator.gradient_state._set_sync_gradients(True)
+
+                            # Gradient clipping
+                            if args.max_grad_norm is not None and args.max_grad_norm > 0:
+                                if is_sagemaker_mp_enabled() and args.fp16:
+                                    _grad_norm = self.optimizer.clip_master_grads(args.max_grad_norm)
+                                elif self.use_apex:
+                                    from apex import amp
+
+                                    # Revert to normal clipping otherwise, handling Apex or full precision
+                                    _grad_norm = nn.utils.clip_grad_norm_(
+                                        amp.master_params(self.optimizer),
                                         args.max_grad_norm,
                                     )
+                                else:
+                                    grad_norm_context = contextlib.nullcontext
+                                    if self.is_tp_enabled:
+                                        from torch.distributed._tensor.experimental import implicit_replication
 
-                            if (
-                                is_accelerate_available()
-                                and self.accelerator.distributed_type == DistributedType.DEEPSPEED
-                            ):
-                                grad_norm = model.get_global_grad_norm()
-                                # In some cases the grad norm may not return a float
-                                if hasattr(grad_norm, "item"):
-                                    grad_norm = grad_norm.item()
-                            else:
-                                grad_norm = _grad_norm
+                                        grad_norm_context = implicit_replication
+                                    with grad_norm_context():
+                                        _grad_norm = self.accelerator.clip_grad_norm_(
+                                            model.parameters(),
+                                            args.max_grad_norm,
+                                        )
 
-                        self.control = self.callback_handler.on_pre_optimizer_step(args, self.state, self.control)
+                                if (
+                                    is_accelerate_available()
+                                    and self.accelerator.distributed_type == DistributedType.DEEPSPEED
+                                ):
+                                    grad_norm = model.get_global_grad_norm()
+                                    # In some cases the grad norm may not return a float
+                                    if hasattr(grad_norm, "item"):
+                                        grad_norm = grad_norm.item()
+                                else:
+                                    grad_norm = _grad_norm
 
-                        context = contextlib.nullcontext
-                        if self.is_tp_enabled:
-                            from torch.distributed._tensor.experimental import implicit_replication
+                            self.control = self.callback_handler.on_pre_optimizer_step(args, self.state, self.control)
 
-                            context = implicit_replication
+                            context = contextlib.nullcontext
+                            if self.is_tp_enabled:
+                                from torch.distributed._tensor.experimental import implicit_replication
 
-                        with context():
-                            self.optimizer.step()
+                                context = implicit_replication
 
-                        self.control = self.callback_handler.on_optimizer_step(args, self.state, self.control)
+                            with context():
+                                self.optimizer.step()
 
-                        # get leaning rate before update
-                        learning_rate = self._get_learning_rate()
+                            self.control = self.callback_handler.on_optimizer_step(args, self.state, self.control)
 
-                        if not self.accelerator.optimizer_step_was_skipped:
-                            # Delay optimizer scheduling until metrics are generated
-                            if not isinstance(self.lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                                self.lr_scheduler.step()
+                            # get leaning rate before update
+                            learning_rate = self._get_learning_rate()
 
-                        model.zero_grad()
-                        self.state.global_step += 1
-                        self.state.epoch = epoch + (step + 1 + steps_skipped) / steps_in_epoch
-                        self.control = self.callback_handler.on_step_end(args, self.state, self.control)
-                        self._maybe_log_save_evaluate(
-                            tr_loss,
-                            grad_norm,
-                            model,
-                            trial,
-                            epoch,
-                            ignore_keys_for_eval,
-                            start_time,
-                            learning_rate=learning_rate,
-                        )
-                    else:
-                        self.control = self.callback_handler.on_substep_end(args, self.state, self.control)
+                            if not self.accelerator.optimizer_step_was_skipped:
+                                # Delay optimizer scheduling until metrics are generated
+                                if not isinstance(self.lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                                    self.lr_scheduler.step()
 
-                    # PyTorch/XLA relies on the data loader to insert the mark_step for
-                    # each step. Since we are breaking the loop early, we need to manually
-                    # insert the mark_step here.
+                            model.zero_grad()
+                            self.state.global_step += 1
+                            self.state.epoch = epoch + (step + 1 + steps_skipped) / steps_in_epoch
+                            self.control = self.callback_handler.on_step_end(args, self.state, self.control)
+                            self._maybe_log_save_evaluate(
+                                tr_loss,
+                                grad_norm,
+                                model,
+                                trial,
+                                epoch,
+                                ignore_keys_for_eval,
+                                start_time,
+                                learning_rate=learning_rate,
+                            )
+                        else:
+                            self.control = self.callback_handler.on_substep_end(args, self.state, self.control)
+
+                        # PyTorch/XLA relies on the data loader to insert the mark_step for
+                        # each step. Since we are breaking the loop early, we need to manually
+                        # insert the mark_step here.
+                        if self.control.should_epoch_stop or self.control.should_training_stop:
+                            if is_torch_xla_available():
+                                xm.mark_step()
+                            break
+                    if profile_training_enabled:
+                        prof.step() #to save the profile
+                    # We also need to break out of the nested loop
                     if self.control.should_epoch_stop or self.control.should_training_stop:
                         if is_torch_xla_available():
                             xm.mark_step()
                         break
-                # We also need to break out of the nested loop
-                if self.control.should_epoch_stop or self.control.should_training_stop:
-                    if is_torch_xla_available():
-                        xm.mark_step()
-                    break
             if step < 0:
                 logger.warning(
                     "There seems not to be a single sample in your epoch_iterator, stopping training at step"
@@ -1742,9 +1590,11 @@ class Trainer(Trainer_):
                 self.control.should_training_stop = True
 
             self.control = self.callback_handler.on_epoch_end(args, self.state, self.control)
-            self._maybe_log_save_evaluate(
-                tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time, learning_rate=learning_rate
-            )
+            
+            if (epoch+1)%self.num_epochs_between_eval==0:
+                self._maybe_log_save_evaluate(
+                    tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time, learning_rate=learning_rate
+                )
 
             #! Modify the callbacks if the curriculum block changed based on the epoch (not in the base class).
             # using epoch instead of self.state.epoch because there is a possibility that self.state.epoch is fractional.
@@ -1836,7 +1686,6 @@ class Trainer(Trainer_):
                     )
             if self.control.should_training_stop:
                 break
-        
         if args.past_index and hasattr(self, "_past"):
             # Clean the state at the end of training
             delattr(self, "_past")
@@ -1913,6 +1762,14 @@ class Trainer(Trainer_):
     ) -> EvalLoopOutput:
         "This function is just for plotting, and is done solely by rank 0"
 
+        RANK = int(os.environ.get("RANK", -1))
+        IS_MAIN_PROCESS = RANK in [-1, 0]
+
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            torch.xpu.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         args = self.args
 
         prediction_loss_only = prediction_loss_only if prediction_loss_only is not None else args.prediction_loss_only
@@ -1929,14 +1786,16 @@ class Trainer(Trainer_):
 
         batch_size = self.args.eval_batch_size
 
-        logger.info(f"\n***** Running the LAST {description} for plotting from the best checkpoint *****")
-        if has_length(dataloader):
-            logger.info(f"  Num examples = {self.num_examples(dataloader)}")
-        else:
-            logger.info("  Num examples: Unknown")
-        logger.info(f"  Batch size = {batch_size}")
+        if IS_MAIN_PROCESS:
+            logger.info(f"\n***** Running the LAST {description} for plotting from the best checkpoint *****")
+            if has_length(dataloader):
+                logger.info(f"  Num examples = {self.num_examples(dataloader)}")
+            else:
+                logger.info("  Num examples: Unknown")
+            logger.info(f"  Batch size = {batch_size}")
 
-        model.eval()
+        if hasattr(model, "eval") and callable(model.eval):
+            model.eval()
         if hasattr(self.optimizer, "eval") and callable(self.optimizer.eval):
             self.optimizer.eval()
 
@@ -1945,17 +1804,67 @@ class Trainer(Trainer_):
         eval_dataset = getattr(dataloader, "dataset", None)
 
         # Initialize containers
+        collect_full_eval_tensors = True if description == "Prediction" else False
         all_losses = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
-        all_preds = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
-        all_labels = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
-        all_inputs = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
-        all_conditioning_inputs = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+        all_preds = (
+            EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+            if collect_full_eval_tensors
+            else None
+        )
+        all_labels = (
+            EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+            if collect_full_eval_tensors
+            else None
+        )
+        all_inputs = (
+            EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+            if collect_full_eval_tensors
+            else None
+        )
+        all_conditioning_inputs = (
+            EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+            if collect_full_eval_tensors
+            else None
+        )
+        example_logits = None
+        example_labels = None
+        example_inputs = None
+        example_conditioning_inputs = None
 
         metrics = None
         eval_set_kwargs = {}
 
         # Will be useful when we have an iterable dataset so don't know its length.
         observed_num_examples = 0
+
+        log_channels = self.data_config.get("log_transform_channels") or []
+        dim = self.data_config.get("dimension")
+        channel_axis = -2 if dim == 1 else (-3 if dim == 2 else -4)
+        channel_names = getattr(eval_dataset, "output_channels")
+        norm_stats = self.data_config.get("data_normalization_stats")
+        norm_strategy = self.data_config.get("data_normalization_strategy")
+
+        def _apply_log_inverse(arr, log_channels, channel_names, norm_stats, norm_strategy, channel_axis):
+            for ch_name in log_channels:
+                if (
+                    ch_name not in channel_names
+                    or norm_stats is None
+                    or norm_strategy is None
+                ):
+                    continue
+                stats_key = f"log_{ch_name}"
+                if stats_key not in norm_stats or ch_name not in norm_stats:
+                    continue
+                ch_idx = channel_names.index(ch_name)
+                slicer = [slice(None)] * arr.ndim
+                slicer[channel_axis] = ch_idx
+                log_space = re_normalize_data(arr[tuple(slicer)], norm_stats[stats_key], norm_strategy)
+                physical_space = torch.exp(log_space)
+                physical_space_normalized = normalize_data(
+                    physical_space, norm_stats[ch_name], norm_strategy
+                )
+                arr[tuple(slicer)] = physical_space_normalized
+            return arr
 
         # Main evaluation loop
         for step, inputs in enumerate(dataloader):
@@ -1984,28 +1893,44 @@ class Trainer(Trainer_):
 
             # Update containers
             if losses is not None:
+                losses = self.gather_function(losses.repeat(batch_size))
                 all_losses.add(losses)
-            if inputs_decode is not None:
+            if collect_full_eval_tensors and inputs_decode is not None:
+                inputs_decode = self.gather_function(inputs_decode)
                 #if not self.args.batch_eval_metrics or description == "Prediction":
                 all_inputs.add(inputs_decode)
-            if conditioning_input_decode is not None:
+            if collect_full_eval_tensors and conditioning_input_decode is not None:
+                conditioning_input_decode = self.gather_function(conditioning_input_decode)
                 #if not self.args.batch_eval_metrics or description == "Prediction":
                 all_conditioning_inputs.add(conditioning_input_decode)
             if logits is not None:
+                logits = _apply_log_inverse(logits, log_channels, channel_names, norm_stats, norm_strategy, channel_axis)
+                if collect_full_eval_tensors:
+                    gathered_logits = self.gather_function(logits)
                 #if not self.args.batch_eval_metrics or description == "Prediction":
-                all_preds.add(logits)
+                    all_preds.add(gathered_logits)
             if labels is not None:
+                labels = _apply_log_inverse(labels, log_channels, channel_names, norm_stats, norm_strategy, channel_axis)
+                if collect_full_eval_tensors:
+                    gathered_labels = self.gather_function(labels)
                 #if not self.args.batch_eval_metrics or description == "Prediction":
-                all_labels.add(labels)
+                    all_labels.add(gathered_labels)
 
             self.control = self.callback_handler.on_prediction_step(args, self.state, self.control)
 
             # if self.args.batch_eval_metrics:
             #     #not implemented
             #     pass
-
+            is_last_step = self.accelerator.gradient_state.end_of_dataloader
+            if not collect_full_eval_tensors and is_last_step and IS_MAIN_PROCESS:
+                #just choosing the first example from the last batch to plot
+                example_logits = logits[-1:].detach().cpu().numpy()
+                example_labels = labels[-1:].detach().cpu().numpy()
+                example_inputs = inputs_decode[-1:].detach().cpu().numpy()
+                example_conditioning_inputs = conditioning_input_decode[-1:].detach().cpu().numpy() if conditioning_input_decode is not None else None
+            
             # Gather all tensors and put them back on the CPU if we have done enough accumulation steps.
-            if args.eval_accumulation_steps is not None and (step + 1) % args.eval_accumulation_steps == 0:
+            if collect_full_eval_tensors and args.eval_accumulation_steps is not None and (step + 1) % args.eval_accumulation_steps == 0:
                 all_losses.to_cpu_and_numpy()
                 all_preds.to_cpu_and_numpy()
                 all_labels.to_cpu_and_numpy()
@@ -2018,11 +1943,19 @@ class Trainer(Trainer_):
                     if torch.xpu.is_available():
                         torch.xpu.empty_cache()
 
-        all_losses = all_losses.get_arrays()
-        all_preds = all_preds.get_arrays()
-        all_labels = all_labels.get_arrays()
-        all_inputs = all_inputs.get_arrays()
-        all_conditioning_inputs = all_conditioning_inputs.get_arrays()
+        # After all calls to `.gather_function`, reset to `gather_for_metrics`:
+        self.gather_function = self.accelerator.gather_for_metrics
+        if args.past_index and hasattr(self, "_past"):
+            # Clean the state at the end of the evaluation loop
+            delattr(self, "_past")
+
+        all_losses = all_losses.get_arrays() if collect_full_eval_tensors else None
+        all_preds = all_preds.get_arrays() if collect_full_eval_tensors else example_logits
+        all_labels = all_labels.get_arrays() if collect_full_eval_tensors else example_labels
+        all_inputs = all_inputs.get_arrays() if collect_full_eval_tensors else example_inputs
+        all_conditioning_inputs = (
+            all_conditioning_inputs.get_arrays() if collect_full_eval_tensors else example_conditioning_inputs
+        )
         # Number of samples
         if has_length(eval_dataset):
             num_samples = len(eval_dataset)
@@ -2348,12 +2281,30 @@ class Trainer(Trainer_):
         # Do this before wrapping.
         eval_dataset = getattr(dataloader, "dataset", None)
 
+        collect_full_eval_tensors = True if (description == "Prediction" or not self.args.batch_eval_metrics) else False
+        #* Description is "Prediction" only when doing inference.
         # Initialize containers
-        all_losses = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
-        all_preds = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
-        all_labels = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
-        all_inputs = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
-        all_conditioning_inputs = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+        all_losses = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100) if collect_full_eval_tensors else None
+        all_preds = (
+            EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+            if collect_full_eval_tensors
+            else None
+        )
+        all_labels = (
+            EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+            if collect_full_eval_tensors
+            else None
+        )
+        all_inputs = (
+            EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+            if collect_full_eval_tensors
+            else None
+        )
+        all_conditioning_inputs = (
+            EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+            if collect_full_eval_tensors
+            else None
+        )
 
         metrics = None
         eval_set_kwargs = {}
@@ -2429,37 +2380,31 @@ class Trainer(Trainer_):
                 losses = self.gather_function(losses.repeat(batch_size)) 
                 #NOTE: repeat is used to ensure that each window of the batch owns the same loss value.
                 all_losses.add(losses)
-            if inputs_decode is not None:
+            if collect_full_eval_tensors and inputs_decode is not None:
                 #inputs_decode = self.accelerator.pad_across_processes(inputs_decode, dim=1, pad_index=-100)
                 inputs_decode = self.gather_function(inputs_decode)
                 #if not self.args.batch_eval_metrics or description == "Prediction":
                 all_inputs.add(inputs_decode)
             #NOTE: The following is added on top of the base class
             #########################################################
-            if conditioning_input_decode is not None:
+            if collect_full_eval_tensors and conditioning_input_decode is not None:
                 #conditioning_input_decode = self.accelerator.pad_across_processes(conditioning_input_decode, dim=1, pad_index=-100)
                 conditioning_input_decode = self.gather_function(conditioning_input_decode)
                 #if not self.args.batch_eval_metrics or description == "Prediction":
                 all_conditioning_inputs.add(conditioning_input_decode)
             #########################################################
-            #if labels is not None:
-                # Pad labels here, preparing for preprocess_logits_for_metrics in next logits block.
-                #labels = self.accelerator.pad_across_processes(labels, dim=1, pad_index=-100)
             if logits is not None:
-                #logits = self.accelerator.pad_across_processes(logits, dim=1, pad_index=-100)
-                # if self.preprocess_logits_for_metrics is not None:
-                #     logits = self.preprocess_logits_for_metrics(logits, labels)
-                #if log_channels:
                 logits = _apply_log_inverse(logits, log_channels, channel_names, norm_stats, norm_strategy, channel_axis)
-                gathered_logits = self.gather_function(logits)
-
-                #if not self.args.batch_eval_metrics or description == "Prediction":
-                all_preds.add(gathered_logits)
+                if collect_full_eval_tensors:
+                    gathered_logits = self.gather_function(logits)
+                    #if not self.args.batch_eval_metrics or description == "Prediction":
+                    all_preds.add(gathered_logits)
             if labels is not None:
                 labels = _apply_log_inverse(labels, log_channels, channel_names, norm_stats, norm_strategy, channel_axis)
-                gathered_labels = self.gather_function(labels)
-                #if not self.args.batch_eval_metrics or description == "Prediction":
-                all_labels.add(gathered_labels)
+                if collect_full_eval_tensors:
+                    gathered_labels = self.gather_function(labels)
+                    #if not self.args.batch_eval_metrics or description == "Prediction":
+                    all_labels.add(gathered_labels)
 
             self.control = self.callback_handler.on_prediction_step(args, self.state, self.control)
 
@@ -2467,13 +2412,21 @@ class Trainer(Trainer_):
                 if self.compute_metrics is not None and logits is not None and labels is not None:
                     is_last_step = self.accelerator.gradient_state.end_of_dataloader
                     batch_kwargs = {}
-                    batch_kwargs["losses"] = losses if "loss" in args.include_for_metrics else None
-                    batch_kwargs["inputs"] = inputs if "inputs" in args.include_for_metrics else None
+                    # batch_kwargs["losses"] = losses if "loss" in args.include_for_metrics else None
+                    # batch_kwargs["inputs"] = inputs if "inputs" in args.include_for_metrics else None
+                    # batch_kwargs["conditioning_inputs"] = conditioning_input_decode if "conditioning_inputs" in args.include_for_metrics else None
                     #NOTE: inputs is a dict which has the input_data and conditioning_input_data
                     metrics = self.compute_metrics(
                         EvalPrediction(predictions=logits, label_ids=labels, **batch_kwargs),
                         compute_result=is_last_step,
                     )
+                    #just one example to plot
+                    if not collect_full_eval_tensors and is_last_step and IS_MAIN_PROCESS:
+                        #just choosing the first example from the last batch to plot
+                        example_logits = logits[-1:].detach().cpu().numpy()
+                        example_labels = labels[-1:].detach().cpu().numpy()
+                        example_inputs = inputs_decode[-1:].detach().cpu().numpy()
+                        example_conditioning_inputs = conditioning_input_decode[-1:].detach().cpu().numpy() if conditioning_input_decode is not None else None
 
                 del losses, logits, labels, inputs
                 if torch.cuda.is_available():
@@ -2482,7 +2435,7 @@ class Trainer(Trainer_):
                     torch.xpu.empty_cache()
 
             # Gather all tensors and put them back on the CPU if we have done enough accumulation steps.
-            if args.eval_accumulation_steps is not None and (step + 1) % args.eval_accumulation_steps == 0:
+            if collect_full_eval_tensors and args.eval_accumulation_steps is not None and (step + 1) % args.eval_accumulation_steps == 0:
                 all_losses.to_cpu_and_numpy()
                 all_preds.to_cpu_and_numpy()
                 all_labels.to_cpu_and_numpy()
@@ -2503,14 +2456,19 @@ class Trainer(Trainer_):
             delattr(self, "_past")
 
         # Gather all remaining tensors and put them back on the CPU
-        all_losses = all_losses.get_arrays() #all_losses.shape = torch.Size([B*(steps+1) , ]) 
-        all_preds = all_preds.get_arrays() #all_preds.shape = torch.Size([B*(steps+1), n_eval_rollouts+1, label_seq_length, C_output, x_resolution, y_resolution, ...]) 
-        all_labels = all_labels.get_arrays() #all_labels.shape = torch.Size([B*(steps+1), (n_eval_rollouts+1)*label_seq_length, C_output, x_resolution, y_resolution, ...]) 
-        all_inputs = all_inputs.get_arrays() #all_inputs.shape = torch.Size([B*(steps+1), input_seq_length, C_input, x_resolution, y_resolution, ...]) 
-        all_conditioning_inputs = all_conditioning_inputs.get_arrays() #all_conditioning_inputs.shape = torch.Size([B*(steps+1), conditioning_seq_length, C_conditioning, x_resolution, y_resolution, ...]) 
-
-        # all_preds = _apply_log_inverse(all_preds, log_channels, channel_names, norm_stats, norm_strategy, channel_axis)
-        # all_labels = _apply_log_inverse(all_labels, log_channels, channel_names, norm_stats, norm_strategy, channel_axis)
+        all_losses = all_losses.get_arrays() if all_losses is not None else None #all_losses.shape = torch.Size([B*(steps+1) , ]) 
+        all_preds = (
+            all_preds.get_arrays() if collect_full_eval_tensors else example_logits
+        ) #all_preds.shape = torch.Size([B*(steps+1), n_eval_rollouts+1, label_seq_length, C_output, x_resolution, y_resolution, ...]) 
+        all_labels = (
+            all_labels.get_arrays() if collect_full_eval_tensors else example_labels
+        ) #all_labels.shape = torch.Size([B*(steps+1), (n_eval_rollouts+1)*label_seq_length, C_output, x_resolution, y_resolution, ...]) 
+        all_inputs = (
+            all_inputs.get_arrays() if collect_full_eval_tensors else example_inputs
+        ) #all_inputs.shape = torch.Size([B*(steps+1), input_seq_length, C_input, x_resolution, y_resolution, ...]) 
+        all_conditioning_inputs = (
+            all_conditioning_inputs.get_arrays() if collect_full_eval_tensors else example_conditioning_inputs
+        ) #all_conditioning_inputs.shape = torch.Size([B*(steps+1), conditioning_seq_length, C_conditioning, x_resolution, y_resolution, ...]) 
 
         # Number of samples
         if has_length(eval_dataset):
@@ -2527,7 +2485,7 @@ class Trainer(Trainer_):
         if num_samples == 0 and observed_num_examples > 0:
             num_samples = observed_num_examples
 
-        # Metrics!
+        # Metrics! (to be removed in future versions)
         if (
             self.compute_metrics is not None
             and all_preds is not None
