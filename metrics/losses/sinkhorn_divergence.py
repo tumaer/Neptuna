@@ -8,13 +8,13 @@ from torch.nn.functional import conv1d, avg_pool1d, avg_pool2d, avg_pool3d, inte
 from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 
 try:  # Import the keops library, www.kernel-operations.io
-    from pykeops.torch import generic_logsumexp, LazyTensor
-    from pykeops.torch.cluster import (
-        grid_cluster,
-        cluster_ranges_centroids,
-        sort_clusters,
-        from_matrix,
-    )
+    # from pykeops.torch import generic_logsumexp, LazyTensor
+    # from pykeops.torch.cluster import (
+    #     grid_cluster,
+    #     cluster_ranges_centroids,
+    #     sort_clusters,
+    #     from_matrix,
+    # )
 
     keops_available = True
 except:

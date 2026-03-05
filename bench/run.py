@@ -231,6 +231,8 @@ def run(cfg):
         ),  # keep inputs and optionally conditioning_inputs for plotting
         greater_is_better=False,  # lower loss/error is better
         dataloader_pin_memory=True,
+        #dataloader_persistent_workers=True,
+        #dataloader_prefetch_factor=2,
         gradient_accumulation_steps=cfg["train_config"]["gradient_accumulation_steps"],
         gradient_checkpointing=False,  # save memory, slower back-prop
         auto_find_batch_size=False,
