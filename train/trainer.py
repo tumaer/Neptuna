@@ -124,7 +124,15 @@ class Trainer(Trainer_):
         #self.original_label_seq_len = self.data_config.sequence_info[1] #number of predicted timesteps from the model (#no rollout timesteps considered)
         
         self.get_prediction_loss_for_eval_windows = False #TODO: Find a way to not hardcode this.
-        self.num_epochs_between_eval = max(1, int(self.train_config.get("num_epochs_between_eval", 1)))
+        self.num_epochs_between_eval = max(
+            1,
+            int(
+                self.train_strategy_config.get(
+                    "num_epochs_between_eval",
+                    self.train_config.get("num_epochs_between_eval", 1),
+                )
+            ),
+        )
 
         self.residual_config = self.data_config["residual_config"]
 
