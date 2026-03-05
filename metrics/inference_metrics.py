@@ -328,11 +328,24 @@ def compute_metrics_for_n_rollouts(
 
 class StreamingRolloutMetrics:
     """
-    Streaming variant of `compute_metrics_for_n_rollouts` designed for
-    `batch_eval_metrics=True` execution inside `Trainer.inference_loop`.
+     Streaming variant of `compute_metrics_for_n_rollouts` for batched HF Trainer
+     evaluation (`batch_eval_metrics=True`).
 
-    It aggregates first and second moments per rollout/timestep over batches,
-    then computes final mean/std only at `compute_result=True`.
+     The class is stateful across evaluation steps:
+
+     1) For each incoming batch, it computes rollout-level metrics via
+         `compute_metrics_for_n_rollouts`.
+     2) It accumulates first and second moments for each metric block
+         (`*_mean` / `*_std`) weighted by batch size.
+     3) On the final call (`compute_result=True`), it performs optional
+         distributed reduction and converts accumulated moments into global
+         population mean/std.
+
+     Notes
+     -----
+     - Returned keys from `base_metrics` are preserved and rollout metrics are
+        written under `out["rollout_metrics"]` to avoid collisions.
+     - Internal accumulators are reset after the final result is emitted.
     """
 
     def __init__(
@@ -352,15 +365,27 @@ class StreamingRolloutMetrics:
         self.reset()
 
     def reset(self):
+        """Clear all running statistics for a new inference pass."""
+        # Total number of samples seen across all processed batches (local rank).
         self._num_samples = 0.0
+        # Running first moment accumulators: E[x] * n per summary key.
         self._sum = {}
+        # Running second moment accumulators: E[x^2] * n per summary key.
         self._sumsq = {}
+        # Metadata (channel/component names) to restore in final output.
         self._names = {}
 
     def _infer_input_frames(self, maybe_inputs):
+        """
+        Extract optional conditioning/input frames from `eval_pred.inputs`.
+
+        Accepts either a direct tensor/array or a mapping and searches common
+        keys (`input_data`, `inputs`, `input_ids`).
+        """
         if maybe_inputs is None:
             return None
         if isinstance(maybe_inputs, Mapping):
+            # Try common keys used by Trainer/eval pipelines.
             for key in ("input_data", "inputs", "input_ids"):
                 if key in maybe_inputs:
                     return maybe_inputs[key]
@@ -368,28 +393,47 @@ class StreamingRolloutMetrics:
         return maybe_inputs
 
     def _to_numpy(self, x):
+        """
+        Convert tensors/array-likes to CPU NumPy arrays.
+
+        Tensor inputs are detached and cast to float to match metric computation
+        expectations.
+        """
         if x is None:
             return None
         if isinstance(x, np.ndarray):
             return x
         if torch.is_tensor(x):
+            # Always detach and move to host; metric computation is NumPy-facing.
             return x.detach().float().cpu().numpy()
         return np.asarray(x)
 
     def _trim_last_step_for_remainder(self, preds, labels, input_frames, compute_result, eval_pred):
         """
-        Match Accelerate's remainder semantics on the last logical step.
+        Match Accelerate remainder semantics on final aggregation step.
+
+        During the final `compute_result=True` call, gathered tensors may include
+        extra samples on some ranks. This method trims local tensors so each rank
+        contributes only valid examples.
+
+        Returns
+        -------
+        Tuple[preds, labels, input_frames]
+            Potentially trimmed arrays with consistent leading batch dimension.
         """
         if not compute_result:
+            # Mid-stream calls keep full local batch.
             return preds, labels, input_frames
 
         trainer = getattr(self.base_metrics, "trainer", None)
         if trainer is None:
+            # Fallback when no Trainer context is available.
             return preds, labels, input_frames
 
         gs = trainer.accelerator.gradient_state
         remainder = gs.remainder
         if remainder <= 0:
+            # No partial final step.
             return preds, labels, input_frames
 
         local_bs = preds.shape[0]
@@ -397,6 +441,7 @@ class StreamingRolloutMetrics:
         start = rank * local_bs
         valid_local = max(0, min(local_bs, remainder - start))
 
+        # Trim all arrays consistently to valid samples for this rank.
         preds = preds[:valid_local]
         labels = labels[:valid_local]
         if input_frames is not None:
@@ -404,22 +449,38 @@ class StreamingRolloutMetrics:
         return preds, labels, input_frames
 
     def _accumulate_metric_block(self, metric_name, metric_values, batch_n: int):
+        """
+        Update running first/second moments for one metric block.
+
+        Parameters
+        ----------
+        metric_name:
+            Top-level loss key (e.g., component name).
+        metric_values:
+            Dict containing summary arrays such as `per_rollout_step_mean` and
+            matching `*_std` arrays (shape `(R, D)` or `(T, D)`).
+        batch_n:
+            Number of samples represented by this batch.
+        """
         if metric_name not in self._sum:
             self._sum[metric_name] = {}
             self._sumsq[metric_name] = {}
 
         for summary_kind, arr in metric_values.items():
             if summary_kind in ("names", "component_names"):
+                # Preserve labels once; no numeric aggregation needed.
                 self._names[(metric_name, summary_kind)] = arr
                 continue
 
             arr_np = np.asarray(arr, dtype=np.float64)
             if arr_np.ndim != 2:
+                # Only aggregate matrix-like summaries: (R, D) or (T, D).
                 continue
 
             mean = arr_np
             std = metric_values.get(summary_kind.replace("_mean", "_std"), None)
             if summary_kind.endswith("_std"):
+                # Std is reconstructed from moments; skip direct accumulation.
                 continue
 
             if std is None:
@@ -429,6 +490,8 @@ class StreamingRolloutMetrics:
             if std_np.shape != mean.shape:
                 continue
 
+            # Convert batch mean/std to first and second moments:
+            # E[x] and E[x^2] where E[x^2] = std^2 + mean^2.
             batch_sum = batch_n * mean
             batch_sumsq = batch_n * (std_np ** 2 + mean ** 2)
 
@@ -440,8 +503,27 @@ class StreamingRolloutMetrics:
                 self._sumsq[metric_name][summary_kind] += batch_sumsq
 
     def __call__(self, eval_pred, compute_result: bool = False):
+        """
+        Consume one evaluation batch and optionally return final aggregated metrics.
+
+        Parameters
+        ----------
+        eval_pred:
+            HF Trainer evaluation payload containing predictions, labels, and
+            optionally inputs.
+        compute_result:
+            When `False`, only updates internal state and returns base metrics.
+            When `True`, performs distributed/global reduction, emits
+            `rollout_metrics`, and resets internal state.
+
+        Returns
+        -------
+        dict
+            Base metric output merged with `rollout_metrics` at finalization.
+        """
         base_out = {}
         if self.base_metrics is not None:
+            # Keep base metric pipeline behavior unchanged.
             base_out = self.base_metrics(eval_pred, compute_result=compute_result) or {}
 
         preds = eval_pred.predictions
@@ -457,11 +539,13 @@ class StreamingRolloutMetrics:
 
         # Expect logits shape (B, R, T, C, ...) and labels shape (B, R*T, C, ...)
         if preds_np.ndim >= 5:
+            # Model output arrives grouped as (B, R, T, C, ...): flatten to (B, R*T, C, ...).
             b, r, t, c = preds_np.shape[:4]
             extra = preds_np.shape[4:]
             outputs_per_rollout = t
             preds_flat = preds_np.reshape(b, r * t, c, *extra)
         elif preds_np.ndim >= 3:
+            # Already flattened as (B, T, C, ...), treat each step as one output per rollout.
             outputs_per_rollout = 1
             preds_flat = preds_np
         else:
@@ -474,6 +558,7 @@ class StreamingRolloutMetrics:
         )
 
         if preds_flat.shape[0] == 0:
+            # Can happen on some ranks for a short remainder.
             return base_out if not compute_result else base_out
 
         batch_metrics = compute_metrics_for_n_rollouts(
@@ -494,9 +579,11 @@ class StreamingRolloutMetrics:
                 self._accumulate_metric_block(metric_name, metric_values, batch_n=batch_n)
 
         if not compute_result:
+            # Streaming mode: update state only.
             return base_out
 
         if self._num_samples <= 0:
+            # Defensive guard for degenerate evals.
             out = dict(base_out)
             self.reset()
             return out
@@ -513,6 +600,7 @@ class StreamingRolloutMetrics:
 
         n_tensor = torch.tensor(self._num_samples, dtype=torch.float64, device=reduce_device)
         if dist.is_available() and dist.is_initialized():
+            # Global sample count across ranks.
             dist.all_reduce(n_tensor, op=dist.ReduceOp.SUM)
         global_n = float(n_tensor.item())
 
@@ -526,9 +614,11 @@ class StreamingRolloutMetrics:
                 sumsq_tensor = torch.as_tensor(local_sumsq, dtype=torch.float64, device=reduce_device)
 
                 if dist.is_available() and dist.is_initialized():
+                    # Reduce moment accumulators to global totals.
                     dist.all_reduce(sum_tensor, op=dist.ReduceOp.SUM)
                     dist.all_reduce(sumsq_tensor, op=dist.ReduceOp.SUM)
 
+                # Recover global population moments.
                 mean = sum_tensor / global_n
                 var = torch.clamp(sumsq_tensor / global_n - mean ** 2, min=0.0)
                 std = torch.sqrt(var)
