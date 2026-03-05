@@ -1,8 +1,11 @@
 do_infer: False
+metrics_device: mps
+batch_eval_metrics: True
 filter_features:
   infer_filter_frames: [null, null]
   infer_filter_groups: null
 n_infer_rollouts: 2
 n_infer_plot_examples: 2
+plot_orientation: horizontal # Plot orientation for inference plots. Options: vertical, horizontal
 infer_from_random_timestep: True
 infer_from_ic: True

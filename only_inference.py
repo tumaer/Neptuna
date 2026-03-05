@@ -938,13 +938,15 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
     _dbg("trainer initialized for inference")
 
     trainer.infer_loss_fn = infer_loss_fn  # attach to trainer for use in StreamingMetrics
+    #base_streaming_metrics containes the __call__ method for accumulating the metrics averaged over the entire test dataset.
     base_streaming_metrics = StreamingMetrics(trainer=trainer, mode="infer")
+    #StreamingRolloutMetrics is used to compute compute_metrics_for_n_rollouts for each batch
     trainer.compute_metrics = StreamingRolloutMetrics(
         loss_metric=infer_loss_fn,
         include_per_timestep=True,
         device=infer_config.get("metrics_device"),
         base_metrics=base_streaming_metrics,
-    )
+    ) if infer_config["batch_eval_metrics"] else compute_metrics_during_inference
 
     def _extract_rollout_metrics(metrics_dict: Dict):
         out = {}
@@ -1006,10 +1008,9 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 print(f"{key}: {value}")
                 overall_errors["random_start_"+key] = value
             save_overall_errors_to_csv(overall_errors, solo_inference_dir)
-        # ----------------------------------------------------------
-        # Prepare prediction, target and input arrays
-        # ----------------------------------------------------------
-        #if IS_MAIN_PROCESS:
+            # ----------------------------------------------------------
+            # Prepare prediction, target and input arrays
+            # ----------------------------------------------------------
             preds = predictions_obj.predictions  # (N, R, T, C, *spatial)
 
             # Flatten rollout and label sequence dimensions if necessary
@@ -1034,9 +1035,9 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             # Conditioning inputs may be None
             cond_inp_arr = conditioning_inputs if conditioning_inputs is not None else None
 
-        # ----------------------------------------------------------
-        # Renormalise data and reconstruct residuals for plotting
-        # ----------------------------------------------------------
+            # ----------------------------------------------------------
+            # Renormalise data and reconstruct residuals for plotting
+            # ----------------------------------------------------------
             (inp_renorm,
                 tgt_renorm,
                 pred_renorm,
@@ -1054,24 +1055,23 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             )
             per_step_errors = {}
             for metric_name, values in per_rollout_step_metrics_random.items():
-                if IS_MAIN_PROCESS:
-                    print(f"{metric_name} per-step (random start): {values}")
+                #print(f"{metric_name} per-step (random start): {values}")
                 per_step_errors[metric_name] = values
             save_errors_to_structured_csv(per_step_errors, 
                                             solo_inference_dir, 
                                             channel_names=output_channel_names, 
                                             file_name="results_structured_random_start.csv")
 
-        # Infer spatial dimensionality (1D / 2D / 3D)
+            # Infer spatial dimensionality (1D / 2D / 3D)
             ndim = pred_renorm.ndim - 3  # subtract l, time, channel dims
 
-        # Use stride from the config if available
+            # Use stride from the config if available
             stride_val = data_config.get("sequence_info")[2]
 
-        # Directory for saving inference plots
+            # Directory for saving inference plots
             plot_save_dir = os.path.join(solo_inference_dir, "inference_plots/random_start")
 
-        # Build formatted info strings  
+            # Build formatted info strings  
             model_info_str, data_info_str, train_info_str, _ = build_info_strings(
                                                                                     model_obj=trainer.model,
                                                                                     data_config=data_config,
@@ -1080,80 +1080,61 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                                                                                     scheduler_config=scheduler_config
                                                                                 )
 
-        # Create rollout sample plots and per-example rollout metrics, saved per example folder
-        # Compute the exact example indices used for plotting to reuse for per-example rollout metrics
-            N_examples = preds.shape[0]
-            num_plot = min(infer_config["n_infer_plot_examples"], N_examples)
-            np.random.seed(42)
-            chosen_example_indices = np.random.choice(N_examples, size=num_plot, replace=False)
-            # For each selected example, save the example plot and the rollout metrics into the same folder
-            for example_idx in chosen_example_indices:
-                ex_save_dir = os.path.join(plot_save_dir, f"example_{int(example_idx)}")
-            # Save the visual comparison plot for this example
+            plot_save_dir = os.path.join(solo_inference_dir, "inference_plots/random_start")
+            layout_config = LayoutConfig(
+                base_visual_size=3.5,
+                margin_between_plots_h=0.65,
+                margin_between_plots_v=0.65
+            )
 
-                layout_config = LayoutConfig(
-                    base_visual_size=3.5,
-                    margin_between_plots_h=0.65,
-                    margin_between_plots_v=0.65
-                )
+            slice_config = Slice3DConfig(
+                slice_axis=0,
+                num_slices=4
+            )
 
-                slice_config = Slice3DConfig(
-                    slice_axis=0,
-                    num_slices=4
-                )
+            plotter = create_plotter(
+                orientation=infer_config.get("plot_orientation", "vertical"),
+                input_array=inp_renorm,
+                prediction_array=pred_renorm,
+                target_array=tgt_renorm,
+                input_channel_names=only_input_channel_names,
+                output_channel_names=output_channel_names,
+                conditioning_input_array=cond_inp_renorm,
+                conditioning_channel_names=cond_inp_channel_names,
+                checkpoint_step=None,
+                epoch=None,
+                extra_info=data_config.get("dataset_name")+"_Inference_plot_from_random_timestep",
+                ndim=ndim,
+                slice_config=slice_config,
+                num_examples=infer_config["n_infer_plot_examples"],
+                stride=stride_val,
+                save_dir=plot_save_dir,
+                log_to_wandb=False,
+                best_plot_at_train_end=False,
+                layout_config=layout_config,
+                include_relative_error=True,
+                model_info=model_info_str,
+                data_info=data_info_str,
+                train_info=train_info_str,
+                loss_config=loss_config_for_plotting
+            )
+            
+            plotter.plot()
 
-                plotter = create_plotter(
-                    orientation='vertical',
-                    input_array=inp_renorm,
-                    prediction_array=pred_renorm,
-                    target_array=tgt_renorm,
-                    input_channel_names=only_input_channel_names,
-                    output_channel_names=output_channel_names,
-                    conditioning_input_array=cond_inp_renorm,
-                    conditioning_channel_names=cond_inp_channel_names,
-                    checkpoint_step=None,
-                    epoch=None,
-                    extra_info=data_config.get("dataset_name")+"_Inference_plot_from_random_timestep",
-                    ndim=ndim,
-                    slice_config=slice_config,
-                    num_examples=1,
-                    stride=stride_val,
-                    save_dir=ex_save_dir,
-                    log_to_wandb=False,
-                    best_plot_at_train_end=False,
-                    layout_config=layout_config,
-                    include_relative_error=True,
-                    model_info=model_info_str,
-                    data_info=data_info_str,
-                    train_info=train_info_str,
-                    loss_config=loss_config_for_plotting
-                )
-                
-                plotter.plot()
-
-            # Create only rollout metrics (and not timestep metrics) plot for this example (no batch aggregation)
-            # Reason: timestep metrics are useful in case 
-                ex_preds = preds[example_idx:example_idx+1]      # shape (1, R*T, C, *spatial)
-                ex_targets = targets[example_idx:example_idx+1]
-                
-                per_rollout_metrics_ex = compute_metrics_for_n_rollouts(
-                    ex_preds,
-                    ex_targets,
-                    outputs_per_rollout=outputs_per_rollout,
-                    loss_metric=infer_loss_fn,
-                    include_per_timestep=False,
-                    input_frames=inp_arr[example_idx:example_idx+1],
-                    device=infer_config.get("metrics_device"),
-                )
-                ex_title = f"Per-rollout metrics ({data_config.get('dataset_name', 'dataset')} - random start, example {int(example_idx)})"
-                plot_rollout_metrics(
-                    step_metrics=per_rollout_metrics_ex,
-                    output_channel_names=output_channel_names,
-                    save_dir=ex_save_dir,
-                    title=ex_title,
-                    filename=f"Metric_evolution_for_random_Ex_{int(example_idx)}.png", 
-                    sequence_info=data_config.get("sequence_info"),
-                )
+            # Create only rollout metrics (and not timestep metrics) plots as windows are sliced across time steps and therefore do not have a consistent start and end time step.
+            # Here we plot the averaged over all windows in terms of the rollout steps, irrespective of where the window starts from.
+            ex_title = f"Per-rollout metrics ({data_config.get('dataset_name', 'dataset')} - random start)"
+            plot_save_dir = os.path.join(solo_inference_dir, "inference_plots/random_start")
+            plot_rollout_metrics(
+                step_metrics=per_rollout_step_metrics_random,
+                output_channel_names=output_channel_names,
+                save_dir=plot_save_dir,
+                mode="random_start",
+                title=ex_title,
+                filename="Metric_evolution_for_random_start.png", 
+                sequence_info=data_config.get("sequence_info"),
+                num_examples=pred_renorm.shape[0],
+            )
 
             random_start_stats_dict = {
                 "metrics": per_rollout_step_metrics_random,
@@ -1227,9 +1208,9 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                     "Please verify batch_eval_metrics=True and StreamingRolloutMetrics wiring."
                 )
         
-        # ----------------------------------------------------------
-        # Renormalise data and reconstruct residuals for plotting
-        # ----------------------------------------------------------
+            # ----------------------------------------------------------
+            # Renormalise data and reconstruct residuals for plotting
+            # ----------------------------------------------------------
             (inp_renorm,
                 tgt_renorm,
                 pred_renorm,
@@ -1248,12 +1229,11 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
 
             errors = {}
             for metric_name, values in per_rollout_step_metrics_ic.items():
-                if IS_MAIN_PROCESS:
-                    print(f"{metric_name} per-step (IC start): {values}")
+                #print(f"{metric_name} per-step (IC start): {values}")
                 errors[metric_name] = values
             save_errors_to_structured_csv(errors, solo_inference_dir, channel_names=output_channel_names, file_name="results_structured_ic_start.csv")
 
-        # Infer spatial dimensionality (1D / 2D / 3D)
+            # Infer spatial dimensionality (1D / 2D / 3D)
             ndim = pred_renorm.ndim - 3  # subtract batch, time, channel dims
 
             stride_val = data_config.get("sequence_info")[2]
@@ -1264,9 +1244,11 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 step_metrics=per_rollout_step_metrics_ic,
                 output_channel_names=output_channel_names,
                 save_dir=plot_save_dir,
+                mode="ic_start",
                 title=f"Per-(rollout and time) step metrics ({data_config.get('dataset_name', 'dataset')} - IC start)",
-                filename="per_step_metrics.png",
+                filename="Metric_evolution_for_ic_start.png",
                 sequence_info=data_config.get("sequence_info"),
+                num_examples=pred_renorm.shape[0],
             )
 
             model_info_str, data_info_str, train_info_str, _ = build_info_strings(
@@ -1277,7 +1259,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                                                                                     scheduler_config=scheduler_config
                                                                                 )
 
-        # Create rollout sample plots, these plots start from the initial condition in the test dataset
+            # Create rollout sample plots, these plots start from the initial condition in the test dataset
 
             layout_config = LayoutConfig(
                 base_visual_size=3.5,
@@ -1291,7 +1273,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             )
 
             plotter = create_plotter(
-                orientation='vertical',
+                orientation=infer_config.get("plot_orientation", "vertical"),
                 input_array=inp_renorm,
                 prediction_array=pred_renorm,
                 target_array=tgt_renorm,
