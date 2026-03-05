@@ -2315,6 +2315,11 @@ class Trainer(Trainer_):
             else None
         )
 
+        example_logits = None
+        example_labels = None
+        example_inputs = None
+        example_conditioning_inputs = None
+        
         metrics = None
         eval_set_kwargs = {}
 
