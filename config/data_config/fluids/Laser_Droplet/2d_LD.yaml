@@ -25,7 +25,7 @@ residual_config: null
   # add_base_value_with_raw_loss: True
   # add_predicted_value_with_diff_loss: False
   # add_predicted_value_with_raw_loss: False
-coord_features: False
+coord_features: True
 data_normalization_strategy: z_normalization
 #NOTE: Statistics are according to sequence_stride = 1 (modified by me manually)
 data_normalization_stats:

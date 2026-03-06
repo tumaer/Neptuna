@@ -482,6 +482,7 @@ class ScOT(PreTrainedModel):
     main_input_name = "input_data"
     conditioning_input_name = "conditioning_input_data"
     config_class = ScOTConfig
+    base_model_prefix = "scot" # will it work?
      
     def __init__(self, config):
         super().__init__(config)
