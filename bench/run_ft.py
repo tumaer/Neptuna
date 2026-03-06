@@ -22,7 +22,7 @@ from utils.seed_utils import set_global_seed
 import psutil
 from only_inference import save_errors_to_csv
 import numpy as np
-from only_inference import load_pretrained_model
+from only_inference import load_pretrained_model, load_pretrained_model_MAN
 
 __all__ = ["run"]
 
@@ -175,11 +175,14 @@ def run(cfg):
     # ------------------------------------------------------------------
     # if cfg["hyperparam_opt_config"]["optimize"] is False:
     #     model = fetch_model(cfg["model_config"], cfg["data_config"])
+    #     # model = model.from_pretrained("camlab-ethz/Poseidon-T")  # Load pretrained weights from Hugging Face Hub
     # else:
     #     model = None
 
-    # model_config_path = "/local/disk1/MainRepos/Neptuna/FT/6_LaserDroplet_2D_UNet_06092025_115759/checkpoint-50600/config.json"
-    # checkpoint_path = "/local/disk1/MainRepos/Neptuna/FT/6_LaserDroplet_2D_UNet_06092025_115759/checkpoint-50600"
+
+    ####################################################################################
+    model_config_path = "/local/disk1/szehisaadat/MainRepos/Neptuna/checkpoints/ScOT_T/config.json"
+    checkpoint_path = "/local/disk1/szehisaadat/MainRepos/Neptuna/checkpoints/ScOT_T"
 
 
     model_config_path = "/local/disk/szehisaadat/Neptuna/bash_folder/1_LaserDroplet_2D_ScOT3D_23022026_155916/checkpoint-11825/config.json"
@@ -189,33 +192,35 @@ def run(cfg):
     # Add the model checkpoint path to the model config
     model_config["model_checkpoint_path"] = checkpoint_path
     model_config["model_name"] = model_config["architectures"][0]
+    # model_config["model_name"] = "SwinForPDE"
 
 
-    model = load_pretrained_model(model_config)
+    model = load_pretrained_model_MAN(model_config, ignore_mismatched_sizes=True)
+
 
 
     ##################################################################################
     # if PEFT is active:
 
 
-    from peft import get_peft_model, LoraConfig
+    # from peft import get_peft_model, LoraConfig
 
-    peft_config = LoraConfig(
-        r=16,
-        lora_alpha=32,
-        target_modules=".*decoder.*(query|key|value|dense)$",
-        # target_modules=".*residual_blocks.*(dwconv|norm|pwconv)$",
-        # target_parameters=['scot.decoder']
+    # peft_config = LoraConfig(
+    #     r=16,
+    #     lora_alpha=32,
+    #     target_modules=".*decoder.*(query|key|value|dense)$",
+    #     # target_modules=".*residual_blocks.*(dwconv|norm|pwconv)$",
+    #     # target_parameters=['scot.decoder']
 
-    )
+    # )
 
-    model = get_peft_model(model, peft_config)
+    # model = get_peft_model(model, peft_config)
 
-    model.print_trainable_parameters()
+    # model.print_trainable_parameters()
 
-    for name, param in model.named_parameters():
-        if "embeddings" in name:
-            param.requires_grad = True 
+    # for name, param in model.named_parameters():
+    #     if "embeddings" in name:
+    #         param.requires_grad = True 
 
 
 
@@ -223,6 +228,15 @@ def run(cfg):
 
     ##################################################################################
     
+    # # Load model directly from Hugging Face Hub (make sure to specify the correct model repo and checkpoint in the config)
+    # from transformers import AutoImageProcessor, SwinForPDE
+
+    # # processor = AutoImageProcessor.from_pretrained("camlab-ethz/Poseidon-T")
+    # model = SwinForPDE.from_pretrained("camlab-ethz/Poseidon-T")
+
+
+    ##################################################################################
+
 
     def model_init():
         return fetch_model(cfg["model_config"], cfg["data_config"])

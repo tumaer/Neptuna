@@ -19,7 +19,7 @@ import torch
 import numpy as np
 import csv
 
-def load_pretrained_model(model_config):
+def load_pretrained_model(model_config, ignore_mismatched_sizes):
     """
     Factory function to load any pretrained model based on model_name in config.
     
@@ -40,6 +40,7 @@ def load_pretrained_model(model_config):
         "autodeeponet": ("models.DeepONet.deeponet", "AutoDeepONet"),
         "cno": ("models.CNO.cno", "CNO"),
         "scot": ("models.ScOT.scot", "ScOT"),
+        "poseidon": ("models.Poseidon.poseidon", "ScOT"),
         "scot3d": ("models.ScOT3D.scot3d", "ScOT3D"),
         "vit": ("models.ViT.vit", "ViT"),
         "transolver": ("models.Transolver.transolver", "Transolver"),
@@ -59,7 +60,107 @@ def load_pretrained_model(model_config):
     model, loading_info = model_class.from_pretrained(
         checkpoint_path,
         output_loading_info=True,
-        ignore_mismatched_sizes=False,
+        ignore_mismatched_sizes=ignore_mismatched_sizes,
+        local_files_only=True,
+        force_download=True
+    )
+
+    assert not loading_info["missing_keys"], f"Missing keys: {loading_info['missing_keys']}"
+    assert not loading_info["unexpected_keys"], f"Unexpected keys: {loading_info['unexpected_keys']}"
+
+    return model
+
+
+
+def load_pretrained_model_MAN(model_config, ignore_mismatched_sizes):
+    """
+    Factory function to load any pretrained model based on model_name in config.
+    
+    Args:
+        model_config: Dictionary containing model configuration with 'model_name' and 'model_checkpoint_path'
+    
+    Returns:
+        Loaded pretrained model instance
+    """
+    model_name = model_config.get("model_name", "").lower()
+    checkpoint_path = model_config["model_checkpoint_path"]
+    
+    # Map model names to their corresponding classes
+    model_registry = {
+        "unet": ("models.UNet.unet", "UNet"),
+        "fno": ("models.FNO.fno", "FNO"),
+        "resnet": ("models.ResNet.resnet", "ResNet"),
+        "autodeeponet": ("models.DeepONet.deeponet", "AutoDeepONet"),
+        "cno": ("models.CNO.cno", "CNO"),
+        "scot": ("models.ScOT.scot", "ScOT"),
+        "swinforpde": ("models.ScOT.scot", "ScOT"),
+        "vit": ("models.ViT.vit", "ViT"),
+        "transolver": ("models.Transolver.transolver", "Transolver"),
+        "poseidon": ("models.Poseidon.poseidon", "ScOT")
+    }
+    
+    if model_name not in model_registry:
+        supported_models = ", ".join(model_registry.keys())
+        raise ValueError(f"Model '{model_name}' is not supported for inference loading. Supported models: {supported_models}")
+    
+    module_path, class_name = model_registry[model_name]
+    
+    # Dynamic import and model loading
+    import importlib
+    module = importlib.import_module(module_path)
+    model_class = getattr(module, class_name)
+
+
+    ###############################################
+
+    import os
+    from safetensors.torch import load_file
+    import torch
+
+    def fix_norm_key_swaps(sd: dict) -> dict:
+        """
+        Fix keys like:
+        layernorm_after.bias.weight  -> layernorm_after.weight
+        layernorm_after.weight.bias  -> layernorm_after.bias
+        and similarly for any module path (works for *.norm.* too).
+        """
+        fixed = {}
+        collisions = []
+
+        for k, v in sd.items():
+            k2 = k
+            k2 = k2.replace(".bias.weight", ".weight")
+            k2 = k2.replace(".weight.bias", ".bias")
+
+            if k2 in fixed:
+                # Collision means two different source keys mapped to same target.
+                # Usually that's expected here (bias.weight vs true weight), but we should verify identical tensors.
+                same = torch.equal(fixed[k2], v)
+                collisions.append((k, k2, same, tuple(v.shape)))
+                # Prefer keeping existing; you could also overwrite if you want.
+                continue
+
+            fixed[k2] = v
+
+        if collisions:
+            print(f"[fix_norm_key_swaps] Collisions: {len(collisions)} (showing up to 20)")
+            for item in collisions[:20]:
+                print("  src:", item[0], "-> dst:", item[1], "same_tensor:", item[2], "shape:", item[3])
+
+        return fixed
+
+    checkpoint_file = os.path.join(checkpoint_path, "model.safetensors")
+    sd = load_file(checkpoint_file)          # keys come from safetensors
+    sd_fixed = fix_norm_key_swaps(sd)
+
+
+    ###############################################
+    
+    model, loading_info = model_class.from_pretrained(
+        checkpoint_path,
+        state_dict=sd_fixed,
+        output_loading_info=True,
+        ignore_mismatched_sizes=ignore_mismatched_sizes,
         local_files_only=True,
     )
 
