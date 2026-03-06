@@ -238,8 +238,8 @@ def run(cfg):
     # ------------------------------------------------------------------
     if cfg["hyperparam_opt_config"]["optimize"] is False:
         start = time.time()
-        # trainer.train(resume_from_checkpoint=f"./checkpoints/KuramotoSivashinsky_2D_ScOT_09072025_074058/checkpoint-15")
-        trainer.train(resume_from_checkpoint=False)
+        trainer.train(resume_from_checkpoint=f"/local/disk/szehisaadat/Neptuna/bash_folder/2_LaserDroplet_2D_ScOT3D_04032026_172838/checkpoint-22041")
+        # trainer.train(resume_from_checkpoint=False)
         print(f"Total train time: {time.time() - start:.2f} s")
         if training_args.push_to_hub:
             print("Pushing model to Hugging Face Hub...")
