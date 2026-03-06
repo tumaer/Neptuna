@@ -472,7 +472,7 @@ class StreamingRolloutMetrics:
                 self._names[(metric_name, summary_kind)] = arr
                 continue
 
-            arr_np = np.asarray(arr, dtype=np.float64)
+            arr_np = np.asarray(arr, dtype=np.float32)
             if arr_np.ndim != 2:
                 # Only aggregate matrix-like summaries: (R, D) or (T, D).
                 continue
@@ -486,7 +486,7 @@ class StreamingRolloutMetrics:
             if std is None:
                 continue
 
-            std_np = np.asarray(std, dtype=np.float64)
+            std_np = np.asarray(std, dtype=np.float32)
             if std_np.shape != mean.shape:
                 continue
 
@@ -598,7 +598,7 @@ class StreamingRolloutMetrics:
         if reduce_device is None:
             reduce_device = torch.device("cpu")
 
-        n_tensor = torch.tensor(self._num_samples, dtype=torch.float64, device=reduce_device)
+        n_tensor = torch.tensor(self._num_samples, dtype=torch.float32, device=reduce_device)
         if dist.is_available() and dist.is_initialized():
             # Global sample count across ranks.
             dist.all_reduce(n_tensor, op=dist.ReduceOp.SUM)
@@ -610,8 +610,8 @@ class StreamingRolloutMetrics:
             for summary_kind, local_sum in metric_sum_dict.items():
                 local_sumsq = self._sumsq[metric_name][summary_kind]
 
-                sum_tensor = torch.as_tensor(local_sum, dtype=torch.float64, device=reduce_device)
-                sumsq_tensor = torch.as_tensor(local_sumsq, dtype=torch.float64, device=reduce_device)
+                sum_tensor = torch.as_tensor(local_sum, dtype=torch.float32, device=reduce_device)
+                sumsq_tensor = torch.as_tensor(local_sumsq, dtype=torch.float32, device=reduce_device)
 
                 if dist.is_available() and dist.is_initialized():
                     # Reduce moment accumulators to global totals.

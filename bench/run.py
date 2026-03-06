@@ -231,6 +231,8 @@ def run(cfg):
         ),  # keep inputs and optionally conditioning_inputs for plotting
         greater_is_better=False,  # lower loss/error is better
         dataloader_pin_memory=True,
+        #dataloader_persistent_workers=True,
+        #dataloader_prefetch_factor=2,
         gradient_accumulation_steps=cfg["train_config"]["gradient_accumulation_steps"],
         gradient_checkpointing=False,  # save memory, slower back-prop
         auto_find_batch_size=False,
@@ -260,7 +262,6 @@ def run(cfg):
         ddp_find_unused_parameters=False,
         batch_eval_metrics=use_batch_eval_metrics,
         dataloader_drop_last=False,
-        #ddp_backend="xccl",
     )
 
     # ------------------------------------------------------------------
@@ -533,8 +534,19 @@ def run(cfg):
             data_config_path = os.path.join(checkpoint_dir, "data_config.json")
             data_config_ckpt = OmegaConf.load(data_config_path) if os.path.exists(data_config_path) else cfg["data_config"]
 
-            metric_device = torch.device("cpu")
-            train_loss_fn_inf, infer_loss_fn, infer_loss_dict = build_train_and_infer_loss(
+            # Determine metric device from infer_config.metrics_device
+            _dev_cfg = cfg["infer_config"].get("metrics_device") if cfg["infer_config"] else None
+            if _dev_cfg is not None and str(_dev_cfg).strip():
+                metric_device = torch.device(str(_dev_cfg).strip())
+            elif hasattr(torch, "xpu") and torch.xpu.is_available():
+                metric_device = torch.device("xpu:0")
+            elif torch.cuda.is_available():
+                metric_device = torch.device("cuda:0")
+            else:
+                metric_device = torch.device("cpu")
+            
+             # Build loss functions
+            train_loss_fn_inf, infer_loss_fn, _ = build_train_and_infer_loss(
                 loss_config=loss_config_ckpt,
                 data_config=data_config_ckpt,
                 device=metric_device,
@@ -624,13 +636,14 @@ def run(cfg):
                 return metrics
 
             streaming_metrics = StreamingMetrics(trainer=trainer, mode="infer")
-            trainer.args.batch_eval_metrics = True
+            use_batch_eval_metrics = cfg["infer_config"].get("batch_eval_metrics", True)
+            trainer.args.batch_eval_metrics = use_batch_eval_metrics
             trainer.compute_metrics = StreamingRolloutMetrics(
                 loss_metric=infer_loss_fn,
                 include_per_timestep=True,
                 device=cfg["infer_config"].get("metrics_device"),
                 base_metrics=streaming_metrics,
-            )
+            ) if cfg["infer_config"].get("batch_eval_metrics", True) else compute_metrics_during_inference
             
             direct_inference_dir = os.path.join(checkpoint_parent_dir, "direct_inference")
             inference_dir = os.path.join(direct_inference_dir, "inference_plots")
@@ -716,7 +729,7 @@ def run(cfg):
 
                 per_step_errors = {}
                 for metric_name, values in per_rollout_step_metrics_random.items():
-                    print(f"{metric_name} per-step (random start): {values}")
+                    #print(f"{metric_name} per-step (random start): {values}")
                     per_step_errors[metric_name] = values
                 save_errors_to_structured_csv(per_step_errors, 
                                               direct_inference_dir, 
@@ -736,76 +749,58 @@ def run(cfg):
                                                                                                     train_config=cfg["train_config"],
                                                                                                     scheduler_config=cfg["scheduler_config"]
                                                                         )
-                # Create rollout sample plots per example in dedicated folders
-                N_examples = preds.shape[0]
-                num_plot = min(cfg["infer_config"]["n_infer_plot_examples"], N_examples)
-                np.random.seed(42)
-                chosen_example_indices = np.random.choice(N_examples, size=num_plot, replace=False)
+                layout_config = LayoutConfig(
+                    base_visual_size=3.5,
+                    margin_between_plots_h=0.65,
+                    margin_between_plots_v=0.65
+                )
 
-                for example_idx in chosen_example_indices:
-                    ex_save_dir = os.path.join(plot_save_dir, f"example_{int(example_idx)}")
+                slice_config = Slice3DConfig(
+                    slice_axis=0,
+                    num_slices=4
+                )
 
-                    layout_config = LayoutConfig(
-                        base_visual_size=3.5,
-                        margin_between_plots_h=0.65,
-                        margin_between_plots_v=0.65
-                    )
+                plotter = create_plotter(
+                    orientation=cfg["infer_config"].get("plot_orientation", "vertical"),
+                    input_array=inp_renorm,
+                    prediction_array=pred_renorm,
+                    target_array=tgt_renorm,
+                    input_channel_names=only_input_channel_names,
+                    output_channel_names=output_channel_names,
+                    conditioning_input_array=cond_inp_renorm,
+                    conditioning_channel_names=cond_inp_channel_names,
+                    checkpoint_step=None,
+                    epoch=None,
+                    extra_info=cfg["data_config"].get("dataset_name")+"_Inference_plot_from_random_timestep",
+                    ndim=ndim,
+                    slice_config=slice_config,
+                    num_examples=cfg["infer_config"]["n_infer_plot_examples"],
+                    stride=stride_val,
+                    save_dir=plot_save_dir,
+                    log_to_wandb=False,
+                    best_plot_at_train_end=False,
+                    layout_config=layout_config,
+                    include_relative_error=True,
+                    model_info=model_info_str,
+                    data_info=data_info_str,
+                    train_info=train_info_str,
+                    loss_config=loss_config_for_plotting
+                )
+                
+                plotter.plot()
 
-                    slice_config = Slice3DConfig(
-                        slice_axis=0,
-                        num_slices=4
-                    )
-
-                    plotter = create_plotter(
-                        orientation='vertical',
-                        input_array=inp_renorm,
-                        prediction_array=pred_renorm,
-                        target_array=tgt_renorm,
-                        input_channel_names=only_input_channel_names,
-                        output_channel_names=output_channel_names,
-                        conditioning_input_array=cond_inp_renorm,
-                        conditioning_channel_names=cond_inp_channel_names,
-                        checkpoint_step=None,
-                        epoch=None,
-                        extra_info=cfg["data_config"].get("dataset_name")+"_Inference_plot_from_random_timestep",
-                        ndim=ndim,
-                        slice_config=slice_config,
-                        num_examples=1,
-                        stride=stride_val,
-                        save_dir=ex_save_dir,
-                        log_to_wandb=False,
-                        best_plot_at_train_end=False,
-                        layout_config=layout_config,
-                        include_relative_error=True,
-                        model_info=model_info_str,
-                        data_info=data_info_str,
-                        train_info=train_info_str,
-                        loss_config=loss_config_for_plotting
-                    )
-                    
-                    plotter.plot()
-
-                    # Create a rollout metrics plot for this example (no batch aggregation)
-                    ex_preds = preds[example_idx:example_idx+1]      # shape (1, R*T, C, *spatial)
-                    ex_targets = targets[example_idx:example_idx+1]
-                    
-                    per_rollout_metrics_ex = compute_metrics_for_n_rollouts(
-                        ex_preds,
-                        ex_targets,
-                        outputs_per_rollout=outputs_per_rollout,
-                        loss_metric=infer_loss_fn,
-                        include_per_timestep=False,
-                        input_frames=inp_arr[example_idx:example_idx+1],
-                    )
-                    ex_title = f"Per-rollout metrics ({cfg['data_config'].get('dataset_name', 'dataset')} - random start, example {int(example_idx)})"
-                    plot_rollout_metrics(
-                        step_metrics=per_rollout_metrics_ex,
-                        output_channel_names=output_channel_names,
-                        save_dir=ex_save_dir,
-                        title=ex_title,
-                        filename=f"Metric_evolution_for_random_Ex_{int(example_idx)}.png",
-                        sequence_info=cfg["data_config"].get("sequence_info"),
-                    )
+                # Create only rollout metrics (and not timestep metrics) plots as windows are sliced across time steps
+                ex_title = f"Per-rollout metrics ({cfg['data_config'].get('dataset_name', 'dataset')} - random start)"
+                plot_rollout_metrics(
+                    step_metrics=per_rollout_step_metrics_random,
+                    output_channel_names=output_channel_names,
+                    save_dir=plot_save_dir,
+                    mode="random_start",
+                    title=ex_title,
+                    filename="Metric_evolution_for_random_start.png",
+                    sequence_info=cfg["data_config"].get("sequence_info"),
+                    num_examples=pred_renorm.shape[0],
+                )
                 
                 random_start_stats_dict = {
                     "metrics": per_rollout_step_metrics_random,
@@ -885,7 +880,7 @@ def run(cfg):
 
                 errors = {}
                 for metric_name, values in per_rollout_step_metrics_ic.items():
-                    print(f"{metric_name} per-step (IC start): {values}")
+                    #print(f"{metric_name} per-step (IC start): {values}")
                     errors[metric_name] = values
                 save_errors_to_structured_csv(errors, direct_inference_dir, channel_names=output_channel_names, file_name="results_structured_ic_start.csv")
                 
@@ -903,9 +898,11 @@ def run(cfg):
                     step_metrics=per_rollout_step_metrics_ic,
                     output_channel_names=output_channel_names,
                     save_dir=plot_save_dir,
-                    title=f"Per-rollout step metric(s) ({cfg['data_config'].get('dataset_name', 'dataset')} - IC start)",
-                    filename="rollout_metrics.png",
+                    mode="ic_start",
+                    title=f"Per-(rollout and time) step metrics ({cfg['data_config'].get('dataset_name', 'dataset')} - IC start)",
+                    filename="Metric_evolution_for_ic_start.png",
                     sequence_info=cfg["data_config"].get("sequence_info"),
+                    num_examples=pred_renorm.shape[0],
                 )
 
                 model_info_str, data_info_str, train_info_str, _ = build_info_strings(
@@ -930,7 +927,7 @@ def run(cfg):
                 )
 
                 plotter = create_plotter(
-                    orientation='vertical',
+                    orientation=cfg["infer_config"].get("plot_orientation", "vertical"),
                     input_array=inp_renorm,
                     prediction_array=pred_renorm,
                     target_array=tgt_renorm,

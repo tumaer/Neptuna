@@ -1219,13 +1219,13 @@ class VerticalPlotter(BasePlotter):
             gs_col = col_gs_indices[col_idx]
             time_ax = fig.add_subplot(gs[row_gs_idx, gs_col])
             time_ax.axis('off')
-            time_ax.text(0.5, 0.5, self._get_time_label(row, T_in),
-                        ha='center', va='center', fontsize=12, weight='bold')
             col_idx += 1
             
             # Plot input
             if row < T_in:
                 gs_col = col_gs_indices[col_idx]
+                time_ax.text(0.5, 0.5, self._get_time_label(row, T_in),
+                        ha='center', va='center', fontsize=12, weight='bold')
                 self._plot_cell(fig, gs, row_gs_idx, gs_col, 1,
                             inp[row], self.input_channel_names,
                             vmins, vmaxs, layout_params)
@@ -1236,6 +1236,8 @@ class VerticalPlotter(BasePlotter):
                 if row < T_in:
                     cond_inp = self.conditioning_input_array[fig.example_idx]
                     gs_col = col_gs_indices[col_idx]
+                    time_ax.text(0.5, 0.5, self._get_time_label(row, T_in),
+                        ha='center', va='center', fontsize=12, weight='bold')
                     self._plot_cell(fig, gs, row_gs_idx, gs_col, 1,
                                 cond_inp[row], self.conditioning_channel_names,
                                 None, None, layout_params)
@@ -1480,12 +1482,12 @@ class HorizontalPlotter(BasePlotter):
         self._add_dims_section(fig, gs, idx, N, spatial_shape, T_in, C, T_pred)
         
         # Add time column headers
-        for col in range(max_time_steps):
+        for col in range(T_in):
             col_gs_idx = 2 + col * 2
             header_ax = fig.add_subplot(gs[1, col_gs_idx])
             header_ax.axis('off')
             header_ax.text(0.5, 0.5, self._get_time_label(col, T_in), 
-                        ha='center', va='center', fontsize=18, weight='bold')
+                        ha='center', va='center', fontsize=14, weight='bold')
         
         # Add row titles
         row_gs_indices = []
@@ -1608,7 +1610,7 @@ class HorizontalPlotter(BasePlotter):
                     time_ax = fig.add_subplot(gs[gs_row, col_gs_idx])
                     time_ax.axis('off')
                     time_ax.text(0.5, 0.5, self._get_pred_time_label(current_time_step),
-                                ha='center', va='center', fontsize=12, weight='bold')
+                                ha='center', va='center', fontsize=14, weight='bold')
                     row_idx += 1
                 
                 # Prediction
@@ -1683,7 +1685,7 @@ def create_plotter(orientation: str = 'vertical', **kwargs) -> BasePlotter:
 
 
 
-def plot_rollout_metrics(step_metrics: dict, output_channel_names: list[str], save_dir: str, title: str | None = None, filename: str = "rollout_metrics.png", plot_type: str = "per_step", sequence_info: list[int] | tuple[int, int, int] | None = None) -> None:
+def plot_rollout_metrics(step_metrics: dict, output_channel_names: list[str], save_dir: str, mode: str = "ic_start", title: str | None = None, filename: str = "rollout_metrics.png", plot_type: str = "per_step", sequence_info: list[int] | tuple[int, int, int] | None = None, num_examples: int | None = None) -> None:
     """Plot per-metric curves over time steps for IC-start evaluations.
 
     Parameters
@@ -1719,12 +1721,18 @@ def plot_rollout_metrics(step_metrics: dict, output_channel_names: list[str], sa
     if plot_type not in {"cumulative", "per_step"}:
         raise ValueError("plot_type must be 'cumulative' or 'per_step'")
 
-    # Create a subplot grid: rows = num_metrics, cols = 2 (rollout | timestep)
-    fig, axes = plt.subplots(num_metrics, 2, figsize=(14, max(3 * num_metrics, 4)), squeeze=False)
+    # Create a subplot grid:
+    # - IC start: rows = num_metrics, cols = 2 (rollout | timestep)
+    # - Random start: rows = num_metrics, cols = 1 (rollout only)
+    show_timestep_metrics = mode != "random_start"
+    ncols = 2 if show_timestep_metrics else 1
+    fig_width = 14 if show_timestep_metrics else 8
+    fig, axes = plt.subplots(num_metrics, ncols, figsize=(fig_width, max(3 * num_metrics, 4)), squeeze=False)
     # Column titles
     if num_metrics > 0:
         axes[0, 0].set_title("Rollout step metrics", fontsize=12)
-        axes[0, 1].set_title("Timestep metrics", fontsize=12)
+        if show_timestep_metrics:
+            axes[0, 1].set_title("Timestep metrics", fontsize=12)
 
     # Prepare legends (overall label)
     overall_label = "overall"
@@ -1741,7 +1749,7 @@ def plot_rollout_metrics(step_metrics: dict, output_channel_names: list[str], sa
 
     for row_idx, (metric_name, stats) in enumerate(step_metrics.items()):
         ax_rollout = axes[row_idx, 0]
-        ax_timestep = axes[row_idx, 1]
+        ax_timestep = axes[row_idx, 1] if show_timestep_metrics else None
 
         # ---------------------
         # Left column: Rollout
@@ -1773,56 +1781,61 @@ def plot_rollout_metrics(step_metrics: dict, output_channel_names: list[str], sa
             ax_rollout.axis("off")
 
         # ----------------------
-        # Right column: Timestep, TODO: Do not plot timestep evolution metrics for random start as the start and end range will be incorrect, 
-        # i.e. x_t will be incorrect as it does not take into account where the window of the random start is starting from.
+        # Right column: Timestep
         # ----------------------
-        if timestep_mean_key in stats and timestep_std_key in stats:
-            means_t = stats[timestep_mean_key]  # (T_flat, C+1)
-            stds_t = stats[timestep_std_key]    # (T_flat, C+1)
-            Tflat, total_cols_t = means_t.shape
-            num_channels_t = total_cols_t - 1
-            channel_legends_t = list(output_channel_names) if num_channels_t == len(output_channel_names) else [f"ch_{i}" for i in range(num_channels_t)]
-            #starts from index 0 so if input_steps=4: 0,1,2,3 then x_t starts from 4
-            x_t = (input_steps - 1 + np.arange(1, Tflat + 1))*stride
+        if show_timestep_metrics:
+            if timestep_mean_key in stats and timestep_std_key in stats:
+                means_t = stats[timestep_mean_key]  # (T_flat, C+1)
+                stds_t = stats[timestep_std_key]    # (T_flat, C+1)
+                Tflat, total_cols_t = means_t.shape
+                num_channels_t = total_cols_t - 1
+                channel_legends_t = list(output_channel_names) if num_channels_t == len(output_channel_names) else [f"ch_{i}" for i in range(num_channels_t)]
+                #starts from index 0 so if input_steps=4: 0,1,2,3 then x_t starts from 4
+                x_t = (input_steps - 1 + np.arange(1, Tflat + 1))*stride
 
-            for c in range(num_channels_t):
-                m = means_t[:, c]
-                s = stds_t[:, c]
-                line, = ax_timestep.plot(x_t, m, label=channel_legends_t[c], linewidth=1.5, alpha=0.95)
-                ax_timestep.scatter(x_t, m, s=18, color=line.get_color(), edgecolors="none", zorder=3)
-                ax_timestep.fill_between(x_t, m - s, m + s, color=line.get_color(), alpha=0.15)
-            
-            m_overall_t = means_t[:, -1]
-            s_overall_t = stds_t[:, -1]
-            ax_timestep.plot(x_t, m_overall_t, label=overall_label, linewidth=2.0, color="black")
-            ax_timestep.scatter(x_t, m_overall_t, s=24, color="black", edgecolors="none", zorder=3)
-            ax_timestep.fill_between(x_t, m_overall_t - s_overall_t, m_overall_t + s_overall_t, color="black", alpha=0.12)
-            # Ensure uniform x-ticks at 'stride' between x_t[0] and x_t[-1], and also include 0
-            try:
-                xmin, xmax = ax_timestep.get_xlim()
-                if xmin > 0:
-                    ax_timestep.set_xlim(left=0)
-                if len(x_t) > 0:
-                    start_tick = float(x_t[0])
-                    end_tick = float(x_t[-1])
-                    step = float(stride) if float(stride) > 0 else max(1.0, end_tick - start_tick)
-                    uniform_ticks = np.arange(start_tick, end_tick + 0.5 * step, step)
-                    ticks_with_zero = np.unique(np.append(uniform_ticks, 0.0))
-                    ax_timestep.set_xticks(ticks_with_zero)
-            except Exception:
-                pass
-            ax_timestep.set_xlabel("time step")
-            ax_timestep.set_ylabel(metric_name)
-            ax_timestep.grid(True, linestyle=":", alpha=0.6)
-            ax_timestep.legend(fontsize=8, ncols=min(4, num_channels_t + 1))
-        else:
-            ax_timestep.text(0.5, 0.5, f"No timestep metrics for '{metric_name}'", ha="center", va="center")
-            ax_timestep.axis("off")
+                for c in range(num_channels_t):
+                    m = means_t[:, c]
+                    s = stds_t[:, c]
+                    line, = ax_timestep.plot(x_t, m, label=channel_legends_t[c], linewidth=1.5, alpha=0.95)
+                    ax_timestep.scatter(x_t, m, s=18, color=line.get_color(), edgecolors="none", zorder=3)
+                    ax_timestep.fill_between(x_t, m - s, m + s, color=line.get_color(), alpha=0.15)
+                
+                m_overall_t = means_t[:, -1]
+                s_overall_t = stds_t[:, -1]
+                ax_timestep.plot(x_t, m_overall_t, label=overall_label, linewidth=2.0, color="black")
+                ax_timestep.scatter(x_t, m_overall_t, s=24, color="black", edgecolors="none", zorder=3)
+                ax_timestep.fill_between(x_t, m_overall_t - s_overall_t, m_overall_t + s_overall_t, color="black", alpha=0.12)
+                # Ensure uniform x-ticks at 'stride' between x_t[0] and x_t[-1], and also include 0
+                try:
+                    xmin, xmax = ax_timestep.get_xlim()
+                    if xmin > 0:
+                        ax_timestep.set_xlim(left=0)
+                    if len(x_t) > 0:
+                        start_tick = float(x_t[0])
+                        end_tick = float(x_t[-1])
+                        step = float(stride) if float(stride) > 0 else max(1.0, end_tick - start_tick)
+                        uniform_ticks = np.arange(start_tick, end_tick + 0.5 * step, step)
+                        ticks_with_zero = np.unique(np.append(uniform_ticks, 0.0))
+                        ax_timestep.set_xticks(ticks_with_zero)
+                except Exception:
+                    pass
+                ax_timestep.set_xlabel("time step")
+                ax_timestep.set_ylabel(metric_name)
+                ax_timestep.grid(True, linestyle=":", alpha=0.6)
+                ax_timestep.legend(fontsize=8, ncols=min(4, num_channels_t + 1))
+            else:
+                ax_timestep.text(0.5, 0.5, f"No timestep metrics for '{metric_name}'", ha="center", va="center")
+                ax_timestep.axis("off")
 
     if title:
         title_str = title
+        title_suffix_parts = []
         if sequence_info is not None:
-            title_str = f"{title}\nsequence_info={sequence_info}"
+            title_suffix_parts.append(f"sequence_info={sequence_info}")
+        if num_examples is not None:
+            title_suffix_parts.append(f"# Windows={num_examples}")
+        if title_suffix_parts:
+            title_str = f"{title}\n" + ", ".join(title_suffix_parts)
         fig.suptitle(title_str, fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, 0.98))
 

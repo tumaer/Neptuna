@@ -49,7 +49,6 @@ Example Usage:
 Configuration Options:
     The callbacks support various configuration options through training arguments:
     - plot_after_epoch: Epoch threshold(s) for enabling plotting (int or list)
-    - n_eval_plot_examples: Number of validation examples to plot (default varies by callback)
     - trial_number: Trial identifier for hyperparameter optimization
     - run_name: W&B run name for experiment organization
 
@@ -711,9 +710,10 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
                     slice_axis=0,
                     num_slices=4
                 )
-
+                
+                #plotter used during validation
                 plotter = create_plotter(
-                    orientation='vertical',
+                    orientation=self.train_config.get("plot_orientation", "vertical"),
                     input_array=inputs_renormed,
                     prediction_array=predictions_renormed,
                     target_array=labels_renormed,
@@ -726,7 +726,7 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
                     extra_info=run_dir.split('/')[-2],
                     ndim=self.data_config["dimension"],
                     slice_config=slice_config,
-                    num_examples=self.train_config["n_eval_plot_examples"],
+                    num_examples=1,
                     stride=self.data_config["sequence_info"][-1],
                     save_dir=output_dir,
                     log_to_wandb=self.output_log_config["logging"]["wandb"],

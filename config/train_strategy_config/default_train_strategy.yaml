@@ -1,50 +1,72 @@
 ########################################################
 # Training strategy configuration
 ########################################################
-num_train_epochs: 5
-batch_eval_metrics: True
-metric_for_best_model:     
-  - type: MSE
 
+# Total number of epochs to train.
+num_train_epochs: 2
+# Compute metrics batch-wise
+batch_eval_metrics: True
+# Run end-of-epoch evaluation every N epochs (**cannot be changed to steps**)
+num_epochs_between_eval: 1
+# Metric for checkpointing the weights during validation.
+metric_for_best_model:     
+  - type: RMSE
+    weight: 1.0
+# Curriculum blocks for epoch-wise training.
 curriculum:
   - name: block_1
     start_epoch: 0
     train_loss:
       components:
         - type: MSE
-        - type: MAE
+          weight: 1.0
+          name: "MSE_train"
       train_loss_weighting_strategy:
-        enabled: true  # Set to true to enable
-        type: GradNorm
-        grad_stats_last_layer_only: true
-        weight_sub_components: false
-        weight_per_channel: false
-        loss_history_interval: 10
-        grad_history_interval: 10
+        enabled: false 
       
     validation_loss:
       components:
         - type: RMSE
-
-  - name: block_2
-    start_epoch: 2
-    train_loss:
-      components:
-        - type: H1SemiNorm
-          weight: 0.5
-
-    validation_loss:
-      components:
-        - type: H2SemiNorm
           weight: 1.0
-        - type: CompositeLoss
-          weight: 1.0
-          name: "SSIM_L2_Composite"
-          sub_components:
-            - type: SSIM
-              weight: 0.7
-            - type: MSE
-              weight: 0.3
+
+  # - name: block_1
+  #   start_epoch: 0
+  #   train_loss:
+  #     components:
+  #       - type: MSE
+  #       - type: MAE
+  #     train_loss_weighting_strategy:
+  #       enabled: true  # Set to true to enable
+  #       type: GradNorm
+  #       grad_stats_last_layer_only: true
+  #       weight_sub_components: false
+  #       weight_per_channel: false
+  #       loss_history_interval: 10
+  #       grad_history_interval: 10
+      
+  #   validation_loss:
+  #     components:
+  #       - type: RMSE
+
+  # - name: block_2
+  #   start_epoch: 2
+  #   train_loss:
+  #     components:
+  #       - type: H1SemiNorm
+  #         weight: 0.5
+
+  #   validation_loss:
+  #     components:
+  #       - type: H2SemiNorm
+  #         weight: 1.0
+  #       - type: CompositeLoss
+  #         weight: 1.0
+  #         name: "SSIM_L2_Composite"
+  #         sub_components:
+  #           - type: SSIM
+  #             weight: 0.7
+  #           - type: MSE
+  #             weight: 0.3
   
   
   

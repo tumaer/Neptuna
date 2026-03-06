@@ -84,17 +84,23 @@ conditioning_features:
   # infers the conditioning parameters from the group names and determines the conditioning method.
   # Options: None, AdaNorm_LSE, AdaNorm_SE_per_param, AdaNorm_1SE, AdaNorm
   # If it is None, no conditioning is applied
-  #Example: If the group name is: "Re_100_Ma_0.1" --> extracted parameters are: [100, 0.1]
+  # Example: If the group name is "001_Re100_Ma0.1", extracted parameters are [100, 0.1]
+  # (a leading numeric id token like "001_" is ignored)
 
-  num_cond_params: null
-  # Type: int
-  # number of conditioning parameters.
-  # if not provided, will be inferred from the dataset group names.
+  conditioning_parameter_names: null
+  # Type: List[str, str, ...] or null
+  # Optional: choose which conditioning parameters to extract from group names.
+  # Matching is case-insensitive and exact (no prefix fallback).
+  # Example: ["Mas", "ugas", "We"]
+  # null means: use all parsed conditioning parameters.
 
   parameter_min_max_stats: null
   # Type: Dict
   # min and max values of each parameter.
-  # if not provided, will be computed automatically from the dataset
+  # if not provided, it will be computed automatically from the dataset.
+  # num_cond_params is auto-inferred from:
+  # 1) len(conditioning_parameter_names) if provided, else
+  # 2) len(parameter_min_max_stats)
   # Example, if there are 2 parameters say Re(0) and Ma(1):
   # 0:
   #   min: 100.0
@@ -112,7 +118,7 @@ conditioning_features:
     hidden_size: null
     # Type: int
     # hidden size of the conditioning MLP. Only relevant if mlp is True.
-    # if not provided, will be set to 4 * num_cond_params
+    # if not provided, will be set to 4 * (inferred number of conditioning parameters)
 
     activation: gelu
     # Type: str
