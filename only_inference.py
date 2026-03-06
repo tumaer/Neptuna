@@ -10,13 +10,18 @@ from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
 from utils.plot_progress import plot_rollout_metrics_bar_chart, calculate_and_save_results_all_channels, strip_validation_loss
 from utils.plot_progress import plot_multi_run_rollout_metrics
 from utils.loss_utils import fetch_loss_metric, fetch_infer_loss_dict
+# Runtime logging helpers:
+# - `InferenceRuntimeScope`: scoped timer + resource sampler
+# - `aggregate_scope_report`: rank/world aggregation for distributed inference
+# - `estimate_local_sample_count`: robust local-sample estimate across sharded/gathered outputs
+# - `write_inference_runtime_log`: atomic JSON write for runtime logs
 from utils.infer_log_utils import (
     InferenceRuntimeScope, 
-    _distributed_rank_world,
-    _aggregate_scope_report, 
-    _detect_accelerator_backend,
-    _write_inference_runtime_log,
-    _estimate_local_sample_count
+    distributed_rank_world,
+    aggregate_scope_report, 
+    detect_accelerator_backend,
+    write_inference_runtime_log,
+    estimate_local_sample_count
 )
 from bench.runner_utils import StreamingMetrics
 from metrics.inference_metrics import compute_metrics_for_n_rollouts, StreamingRolloutMetrics
@@ -449,6 +454,14 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
     Args:
         experiment_dir: Path to the experiment directory
         infer_config: Inference configuration
+
+        Runtime logging behavior:
+                - Creates one `InferenceRuntimeScope` for the overall run and additional
+                    per-section scopes around each `trainer.predict(...)` execution.
+                - Builds rank-local reports and aggregates them across ranks (if
+                    distributed) with `aggregate_scope_report`.
+                - Writes a single JSON runtime report in the experiment's
+                    `solo_inference` folder on the main process.
     """
     if dist.is_available() and dist.is_initialized():
         RANK = dist.get_rank()
@@ -879,9 +892,14 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
     _dbg(f"using solo_inference_dir={solo_inference_dir}")
 
     runtime_sample_interval = float(infer_config.get("runtime_log_sample_interval_sec", 1.0))
+    # `runtime_log_sections` stores already-aggregated section payloads keyed by
+    # logical section name (e.g., `eval_loop_random_start`, `overall_inference`).
     runtime_log_sections: Dict[str, Dict] = {}
+    # Local/global sample counters are used to compute stable throughput values
+    # for the final `overall_inference` section.
     runtime_local_samples_total = 0
     runtime_global_samples_total = 0
+    # Scope covering the complete experiment inference flow.
     overall_runtime_scope = InferenceRuntimeScope(
         name="overall_inference",
         sample_interval_sec=runtime_sample_interval,
@@ -973,6 +991,18 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
     ) if infer_config["batch_eval_metrics"] else compute_metrics_during_inference
 
     def _extract_rollout_metrics(metrics_dict: Dict):
+        """Extract rollout metric dictionaries from trainer metric payload.
+
+        Supports:
+            1. Preferred nested schema:
+               ``metrics_dict['rollout_metrics'][metric_name]``
+            2. Backward-compatible flat schema where rollout metrics are at the
+               top level.
+
+        Returns:
+            A dictionary keyed by metric name, where each value includes fields
+            such as ``per_rollout_step_mean``.
+        """
         out = {}
         if not isinstance(metrics_dict, dict):
             return out
@@ -1016,9 +1046,11 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         ) as eval_scope_random:
             predictions_obj, inputs, conditioning_inputs = trainer.predict(infer_ds, metric_key_prefix="")
 
-        random_local_samples = _estimate_local_sample_count(predictions_obj, len(infer_ds))
+        # Estimate how many samples this rank actually processed in the section,
+        # then aggregate rank reports into one world-level section payload.
+        random_local_samples = estimate_local_sample_count(predictions_obj, len(infer_ds))
         runtime_local_samples_total += int(random_local_samples)
-        runtime_log_sections["eval_loop_random_start"] = _aggregate_scope_report(
+        runtime_log_sections["eval_loop_random_start"] = aggregate_scope_report(
             eval_scope_random.build_local_report(local_samples=random_local_samples),
             global_samples=len(infer_ds),
         )
@@ -1213,9 +1245,10 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         ) as eval_scope_ic:
             predictions_obj, inputs, conditioning_inputs = trainer.predict(infer_ds_from_ic, metric_key_prefix="")
 
-        ic_local_samples = _estimate_local_sample_count(predictions_obj, len(infer_ds_from_ic))
+        # Same runtime accounting strategy as random-start branch.
+        ic_local_samples = estimate_local_sample_count(predictions_obj, len(infer_ds_from_ic))
         runtime_local_samples_total += int(ic_local_samples)
-        runtime_log_sections["eval_loop_ic_start"] = _aggregate_scope_report(
+        runtime_log_sections["eval_loop_ic_start"] = aggregate_scope_report(
             eval_scope_ic.build_local_report(local_samples=ic_local_samples),
             global_samples=len(infer_ds_from_ic),
         )
@@ -1374,13 +1407,15 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             _dbg("finished dist.barrier() after ic-start branch")
 
     overall_runtime_scope.stop()
-    runtime_log_sections["overall_inference"] = _aggregate_scope_report(
+    runtime_log_sections["overall_inference"] = aggregate_scope_report(
         overall_runtime_scope.build_local_report(local_samples=runtime_local_samples_total),
         global_samples=runtime_global_samples_total if runtime_global_samples_total > 0 else None,
     )
-    _rank_now, _world_now = _distributed_rank_world()
+    _rank_now, _world_now = distributed_rank_world()
 
     runtime_log_payload = {
+        # Build metadata-rich payload so the log is self-contained and can be
+        # consumed offline without additional context files.
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "overall_runtime_start_utc": overall_runtime_start_wall,
         "experiment_dir": experiment_dir,
@@ -1391,7 +1426,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             "platform": platform.platform(),
             "python": platform.python_version(),
         },
-        "accelerator_backend": _detect_accelerator_backend(),
+        "accelerator_backend": detect_accelerator_backend(),
         "distributed": {
             "initialized": bool(dist.is_available() and dist.is_initialized()),
             "rank": int(_rank_now),
@@ -1402,7 +1437,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
 
     if IS_MAIN_PROCESS:
         runtime_log_path = os.path.join(solo_inference_dir, "inference_runtime_log.json")
-        _write_inference_runtime_log(runtime_log_path, runtime_log_payload)
+        write_inference_runtime_log(runtime_log_path, runtime_log_payload)
         print(f"Runtime log saved to: {runtime_log_path}")
         print(f"Inference completed for {os.path.basename(experiment_dir)}")
         print(f"Results saved to: {solo_inference_dir}")

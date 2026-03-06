@@ -1,3 +1,17 @@
+"""Utility helpers for robust inference runtime telemetry.
+
+This module provides:
+- Lightweight backend/rank detection helpers.
+- `InferenceRuntimeScope` for scoped runtime sampling.
+- Aggregation helpers to merge per-rank telemetry into a single report.
+- Safe JSON log writing and sample-count estimation utilities.
+
+Design goals:
+- Never fail hard when optional telemetry tools are unavailable.
+- Work across CPU/CUDA/XPU/MPS backends.
+- Support both single-process and `torch.distributed` inference runs.
+"""
+
 import torch
 import numpy as np
 import os
@@ -14,7 +28,12 @@ import torch.distributed as dist
 import json
 
 
-def _detect_accelerator_backend() -> str:
+def detect_accelerator_backend() -> str:
+    """Detect the active accelerator backend in priority order.
+
+    Returns:
+        One of: ``"cuda"``, ``"xpu"``, ``"mps"``, or ``"cpu"``.
+    """
     if torch.cuda.is_available():
         return "cuda"
     if hasattr(torch, "xpu") and torch.xpu.is_available():
@@ -24,7 +43,17 @@ def _detect_accelerator_backend() -> str:
     return "cpu"
 
 
-def _distributed_rank_world() -> tuple[int, int]:
+def distributed_rank_world() -> tuple[int, int]:
+    """Return ``(rank, world_size)`` for the current process.
+
+    Behavior:
+        1. If ``torch.distributed`` is initialized, use that source of truth.
+        2. Otherwise, fall back to ``RANK``/``WORLD_SIZE`` environment variables.
+        3. If rank is missing, default to rank 0 and world size 1.
+
+    Returns:
+        Tuple containing the process rank and total world size.
+    """
     if dist.is_available() and dist.is_initialized():
         return dist.get_rank(), dist.get_world_size()
     rank = int(os.environ.get("RANK", -1))
@@ -63,18 +92,26 @@ def _mean_std(values: List[float]) -> tuple[Optional[float], Optional[float]]:
 
 class InferenceRuntimeScope:
     """
-    Runtime monitor for a scoped inference phase.
+        Runtime monitor for a scoped inference phase.
 
-    Supports CPU/CUDA/XPU/MPS without hard failures. GPU utilization/power is
-    sampled on CUDA via `nvidia-smi` when available.
+        The scope is used as a context manager around inference
+        sections (for example a single `trainer.predict(...)` call).
+
+        Capabilities:
+            - Tracks elapsed wall time.
+            - Captures peak process memory and accelerator memory where available.
+            - Samples device utilization/power with best-effort backend-specific
+                sources (e.g., `nvidia-smi`, `xpu-smi`, `xpumcli`, `powermetrics`).
+            - Produces a rank-local structured report consumable by
+                `aggregate_scope_report()`.
     """
 
     def __init__(self, name: str, sample_interval_sec: float = 1.0):
         self.name = name
         self.sample_interval_sec = max(0.2, float(sample_interval_sec))
-        self.backend = _detect_accelerator_backend()
+        self.backend = detect_accelerator_backend()
         self.hostname = socket.gethostname()
-        self.rank, self.world_size = _distributed_rank_world()
+        self.rank, self.world_size = distributed_rank_world()
 
         self._start_ts = None
         self._end_ts = None
@@ -131,6 +168,10 @@ class InferenceRuntimeScope:
         return ["cpu"]
 
     def start(self):
+        """Start timing and background sampling for this scope.
+
+        This method is idempotent for already-running scopes.
+        """
         if self._running:
             return
         self._running = True
@@ -153,6 +194,11 @@ class InferenceRuntimeScope:
         self._thread.start()
 
     def stop(self):
+        """Stop sampling and finalize elapsed timing for this scope.
+
+        Safe to call multiple times; only the first call while running has
+        effect.
+        """
         if not self._running:
             return
         self._stop_event.set()
@@ -163,6 +209,10 @@ class InferenceRuntimeScope:
 
     @property
     def elapsed_sec(self) -> float:
+        """Return elapsed scope duration in seconds.
+
+        If the scope is still running, this is computed up to "now".
+        """
         end_ts = self._end_ts if self._end_ts is not None else time.perf_counter()
         start_ts = self._start_ts if self._start_ts is not None else end_ts
         return max(0.0, end_ts - start_ts)
@@ -392,6 +442,16 @@ class InferenceRuntimeScope:
         return info
 
     def build_local_report(self, local_samples: int) -> Dict:
+        """Build a rank-local runtime summary payload.
+
+        Args:
+            local_samples: Number of samples processed by this rank within the
+                monitored scope.
+
+        Returns:
+            A JSON-serializable dictionary containing elapsed time, throughput,
+            memory peaks, per-device telemetry, and telemetry provenance.
+        """
         elapsed = max(self.elapsed_sec, 1e-12)
         throughput = float(local_samples) / elapsed
 
@@ -432,8 +492,24 @@ class InferenceRuntimeScope:
         return report
 
 
-def _aggregate_scope_report(local_report: Dict, global_samples: Optional[int] = None) -> Dict:
-    rank, world = _distributed_rank_world()
+def aggregate_scope_report(local_report: Dict, global_samples: Optional[int] = None) -> Dict:
+    """Aggregate rank-local scope reports into a world-level report.
+
+    In distributed runs, this function gathers local reports from all ranks via
+    ``dist.all_gather_object``. In single-process mode, the output is built from
+    the provided local report only.
+
+    Args:
+        local_report: Rank-local report from
+            ``InferenceRuntimeScope.build_local_report()``.
+        global_samples: Optional known global sample count. If not provided,
+            the sum of local sample counts is used.
+
+    Returns:
+        A structured aggregate containing elapsed scope time, global/per-device
+        throughput, telemetry availability, source metadata, and rank reports.
+    """
+    rank, world = distributed_rank_world()
 
     reports = [local_report]
     if dist.is_available() and dist.is_initialized() and world > 1:
@@ -569,15 +645,38 @@ def _aggregate_scope_report(local_report: Dict, global_samples: Optional[int] = 
     return aggregated
 
 
-def _write_inference_runtime_log(log_path: str, payload: Dict) -> None:
+def write_inference_runtime_log(log_path: str, payload: Dict) -> None:
+    """Atomically write inference runtime telemetry to JSON.
+
+    The payload is written to a temporary file first and then moved into place,
+    reducing the chance of partially written logs.
+
+    Args:
+        log_path: Final destination JSON path.
+        payload: JSON-serializable runtime report payload.
+    """
     tmp_path = f"{log_path}.tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, sort_keys=False)
     os.replace(tmp_path, log_path)
 
 
-def _estimate_local_sample_count(predictions_obj, global_dataset_len: int) -> int:
-    rank, world = _distributed_rank_world()
+def estimate_local_sample_count(predictions_obj, global_dataset_len: int) -> int:
+    """Estimate per-rank processed sample count from predict output.
+
+    This helper handles cases where prediction tensors may be globally gathered
+    (and thus larger than expected for one rank). In those cases it falls back
+    to an expected shard size derived from ``global_dataset_len``.
+
+    Args:
+        predictions_obj: Prediction object (typically from `trainer.predict`) 
+            expected to expose ``predictions``.
+        global_dataset_len: Global dataset length used for inference.
+
+    Returns:
+        Estimated local sample count for the current rank.
+    """
+    rank, world = distributed_rank_world()
     n_local = None
     try:
         preds = getattr(predictions_obj, "predictions", None)
