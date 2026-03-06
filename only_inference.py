@@ -10,6 +10,14 @@ from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
 from utils.plot_progress import plot_rollout_metrics_bar_chart, calculate_and_save_results_all_channels, strip_validation_loss
 from utils.plot_progress import plot_multi_run_rollout_metrics
 from utils.loss_utils import fetch_loss_metric, fetch_infer_loss_dict
+from utils.infer_log_utils import (
+    InferenceRuntimeScope, 
+    _distributed_rank_world,
+    _aggregate_scope_report, 
+    _detect_accelerator_backend,
+    _write_inference_runtime_log,
+    _estimate_local_sample_count
+)
 from bench.runner_utils import StreamingMetrics
 from metrics.inference_metrics import compute_metrics_for_n_rollouts, StreamingRolloutMetrics
 from transformers.trainer import EvalPrediction
@@ -26,6 +34,9 @@ import time
 import numpy as np
 import csv
 import ast
+import socket
+import platform
+from datetime import datetime, timezone
 
 
 def load_pretrained_model(model_config):
@@ -429,6 +440,7 @@ def save_errors_to_structured_csv(errors, output_dir, channel_names: Optional[Li
             for col_name in all_col_names_sorted:
                 row.append(row_data.get(col_name, ""))  # empty if missing
             writer.writerow(row)
+
 
 def run_inference_for_each_experiment(experiment_dir, infer_config):
     """
@@ -865,6 +877,17 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
     # Create a unique solo_inference directory within the experiment directory
     solo_inference_dir = get_inference_dir_main_process_only(experiment_dir)
     _dbg(f"using solo_inference_dir={solo_inference_dir}")
+
+    runtime_sample_interval = float(infer_config.get("runtime_log_sample_interval_sec", 1.0))
+    runtime_log_sections: Dict[str, Dict] = {}
+    runtime_local_samples_total = 0
+    runtime_global_samples_total = 0
+    overall_runtime_scope = InferenceRuntimeScope(
+        name="overall_inference",
+        sample_interval_sec=runtime_sample_interval,
+    )
+    overall_runtime_scope.start()
+    overall_runtime_start_wall = datetime.now(timezone.utc).isoformat()
     
     # Override filter parameters from infer_config if they are specified (not None)
     infer_filter_groups = data_config["filter_features"]["infer_filter_groups"]
@@ -969,6 +992,11 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
 
     random_start_stats_dict = None
     ic_start_stats_dict = None
+
+    if infer_config["infer_from_random_timestep"] and infer_ds is not None:
+        runtime_global_samples_total += len(infer_ds)
+    if infer_config["infer_from_ic"] and infer_ds_from_ic is not None:
+        runtime_global_samples_total += len(infer_ds_from_ic)
     
     if infer_config["infer_from_random_timestep"]:
         if IS_MAIN_PROCESS:
@@ -982,7 +1010,18 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             main_only=True,
         )
 
-        predictions_obj, inputs, conditioning_inputs = trainer.predict(infer_ds, metric_key_prefix="")
+        with InferenceRuntimeScope(
+            name="eval_loop_random_start",
+            sample_interval_sec=runtime_sample_interval,
+        ) as eval_scope_random:
+            predictions_obj, inputs, conditioning_inputs = trainer.predict(infer_ds, metric_key_prefix="")
+
+        random_local_samples = _estimate_local_sample_count(predictions_obj, len(infer_ds))
+        runtime_local_samples_total += int(random_local_samples)
+        runtime_log_sections["eval_loop_random_start"] = _aggregate_scope_report(
+            eval_scope_random.build_local_report(local_samples=random_local_samples),
+            global_samples=len(infer_ds),
+        )
         _dbg(
             "trainer.predict(random-start) completed | "
             f"pred_shape={getattr(predictions_obj.predictions, 'shape', None)} | "
@@ -1168,7 +1207,18 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         # ----------------------------------------------------------
         # Prepare prediction, target and input arrays
         # ----------------------------------------------------------
-        predictions_obj, inputs, conditioning_inputs = trainer.predict(infer_ds_from_ic, metric_key_prefix="")
+        with InferenceRuntimeScope(
+            name="eval_loop_ic_start",
+            sample_interval_sec=runtime_sample_interval,
+        ) as eval_scope_ic:
+            predictions_obj, inputs, conditioning_inputs = trainer.predict(infer_ds_from_ic, metric_key_prefix="")
+
+        ic_local_samples = _estimate_local_sample_count(predictions_obj, len(infer_ds_from_ic))
+        runtime_local_samples_total += int(ic_local_samples)
+        runtime_log_sections["eval_loop_ic_start"] = _aggregate_scope_report(
+            eval_scope_ic.build_local_report(local_samples=ic_local_samples),
+            global_samples=len(infer_ds_from_ic),
+        )
         _dbg(
             "trainer.predict(ic-start) completed | "
             f"pred_shape={getattr(predictions_obj.predictions, 'shape', None)} | "
@@ -1323,7 +1373,37 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             dist.barrier()
             _dbg("finished dist.barrier() after ic-start branch")
 
+    overall_runtime_scope.stop()
+    runtime_log_sections["overall_inference"] = _aggregate_scope_report(
+        overall_runtime_scope.build_local_report(local_samples=runtime_local_samples_total),
+        global_samples=runtime_global_samples_total if runtime_global_samples_total > 0 else None,
+    )
+    _rank_now, _world_now = _distributed_rank_world()
+
+    runtime_log_payload = {
+        "generated_utc": datetime.now(timezone.utc).isoformat(),
+        "overall_runtime_start_utc": overall_runtime_start_wall,
+        "experiment_dir": experiment_dir,
+        "solo_inference_dir": solo_inference_dir,
+        "checkpoint_path": checkpoint_path,
+        "host": {
+            "hostname": socket.gethostname(),
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+        },
+        "accelerator_backend": _detect_accelerator_backend(),
+        "distributed": {
+            "initialized": bool(dist.is_available() and dist.is_initialized()),
+            "rank": int(_rank_now),
+            "world_size": int(_world_now),
+        },
+        "sections": runtime_log_sections,
+    }
+
     if IS_MAIN_PROCESS:
+        runtime_log_path = os.path.join(solo_inference_dir, "inference_runtime_log.json")
+        _write_inference_runtime_log(runtime_log_path, runtime_log_payload)
+        print(f"Runtime log saved to: {runtime_log_path}")
         print(f"Inference completed for {os.path.basename(experiment_dir)}")
         print(f"Results saved to: {solo_inference_dir}")
 

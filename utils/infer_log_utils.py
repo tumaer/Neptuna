@@ -1,0 +1,597 @@
+import torch
+import numpy as np
+import os
+import socket
+import time
+import threading
+import subprocess
+import shutil
+import re
+import resource
+from collections import defaultdict
+from typing import List, Dict, Optional
+import torch.distributed as dist
+import json
+
+
+def _detect_accelerator_backend() -> str:
+    if torch.cuda.is_available():
+        return "cuda"
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        return "xpu"
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def _distributed_rank_world() -> tuple[int, int]:
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_rank(), dist.get_world_size()
+    rank = int(os.environ.get("RANK", -1))
+    world = int(os.environ.get("WORLD_SIZE", "1"))
+    if rank < 0:
+        rank = 0
+    return rank, world
+
+
+def _sharded_local_count(global_count: int, rank: int, world_size: int) -> int:
+    if world_size <= 1:
+        return int(global_count)
+    base = int(global_count) // world_size
+    rem = int(global_count) % world_size
+    return base + (1 if rank < rem else 0)
+
+
+def _as_float_or_none(value):
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _mean_std(values: List[float]) -> tuple[Optional[float], Optional[float]]:
+    arr = [float(v) for v in values if v is not None]
+    if len(arr) == 0:
+        return None, None
+    if len(arr) == 1:
+        return arr[0], 0.0
+    np_arr = np.asarray(arr, dtype=np.float64)
+    return float(np_arr.mean()), float(np_arr.std(ddof=0))
+
+
+class InferenceRuntimeScope:
+    """
+    Runtime monitor for a scoped inference phase.
+
+    Supports CPU/CUDA/XPU/MPS without hard failures. GPU utilization/power is
+    sampled on CUDA via `nvidia-smi` when available.
+    """
+
+    def __init__(self, name: str, sample_interval_sec: float = 1.0):
+        self.name = name
+        self.sample_interval_sec = max(0.2, float(sample_interval_sec))
+        self.backend = _detect_accelerator_backend()
+        self.hostname = socket.gethostname()
+        self.rank, self.world_size = _distributed_rank_world()
+
+        self._start_ts = None
+        self._end_ts = None
+        self._running = False
+        self._thread = None
+        self._stop_event = threading.Event()
+
+        self._gpu_samples = defaultdict(lambda: {"util": [], "power_w": []})
+        self._mps_memory_samples_mb = []
+        self._telemetry_info = {
+            "utilization_source": None,
+            "power_source": None,
+            "notes": [],
+        }
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()
+
+    def _active_device_labels(self) -> List[str]:
+        if self.backend == "cuda":
+            try:
+                if self.world_size > 1:
+                    idx = int(torch.cuda.current_device())
+                    name = torch.cuda.get_device_name(idx)
+                    return [f"cuda:{idx} ({name})"]
+                labels = []
+                for idx in range(torch.cuda.device_count()):
+                    name = torch.cuda.get_device_name(idx)
+                    labels.append(f"cuda:{idx} ({name})")
+                return labels
+            except Exception:
+                return ["cuda"]
+
+        if self.backend == "xpu":
+            try:
+                if self.world_size > 1:
+                    idx = int(torch.xpu.current_device())
+                    name = torch.xpu.get_device_name(idx)
+                    return [f"xpu:{idx} ({name})"]
+                labels = []
+                for idx in range(torch.xpu.device_count()):
+                    name = torch.xpu.get_device_name(idx)
+                    labels.append(f"xpu:{idx} ({name})")
+                return labels
+            except Exception:
+                return ["xpu"]
+
+        if self.backend == "mps":
+            return ["mps:0"]
+        return ["cpu"]
+
+    def start(self):
+        if self._running:
+            return
+        self._running = True
+        self._start_ts = time.perf_counter()
+
+        if self.backend == "cuda":
+            try:
+                torch.cuda.reset_peak_memory_stats()
+            except Exception:
+                pass
+        elif self.backend == "xpu":
+            try:
+                if hasattr(torch.xpu, "reset_peak_memory_stats"):
+                    torch.xpu.reset_peak_memory_stats()
+            except Exception:
+                pass
+
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._sample_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        if not self._running:
+            return
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=max(1.0, 2.0 * self.sample_interval_sec))
+        self._end_ts = time.perf_counter()
+        self._running = False
+
+    @property
+    def elapsed_sec(self) -> float:
+        end_ts = self._end_ts if self._end_ts is not None else time.perf_counter()
+        start_ts = self._start_ts if self._start_ts is not None else end_ts
+        return max(0.0, end_ts - start_ts)
+
+    def _sample_loop(self):
+        while not self._stop_event.is_set():
+            self._sample_once()
+            self._stop_event.wait(self.sample_interval_sec)
+
+    def _sample_once(self):
+        if self.backend == "cuda":
+            self._sample_cuda_util_power()
+        elif self.backend == "xpu":
+            self._sample_xpu_util_power()
+        elif self.backend == "mps":
+            self._sample_mps_memory()
+            self._sample_mps_util_power()
+
+    def _sample_mps_memory(self):
+        try:
+            if hasattr(torch, "mps") and hasattr(torch.mps, "current_allocated_memory"):
+                mem_mb = float(torch.mps.current_allocated_memory()) / (1024.0 ** 2)
+                self._mps_memory_samples_mb.append(mem_mb)
+        except Exception:
+            pass
+
+    def _sample_cuda_util_power(self):
+        cmd = [
+            "nvidia-smi",
+            "--query-gpu=index,utilization.gpu,power.draw",
+            "--format=csv,noheader,nounits",
+        ]
+        try:
+            out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True, timeout=2.0)
+        except Exception:
+            return
+
+        for line in out.splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 3:
+                continue
+            gpu_id = parts[0]
+            try:
+                util = float(parts[1]) if parts[1] not in ("", "N/A") else None
+                pwr = float(parts[2]) if parts[2] not in ("", "N/A") else None
+            except Exception:
+                util = None
+                pwr = None
+            if util is not None:
+                self._gpu_samples[gpu_id]["util"].append(util)
+            if pwr is not None:
+                self._gpu_samples[gpu_id]["power_w"].append(pwr)
+
+        self._telemetry_info["utilization_source"] = "nvidia-smi"
+        self._telemetry_info["power_source"] = "nvidia-smi"
+
+    def _append_note_once(self, message: str):
+        if message not in self._telemetry_info["notes"]:
+            self._telemetry_info["notes"].append(message)
+
+    def _sample_xpu_util_power(self):
+        # 1) Try PyTorch-native utilization if available.
+        try:
+            if hasattr(torch, "xpu") and hasattr(torch.xpu, "utilization"):
+                if self.world_size > 1:
+                    dev_ids = [int(torch.xpu.current_device())]
+                else:
+                    dev_ids = list(range(int(torch.xpu.device_count())))
+                for dev_id in dev_ids:
+                    try:
+                        util = torch.xpu.utilization(dev_id)
+                        if util is not None:
+                            self._gpu_samples[str(dev_id)]["util"].append(float(util))
+                    except Exception:
+                        pass
+                self._telemetry_info["utilization_source"] = "torch.xpu.utilization"
+        except Exception:
+            pass
+
+        # 2) Try xpu-smi if installed. Expected csv-like output lines:
+        #    <id>,<util>,<power>
+        if shutil.which("xpu-smi") is not None:
+            cmd = [
+                "xpu-smi",
+                "stats",
+                "-d",
+                "all",
+                "--format",
+                "csv",
+                "--show",
+                "utilization,power",
+            ]
+            try:
+                out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True, timeout=2.0)
+                parsed_any = False
+                for line in out.splitlines():
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) < 3:
+                        continue
+                    dev = parts[0]
+                    try:
+                        util = float(parts[1]) if parts[1] not in ("", "N/A", "na") else None
+                        pwr = float(parts[2]) if parts[2] not in ("", "N/A", "na") else None
+                    except Exception:
+                        util, pwr = None, None
+                    if util is not None:
+                        self._gpu_samples[str(dev)]["util"].append(util)
+                        parsed_any = True
+                    if pwr is not None:
+                        self._gpu_samples[str(dev)]["power_w"].append(pwr)
+                        parsed_any = True
+                if parsed_any:
+                    self._telemetry_info["utilization_source"] = self._telemetry_info["utilization_source"] or "xpu-smi"
+                    self._telemetry_info["power_source"] = "xpu-smi"
+                    return
+            except Exception:
+                pass
+
+        # 3) Try xpumcli (JSON/text). Parse best-effort util/power pairs.
+        if shutil.which("xpumcli") is not None:
+            # NOTE: xpumcli format varies by version; we do regex extraction.
+            cmd = ["xpumcli", "stats", "-d", "-1"]
+            try:
+                out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True, timeout=2.0)
+                # A loose parser: look for device id and nearby util/power numbers.
+                # We avoid hard dependency on a specific xpumcli schema.
+                current_dev = None
+                parsed_any = False
+                for raw in out.splitlines():
+                    line = raw.strip()
+                    m_dev = re.search(r"device\s*id\s*[:=]\s*(\d+)", line, flags=re.IGNORECASE)
+                    if m_dev:
+                        current_dev = m_dev.group(1)
+                        continue
+
+                    m_util = re.search(r"(gpu\s*util\w*|utili[sz]ation)\D+([0-9]+(?:\.[0-9]+)?)", line, flags=re.IGNORECASE)
+                    if m_util and current_dev is not None:
+                        self._gpu_samples[str(current_dev)]["util"].append(float(m_util.group(2)))
+                        parsed_any = True
+
+                    m_pwr = re.search(r"power\D+([0-9]+(?:\.[0-9]+)?)", line, flags=re.IGNORECASE)
+                    if m_pwr and current_dev is not None:
+                        self._gpu_samples[str(current_dev)]["power_w"].append(float(m_pwr.group(1)))
+                        parsed_any = True
+
+                if parsed_any:
+                    self._telemetry_info["utilization_source"] = self._telemetry_info["utilization_source"] or "xpumcli"
+                    self._telemetry_info["power_source"] = self._telemetry_info["power_source"] or "xpumcli"
+                    return
+            except Exception:
+                pass
+
+        # If we get here, no xpu util/power source succeeded this sample.
+        if self._telemetry_info["utilization_source"] is None:
+            self._append_note_once("XPU utilization telemetry unavailable (torch.xpu.utilization/xpu-smi/xpumcli not usable).")
+        if self._telemetry_info["power_source"] is None:
+            self._append_note_once("XPU power telemetry unavailable (xpu-smi/xpumcli not usable).")
+
+    def _sample_mps_util_power(self):
+        # There is no stable PyTorch MPS API for utilization/power. Try powermetrics best-effort.
+        if shutil.which("powermetrics") is None:
+            self._append_note_once("MPS utilization/power telemetry unavailable (powermetrics not found).")
+            return
+
+        # `powermetrics` often needs elevated privileges; keep this optional/non-fatal.
+        cmd = ["powermetrics", "--samplers", "gpu_power", "-n", "1", "-i", "1000"]
+        try:
+            out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True, timeout=3.0)
+        except Exception:
+            self._append_note_once("powermetrics exists but could not be executed (permission or platform constraints).")
+            return
+
+        util = None
+        pwr = None
+        for raw in out.splitlines():
+            line = raw.strip()
+            # Best-effort parsing across macOS versions
+            m_util = re.search(r"(gpu\s*active|utili[sz]ation)\D+([0-9]+(?:\.[0-9]+)?)\s*%", line, flags=re.IGNORECASE)
+            if m_util:
+                util = float(m_util.group(2))
+            m_pwr = re.search(r"gpu\s*power\D+([0-9]+(?:\.[0-9]+)?)\s*(w|mw)", line, flags=re.IGNORECASE)
+            if m_pwr:
+                val = float(m_pwr.group(1))
+                unit = m_pwr.group(2).lower()
+                pwr = val / 1000.0 if unit == "mw" else val
+
+        dev = "0"
+        if util is not None:
+            self._gpu_samples[dev]["util"].append(util)
+            self._telemetry_info["utilization_source"] = "powermetrics"
+        if pwr is not None:
+            self._gpu_samples[dev]["power_w"].append(pwr)
+            self._telemetry_info["power_source"] = "powermetrics"
+
+        if util is None and pwr is None:
+            self._append_note_once("powermetrics output did not include parseable MPS util/power samples.")
+
+    def _peak_memory_info(self) -> Dict[str, Optional[float]]:
+        # ru_maxrss on Linux is KB.
+        cpu_peak_mb = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / 1024.0
+        info: Dict[str, Optional[float]] = {
+            "cpu_peak_rss_mb": cpu_peak_mb,
+            "accelerator_peak_allocated_mb": None,
+            "accelerator_peak_reserved_mb": None,
+        }
+
+        if self.backend == "cuda":
+            try:
+                dev = torch.cuda.current_device()
+                info["accelerator_peak_allocated_mb"] = float(torch.cuda.max_memory_allocated(dev)) / (1024.0 ** 2)
+                info["accelerator_peak_reserved_mb"] = float(torch.cuda.max_memory_reserved(dev)) / (1024.0 ** 2)
+            except Exception:
+                pass
+        elif self.backend == "xpu":
+            try:
+                dev = torch.xpu.current_device()
+                if hasattr(torch.xpu, "max_memory_allocated"):
+                    info["accelerator_peak_allocated_mb"] = float(torch.xpu.max_memory_allocated(dev)) / (1024.0 ** 2)
+                if hasattr(torch.xpu, "max_memory_reserved"):
+                    info["accelerator_peak_reserved_mb"] = float(torch.xpu.max_memory_reserved(dev)) / (1024.0 ** 2)
+            except Exception:
+                pass
+        elif self.backend == "mps":
+            if self._mps_memory_samples_mb:
+                info["accelerator_peak_allocated_mb"] = float(max(self._mps_memory_samples_mb))
+
+        return info
+
+    def build_local_report(self, local_samples: int) -> Dict:
+        elapsed = max(self.elapsed_sec, 1e-12)
+        throughput = float(local_samples) / elapsed
+
+        per_device = {}
+        for gpu_id, gpu_series in self._gpu_samples.items():
+            util_mean, util_std = _mean_std(gpu_series.get("util", []))
+            pwr_mean, pwr_std = _mean_std(gpu_series.get("power_w", []))
+            per_device[str(gpu_id)] = {
+                "utilization_mean_percent": util_mean,
+                "utilization_std_percent": util_std,
+                "power_mean_w": pwr_mean,
+                "power_std_w": pwr_std,
+            }
+
+        util_available = any(v.get("utilization_mean_percent") is not None for v in per_device.values())
+        power_available = any(v.get("power_mean_w") is not None for v in per_device.values())
+
+        report = {
+            "scope_name": self.name,
+            "rank": self.rank,
+            "world_size": self.world_size,
+            "hostname": self.hostname,
+            "backend": self.backend,
+            "device_labels": self._active_device_labels(),
+            "elapsed_sec": float(elapsed),
+            "local_samples": int(local_samples),
+            "throughput_samples_per_sec": float(throughput),
+            "memory": self._peak_memory_info(),
+            "device_telemetry": {
+                "per_device": per_device,
+                "utilization_source": self._telemetry_info.get("utilization_source"),
+                "power_source": self._telemetry_info.get("power_source"),
+                "notes": list(self._telemetry_info.get("notes", [])),
+                "utilization_available": util_available,
+                "power_available": power_available,
+            },
+        }
+        return report
+
+
+def _aggregate_scope_report(local_report: Dict, global_samples: Optional[int] = None) -> Dict:
+    rank, world = _distributed_rank_world()
+
+    reports = [local_report]
+    if dist.is_available() and dist.is_initialized() and world > 1:
+        gathered = [None for _ in range(world)]
+        dist.all_gather_object(gathered, local_report)
+        reports = [r for r in gathered if isinstance(r, dict)]
+
+    elapsed_values = [
+        _as_float_or_none(r.get("elapsed_sec"))
+        for r in reports
+    ]
+    elapsed_values = [v for v in elapsed_values if v is not None]
+    elapsed_scope = max(elapsed_values) if elapsed_values else None
+
+    per_device_throughput = [
+        _as_float_or_none(r.get("throughput_samples_per_sec"))
+        for r in reports
+    ]
+    per_device_throughput = [v for v in per_device_throughput if v is not None]
+    thr_mean, thr_std = _mean_std(per_device_throughput)
+
+    util_device_means = []
+    power_device_means = []
+    per_device_gpu_stats = []
+    for r in reports:
+        r_rank = r.get("rank")
+        host = r.get("hostname")
+        # New unified schema with backward-compatible fallback.
+        local_device_telemetry = r.get("device_telemetry") or {}
+        per_local_device = local_device_telemetry.get("per_device") or r.get("gpu_devices") or {}
+        for gpu_id, stats in per_local_device.items():
+            util_mean = _as_float_or_none(stats.get("utilization_mean_percent"))
+            pwr_mean = _as_float_or_none(stats.get("power_mean_w"))
+            if util_mean is not None:
+                util_device_means.append(util_mean)
+            if pwr_mean is not None:
+                power_device_means.append(pwr_mean)
+            per_device_gpu_stats.append(
+                {
+                    "rank": r_rank,
+                    "hostname": host,
+                    "gpu_id": gpu_id,
+                    **stats,
+                }
+            )
+
+    util_mean, util_std = _mean_std(util_device_means)
+    power_mean, power_std = _mean_std(power_device_means)
+
+    util_sources = sorted(
+        list(
+            {
+                str((r.get("device_telemetry") or r.get("telemetry") or {}).get("utilization_source"))
+                for r in reports
+                if ((r.get("device_telemetry") or r.get("telemetry") or {}).get("utilization_source"))
+            }
+        )
+    )
+    power_sources = sorted(
+        list(
+            {
+                str((r.get("device_telemetry") or r.get("telemetry") or {}).get("power_source"))
+                for r in reports
+                if ((r.get("device_telemetry") or r.get("telemetry") or {}).get("power_source"))
+            }
+        )
+    )
+    telemetry_notes = []
+    for r in reports:
+        merged_local = r.get("device_telemetry") or r.get("telemetry") or {}
+        for note in merged_local.get("notes", []) or []:
+            if note not in telemetry_notes:
+                telemetry_notes.append(note)
+
+    total_local_samples = int(sum(int(r.get("local_samples", 0)) for r in reports))
+    total_samples = int(global_samples) if global_samples is not None else total_local_samples
+    global_throughput = None
+    if elapsed_scope is not None and elapsed_scope > 0:
+        global_throughput = float(total_samples) / float(elapsed_scope)
+
+    peak_cpu_mb = [
+        _as_float_or_none((r.get("memory") or {}).get("cpu_peak_rss_mb"))
+        for r in reports
+    ]
+    peak_accel_mb = [
+        _as_float_or_none((r.get("memory") or {}).get("accelerator_peak_allocated_mb"))
+        for r in reports
+    ]
+
+    aggregated = {
+        "scope_name": local_report.get("scope_name", "scope"),
+        "rank": rank,
+        "world_size": world,
+        "backend": local_report.get("backend"),
+        "hostnames": sorted(list({str(r.get("hostname")) for r in reports if r.get("hostname")})),
+        "devices": {
+            "devices_reporting": int(len(reports)),
+            "accelerator_devices_reporting": int(len(per_device_gpu_stats)),
+        },
+        "elapsed_sec": elapsed_scope,
+        "samples": {
+            "global_samples": total_samples,
+            "summed_local_samples": total_local_samples,
+        },
+        "throughput": {
+            "global_samples_per_sec": global_throughput,
+            "per_device_samples_per_sec": per_device_throughput,
+            "per_device_mean_samples_per_sec": thr_mean,
+            "per_device_std_samples_per_sec": thr_std,
+        },
+        "device_telemetry": {
+            "per_device": per_device_gpu_stats,
+            "utilization": {
+                "mean_percent": util_mean,
+                "std_percent": util_std,
+            },
+            "power": {
+                "mean_w": power_mean,
+                "std_w": power_std,
+            },
+            "utilization_sources": util_sources,
+            "power_sources": power_sources,
+            "notes": telemetry_notes,
+            "utilization_available": len(util_device_means) > 0,
+            "power_available": len(power_device_means) > 0,
+        },
+        "peak_memory": {
+            "cpu_peak_rss_mb_max": float(max([v for v in peak_cpu_mb if v is not None])) if any(v is not None for v in peak_cpu_mb) else None,
+            "accelerator_peak_allocated_mb_max": float(max([v for v in peak_accel_mb if v is not None])) if any(v is not None for v in peak_accel_mb) else None,
+        },
+        "reports_by_rank": reports,
+    }
+    return aggregated
+
+
+def _write_inference_runtime_log(log_path: str, payload: Dict) -> None:
+    tmp_path = f"{log_path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=False)
+    os.replace(tmp_path, log_path)
+
+
+def _estimate_local_sample_count(predictions_obj, global_dataset_len: int) -> int:
+    rank, world = _distributed_rank_world()
+    n_local = None
+    try:
+        preds = getattr(predictions_obj, "predictions", None)
+        if hasattr(preds, "shape") and len(preds.shape) > 0:
+            n_local = int(preds.shape[0])
+    except Exception:
+        n_local = None
+
+    fallback = _sharded_local_count(global_dataset_len, rank, world)
+    if n_local is None or n_local <= 0:
+        return fallback
+
+    # If predict() returns globally gathered tensors per rank, this value can be too large.
+    # In that case, fall back to the expected sharded count.
+    if world > 1 and n_local > global_dataset_len:
+        return fallback
+    return n_local

@@ -1,6 +1,8 @@
 import time
 import os
 import atexit
+import socket
+import platform
 from transformers import TrainingArguments
 from train.trainer import Trainer, compute_curriculum_start_epochs
 from metrics.inference_metrics import compute_metrics_for_n_rollouts, StreamingRolloutMetrics
@@ -33,6 +35,15 @@ import torch.distributed as dist
 from omegaconf import ListConfig, OmegaConf
 from only_inference import build_train_and_infer_loss
 import glob
+from datetime import datetime, timezone
+from utils.infer_log_utils import (
+    InferenceRuntimeScope, 
+    _distributed_rank_world,
+    _aggregate_scope_report, 
+    _detect_accelerator_backend,
+    _write_inference_runtime_log,
+    _estimate_local_sample_count
+)
 
 __all__ = ["run"]
 
@@ -650,7 +661,23 @@ def run(cfg):
 
             os.makedirs(inference_dir, exist_ok=True)
 
+            runtime_sample_interval = float(cfg["infer_config"].get("runtime_log_sample_interval_sec", 1.0))
+            runtime_log_sections: dict[str, dict] = {}
+            runtime_local_samples_total = 0
+            runtime_global_samples_total = 0
+            overall_runtime_scope = InferenceRuntimeScope(
+                name="overall_inference",
+                sample_interval_sec=runtime_sample_interval,
+            )
+            overall_runtime_scope.start()
+            overall_runtime_start_wall = datetime.now(timezone.utc).isoformat()
+
             infer_ds, infer_ds_from_ic = make_datasets(cfg, mode="infer")
+
+            if cfg["infer_config"]["infer_from_random_timestep"] and infer_ds is not None:
+                runtime_global_samples_total += len(infer_ds)
+            if cfg["infer_config"]["infer_from_ic"] and infer_ds_from_ic is not None:
+                runtime_global_samples_total += len(infer_ds_from_ic)
             
             random_start_stats_dict = None
             ic_start_stats_dict = None
@@ -661,7 +688,18 @@ def run(cfg):
                     rollout_steps=cfg["infer_config"]["n_infer_rollouts"], output_all_steps=True
                 )
 
-                predictions_obj, inputs, conditioning_inputs = trainer.predict(infer_ds, metric_key_prefix="")
+                with InferenceRuntimeScope(
+                    name="eval_loop_random_start",
+                    sample_interval_sec=runtime_sample_interval,
+                ) as eval_scope_random:
+                    predictions_obj, inputs, conditioning_inputs = trainer.predict(infer_ds, metric_key_prefix="")
+
+                random_local_samples = _estimate_local_sample_count(predictions_obj, len(infer_ds))
+                runtime_local_samples_total += int(random_local_samples)
+                runtime_log_sections["eval_loop_random_start"] = _aggregate_scope_report(
+                    eval_scope_random.build_local_report(local_samples=random_local_samples),
+                    global_samples=len(infer_ds),
+                )
                 ############################################################
                 # predictions_obj.predictions: the output of the model with shape (accumulated_outputs, num_rollouts, label_seq_length, channel_dim, *spatial) 
                 # accumulated_outputs and accumulated_gt have the length of number of windows in the test dataset
@@ -826,7 +864,18 @@ def run(cfg):
                 # ----------------------------------------------------------
                 # Prepare prediction, target and input arrays
                 # ----------------------------------------------------------
-                predictions_obj, inputs, conditioning_inputs = trainer.predict(infer_ds_from_ic, metric_key_prefix="")
+                with InferenceRuntimeScope(
+                    name="eval_loop_ic_start",
+                    sample_interval_sec=runtime_sample_interval,
+                ) as eval_scope_ic:
+                    predictions_obj, inputs, conditioning_inputs = trainer.predict(infer_ds_from_ic, metric_key_prefix="")
+
+                ic_local_samples = _estimate_local_sample_count(predictions_obj, len(infer_ds_from_ic))
+                runtime_local_samples_total += int(ic_local_samples)
+                runtime_log_sections["eval_loop_ic_start"] = _aggregate_scope_report(
+                    eval_scope_ic.build_local_report(local_samples=ic_local_samples),
+                    global_samples=len(infer_ds_from_ic),
+                )
 
                 print('Accumulated error for the whole test set (IC start):')
                 errors = {}
@@ -973,6 +1022,37 @@ def run(cfg):
 
                 print(f"Inference completed for {checkpoint_parent_dir} ")
                 print(f"Results saved to: {direct_inference_dir}")
+
+            overall_runtime_scope.stop()
+            runtime_log_sections["overall_inference"] = _aggregate_scope_report(
+                overall_runtime_scope.build_local_report(local_samples=runtime_local_samples_total),
+                global_samples=runtime_global_samples_total if runtime_global_samples_total > 0 else None,
+            )
+            _rank_now, _world_now = _distributed_rank_world()
+
+            runtime_log_payload = {
+                "generated_utc": datetime.now(timezone.utc).isoformat(),
+                "overall_runtime_start_utc": overall_runtime_start_wall,
+                "checkpoint_dir": checkpoint_dir,
+                "direct_inference_dir": direct_inference_dir,
+                "host": {
+                    "hostname": socket.gethostname(),
+                    "platform": platform.platform(),
+                    "python": platform.python_version(),
+                },
+                "accelerator_backend": _detect_accelerator_backend(),
+                "distributed": {
+                    "initialized": bool(dist.is_available() and dist.is_initialized()),
+                    "rank": int(_rank_now),
+                    "world_size": int(_world_now),
+                },
+                "sections": runtime_log_sections,
+            }
+
+            if IS_MAIN_PROCESS:
+                runtime_log_path = os.path.join(direct_inference_dir, "inference_runtime_log.json")
+                _write_inference_runtime_log(runtime_log_path, runtime_log_payload)
+                print(f"Runtime log saved to: {runtime_log_path}")
             
     else:
         # get the sampler from the config, it could be GridSampler, RandomSampler, TPESampler etc.
