@@ -253,6 +253,7 @@ class RuntimeTelemetryScope:
 
     def _sample_cuda_util_power(self):
         # CUDA telemetry is sourced from nvidia-smi for broad compatibility.
+        target_gpu_ids = self._target_cuda_gpu_ids()
         cmd = [
             "nvidia-smi",
             "--query-gpu=index,utilization.gpu,power.draw",
@@ -268,6 +269,12 @@ class RuntimeTelemetryScope:
             if len(parts) < 3:
                 continue
             gpu_id = parts[0]
+
+            # In multi-process runs, keep telemetry rank-local so each rank
+            # reports only the accelerator it is actually using.
+            if target_gpu_ids is not None and gpu_id not in target_gpu_ids:
+                continue
+
             try:
                 util = float(parts[1]) if parts[1] not in ("", "N/A") else None
                 pwr = float(parts[2]) if parts[2] not in ("", "N/A") else None
@@ -281,6 +288,41 @@ class RuntimeTelemetryScope:
 
         self._telemetry_info["utilization_source"] = "nvidia-smi"
         self._telemetry_info["power_source"] = "nvidia-smi"
+
+    def _target_cuda_gpu_ids(self) -> Optional[set[str]]:
+        """Return physical CUDA GPU ids to sample for this rank.
+
+        Behavior:
+        - Single-process: sample all GPUs (return ``None``).
+        - Multi-process: sample only rank-local GPU.
+
+        We try to map logical ``torch.cuda.current_device()`` to physical ids
+        via ``CUDA_VISIBLE_DEVICES`` when available.
+        """
+        if self.backend != "cuda" or self.world_size <= 1:
+            return None
+
+        try:
+            logical_idx = int(torch.cuda.current_device())
+        except Exception:
+            return None
+
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+        if not cvd:
+            # No explicit masking: logical index usually matches physical index.
+            return {str(logical_idx)}
+
+        tokens = [t.strip() for t in cvd.split(",") if t.strip()]
+        try:
+            physical = [int(t) for t in tokens]
+        except Exception:
+            # Non-integer token forms (e.g. UUIDs) cannot be matched against
+            # nvidia-smi index query; fall back to logical index.
+            return {str(logical_idx)}
+
+        if 0 <= logical_idx < len(physical):
+            return {str(physical[logical_idx])}
+        return {str(logical_idx)}
 
     def _append_note_once(self, message: str):
         if message not in self._telemetry_info["notes"]:
