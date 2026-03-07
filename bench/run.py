@@ -16,7 +16,13 @@ from utils.hp_optimization import (
     get_optuna_sampler,
 )
 from optuna.pruners import NopPruner
-from utils.custom_callbacks import PlotOnEvalAndSaveCallback, NaNCallback, LossStatisticsCallback, AdaptiveWeightCallback
+from utils.custom_callbacks import (
+    PlotOnEvalAndSaveCallback,
+    NaNCallback,
+    LossStatisticsCallback,
+    AdaptiveWeightCallback,
+    TrainingJsonLoggerCallback,
+)
 import csv
 from utils.hp_optimization import trial_name_factory
 from utils.loss_utils import fetch_loss_metric, create_loss_weighting_strategy
@@ -37,12 +43,12 @@ from only_inference import build_train_and_infer_loss
 import glob
 from datetime import datetime, timezone
 from utils.infer_log_utils import (
-    InferenceRuntimeScope, 
-    distributed_rank_world,
-    aggregate_scope_report, 
-    detect_accelerator_backend,
-    write_inference_runtime_log,
-    estimate_local_sample_count
+    RuntimeTelemetryScope,
+    get_rank_world,
+    aggregate_runtime_report,
+    detect_runtime_backend,
+    write_runtime_log,
+    estimate_local_sample_count,
 )
 
 __all__ = ["run"]
@@ -389,6 +395,7 @@ def run(cfg):
     # Always add PlotOnEvalAndSaveCallback and NaNCallback
     callbacks.append(PlotOnEvalAndSaveCallback)
     callbacks.append(NaNCallback)
+    callbacks.append(TrainingJsonLoggerCallback)
 
     initial_train_strategy_dict = cfg.train_strategy_config.curriculum[0]
     initial_train_loss_dict = initial_train_strategy_dict.train_loss
@@ -646,6 +653,7 @@ def run(cfg):
 
                 return metrics
 
+            # StreamingMetrics for inference (rollout + overall metrics accumulated on GPU)
             streaming_metrics = StreamingMetrics(trainer=trainer, mode="infer")
             use_batch_eval_metrics = cfg["infer_config"].get("batch_eval_metrics", True)
             trainer.args.batch_eval_metrics = use_batch_eval_metrics
@@ -661,11 +669,12 @@ def run(cfg):
 
             os.makedirs(inference_dir, exist_ok=True)
 
+            # Initialize runtime telemetry for inference_runtime_log.json
             runtime_sample_interval = float(cfg["infer_config"].get("runtime_log_sample_interval_sec", 1.0))
             runtime_log_sections: dict[str, dict] = {}
             runtime_local_samples_total = 0
             runtime_global_samples_total = 0
-            overall_runtime_scope = InferenceRuntimeScope(
+            overall_runtime_scope = RuntimeTelemetryScope(
                 name="overall_inference",
                 sample_interval_sec=runtime_sample_interval,
             )
@@ -688,7 +697,7 @@ def run(cfg):
                     rollout_steps=cfg["infer_config"]["n_infer_rollouts"], output_all_steps=True
                 )
 
-                with InferenceRuntimeScope(
+                with RuntimeTelemetryScope(
                     name="eval_loop_random_start",
                     sample_interval_sec=runtime_sample_interval,
                 ) as eval_scope_random:
@@ -696,7 +705,7 @@ def run(cfg):
 
                 random_local_samples = estimate_local_sample_count(predictions_obj, len(infer_ds))
                 runtime_local_samples_total += int(random_local_samples)
-                runtime_log_sections["eval_loop_random_start"] = aggregate_scope_report(
+                runtime_log_sections["eval_loop_random_start"] = aggregate_runtime_report(
                     eval_scope_random.build_local_report(local_samples=random_local_samples),
                     global_samples=len(infer_ds),
                 )
@@ -864,7 +873,7 @@ def run(cfg):
                 # ----------------------------------------------------------
                 # Prepare prediction, target and input arrays
                 # ----------------------------------------------------------
-                with InferenceRuntimeScope(
+                with RuntimeTelemetryScope(
                     name="eval_loop_ic_start",
                     sample_interval_sec=runtime_sample_interval,
                 ) as eval_scope_ic:
@@ -872,7 +881,7 @@ def run(cfg):
 
                 ic_local_samples = estimate_local_sample_count(predictions_obj, len(infer_ds_from_ic))
                 runtime_local_samples_total += int(ic_local_samples)
-                runtime_log_sections["eval_loop_ic_start"] = aggregate_scope_report(
+                runtime_log_sections["eval_loop_ic_start"] = aggregate_runtime_report(
                     eval_scope_ic.build_local_report(local_samples=ic_local_samples),
                     global_samples=len(infer_ds_from_ic),
                 )
@@ -1024,11 +1033,11 @@ def run(cfg):
                 print(f"Results saved to: {direct_inference_dir}")
 
             overall_runtime_scope.stop()
-            runtime_log_sections["overall_inference"] = aggregate_scope_report(
+            runtime_log_sections["overall_inference"] = aggregate_runtime_report(
                 overall_runtime_scope.build_local_report(local_samples=runtime_local_samples_total),
                 global_samples=runtime_global_samples_total if runtime_global_samples_total > 0 else None,
             )
-            _rank_now, _world_now = distributed_rank_world()
+            _rank_now, _world_now = get_rank_world()
 
             runtime_log_payload = {
                 "generated_utc": datetime.now(timezone.utc).isoformat(),
@@ -1040,7 +1049,7 @@ def run(cfg):
                     "platform": platform.platform(),
                     "python": platform.python_version(),
                 },
-                "accelerator_backend": detect_accelerator_backend(),
+                "accelerator_backend": detect_runtime_backend(),
                 "distributed": {
                     "initialized": bool(dist.is_available() and dist.is_initialized()),
                     "rank": int(_rank_now),
@@ -1051,7 +1060,7 @@ def run(cfg):
 
             if IS_MAIN_PROCESS:
                 runtime_log_path = os.path.join(direct_inference_dir, "inference_runtime_log.json")
-                write_inference_runtime_log(runtime_log_path, runtime_log_payload)
+                write_runtime_log(runtime_log_path, runtime_log_payload)
                 print(f"Runtime log saved to: {runtime_log_path}")
             
     else:

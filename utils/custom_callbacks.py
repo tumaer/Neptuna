@@ -84,6 +84,18 @@ import torch
 from metrics.loss_weighting_strategies import LossWeightingStrategyBase
 import torch.distributed as dist
 from itertools import zip_longest
+import json
+import socket
+import platform
+from datetime import datetime, timezone
+from utils.infer_log_utils import (
+    RuntimeTelemetryScope,
+    aggregate_runtime_report,
+    detect_runtime_backend,
+    get_rank_world,
+)
+import time
+
 class CallbackHandler(CallbackHandler_):
     """
     Extended callback handler with support for custom evaluation and plotting events.
@@ -188,6 +200,231 @@ class NaNCallback(TrainerCallback):
             control.should_evaluate = False
             control.should_save = False
             control.should_plot = False
+
+
+class TrainingJsonLoggerCallback(TrainerCallback):
+    """
+    Write training/eval metrics to ``training_log.json``.
+
+    Design goals
+    ------------
+    - Reuse existing trainer logs/metrics (no extra model compute).
+    - Rank-0-only file writes.
+    - Optional low-frequency background telemetry sampling.
+
+    What gets recorded
+    ------------------
+    - Static run metadata at train-begin (host/platform/backend/distribution).
+    - One record per evaluation event:
+        - latest train scalars seen in ``on_log`` (`loss`, `learning_rate`, `grad_norm`, `epoch`),
+        - evaluation metrics dictionary from ``on_evaluate``,
+        - elapsed wall time since train start,
+        - optional telemetry snapshot (`device_telemetry`, `peak_memory`).
+    - Final run summary at train-end (end time + total duration + final telemetry).
+
+    Distributed behavior
+    --------------------
+    ``aggregate_runtime_report()`` internally performs rank synchronization/gathering
+    when distributed is active. Therefore all ranks execute the aggregation call,
+    while only rank 0 writes the aggregated JSON payload.
+    """
+
+    def __init__(self, telemetry_sample_interval_sec: float = 5.0, enable_device_telemetry: bool = True):
+        # Keep sampling conservative by default so telemetry overhead remains low.
+        self.telemetry_sample_interval_sec = max(0.2, float(telemetry_sample_interval_sec))
+        self.enable_device_telemetry = bool(enable_device_telemetry)
+
+        # Internal run state (initialized in `on_train_begin`).
+        self._train_start_perf = None
+        self._train_start_utc = None
+
+        # Latest train-side scalars captured from `on_log`, later attached to
+        # each eval record in `on_evaluate`.
+        self._latest_train_log = {}
+
+        # In-memory JSON payload + destination path.
+        self._payload = None
+        self._log_path = None
+
+        # Optional long-lived telemetry scope covering the full train window.
+        self._runtime_scope = None
+
+    def _run_dir(self, args, state) -> str:
+        """
+        Resolve the per-run output directory.
+        """
+        trial_name = getattr(state, "trial_name", None)
+        return os.path.join(args.output_dir, trial_name) if trial_name else args.output_dir
+
+    def _write_payload_atomic(self):
+        """Write the in-memory payload to disk.
+
+        Using a temporary file prevents partially-written JSON files if the
+        process is interrupted during write.
+        """
+        if self._log_path is None or self._payload is None:
+            return
+        tmp_path = f"{self._log_path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(self._payload, f, indent=2, sort_keys=False)
+        os.replace(tmp_path, self._log_path)
+
+    def _safe_float(self, v):
+        """Convert value to float, returning ``None`` when conversion fails."""
+        try:
+            return float(v)
+        except Exception:
+            return None
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        """Initialize runtime state and create the initial JSON payload.
+
+        Notes:
+        - Starts optional telemetry sampler for the whole training window.
+        """
+        # Rank/world are used both for metadata and rank-0-only persistence.
+        rank, world = get_rank_world()
+
+        self._train_start_perf = time.perf_counter()
+        self._train_start_utc = datetime.now(timezone.utc).isoformat()
+
+        run_dir = self._run_dir(args, state)
+        os.makedirs(run_dir, exist_ok=True)
+        self._log_path = os.path.join(run_dir, "training_log.json")
+
+        # Start with a minimal, stable schema and append records incrementally.
+        self._payload = {
+            "generated_utc": self._train_start_utc,
+            "training_start_utc": self._train_start_utc,
+            "host": {
+                "hostname": socket.gethostname(),
+                "platform": platform.platform(),
+                "python": platform.python_version(),
+            },
+            "accelerator_backend": detect_runtime_backend(),
+            "distributed": {
+                "initialized": bool(dist.is_available() and dist.is_initialized()),
+                "rank": int(rank),
+                "world_size": int(world),
+            },
+            "records": [],
+        }
+
+        # Telemetry sampling is optional and runs in a lightweight background
+        # sampler thread managed by RuntimeTelemetryScope.
+        if self.enable_device_telemetry:
+            self._runtime_scope = RuntimeTelemetryScope(
+                name="training_runtime",
+                sample_interval_sec=self.telemetry_sample_interval_sec,
+            )
+            self._runtime_scope.start()
+
+        # Only rank 0 writes files to avoid write races in distributed runs.
+        if rank == 0:
+            self._write_payload_atomic()
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        """Cache latest train-side logs. We keep only the latest values
+        and attach them to the next evaluation record. 
+        """
+        logs = logs or {}
+        tracked = {}
+        # Keep this intentionally small and stable so the JSON remains easy to
+        # diff/parse across long runs.
+        for key in ("loss", "learning_rate", "grad_norm", "epoch"):
+            if key in logs:
+                tracked[key] = logs[key]
+        if tracked:
+            self._latest_train_log.update(tracked)
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        """Append one evaluation record to ``training_log.json``.
+
+        The record includes:
+        - latest cached train scalars,
+        - all numeric evaluation metrics,
+        - elapsed training time,
+        - optional telemetry snapshot.
+
+        In distributed mode, aggregation is executed on all ranks; only rank 0
+        performs the actual file write.
+        """
+        if self._payload is None:
+            return
+
+        rank, _ = get_rank_world()
+        metrics = metrics or {}
+
+        # Elapsed wall time is measured from training start, independent of
+        # trainer's own runtime metrics.
+        elapsed_sec = None
+        if self._train_start_perf is not None:
+            elapsed_sec = max(0.0, time.perf_counter() - self._train_start_perf)
+
+        record = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "global_step": int(getattr(state, "global_step", 0) or 0),
+            "epoch": self._safe_float(self._latest_train_log.get("epoch", getattr(state, "epoch", None))),
+            "train_loss": self._safe_float(self._latest_train_log.get("loss")),
+            "learning_rate": self._safe_float(self._latest_train_log.get("learning_rate")),
+            "grad_norm": self._safe_float(self._latest_train_log.get("grad_norm")),
+            "elapsed_since_training_start_sec": elapsed_sec,
+            # Keep numeric metrics only for schema consistency and safe JSON
+            # downstream processing.
+            "eval_metrics": {
+                k: self._safe_float(v)
+                for k, v in metrics.items()
+                if isinstance(v, (int, float))
+            },
+        }
+
+        # Optional lightweight telemetry snapshot, aggregated across devices/ranks.
+        if self._runtime_scope is not None:
+            telemetry_snapshot = aggregate_runtime_report(
+                self._runtime_scope.build_local_report(
+                    # We use global_step as a practical progress proxy for
+                    # local sample count in this callback context.
+                    local_samples=int(getattr(state, "global_step", 0) or 0)
+                )
+            )
+            record["device_telemetry"] = telemetry_snapshot.get("device_telemetry", {})
+            record["peak_memory"] = telemetry_snapshot.get("peak_memory", {})
+
+        # All ranks must pass through aggregation above; only rank 0 writes.
+        if rank != 0:
+            return
+
+        self._payload["records"].append(record)
+        self._payload["generated_utc"] = datetime.now(timezone.utc).isoformat()
+        self._write_payload_atomic()
+
+    def on_train_end(self, args, state, control, **kwargs):
+        """Finalize training JSON log and write end-of-run summary.
+
+        Stops optional telemetry scope, appends final telemetry summaries and
+        total wall time, then performs one last atomic write on rank 0.
+        """
+        rank, _ = get_rank_world()
+
+        if self._runtime_scope is not None:
+            # Stop first so no new samples are appended while we aggregate.
+            self._runtime_scope.stop()
+            final_telemetry = aggregate_runtime_report(
+                self._runtime_scope.build_local_report(
+                    local_samples=int(getattr(state, "global_step", 0) or 0)
+                )
+            )
+            if self._payload is not None:
+                self._payload["final_device_telemetry"] = final_telemetry.get("device_telemetry", {})
+                self._payload["final_peak_memory"] = final_telemetry.get("peak_memory", {})
+
+        if self._payload is not None:
+            self._payload["training_end_utc"] = datetime.now(timezone.utc).isoformat()
+            if self._train_start_perf is not None:
+                self._payload["training_elapsed_sec"] = max(0.0, time.perf_counter() - self._train_start_perf)
+
+        if rank == 0:
+            self._write_payload_atomic()
 
 class WandbCallback(WandbCallback_):
     """

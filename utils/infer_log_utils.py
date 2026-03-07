@@ -1,17 +1,3 @@
-"""Utility helpers for robust inference runtime telemetry.
-
-This module provides:
-- Lightweight backend/rank detection helpers.
-- `InferenceRuntimeScope` for scoped runtime sampling.
-- Aggregation helpers to merge per-rank telemetry into a single report.
-- Safe JSON log writing and sample-count estimation utilities.
-
-Design goals:
-- Never fail hard when optional telemetry tools are unavailable.
-- Work across CPU/CUDA/XPU/MPS backends.
-- Support both single-process and `torch.distributed` inference runs.
-"""
-
 import torch
 import numpy as np
 import os
@@ -28,8 +14,8 @@ import torch.distributed as dist
 import json
 
 
-def detect_accelerator_backend() -> str:
-    """Detect the active accelerator backend in priority order.
+def detect_runtime_backend() -> str:
+    """Detect the active accelerator backend.
 
     Returns:
         One of: ``"cuda"``, ``"xpu"``, ``"mps"``, or ``"cpu"``.
@@ -43,7 +29,7 @@ def detect_accelerator_backend() -> str:
     return "cpu"
 
 
-def distributed_rank_world() -> tuple[int, int]:
+def get_rank_world() -> tuple[int, int]:
     """Return ``(rank, world_size)`` for the current process.
 
     Behavior:
@@ -64,6 +50,11 @@ def distributed_rank_world() -> tuple[int, int]:
 
 
 def _sharded_local_count(global_count: int, rank: int, world_size: int) -> int:
+    """Compute deterministic per-rank shard size for a global sample count.
+
+    Remainder samples are assigned to lower ranks first, matching the typical
+    contiguous sharding strategy.
+    """
     if world_size <= 1:
         return int(global_count)
     base = int(global_count) // world_size
@@ -90,7 +81,7 @@ def _mean_std(values: List[float]) -> tuple[Optional[float], Optional[float]]:
     return float(np_arr.mean()), float(np_arr.std(ddof=0))
 
 
-class InferenceRuntimeScope:
+class RuntimeTelemetryScope:
     """
         Runtime monitor for a scoped inference phase.
 
@@ -103,15 +94,20 @@ class InferenceRuntimeScope:
             - Samples device utilization/power with best-effort backend-specific
                 sources (e.g., `nvidia-smi`, `xpu-smi`, `xpumcli`, `powermetrics`).
             - Produces a rank-local structured report consumable by
-                `aggregate_scope_report()`.
+                `aggregate_runtime_report()`.
     """
 
     def __init__(self, name: str, sample_interval_sec: float = 1.0):
+        # Human-readable scope label (for example: "eval_random_start").
         self.name = name
+
+        # Keep a lower bound to avoid very aggressive polling.
         self.sample_interval_sec = max(0.2, float(sample_interval_sec))
-        self.backend = detect_accelerator_backend()
+
+        # Snapshot runtime context once at construction.
+        self.backend = detect_runtime_backend()
         self.hostname = socket.gethostname()
-        self.rank, self.world_size = distributed_rank_world()
+        self.rank, self.world_size = get_rank_world()
 
         self._start_ts = None
         self._end_ts = None
@@ -119,8 +115,12 @@ class InferenceRuntimeScope:
         self._thread = None
         self._stop_event = threading.Event()
 
+        # Per-device rolling sample buffers.
         self._gpu_samples = defaultdict(lambda: {"util": [], "power_w": []})
         self._mps_memory_samples_mb = []
+
+        # Internal provenance/debug notes. Kept internal unless explicitly
+        # surfaced by callers.
         self._telemetry_info = {
             "utilization_source": None,
             "power_source": None,
@@ -135,6 +135,11 @@ class InferenceRuntimeScope:
         self.stop()
 
     def _active_device_labels(self) -> List[str]:
+        """Return display labels for devices associated with this process.
+
+        In distributed mode we report the current rank-local device; otherwise
+        we list all visible devices for the backend.
+        """
         if self.backend == "cuda":
             try:
                 if self.world_size > 1:
@@ -177,6 +182,8 @@ class InferenceRuntimeScope:
         self._running = True
         self._start_ts = time.perf_counter()
 
+        # Reset accelerator peak-memory counters at scope start so reported
+        # peaks are local to this scope window.
         if self.backend == "cuda":
             try:
                 torch.cuda.reset_peak_memory_stats()
@@ -190,6 +197,8 @@ class InferenceRuntimeScope:
                 pass
 
         self._stop_event.clear()
+        # Background sampler keeps runtime overhead low and decoupled from the
+        # model forward path.
         self._thread = threading.Thread(target=self._sample_loop, daemon=True)
         self._thread.start()
 
@@ -218,11 +227,14 @@ class InferenceRuntimeScope:
         return max(0.0, end_ts - start_ts)
 
     def _sample_loop(self):
+        # Run until `stop()` signals termination.
         while not self._stop_event.is_set():
             self._sample_once()
             self._stop_event.wait(self.sample_interval_sec)
 
     def _sample_once(self):
+        # Backend-specific sampling is intentionally split into dedicated
+        # methods to isolate vendor/tooling differences.
         if self.backend == "cuda":
             self._sample_cuda_util_power()
         elif self.backend == "xpu":
@@ -240,6 +252,7 @@ class InferenceRuntimeScope:
             pass
 
     def _sample_cuda_util_power(self):
+        # CUDA telemetry is sourced from nvidia-smi for broad compatibility.
         cmd = [
             "nvidia-smi",
             "--query-gpu=index,utilization.gpu,power.draw",
@@ -411,7 +424,8 @@ class InferenceRuntimeScope:
             self._append_note_once("powermetrics output did not include parseable MPS util/power samples.")
 
     def _peak_memory_info(self) -> Dict[str, Optional[float]]:
-        # ru_maxrss on Linux is KB.
+        # ru_maxrss on Linux is KB; convert to MB for consistency with
+        # accelerator memory reporting.
         cpu_peak_mb = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / 1024.0
         info: Dict[str, Optional[float]] = {
             "cpu_peak_rss_mb": cpu_peak_mb,
@@ -452,6 +466,7 @@ class InferenceRuntimeScope:
             A JSON-serializable dictionary containing elapsed time, throughput,
             memory peaks, per-device telemetry, and telemetry provenance.
         """
+        # Protect throughput division against near-zero elapsed values.
         elapsed = max(self.elapsed_sec, 1e-12)
         throughput = float(local_samples) / elapsed
 
@@ -466,9 +481,6 @@ class InferenceRuntimeScope:
                 "power_std_w": pwr_std,
             }
 
-        util_available = any(v.get("utilization_mean_percent") is not None for v in per_device.values())
-        power_available = any(v.get("power_mean_w") is not None for v in per_device.values())
-
         report = {
             "scope_name": self.name,
             "rank": self.rank,
@@ -482,17 +494,12 @@ class InferenceRuntimeScope:
             "memory": self._peak_memory_info(),
             "device_telemetry": {
                 "per_device": per_device,
-                "utilization_source": self._telemetry_info.get("utilization_source"),
-                "power_source": self._telemetry_info.get("power_source"),
-                "notes": list(self._telemetry_info.get("notes", [])),
-                "utilization_available": util_available,
-                "power_available": power_available,
             },
         }
         return report
 
 
-def aggregate_scope_report(local_report: Dict, global_samples: Optional[int] = None) -> Dict:
+def aggregate_runtime_report(local_report: Dict, global_samples: Optional[int] = None) -> Dict:
     """Aggregate rank-local scope reports into a world-level report.
 
     In distributed runs, this function gathers local reports from all ranks via
@@ -501,7 +508,7 @@ def aggregate_scope_report(local_report: Dict, global_samples: Optional[int] = N
 
     Args:
         local_report: Rank-local report from
-            ``InferenceRuntimeScope.build_local_report()``.
+            ``RuntimeTelemetryScope.build_local_report()``.
         global_samples: Optional known global sample count. If not provided,
             the sum of local sample counts is used.
 
@@ -509,8 +516,9 @@ def aggregate_scope_report(local_report: Dict, global_samples: Optional[int] = N
         A structured aggregate containing elapsed scope time, global/per-device
         throughput, telemetry availability, source metadata, and rank reports.
     """
-    rank, world = distributed_rank_world()
+    rank, world = get_rank_world()
 
+    # In distributed mode, every rank contributes one local report.
     reports = [local_report]
     if dist.is_available() and dist.is_initialized() and world > 1:
         gathered = [None for _ in range(world)]
@@ -522,6 +530,8 @@ def aggregate_scope_report(local_report: Dict, global_samples: Optional[int] = N
         for r in reports
     ]
     elapsed_values = [v for v in elapsed_values if v is not None]
+    # Scope duration is the max rank duration so global throughput reflects
+    # end-to-end wall time.
     elapsed_scope = max(elapsed_values) if elapsed_values else None
 
     per_device_throughput = [
@@ -559,31 +569,8 @@ def aggregate_scope_report(local_report: Dict, global_samples: Optional[int] = N
     util_mean, util_std = _mean_std(util_device_means)
     power_mean, power_std = _mean_std(power_device_means)
 
-    util_sources = sorted(
-        list(
-            {
-                str((r.get("device_telemetry") or r.get("telemetry") or {}).get("utilization_source"))
-                for r in reports
-                if ((r.get("device_telemetry") or r.get("telemetry") or {}).get("utilization_source"))
-            }
-        )
-    )
-    power_sources = sorted(
-        list(
-            {
-                str((r.get("device_telemetry") or r.get("telemetry") or {}).get("power_source"))
-                for r in reports
-                if ((r.get("device_telemetry") or r.get("telemetry") or {}).get("power_source"))
-            }
-        )
-    )
-    telemetry_notes = []
-    for r in reports:
-        merged_local = r.get("device_telemetry") or r.get("telemetry") or {}
-        for note in merged_local.get("notes", []) or []:
-            if note not in telemetry_notes:
-                telemetry_notes.append(note)
-
+    # Summed local counts are used by default unless caller provides an
+    # authoritative global sample count.
     total_local_samples = int(sum(int(r.get("local_samples", 0)) for r in reports))
     total_samples = int(global_samples) if global_samples is not None else total_local_samples
     global_throughput = None
@@ -630,11 +617,6 @@ def aggregate_scope_report(local_report: Dict, global_samples: Optional[int] = N
                 "mean_w": power_mean,
                 "std_w": power_std,
             },
-            "utilization_sources": util_sources,
-            "power_sources": power_sources,
-            "notes": telemetry_notes,
-            "utilization_available": len(util_device_means) > 0,
-            "power_available": len(power_device_means) > 0,
         },
         "peak_memory": {
             "cpu_peak_rss_mb_max": float(max([v for v in peak_cpu_mb if v is not None])) if any(v is not None for v in peak_cpu_mb) else None,
@@ -645,7 +627,7 @@ def aggregate_scope_report(local_report: Dict, global_samples: Optional[int] = N
     return aggregated
 
 
-def write_inference_runtime_log(log_path: str, payload: Dict) -> None:
+def write_runtime_log(log_path: str, payload: Dict) -> None:
     """Atomically write inference runtime telemetry to JSON.
 
     The payload is written to a temporary file first and then moved into place,
@@ -655,6 +637,7 @@ def write_inference_runtime_log(log_path: str, payload: Dict) -> None:
         log_path: Final destination JSON path.
         payload: JSON-serializable runtime report payload.
     """
+    # Atomic replace prevents consumers from seeing partially-written JSON.
     tmp_path = f"{log_path}.tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, sort_keys=False)
@@ -676,7 +659,7 @@ def estimate_local_sample_count(predictions_obj, global_dataset_len: int) -> int
     Returns:
         Estimated local sample count for the current rank.
     """
-    rank, world = distributed_rank_world()
+    rank, world = get_rank_world()
     n_local = None
     try:
         preds = getattr(predictions_obj, "predictions", None)
@@ -685,6 +668,7 @@ def estimate_local_sample_count(predictions_obj, global_dataset_len: int) -> int
     except Exception:
         n_local = None
 
+    # Expected local shard size from global dataset metadata.
     fallback = _sharded_local_count(global_dataset_len, rank, world)
     if n_local is None or n_local <= 0:
         return fallback

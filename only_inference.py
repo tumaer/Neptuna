@@ -10,17 +10,12 @@ from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
 from utils.plot_progress import plot_rollout_metrics_bar_chart, calculate_and_save_results_all_channels, strip_validation_loss
 from utils.plot_progress import plot_multi_run_rollout_metrics
 from utils.loss_utils import fetch_loss_metric, fetch_infer_loss_dict
-# Runtime logging helpers:
-# - `InferenceRuntimeScope`: scoped timer + resource sampler
-# - `aggregate_scope_report`: rank/world aggregation for distributed inference
-# - `estimate_local_sample_count`: robust local-sample estimate across sharded/gathered outputs
-# - `write_inference_runtime_log`: atomic JSON write for runtime logs
 from utils.infer_log_utils import (
-    InferenceRuntimeScope, 
-    distributed_rank_world,
-    aggregate_scope_report, 
-    detect_accelerator_backend,
-    write_inference_runtime_log,
+    RuntimeTelemetryScope, 
+    get_rank_world,
+    aggregate_runtime_report, 
+    detect_runtime_backend,
+    write_runtime_log,
     estimate_local_sample_count
 )
 from bench.runner_utils import StreamingMetrics
@@ -456,10 +451,10 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         infer_config: Inference configuration
 
         Runtime logging behavior:
-                - Creates one `InferenceRuntimeScope` for the overall run and additional
+                - Creates one `RuntimeTelemetryScope` for the overall run and additional
                     per-section scopes around each `trainer.predict(...)` execution.
                 - Builds rank-local reports and aggregates them across ranks (if
-                    distributed) with `aggregate_scope_report`.
+                    distributed) with `aggregate_runtime_report`.
                 - Writes a single JSON runtime report in the experiment's
                     `solo_inference` folder on the main process.
     """
@@ -900,7 +895,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
     runtime_local_samples_total = 0
     runtime_global_samples_total = 0
     # Scope covering the complete experiment inference flow.
-    overall_runtime_scope = InferenceRuntimeScope(
+    overall_runtime_scope = RuntimeTelemetryScope(
         name="overall_inference",
         sample_interval_sec=runtime_sample_interval,
     )
@@ -1040,7 +1035,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             main_only=True,
         )
 
-        with InferenceRuntimeScope(
+        with RuntimeTelemetryScope(
             name="eval_loop_random_start",
             sample_interval_sec=runtime_sample_interval,
         ) as eval_scope_random:
@@ -1050,7 +1045,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         # then aggregate rank reports into one world-level section payload.
         random_local_samples = estimate_local_sample_count(predictions_obj, len(infer_ds))
         runtime_local_samples_total += int(random_local_samples)
-        runtime_log_sections["eval_loop_random_start"] = aggregate_scope_report(
+        runtime_log_sections["eval_loop_random_start"] = aggregate_runtime_report(
             eval_scope_random.build_local_report(local_samples=random_local_samples),
             global_samples=len(infer_ds),
         )
@@ -1239,7 +1234,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         # ----------------------------------------------------------
         # Prepare prediction, target and input arrays
         # ----------------------------------------------------------
-        with InferenceRuntimeScope(
+        with RuntimeTelemetryScope(
             name="eval_loop_ic_start",
             sample_interval_sec=runtime_sample_interval,
         ) as eval_scope_ic:
@@ -1248,7 +1243,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         # Same runtime accounting strategy as random-start branch.
         ic_local_samples = estimate_local_sample_count(predictions_obj, len(infer_ds_from_ic))
         runtime_local_samples_total += int(ic_local_samples)
-        runtime_log_sections["eval_loop_ic_start"] = aggregate_scope_report(
+        runtime_log_sections["eval_loop_ic_start"] = aggregate_runtime_report(
             eval_scope_ic.build_local_report(local_samples=ic_local_samples),
             global_samples=len(infer_ds_from_ic),
         )
@@ -1407,11 +1402,11 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             _dbg("finished dist.barrier() after ic-start branch")
 
     overall_runtime_scope.stop()
-    runtime_log_sections["overall_inference"] = aggregate_scope_report(
+    runtime_log_sections["overall_inference"] = aggregate_runtime_report(
         overall_runtime_scope.build_local_report(local_samples=runtime_local_samples_total),
         global_samples=runtime_global_samples_total if runtime_global_samples_total > 0 else None,
     )
-    _rank_now, _world_now = distributed_rank_world()
+    _rank_now, _world_now = get_rank_world()
 
     runtime_log_payload = {
         # Build metadata-rich payload so the log is self-contained and can be
@@ -1426,7 +1421,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
             "platform": platform.platform(),
             "python": platform.python_version(),
         },
-        "accelerator_backend": detect_accelerator_backend(),
+        "accelerator_backend": detect_runtime_backend(),
         "distributed": {
             "initialized": bool(dist.is_available() and dist.is_initialized()),
             "rank": int(_rank_now),
@@ -1437,7 +1432,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
 
     if IS_MAIN_PROCESS:
         runtime_log_path = os.path.join(solo_inference_dir, "inference_runtime_log.json")
-        write_inference_runtime_log(runtime_log_path, runtime_log_payload)
+        write_runtime_log(runtime_log_path, runtime_log_payload)
         print(f"Runtime log saved to: {runtime_log_path}")
         print(f"Inference completed for {os.path.basename(experiment_dir)}")
         print(f"Results saved to: {solo_inference_dir}")
