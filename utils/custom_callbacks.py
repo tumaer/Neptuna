@@ -88,7 +88,7 @@ import json
 import socket
 import platform
 from datetime import datetime, timezone
-from utils.infer_log_utils import (
+from utils.telemetry_log_utils import (
     RuntimeTelemetryScope,
     aggregate_runtime_report,
     detect_runtime_backend,

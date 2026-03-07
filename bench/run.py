@@ -42,7 +42,7 @@ from omegaconf import ListConfig, OmegaConf
 from only_inference import build_train_and_infer_loss
 import glob
 from datetime import datetime, timezone
-from utils.infer_log_utils import (
+from utils.telemetry_log_utils import (
     RuntimeTelemetryScope,
     get_rank_world,
     aggregate_runtime_report,

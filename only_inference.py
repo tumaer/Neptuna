@@ -10,7 +10,7 @@ from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
 from utils.plot_progress import plot_rollout_metrics_bar_chart, calculate_and_save_results_all_channels, strip_validation_loss
 from utils.plot_progress import plot_multi_run_rollout_metrics
 from utils.loss_utils import fetch_loss_metric, fetch_infer_loss_dict
-from utils.infer_log_utils import (
+from utils.telemetry_log_utils import (
     RuntimeTelemetryScope, 
     get_rank_world,
     aggregate_runtime_report, 
