@@ -253,10 +253,10 @@ class RuntimeTelemetryScope:
 
     def _sample_cuda_util_power(self):
         # CUDA telemetry is sourced from nvidia-smi for broad compatibility.
-        target_gpu_ids = self._target_cuda_gpu_ids()
+        target_selectors = self._target_cuda_gpu_selectors()
         cmd = [
             "nvidia-smi",
-            "--query-gpu=index,utilization.gpu,power.draw",
+            "--query-gpu=index,uuid,utilization.gpu,power.draw",
             "--format=csv,noheader,nounits",
         ]
         try:
@@ -266,18 +266,24 @@ class RuntimeTelemetryScope:
 
         for line in out.splitlines():
             parts = [p.strip() for p in line.split(",")]
-            if len(parts) < 3:
+            if len(parts) < 4:
                 continue
             gpu_id = parts[0]
+            gpu_uuid = parts[1]
 
             # In multi-process runs, keep telemetry rank-local so each rank
             # reports only the accelerator it is actually using.
-            if target_gpu_ids is not None and gpu_id not in target_gpu_ids:
-                continue
+            if target_selectors is not None:
+                target_ids = target_selectors.get("ids", set())
+                target_uuids = target_selectors.get("uuids", set())
+                id_match = bool(target_ids) and (gpu_id in target_ids)
+                uuid_match = bool(target_uuids) and (gpu_uuid.lower() in target_uuids)
+                if not (id_match or uuid_match):
+                    continue
 
             try:
-                util = float(parts[1]) if parts[1] not in ("", "N/A") else None
-                pwr = float(parts[2]) if parts[2] not in ("", "N/A") else None
+                util = float(parts[2]) if parts[2] not in ("", "N/A") else None
+                pwr = float(parts[3]) if parts[3] not in ("", "N/A") else None
             except Exception:
                 util = None
                 pwr = None
@@ -289,15 +295,16 @@ class RuntimeTelemetryScope:
         self._telemetry_info["utilization_source"] = "nvidia-smi"
         self._telemetry_info["power_source"] = "nvidia-smi"
 
-    def _target_cuda_gpu_ids(self) -> Optional[set[str]]:
-        """Return physical CUDA GPU ids to sample for this rank.
+    def _target_cuda_gpu_selectors(self) -> Optional[Dict[str, set[str]]]:
+        """Return rank-local CUDA selectors for nvidia-smi rows.
 
         Behavior:
-        - Single-process: sample all GPUs (return ``None``).
-        - Multi-process: sample only rank-local GPU.
+        - Single-process: sample all GPUs (returns ``None``).
+        - Multi-process: sample only rank-local GPU (by index or UUID).
 
-        We try to map logical ``torch.cuda.current_device()`` to physical ids
-        via ``CUDA_VISIBLE_DEVICES`` when available.
+        We map logical ``torch.cuda.current_device()`` through
+        ``CUDA_VISIBLE_DEVICES`` when available. Tokens may be integer indices
+        or GPU UUIDs depending on launcher/scheduler setup.
         """
         if self.backend != "cuda" or self.world_size <= 1:
             return None
@@ -310,19 +317,18 @@ class RuntimeTelemetryScope:
         cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
         if not cvd:
             # No explicit masking: logical index usually matches physical index.
-            return {str(logical_idx)}
+            return {"ids": {str(logical_idx)}, "uuids": set()}
 
         tokens = [t.strip() for t in cvd.split(",") if t.strip()]
-        try:
-            physical = [int(t) for t in tokens]
-        except Exception:
-            # Non-integer token forms (e.g. UUIDs) cannot be matched against
-            # nvidia-smi index query; fall back to logical index.
-            return {str(logical_idx)}
+        if not (0 <= logical_idx < len(tokens)):
+            return {"ids": {str(logical_idx)}, "uuids": set()}
 
-        if 0 <= logical_idx < len(physical):
-            return {str(physical[logical_idx])}
-        return {str(logical_idx)}
+        selected = tokens[logical_idx]
+        if re.fullmatch(r"\d+", selected):
+            return {"ids": {str(int(selected))}, "uuids": set()}
+
+        # UUID token path (e.g. GPU-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).
+        return {"ids": set(), "uuids": {selected.lower()}}
 
     def _append_note_once(self, message: str):
         if message not in self._telemetry_info["notes"]:
