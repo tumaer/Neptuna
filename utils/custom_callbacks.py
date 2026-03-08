@@ -87,12 +87,12 @@ from itertools import zip_longest
 import json
 import socket
 import platform
-from datetime import datetime, timezone
 from utils.telemetry_log_utils import (
     RuntimeTelemetryScope,
     aggregate_runtime_report,
     detect_runtime_backend,
     get_rank_world,
+    now_berlin_iso,
 )
 import time
 
@@ -236,11 +236,12 @@ class TrainingJsonLoggerCallback(TrainerCallback):
 
         # Internal run state (initialized in `on_train_begin`).
         self._train_start_perf = None
-        self._train_start_utc = None
+        self._train_start_local = None
 
         # Latest train-side scalars captured from `on_log`, later attached to
         # each eval record in `on_evaluate`.
         self._latest_train_log = {}
+        self._last_eval_end_epoch = None
 
         # In-memory JSON payload + destination path.
         self._payload = None
@@ -265,9 +266,38 @@ class TrainingJsonLoggerCallback(TrainerCallback):
         if self._log_path is None or self._payload is None:
             return
         tmp_path = f"{self._log_path}.tmp"
+        rounded_payload = self._round_payload_for_write(self._payload)
         with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(self._payload, f, indent=2, sort_keys=False)
+            json.dump(rounded_payload, f, indent=2, sort_keys=False)
         os.replace(tmp_path, self._log_path)
+
+    def _round_payload_for_write(self, payload):
+        """Round numeric values before writing training log JSON.
+
+        Default precision is 2 decimals, except:
+        - `eval_metrics`: 6 decimals
+        - `training_metrics` / `train_metrics`: 6 decimals
+        """
+        high_precision_keys = {"eval_metrics", "training_metrics", "train_metrics"}
+
+        def _round(obj, digits: int):
+            if isinstance(obj, bool) or obj is None:
+                return obj
+            if isinstance(obj, float):
+                return round(obj, digits)
+            if isinstance(obj, dict):
+                out = {}
+                for k, v in obj.items():
+                    child_digits = 6 if str(k) in high_precision_keys else digits
+                    out[k] = _round(v, child_digits)
+                return out
+            if isinstance(obj, list):
+                return [_round(v, digits) for v in obj]
+            if isinstance(obj, tuple):
+                return tuple(_round(v, digits) for v in obj)
+            return obj
+
+        return _round(payload, 2)
 
     def _safe_float(self, v):
         """Convert value to float, returning ``None`` when conversion fails."""
@@ -275,6 +305,63 @@ class TrainingJsonLoggerCallback(TrainerCallback):
             return float(v)
         except Exception:
             return None
+
+    def _estimate_seen_samples(self, args, global_step: int) -> Optional[float]:
+        """Estimate cumulative seen training samples from global step."""
+        trainer = getattr(self, "trainer", None)
+        if trainer is None:
+            return None
+        try:
+            total_train_batch_size = int(trainer.get_total_train_batch_size(args))
+            if total_train_batch_size <= 0:
+                return None
+            return float(int(global_step) * total_train_batch_size)
+        except Exception:
+            return None
+
+    def _infer_train_samples_per_second(self, args, state, elapsed_sec: Optional[float]) -> Optional[float]:
+        """Infer interval train throughput (samples/sec) for current eval window.
+
+        Priority:
+        1. Reuse a logged value if already present.
+        2. Estimate from deltas between current and previous eval record:
+           `delta_samples / delta_time_sec`.
+        """
+        # 1) Prefer any explicitly logged throughput key.
+        for key in ("train_samples_per_second", "samples_per_second"):
+            v = self._safe_float(self._latest_train_log.get(key))
+            if v is not None:
+                return v
+
+        # 2) Estimate from current-vs-previous record deltas.
+        if elapsed_sec is None or elapsed_sec <= 0:
+            return None
+
+        current_step = int(getattr(state, "global_step", 0) or 0)
+        current_samples = self._estimate_seen_samples(args, current_step)
+        if current_samples is None:
+            return None
+
+        records = (self._payload or {}).get("records", []) if isinstance(self._payload, dict) else []
+        if not records:
+            # First record: fall back to cumulative throughput since train start.
+            return current_samples / float(elapsed_sec)
+
+        prev = records[-1] if isinstance(records[-1], dict) else {}
+        prev_elapsed_min = self._safe_float(prev.get("elapsed_since_training_start_min"))
+        prev_elapsed_sec = (prev_elapsed_min * 60.0) if prev_elapsed_min is not None else None
+        prev_step = int(prev.get("global_step", 0) or 0)
+        prev_samples = self._estimate_seen_samples(args, prev_step)
+
+        if prev_elapsed_sec is None or prev_samples is None:
+            return None
+
+        delta_t = float(elapsed_sec) - float(prev_elapsed_sec)
+        delta_s = float(current_samples) - float(prev_samples)
+        if delta_t <= 0 or delta_s < 0:
+            return None
+
+        return round(delta_s / delta_t, 4)
 
     def on_train_begin(self, args, state, control, **kwargs):
         """Initialize runtime state and create the initial JSON payload.
@@ -286,7 +373,7 @@ class TrainingJsonLoggerCallback(TrainerCallback):
         rank, world = get_rank_world()
 
         self._train_start_perf = time.perf_counter()
-        self._train_start_utc = datetime.now(timezone.utc).isoformat()
+        self._train_start_local = now_berlin_iso()
 
         run_dir = self._run_dir(args, state)
         os.makedirs(run_dir, exist_ok=True)
@@ -294,8 +381,8 @@ class TrainingJsonLoggerCallback(TrainerCallback):
 
         # Start with a minimal, stable schema and append records incrementally.
         self._payload = {
-            "generated_utc": self._train_start_utc,
-            "training_start_utc": self._train_start_utc,
+            "generated_local": self._train_start_local,
+            "training_start_local": self._train_start_local,
             "host": {
                 "hostname": socket.gethostname(),
                 "platform": platform.platform(),
@@ -331,9 +418,13 @@ class TrainingJsonLoggerCallback(TrainerCallback):
         tracked = {}
         # Keep this intentionally small and stable so the JSON remains easy to
         # diff/parse across long runs.
-        for key in ("loss", "learning_rate", "grad_norm", "epoch"):
-            if key in logs:
-                tracked[key] = logs[key]
+        for key, value in logs.items():
+            # Keep numeric train-side metrics only. Eval metrics are handled in
+            # `on_evaluate` under `eval_metrics`.
+            if key.startswith("eval_"):
+                continue
+            if isinstance(value, (int, float)):
+                tracked[key] = value
         if tracked:
             self._latest_train_log.update(tracked)
 
@@ -361,22 +452,43 @@ class TrainingJsonLoggerCallback(TrainerCallback):
         if self._train_start_perf is not None:
             elapsed_sec = max(0.0, time.perf_counter() - self._train_start_perf)
 
+        end_epoch = self._safe_float(self._latest_train_log.get("epoch", getattr(state, "epoch", None)))
+        if self._last_eval_end_epoch is None:
+            start_epoch = 0.0 if end_epoch is not None else None
+        else:
+            start_epoch = self._last_eval_end_epoch
+
+        training_metrics = {
+            k: self._safe_float(v)
+            for k, v in self._latest_train_log.items()
+            if isinstance(v, (int, float)) and k != "epoch"
+        }
+
+        # Ensure throughput is present in training metrics.
+        if "train_samples_per_second" not in training_metrics:
+            inferred_sps = self._infer_train_samples_per_second(args, state, elapsed_sec)
+            if inferred_sps is not None:
+                training_metrics["train_samples_per_second"] = inferred_sps
+
         record = {
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "timestamp_local": now_berlin_iso(),
             "global_step": int(getattr(state, "global_step", 0) or 0),
-            "epoch": self._safe_float(self._latest_train_log.get("epoch", getattr(state, "epoch", None))),
-            "train_loss": self._safe_float(self._latest_train_log.get("loss")),
-            "learning_rate": self._safe_float(self._latest_train_log.get("learning_rate")),
-            "grad_norm": self._safe_float(self._latest_train_log.get("grad_norm")),
-            "elapsed_since_training_start_sec": elapsed_sec,
+            "start_epoch": start_epoch,
+            "end_epoch": end_epoch,
+            "elapsed_since_training_start_min": (
+                (float(elapsed_sec) / 60.0) if elapsed_sec is not None else None
+            ),
+            "training_metrics": training_metrics,
             # Keep numeric metrics only for schema consistency and safe JSON
             # downstream processing.
             "eval_metrics": {
                 k: self._safe_float(v)
                 for k, v in metrics.items()
-                if isinstance(v, (int, float))
+                if isinstance(v, (int, float)) and k != "epoch"
             },
         }
+
+        self._last_eval_end_epoch = end_epoch
 
         # Optional lightweight telemetry snapshot, aggregated across devices/ranks.
         if self._runtime_scope is not None:
@@ -388,6 +500,7 @@ class TrainingJsonLoggerCallback(TrainerCallback):
                 )
             )
             record["device_telemetry"] = telemetry_snapshot.get("device_telemetry", {})
+            record["telemetry_sampling"] = telemetry_snapshot.get("telemetry_sampling", {})
             record["peak_memory"] = telemetry_snapshot.get("peak_memory", {})
 
         # All ranks must pass through aggregation above; only rank 0 writes.
@@ -395,7 +508,7 @@ class TrainingJsonLoggerCallback(TrainerCallback):
             return
 
         self._payload["records"].append(record)
-        self._payload["generated_utc"] = datetime.now(timezone.utc).isoformat()
+        self._payload["generated_local"] = now_berlin_iso()
         self._write_payload_atomic()
 
     def on_train_end(self, args, state, control, **kwargs):
@@ -416,12 +529,13 @@ class TrainingJsonLoggerCallback(TrainerCallback):
             )
             if self._payload is not None:
                 self._payload["final_device_telemetry"] = final_telemetry.get("device_telemetry", {})
+                self._payload["final_telemetry_sampling"] = final_telemetry.get("telemetry_sampling", {})
                 self._payload["final_peak_memory"] = final_telemetry.get("peak_memory", {})
 
         if self._payload is not None:
-            self._payload["training_end_utc"] = datetime.now(timezone.utc).isoformat()
+            self._payload["training_end_local"] = now_berlin_iso()
             if self._train_start_perf is not None:
-                self._payload["training_elapsed_sec"] = max(0.0, time.perf_counter() - self._train_start_perf)
+                self._payload["training_elapsed_min"] = max(0.0, time.perf_counter() - self._train_start_perf) / 60.0
 
         if rank == 0:
             self._write_payload_atomic()

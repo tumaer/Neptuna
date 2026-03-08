@@ -12,6 +12,7 @@ from collections import defaultdict
 from typing import List, Dict, Optional
 import torch.distributed as dist
 import json
+from zoneinfo import ZoneInfo
 
 
 def detect_runtime_backend() -> str:
@@ -81,6 +82,73 @@ def _mean_std(values: List[float]) -> tuple[Optional[float], Optional[float]]:
     return float(np_arr.mean()), float(np_arr.std(ddof=0))
 
 
+def now_berlin_iso() -> str:
+    """Return current wall-clock time in Europe/Berlin as ISO-8601."""
+    return datetime_now_berlin().isoformat()
+
+
+def datetime_now_berlin():
+    """Return timezone-aware datetime in Europe/Berlin."""
+    from datetime import datetime
+    return datetime.now(ZoneInfo("Europe/Berlin"))
+
+
+def round_nested_numbers(obj, digits: int = 2):
+    """Recursively round floating-point values in nested containers."""
+    if isinstance(obj, bool) or obj is None:
+        return obj
+    if isinstance(obj, (float, np.floating)):
+        return round(float(obj), digits)
+    if isinstance(obj, dict):
+        return {k: round_nested_numbers(v, digits=digits) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [round_nested_numbers(v, digits=digits) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(round_nested_numbers(v, digits=digits) for v in obj)
+    return obj
+
+
+def _overall_mean_std_from_device_stats(
+    device_stats: List[Dict],
+    mean_key: str,
+    std_key: str,
+    count_key: str,
+) -> tuple[Optional[float], Optional[float]]:
+    """Compute pooled mean/std across devices using per-device mean/std/count.
+
+    Uses population variance (ddof=0):
+        var = (sum_i n_i (s_i^2 + (m_i - m)^2)) / sum_i n_i
+    where m_i/s_i/n_i are per-device mean/std/count.
+    """
+    weighted_count = 0.0
+    weighted_mean_sum = 0.0
+    prepared = []
+    for stats in device_stats:
+        n = _as_float_or_none(stats.get(count_key))
+        m = _as_float_or_none(stats.get(mean_key))
+        s = _as_float_or_none(stats.get(std_key))
+        if n is None or n <= 0 or m is None:
+            continue
+        if s is None:
+            s = 0.0
+        n = float(n)
+        m = float(m)
+        s = float(s)
+        prepared.append((n, m, s))
+        weighted_count += n
+        weighted_mean_sum += n * m
+
+    if weighted_count <= 0:
+        return None, None
+
+    mean = weighted_mean_sum / weighted_count
+    var_num = 0.0
+    for n, m, s in prepared:
+        var_num += n * ((s ** 2) + ((m - mean) ** 2))
+    var = max(0.0, var_num / weighted_count)
+    return float(mean), float(np.sqrt(var))
+
+
 class RuntimeTelemetryScope:
     """
         Runtime monitor for a scoped inference phase.
@@ -117,7 +185,8 @@ class RuntimeTelemetryScope:
 
         # Per-device rolling sample buffers.
         self._gpu_samples = defaultdict(lambda: {"util": [], "power_w": []})
-        self._mps_memory_samples_mb = []
+        self._mps_memory_samples_gb = []
+        self._sample_loop_iterations = 0
 
         # Internal provenance/debug notes. Kept internal unless explicitly
         # surfaced by callers.
@@ -233,6 +302,7 @@ class RuntimeTelemetryScope:
             self._stop_event.wait(self.sample_interval_sec)
 
     def _sample_once(self):
+        self._sample_loop_iterations += 1
         # Backend-specific sampling is intentionally split into dedicated
         # methods to isolate vendor/tooling differences.
         if self.backend == "cuda":
@@ -246,8 +316,8 @@ class RuntimeTelemetryScope:
     def _sample_mps_memory(self):
         try:
             if hasattr(torch, "mps") and hasattr(torch.mps, "current_allocated_memory"):
-                mem_mb = float(torch.mps.current_allocated_memory()) / (1024.0 ** 2)
-                self._mps_memory_samples_mb.append(mem_mb)
+                mem_gb = float(torch.mps.current_allocated_memory()) / (1024.0 ** 3)
+                self._mps_memory_samples_gb.append(mem_gb)
         except Exception:
             pass
 
@@ -472,34 +542,34 @@ class RuntimeTelemetryScope:
             self._append_note_once("powermetrics output did not include parseable MPS util/power samples.")
 
     def _peak_memory_info(self) -> Dict[str, Optional[float]]:
-        # ru_maxrss on Linux is KB; convert to MB for consistency with
+        # ru_maxrss on Linux is KB; convert to GB for consistency with
         # accelerator memory reporting.
-        cpu_peak_mb = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / 1024.0
+        cpu_peak_gb = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / (1024.0 ** 2)
         info: Dict[str, Optional[float]] = {
-            "cpu_peak_rss_mb": cpu_peak_mb,
-            "accelerator_peak_allocated_mb": None,
-            "accelerator_peak_reserved_mb": None,
+            "cpu_peak_rss_gb": cpu_peak_gb,
+            "accelerator_peak_allocated_gb": None,
+            "accelerator_peak_reserved_gb": None,
         }
 
         if self.backend == "cuda":
             try:
                 dev = torch.cuda.current_device()
-                info["accelerator_peak_allocated_mb"] = float(torch.cuda.max_memory_allocated(dev)) / (1024.0 ** 2)
-                info["accelerator_peak_reserved_mb"] = float(torch.cuda.max_memory_reserved(dev)) / (1024.0 ** 2)
+                info["accelerator_peak_allocated_gb"] = float(torch.cuda.max_memory_allocated(dev)) / (1024.0 ** 3)
+                info["accelerator_peak_reserved_gb"] = float(torch.cuda.max_memory_reserved(dev)) / (1024.0 ** 3)
             except Exception:
                 pass
         elif self.backend == "xpu":
             try:
                 dev = torch.xpu.current_device()
                 if hasattr(torch.xpu, "max_memory_allocated"):
-                    info["accelerator_peak_allocated_mb"] = float(torch.xpu.max_memory_allocated(dev)) / (1024.0 ** 2)
+                    info["accelerator_peak_allocated_gb"] = float(torch.xpu.max_memory_allocated(dev)) / (1024.0 ** 3)
                 if hasattr(torch.xpu, "max_memory_reserved"):
-                    info["accelerator_peak_reserved_mb"] = float(torch.xpu.max_memory_reserved(dev)) / (1024.0 ** 2)
+                    info["accelerator_peak_reserved_gb"] = float(torch.xpu.max_memory_reserved(dev)) / (1024.0 ** 3)
             except Exception:
                 pass
         elif self.backend == "mps":
-            if self._mps_memory_samples_mb:
-                info["accelerator_peak_allocated_mb"] = float(max(self._mps_memory_samples_mb))
+            if self._mps_memory_samples_gb:
+                info["accelerator_peak_allocated_gb"] = float(max(self._mps_memory_samples_gb))
 
         return info
 
@@ -515,8 +585,9 @@ class RuntimeTelemetryScope:
             memory peaks, per-device telemetry, and telemetry provenance.
         """
         # Protect throughput division against near-zero elapsed values.
-        elapsed = max(self.elapsed_sec, 1e-12)
-        throughput = float(local_samples) / elapsed
+        elapsed_sec = max(self.elapsed_sec, 1e-12)
+        elapsed_min = elapsed_sec / 60.0
+        throughput = float(local_samples) / elapsed_sec
 
         per_device = {}
         for gpu_id, gpu_series in self._gpu_samples.items():
@@ -536,9 +607,13 @@ class RuntimeTelemetryScope:
             "hostname": self.hostname,
             "backend": self.backend,
             "device_labels": self._active_device_labels(),
-            "elapsed_sec": float(elapsed),
+            "elapsed_min": float(elapsed_min),
             "local_samples": int(local_samples),
             "throughput_samples_per_sec": float(throughput),
+            "telemetry_sampling": {
+                "sample_interval_sec": float(self.sample_interval_sec),
+                "samples_logged_total": int(self._sample_loop_iterations),
+            },
             "memory": self._peak_memory_info(),
             "device_telemetry": {
                 "per_device": per_device,
@@ -574,7 +649,7 @@ def aggregate_runtime_report(local_report: Dict, global_samples: Optional[int] =
         reports = [r for r in gathered if isinstance(r, dict)]
 
     elapsed_values = [
-        _as_float_or_none(r.get("elapsed_sec"))
+        _as_float_or_none(r.get("elapsed_min"))
         for r in reports
     ]
     elapsed_values = [v for v in elapsed_values if v is not None]
@@ -589,22 +664,21 @@ def aggregate_runtime_report(local_report: Dict, global_samples: Optional[int] =
     per_device_throughput = [v for v in per_device_throughput if v is not None]
     thr_mean, thr_std = _mean_std(per_device_throughput)
 
-    util_device_means = []
-    power_device_means = []
     per_device_gpu_stats = []
+    util_agg_stats = []
+    power_agg_stats = []
     for r in reports:
         r_rank = r.get("rank")
         host = r.get("hostname")
         # New unified schema with backward-compatible fallback.
         local_device_telemetry = r.get("device_telemetry") or {}
         per_local_device = local_device_telemetry.get("per_device") or r.get("gpu_devices") or {}
+        local_device_count = max(1, int(len(per_local_device)))
+        samples_logged_total = _as_float_or_none((r.get("telemetry_sampling") or {}).get("samples_logged_total"))
+        inferred_count_per_device = None
+        if samples_logged_total is not None and samples_logged_total > 0:
+            inferred_count_per_device = float(samples_logged_total) / float(local_device_count)
         for gpu_id, stats in per_local_device.items():
-            util_mean = _as_float_or_none(stats.get("utilization_mean_percent"))
-            pwr_mean = _as_float_or_none(stats.get("power_mean_w"))
-            if util_mean is not None:
-                util_device_means.append(util_mean)
-            if pwr_mean is not None:
-                power_device_means.append(pwr_mean)
             per_device_gpu_stats.append(
                 {
                     "rank": r_rank,
@@ -614,8 +688,44 @@ def aggregate_runtime_report(local_report: Dict, global_samples: Optional[int] =
                 }
             )
 
-    util_mean, util_std = _mean_std(util_device_means)
-    power_mean, power_std = _mean_std(power_device_means)
+            util_mean = _as_float_or_none(stats.get("utilization_mean_percent"))
+            util_std = _as_float_or_none(stats.get("utilization_std_percent"))
+            util_n = _as_float_or_none(stats.get("utilization_sample_count"))
+            if util_n is None:
+                util_n = inferred_count_per_device
+            util_agg_stats.append(
+                {
+                    "utilization_mean_percent": util_mean,
+                    "utilization_std_percent": util_std,
+                    "sample_count": util_n,
+                }
+            )
+
+            pwr_mean = _as_float_or_none(stats.get("power_mean_w"))
+            pwr_std = _as_float_or_none(stats.get("power_std_w"))
+            pwr_n = _as_float_or_none(stats.get("power_sample_count"))
+            if pwr_n is None:
+                pwr_n = inferred_count_per_device
+            power_agg_stats.append(
+                {
+                    "power_mean_w": pwr_mean,
+                    "power_std_w": pwr_std,
+                    "sample_count": pwr_n,
+                }
+            )
+
+    util_mean, util_std = _overall_mean_std_from_device_stats(
+        util_agg_stats,
+        mean_key="utilization_mean_percent",
+        std_key="utilization_std_percent",
+        count_key="sample_count",
+    )
+    power_mean, power_std = _overall_mean_std_from_device_stats(
+        power_agg_stats,
+        mean_key="power_mean_w",
+        std_key="power_std_w",
+        count_key="sample_count",
+    )
 
     # Summed local counts are used by default unless caller provides an
     # authoritative global sample count.
@@ -623,19 +733,29 @@ def aggregate_runtime_report(local_report: Dict, global_samples: Optional[int] =
     total_samples = int(global_samples) if global_samples is not None else total_local_samples
     global_throughput = None
     if elapsed_scope is not None and elapsed_scope > 0:
-        global_throughput = float(total_samples) / float(elapsed_scope)
+        global_throughput = float(total_samples) / float(elapsed_scope * 60.0)
 
-    peak_cpu_mb = [
-        _as_float_or_none((r.get("memory") or {}).get("cpu_peak_rss_mb"))
+    peak_cpu_gb = [
+        _as_float_or_none((r.get("memory") or {}).get("cpu_peak_rss_gb"))
         for r in reports
     ]
-    peak_accel_mb = [
-        _as_float_or_none((r.get("memory") or {}).get("accelerator_peak_allocated_mb"))
+    peak_accel_gb = [
+        _as_float_or_none((r.get("memory") or {}).get("accelerator_peak_allocated_gb"))
         for r in reports
     ]
 
+    sample_intervals = [
+        _as_float_or_none((r.get("telemetry_sampling") or {}).get("sample_interval_sec"))
+        for r in reports
+    ]
+    sample_intervals = [v for v in sample_intervals if v is not None and v > 0]
+    # All ranks are expected to share the same configured interval; choose first.
+    sample_interval_sec = sample_intervals[0] if sample_intervals else None
+
+    total_samples_logged = int(sum(int((r.get("telemetry_sampling") or {}).get("samples_logged_total", 0) or 0) for r in reports))
     aggregated = {
         "scope_name": local_report.get("scope_name", "scope"),
+        "elapsed_min": elapsed_scope,
         "rank": rank,
         "world_size": world,
         "backend": local_report.get("backend"),
@@ -644,7 +764,10 @@ def aggregate_runtime_report(local_report: Dict, global_samples: Optional[int] =
             "devices_reporting": int(len(reports)),
             "accelerator_devices_reporting": int(len(per_device_gpu_stats)),
         },
-        "elapsed_sec": elapsed_scope,
+        "telemetry_sampling": {
+            "sample_interval_sec": sample_interval_sec,
+            "samples_logged_total": total_samples_logged,
+        },
         "samples": {
             "global_samples": total_samples,
             "summed_local_samples": total_local_samples,
@@ -657,20 +780,19 @@ def aggregate_runtime_report(local_report: Dict, global_samples: Optional[int] =
         },
         "device_telemetry": {
             "per_device": per_device_gpu_stats,
-            "utilization": {
+            "overall_utilization": {
                 "mean_percent": util_mean,
                 "std_percent": util_std,
             },
-            "power": {
+            "overall_power": {
                 "mean_w": power_mean,
                 "std_w": power_std,
             },
         },
         "peak_memory": {
-            "cpu_peak_rss_mb_max": float(max([v for v in peak_cpu_mb if v is not None])) if any(v is not None for v in peak_cpu_mb) else None,
-            "accelerator_peak_allocated_mb_max": float(max([v for v in peak_accel_mb if v is not None])) if any(v is not None for v in peak_accel_mb) else None,
+            "cpu_peak_rss_gb_max": float(max([v for v in peak_cpu_gb if v is not None])) if any(v is not None for v in peak_cpu_gb) else None,
+            "accelerator_peak_allocated_gb_max": float(max([v for v in peak_accel_gb if v is not None])) if any(v is not None for v in peak_accel_gb) else None,
         },
-        "reports_by_rank": reports,
     }
     return aggregated
 
@@ -687,8 +809,9 @@ def write_runtime_log(log_path: str, payload: Dict) -> None:
     """
     # Atomic replace prevents consumers from seeing partially-written JSON.
     tmp_path = f"{log_path}.tmp"
+    payload_rounded = round_nested_numbers(payload, digits=2)
     with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, sort_keys=False)
+        json.dump(payload_rounded, f, indent=2, sort_keys=False)
     os.replace(tmp_path, log_path)
 
 

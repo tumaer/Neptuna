@@ -41,7 +41,6 @@ import torch.distributed as dist
 from omegaconf import ListConfig, OmegaConf
 from only_inference import build_train_and_infer_loss
 import glob
-from datetime import datetime, timezone
 from utils.telemetry_log_utils import (
     RuntimeTelemetryScope,
     get_rank_world,
@@ -49,6 +48,7 @@ from utils.telemetry_log_utils import (
     detect_runtime_backend,
     write_runtime_log,
     estimate_local_sample_count,
+    now_berlin_iso,
 )
 
 __all__ = ["run"]
@@ -679,7 +679,7 @@ def run(cfg):
                 sample_interval_sec=runtime_sample_interval,
             )
             overall_runtime_scope.start()
-            overall_runtime_start_wall = datetime.now(timezone.utc).isoformat()
+            overall_runtime_start_wall = now_berlin_iso()
 
             infer_ds, infer_ds_from_ic = make_datasets(cfg, mode="infer")
 
@@ -1040,8 +1040,8 @@ def run(cfg):
             _rank_now, _world_now = get_rank_world()
 
             runtime_log_payload = {
-                "generated_utc": datetime.now(timezone.utc).isoformat(),
-                "overall_runtime_start_utc": overall_runtime_start_wall,
+                "generated_local": now_berlin_iso(),
+                "overall_runtime_start_local": overall_runtime_start_wall,
                 "checkpoint_dir": checkpoint_dir,
                 "direct_inference_dir": direct_inference_dir,
                 "host": {
