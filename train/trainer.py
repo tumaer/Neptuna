@@ -1745,10 +1745,10 @@ class Trainer(Trainer_):
                     shutil.rmtree(checkpoint, ignore_errors=True)
         
         #! Only rank 0 runs end-of-train callbacks; others wait at barriers (! this isnot in the base class).
-        self.accelerator.wait_for_everyone()
-        if self.accelerator.is_main_process:
-            self.control = self.callback_handler.on_train_end(args, self.state, self.control)
-        self.accelerator.wait_for_everyone()
+        #self.accelerator.wait_for_everyone()
+        #if self.accelerator.is_main_process:
+        self.control = self.callback_handler.on_train_end(args, self.state, self.control)
+        #self.accelerator.wait_for_everyone()
         
         # Wait for the checkpoint to be uploaded.
         self._finish_current_push()

@@ -229,9 +229,9 @@ class TrainingJsonLoggerCallback(TrainerCallback):
     while only rank 0 writes the aggregated JSON payload.
     """
 
-    def __init__(self, telemetry_sample_interval_sec: float = 5.0, enable_device_telemetry: bool = True):
+    def __init__(self, telemetry_sample_interval_sec: float = 1.0, enable_device_telemetry: bool = True):
         # Keep sampling conservative by default so telemetry overhead remains low.
-        self.telemetry_sample_interval_sec = max(0.2, float(telemetry_sample_interval_sec))
+        self.telemetry_sample_interval_sec = max(0.01, float(telemetry_sample_interval_sec))
         self.enable_device_telemetry = bool(enable_device_telemetry)
 
         # Internal run state (initialized in `on_train_begin`).

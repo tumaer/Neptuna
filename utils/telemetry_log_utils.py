@@ -97,12 +97,12 @@ class RuntimeTelemetryScope:
                 `aggregate_runtime_report()`.
     """
 
-    def __init__(self, name: str, sample_interval_sec: float = 1.0):
+    def __init__(self, name: str, sample_interval_sec: float = 5.0):
         # Human-readable scope label (for example: "eval_random_start").
         self.name = name
 
         # Keep a lower bound to avoid very aggressive polling.
-        self.sample_interval_sec = max(0.2, float(sample_interval_sec))
+        self.sample_interval_sec = max(0.01, float(sample_interval_sec))
 
         # Snapshot runtime context once at construction.
         self.backend = detect_runtime_backend()
