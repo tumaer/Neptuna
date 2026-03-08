@@ -545,7 +545,11 @@ class RuntimeTelemetryScope:
         for raw in out.splitlines():
             line = raw.strip()
             # Best-effort parsing across macOS versions
-            m_util = re.search(r"(gpu\s*active|utili[sz]ation)\D+([0-9]+(?:\.[0-9]+)?)\s*%", line, flags=re.IGNORECASE)
+            m_util = re.search(
+                r"(gpu\s*active|utili[sz]ation|gpu\s*hw\s*active\s*residency|active\s*residency)\D+([0-9]+(?:\.[0-9]+)?)\s*%",
+                line,
+                flags=re.IGNORECASE,
+            )
             if m_util:
                 util = float(m_util.group(2))
             m_pwr = re.search(r"gpu\s*power\D+([0-9]+(?:\.[0-9]+)?)\s*(w|mw)", line, flags=re.IGNORECASE)
