@@ -79,7 +79,7 @@ from transformers.trainer_callback import TrainerState
 import os
 from PIL import Image
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 import torch
 from metrics.loss_weighting_strategies import LossWeightingStrategyBase
 import torch.distributed as dist
@@ -329,16 +329,25 @@ class TrainingJsonLoggerCallback(TrainerCallback):
         except Exception:
             return None
 
-    def _infer_train_samples_per_second(self, args, state, elapsed_sec: Optional[float]) -> Optional[float]:
-        """Infer interval train throughput (samples/sec) for current eval window.
+    def _infer_interval_throughput(
+        self,
+        state,
+        elapsed_sec: Optional[float],
+        *,
+        preferred_log_keys,
+        total_from_step: Callable[[int], Optional[float]],
+    ) -> Optional[float]:
+        """Infer interval throughput from logged keys or record deltas.
 
-        Priority:
-        1. Reuse a logged value if already present.
-        2. Estimate from deltas between current and previous eval record:
-           `delta_samples / delta_time_sec`.
+        Args:
+            state: Trainer state (uses `global_step`).
+            elapsed_sec: Wall-clock seconds since training start.
+            preferred_log_keys: Throughput keys to reuse from `_latest_train_log`.
+            total_from_step: Callable mapping `global_step` -> cumulative total
+                for the quantity (e.g. samples or steps).
         """
-        # 1) Prefer any explicitly logged throughput key.
-        for key in ("train_samples_per_second", "samples_per_second"):
+        # 1) Prefer explicitly logged throughput values when available.
+        for key in preferred_log_keys:
             v = self._safe_float(self._latest_train_log.get(key))
             if v is not None:
                 return v
@@ -348,30 +357,62 @@ class TrainingJsonLoggerCallback(TrainerCallback):
             return None
 
         current_step = int(getattr(state, "global_step", 0) or 0)
-        current_samples = self._estimate_seen_samples(args, current_step)
-        if current_samples is None:
+        current_total = total_from_step(current_step)
+        if current_total is None:
             return None
 
         records = (self._payload or {}).get("records", []) if isinstance(self._payload, dict) else []
         if not records:
-            # First record: fall back to cumulative throughput since train start.
-            return current_samples / float(elapsed_sec)
+            # First record: cumulative throughput since train start.
+            return round(float(current_total) / float(elapsed_sec), 4)
 
         prev = records[-1] if isinstance(records[-1], dict) else {}
         prev_elapsed_min = self._safe_float(prev.get("wallclock_time_elapsed_since_training_start_min"))
         prev_elapsed_sec = (prev_elapsed_min * 60.0) if prev_elapsed_min is not None else None
         prev_step = int(prev.get("global_step", 0) or 0)
-        prev_samples = self._estimate_seen_samples(args, prev_step)
-
-        if prev_elapsed_sec is None or prev_samples is None:
+        if prev_elapsed_sec is None:
             return None
 
         delta_t = float(elapsed_sec) - float(prev_elapsed_sec)
-        delta_s = float(current_samples) - float(prev_samples)
-        if delta_t <= 0 or delta_s < 0:
+        if delta_t <= 0:
             return None
 
-        return round(delta_s / delta_t, 4)
+        if current_step < prev_step:
+            return None
+
+        prev_total = total_from_step(prev_step)
+        if prev_total is None:
+            return None
+
+        delta_total = float(current_total) - float(prev_total)
+        if delta_total < 0:
+            return None
+
+        return round(delta_total / delta_t, 4)
+
+    def _infer_train_samples_per_second(self, args, state, elapsed_sec: Optional[float]) -> Optional[float]:
+        """Infer interval train throughput (samples/sec) for current eval window.
+
+        Priority:
+        1. Reuse a logged value if already present.
+        2. Estimate from deltas between current and previous eval record:
+           `delta_samples / delta_time_sec`.
+        """
+        return self._infer_interval_throughput(
+            state,
+            elapsed_sec,
+            preferred_log_keys=("train_samples_per_second", "samples_per_second"),
+            total_from_step=lambda step: self._estimate_seen_samples(args, step),
+        )
+
+    def _infer_train_steps_per_second(self, state, elapsed_sec: Optional[float]) -> Optional[float]:
+        """Infer interval train throughput (steps/sec) for current eval window."""
+        return self._infer_interval_throughput(
+            state,
+            elapsed_sec,
+            preferred_log_keys=("train_steps_per_second", "steps_per_second"),
+            total_from_step=lambda step: float(step),
+        )
 
     def on_train_begin(self, args, state, control, **kwargs):
         """Initialize runtime state and create the initial JSON payload.
@@ -430,12 +471,23 @@ class TrainingJsonLoggerCallback(TrainerCallback):
         """
         logs = logs or {}
         tracked = {}
+        # Keys emitted by the final train summary log; we don't want these to
+        # pollute the next `training_metrics` entry created on end-of-train
+        # evaluation/plot passes.
+        excluded_train_metric_keys = {
+            "train_samples_per_second",
+            "train_steps_per_second",
+            "total_flos",
+            "train_loss",
+        }
         # Keep this intentionally small and stable so the JSON remains easy to
         # diff/parse across long runs.
         for key, value in logs.items():
             # Keep numeric train-side metrics only. Eval metrics are handled in
             # `on_evaluate` under `eval_metrics`.
             if key.startswith("eval_"):
+                continue
+            if key in excluded_train_metric_keys:
                 continue
             if isinstance(value, (int, float)):
                 tracked[key] = value
@@ -475,7 +527,9 @@ class TrainingJsonLoggerCallback(TrainerCallback):
         training_metrics = {
             k: self._safe_float(v)
             for k, v in self._latest_train_log.items()
-            if isinstance(v, (int, float)) and k != "epoch"
+            if isinstance(v, (int, float))
+            and k != "epoch"
+            and k not in {"train_steps_per_second", "total_flos", "train_loss"}
         }
 
         # Ensure throughput is present in training metrics.
@@ -483,6 +537,10 @@ class TrainingJsonLoggerCallback(TrainerCallback):
             inferred_sps = self._infer_train_samples_per_second(args, state, elapsed_sec)
             if inferred_sps is not None:
                 training_metrics["train_samples_per_second"] = inferred_sps
+        if "train_steps_per_second" not in training_metrics:
+            inferred_steps_ps = self._infer_train_steps_per_second(state, elapsed_sec)
+            if inferred_steps_ps is not None:
+                training_metrics["train_steps_per_second"] = inferred_steps_ps
 
         record = {
             "timestamp_local": now_local_iso(),
