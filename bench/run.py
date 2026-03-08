@@ -397,7 +397,15 @@ def run(cfg):
     # Always add PlotOnEvalAndSaveCallback and NaNCallback
     callbacks.append(PlotOnEvalAndSaveCallback)
     callbacks.append(NaNCallback)
-    callbacks.append(TrainingJsonLoggerCallback)
+    telemetry_cfg = cfg["train_config"].get("train_telemetry_config", {})
+    telemetry_enabled = telemetry_cfg.get("enable_device_telemetry", True)
+    telemetry_interval_sec = telemetry_cfg.get("train_telemetry_sample_interval_sec", 1.0)
+    callbacks.append(
+        TrainingJsonLoggerCallback(
+            telemetry_sample_interval_sec=telemetry_interval_sec,
+            enable_device_telemetry=telemetry_enabled,
+        )
+    )
 
     initial_train_strategy_dict = cfg.train_strategy_config.curriculum[0]
     initial_train_loss_dict = initial_train_strategy_dict.train_loss
@@ -672,7 +680,7 @@ def run(cfg):
             os.makedirs(inference_dir, exist_ok=True)
 
             # Initialize runtime telemetry for inference_runtime_log.json
-            runtime_sample_interval = float(cfg["infer_config"].get("runtime_log_sample_interval_sec", 1.0))
+            runtime_sample_interval = float(cfg["infer_config"].get("infer_telemetry_sample_interval_sec", 1.0))
             runtime_log_sections: dict[str, dict] = {}
             runtime_local_samples_total = 0
             runtime_global_samples_total = 0

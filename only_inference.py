@@ -886,7 +886,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
     solo_inference_dir = get_inference_dir_main_process_only(experiment_dir)
     _dbg(f"using solo_inference_dir={solo_inference_dir}")
 
-    runtime_sample_interval = float(infer_config.get("runtime_log_sample_interval_sec", 1.0))
+    runtime_sample_interval = float(infer_config.get("infer_telemetry_sample_interval_sec", 1.0))
     # `runtime_log_sections` stores already-aggregated section payloads keyed by
     # logical section name (e.g., `eval_loop_random_start`, `overall_inference`).
     runtime_log_sections: Dict[str, Dict] = {}

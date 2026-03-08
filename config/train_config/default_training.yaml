@@ -49,6 +49,12 @@ profile_training:
   repeat: 1
   active_steps: 5
 #############################################################
+# Telemetry options
+#############################################################
+train_telemetry_config:
+  enable_device_telemetry: True
+  train_telemetry_sample_interval_sec: 1.0
+#############################################################
 # Hugging-Face Hub options
 #############################################################
 push_to_hub: False
