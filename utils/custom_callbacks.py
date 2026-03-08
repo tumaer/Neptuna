@@ -249,6 +249,16 @@ class TrainingJsonLoggerCallback(TrainerCallback):
 
         # Optional long-lived telemetry scope covering the full train window.
         self._runtime_scope = None
+        self._runtime_scope_full = None
+        self._last_telemetry_global_step = 0
+
+    def _start_new_runtime_scope(self):
+        """Start a fresh telemetry scope for the next logging interval."""
+        self._runtime_scope = RuntimeTelemetryScope(
+            name="training_runtime",
+            sample_interval_sec=self.telemetry_sample_interval_sec,
+        )
+        self._runtime_scope.start()
 
     def _run_dir(self, args, state) -> str:
         """
@@ -400,11 +410,15 @@ class TrainingJsonLoggerCallback(TrainerCallback):
         # Telemetry sampling is optional and runs in a lightweight background
         # sampler thread managed by RuntimeTelemetryScope.
         if self.enable_device_telemetry:
-            self._runtime_scope = RuntimeTelemetryScope(
-                name="training_runtime",
+            # Full-window scope for end-of-training summary across the entire run.
+            self._runtime_scope_full = RuntimeTelemetryScope(
+                name="training_runtime_full",
                 sample_interval_sec=self.telemetry_sample_interval_sec,
             )
-            self._runtime_scope.start()
+            self._runtime_scope_full.start()
+
+            # Interval scope used for per-evaluation records.
+            self._start_new_runtime_scope()
 
         # Only rank 0 writes files to avoid write races in distributed runs.
         if rank == 0:
@@ -492,16 +506,24 @@ class TrainingJsonLoggerCallback(TrainerCallback):
 
         # Optional lightweight telemetry snapshot, aggregated across devices/ranks.
         if self._runtime_scope is not None:
+            # Close the current interval scope and aggregate it.
+            self._runtime_scope.stop()
+            current_step = int(getattr(state, "global_step", 0) or 0)
+            interval_step_count = max(0, current_step - int(self._last_telemetry_global_step or 0))
             telemetry_snapshot = aggregate_runtime_report(
                 self._runtime_scope.build_local_report(
-                    # We use global_step as a practical progress proxy for
-                    # local sample count in this callback context.
-                    local_samples=int(getattr(state, "global_step", 0) or 0)
+                    # Use interval step delta as proxy so telemetry throughput
+                    # corresponds to this logging window only.
+                    local_samples=interval_step_count
                 )
             )
             record["device_telemetry"] = telemetry_snapshot.get("device_telemetry", {})
             record["telemetry_sampling"] = telemetry_snapshot.get("telemetry_sampling", {})
             record["peak_memory"] = telemetry_snapshot.get("peak_memory", {})
+
+            # Prepare next interval scope immediately (on all ranks).
+            self._last_telemetry_global_step = current_step
+            self._start_new_runtime_scope()
 
         # All ranks must pass through aggregation above; only rank 0 writes.
         if rank != 0:
@@ -522,15 +544,30 @@ class TrainingJsonLoggerCallback(TrainerCallback):
         if self._runtime_scope is not None:
             # Stop first so no new samples are appended while we aggregate.
             self._runtime_scope.stop()
+            current_step = int(getattr(state, "global_step", 0) or 0)
+            interval_step_count = max(0, current_step - int(self._last_telemetry_global_step or 0))
             final_telemetry = aggregate_runtime_report(
                 self._runtime_scope.build_local_report(
-                    local_samples=int(getattr(state, "global_step", 0) or 0)
+                    local_samples=interval_step_count
                 )
             )
             if self._payload is not None:
                 self._payload["final_device_telemetry"] = final_telemetry.get("device_telemetry", {})
                 self._payload["final_telemetry_sampling"] = final_telemetry.get("telemetry_sampling", {})
                 self._payload["final_peak_memory"] = final_telemetry.get("peak_memory", {})
+
+        # Full-window telemetry summary across the entire training run.
+        if self._runtime_scope_full is not None:
+            self._runtime_scope_full.stop()
+            final_full_telemetry = aggregate_runtime_report(
+                self._runtime_scope_full.build_local_report(
+                    local_samples=int(getattr(state, "global_step", 0) or 0)
+                )
+            )
+            if self._payload is not None:
+                self._payload["final_device_telemetry"] = final_full_telemetry.get("device_telemetry", {})
+                self._payload["final_telemetry_sampling"] = final_full_telemetry.get("telemetry_sampling", {})
+                self._payload["final_peak_memory"] = final_full_telemetry.get("peak_memory", {})
 
         if self._payload is not None:
             self._payload["training_end_local"] = now_berlin_iso()

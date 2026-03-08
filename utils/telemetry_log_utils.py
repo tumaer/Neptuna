@@ -612,7 +612,7 @@ class RuntimeTelemetryScope:
             "throughput_samples_per_sec": float(throughput),
             "telemetry_sampling": {
                 "sample_interval_sec": float(self.sample_interval_sec),
-                "samples_logged_total": int(self._sample_loop_iterations),
+                "samples_logged": int(self._sample_loop_iterations),
             },
             "memory": self._peak_memory_info(),
             "device_telemetry": {
@@ -674,10 +674,10 @@ def aggregate_runtime_report(local_report: Dict, global_samples: Optional[int] =
         local_device_telemetry = r.get("device_telemetry") or {}
         per_local_device = local_device_telemetry.get("per_device") or r.get("gpu_devices") or {}
         local_device_count = max(1, int(len(per_local_device)))
-        samples_logged_total = _as_float_or_none((r.get("telemetry_sampling") or {}).get("samples_logged_total"))
+        samples_logged = _as_float_or_none((r.get("telemetry_sampling") or {}).get("samples_logged"))
         inferred_count_per_device = None
-        if samples_logged_total is not None and samples_logged_total > 0:
-            inferred_count_per_device = float(samples_logged_total) / float(local_device_count)
+        if samples_logged is not None and samples_logged > 0:
+            inferred_count_per_device = float(samples_logged) / float(local_device_count)
         for gpu_id, stats in per_local_device.items():
             per_device_gpu_stats.append(
                 {
@@ -752,7 +752,7 @@ def aggregate_runtime_report(local_report: Dict, global_samples: Optional[int] =
     # All ranks are expected to share the same configured interval; choose first.
     sample_interval_sec = sample_intervals[0] if sample_intervals else None
 
-    total_samples_logged = int(sum(int((r.get("telemetry_sampling") or {}).get("samples_logged_total", 0) or 0) for r in reports))
+    total_samples_logged = int(sum(int((r.get("telemetry_sampling") or {}).get("samples_logged", 0) or 0) for r in reports))
     aggregated = {
         "scope_name": local_report.get("scope_name", "scope"),
         "elapsed_min": elapsed_scope,
@@ -766,7 +766,7 @@ def aggregate_runtime_report(local_report: Dict, global_samples: Optional[int] =
         },
         "telemetry_sampling": {
             "sample_interval_sec": sample_interval_sec,
-            "samples_logged_total": total_samples_logged,
+            "samples_logged": total_samples_logged,
         },
         "samples": {
             "global_samples": total_samples,
