@@ -379,19 +379,44 @@ class RuntimeTelemetryScope:
         if self.backend != "cuda" or self.world_size <= 1:
             return None
 
-        try:
-            logical_idx = int(torch.cuda.current_device())
-        except Exception:
-            return None
+        def _env_int(name: str) -> Optional[int]:
+            raw = os.environ.get(name, "").strip()
+            if raw == "":
+                return None
+            try:
+                return int(raw)
+            except Exception:
+                return None
+
+        # In distributed launches, LOCAL_RANK is usually the most reliable
+        # process-to-device index. Some setups can still report current_device=0
+        # on every rank if set_device is deferred.
+        local_rank = _env_int("LOCAL_RANK")
+        rank_env = _env_int("RANK")
+        logical_idx = local_rank
+        if logical_idx is None:
+            try:
+                logical_idx = int(torch.cuda.current_device())
+            except Exception:
+                logical_idx = 0
 
         cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
         if not cvd:
-            # No explicit masking: logical index usually matches physical index.
+            # No explicit masking: prefer LOCAL_RANK/RANK, then current_device.
+            if rank_env is not None and self.world_size > 0:
+                logical_idx = rank_env % self.world_size
             return {"ids": {str(logical_idx)}, "uuids": set()}
 
         tokens = [t.strip() for t in cvd.split(",") if t.strip()]
-        if not (0 <= logical_idx < len(tokens)):
+        if len(tokens) == 0:
             return {"ids": {str(logical_idx)}, "uuids": set()}
+
+        # If logical index is out of bounds, fall back to rank-based mapping.
+        if not (0 <= logical_idx < len(tokens)):
+            if rank_env is not None:
+                logical_idx = rank_env % len(tokens)
+            else:
+                logical_idx = max(0, min(logical_idx, len(tokens) - 1))
 
         selected = tokens[logical_idx]
         if re.fullmatch(r"\d+", selected):
