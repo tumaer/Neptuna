@@ -92,7 +92,7 @@ from utils.telemetry_log_utils import (
     aggregate_runtime_report,
     detect_runtime_backend,
     get_rank_world,
-    now_berlin_iso,
+    now_local_iso,
 )
 import time
 
@@ -358,7 +358,7 @@ class TrainingJsonLoggerCallback(TrainerCallback):
             return current_samples / float(elapsed_sec)
 
         prev = records[-1] if isinstance(records[-1], dict) else {}
-        prev_elapsed_min = self._safe_float(prev.get("elapsed_since_training_start_min"))
+        prev_elapsed_min = self._safe_float(prev.get("wallclock_time_elapsed_since_training_start_min"))
         prev_elapsed_sec = (prev_elapsed_min * 60.0) if prev_elapsed_min is not None else None
         prev_step = int(prev.get("global_step", 0) or 0)
         prev_samples = self._estimate_seen_samples(args, prev_step)
@@ -383,7 +383,7 @@ class TrainingJsonLoggerCallback(TrainerCallback):
         rank, world = get_rank_world()
 
         self._train_start_perf = time.perf_counter()
-        self._train_start_local = now_berlin_iso()
+        self._train_start_local = now_local_iso()
 
         run_dir = self._run_dir(args, state)
         os.makedirs(run_dir, exist_ok=True)
@@ -485,11 +485,11 @@ class TrainingJsonLoggerCallback(TrainerCallback):
                 training_metrics["train_samples_per_second"] = inferred_sps
 
         record = {
-            "timestamp_local": now_berlin_iso(),
+            "timestamp_local": now_local_iso(),
             "global_step": int(getattr(state, "global_step", 0) or 0),
             "start_epoch": start_epoch,
             "end_epoch": end_epoch,
-            "elapsed_since_training_start_min": (
+            "wallclock_time_elapsed_since_training_start_min": (
                 (float(elapsed_sec) / 60.0) if elapsed_sec is not None else None
             ),
             "training_metrics": training_metrics,
@@ -530,7 +530,7 @@ class TrainingJsonLoggerCallback(TrainerCallback):
             return
 
         self._payload["records"].append(record)
-        self._payload["generated_local"] = now_berlin_iso()
+        self._payload["generated_local"] = now_local_iso()
         self._write_payload_atomic()
 
     def on_train_end(self, args, state, control, **kwargs):
@@ -570,7 +570,7 @@ class TrainingJsonLoggerCallback(TrainerCallback):
                 self._payload["final_peak_memory"] = final_full_telemetry.get("peak_memory", {})
 
         if self._payload is not None:
-            self._payload["training_end_local"] = now_berlin_iso()
+            self._payload["training_end_local"] = now_local_iso()
             if self._train_start_perf is not None:
                 self._payload["training_elapsed_min"] = max(0.0, time.perf_counter() - self._train_start_perf) / 60.0
 

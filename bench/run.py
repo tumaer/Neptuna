@@ -48,7 +48,7 @@ from utils.telemetry_log_utils import (
     detect_runtime_backend,
     write_runtime_log,
     estimate_local_sample_count,
-    now_berlin_iso,
+    now_local_iso,
 )
 
 __all__ = ["run"]
@@ -80,6 +80,8 @@ def get_device_string() -> str:
             return f"xpu:{idx} ({name})"
         except Exception:
             return "xpu"
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps:0"
     if torch.cuda.is_available():
         idx = torch.cuda.current_device()
         name = torch.cuda.get_device_name(idx)
@@ -679,7 +681,7 @@ def run(cfg):
                 sample_interval_sec=runtime_sample_interval,
             )
             overall_runtime_scope.start()
-            overall_runtime_start_wall = now_berlin_iso()
+            overall_runtime_start_wall = now_local_iso()
 
             infer_ds, infer_ds_from_ic = make_datasets(cfg, mode="infer")
 
@@ -1040,7 +1042,7 @@ def run(cfg):
             _rank_now, _world_now = get_rank_world()
 
             runtime_log_payload = {
-                "generated_local": now_berlin_iso(),
+                "generated_local": now_local_iso(),
                 "overall_runtime_start_local": overall_runtime_start_wall,
                 "checkpoint_dir": checkpoint_dir,
                 "direct_inference_dir": direct_inference_dir,

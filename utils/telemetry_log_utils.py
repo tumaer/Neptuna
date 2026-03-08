@@ -12,7 +12,7 @@ from collections import defaultdict
 from typing import List, Dict, Optional
 import torch.distributed as dist
 import json
-from zoneinfo import ZoneInfo
+from datetime import datetime
 
 
 def detect_runtime_backend() -> str:
@@ -82,15 +82,14 @@ def _mean_std(values: List[float]) -> tuple[Optional[float], Optional[float]]:
     return float(np_arr.mean()), float(np_arr.std(ddof=0))
 
 
-def now_berlin_iso() -> str:
-    """Return current wall-clock time in Europe/Berlin as ISO-8601."""
-    return datetime_now_berlin().isoformat()
+def now_local_iso() -> str:
+    """Return current wall-clock time in system-local timezone as ISO-8601."""
+    return datetime_now_local().isoformat()
 
 
-def datetime_now_berlin():
-    """Return timezone-aware datetime in Europe/Berlin."""
-    from datetime import datetime
-    return datetime.now(ZoneInfo("Europe/Berlin"))
+def datetime_now_local():
+    """Return timezone-aware datetime in the system-local timezone."""
+    return datetime.now().astimezone()
 
 
 def round_nested_numbers(obj, digits: int = 2):

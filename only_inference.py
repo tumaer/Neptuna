@@ -17,7 +17,7 @@ from utils.telemetry_log_utils import (
     detect_runtime_backend,
     write_runtime_log,
     estimate_local_sample_count,
-    now_berlin_iso,
+    now_local_iso,
 )
 from bench.runner_utils import StreamingMetrics
 from metrics.inference_metrics import compute_metrics_for_n_rollouts, StreamingRolloutMetrics
@@ -900,7 +900,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         sample_interval_sec=runtime_sample_interval,
     )
     overall_runtime_scope.start()
-    overall_runtime_start_wall = now_berlin_iso()
+    overall_runtime_start_wall = now_local_iso()
     
     # Override filter parameters from infer_config if they are specified (not None)
     infer_filter_groups = data_config["filter_features"]["infer_filter_groups"]
@@ -1411,7 +1411,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
     runtime_log_payload = {
         # Build metadata-rich payload so the log is self-contained and can be
         # consumed offline without additional context files.
-        "generated_local": now_berlin_iso(),
+        "generated_local": now_local_iso(),
         "overall_runtime_start_local": overall_runtime_start_wall,
         "experiment_dir": experiment_dir,
         "solo_inference_dir": solo_inference_dir,
