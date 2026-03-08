@@ -475,6 +475,7 @@ class TrainingJsonLoggerCallback(TrainerCallback):
         # pollute the next `training_metrics` entry created on end-of-train
         # evaluation/plot passes.
         excluded_train_metric_keys = {
+            "train_runtime",
             "train_samples_per_second",
             "train_steps_per_second",
             "total_flos",
