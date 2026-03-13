@@ -451,6 +451,533 @@ def _boundary_mask(field: torch.Tensor, axis_index: int, side: str) -> torch.Ten
     return mask
 
 
+def _normalize_field_token(name: str) -> str:
+    return "".join(ch for ch in str(name).lower() if ch.isalnum())
+
+
+def _resolve_field_name(requested: str, available: List[str]) -> Optional[str]:
+    if requested in available:
+        return requested
+
+    req_norm = _normalize_field_token(requested)
+    norm_to_names: Dict[str, List[str]] = {}
+    for n in available:
+        norm_to_names.setdefault(_normalize_field_token(n), []).append(n)
+
+    candidates = norm_to_names.get(req_norm, [])
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        raise ValueError(
+            f"Ambiguous field mapping for '{requested}'. Candidates: {candidates}. "
+            "Please set explicit field names in component config."
+        )
+    return None
+
+
+def _default_velocity_fields(spatial_dim: int) -> List[str]:
+    mapping = {
+        1: ["Velocity_X"],
+        2: ["Velocity_X", "Velocity_Y"],
+        3: ["Velocity_X", "Velocity_Y", "Velocity_Z"],
+    }
+    if spatial_dim not in mapping:
+        raise ValueError(f"Unsupported spatial dim: {spatial_dim}")
+    return mapping[spatial_dim]
+
+
+class _MultiMaterialEulerBase(PDEComponent):
+    supported_spatial_dims = (2, 3)
+
+    def __init__(
+        self,
+        name: Optional[str] = None,
+        spatial_dim: int = 2,
+        density_field: str = "Density",
+        pressure_field: str = "Pressure",
+        velocity_fields: Optional[List[str]] = None,
+        energy_field: str = "Energy",
+        alpha_field: str = "Diffuse_Volume_Fraction_1",
+        **params: Any,
+    ):
+        super().__init__(name=name, spatial_dim=spatial_dim, **params)
+        self.density_field = str(density_field)
+        self.pressure_field = str(pressure_field)
+        self.velocity_fields = list(velocity_fields) if velocity_fields is not None else _default_velocity_fields(spatial_dim)
+        if len(self.velocity_fields) != spatial_dim:
+            raise ValueError(
+                f"{self.__class__.__name__}: velocity_fields length {len(self.velocity_fields)} "
+                f"must match spatial_dim={spatial_dim}."
+            )
+        self.energy_field = str(energy_field)
+        self.alpha_field = str(alpha_field)
+
+    def _dx(self, derivs: DerivativeCache, field: str, axis_phys: int) -> torch.Tensor:
+        axis_tensor = _physical_to_tensor_axis(axis_phys, self.spatial_dim)
+        return derivs.grads[field][axis_tensor]
+
+    def _grad_phys(self, derivs: DerivativeCache, field: str) -> List[torch.Tensor]:
+        return [self._dx(derivs, field, a) for a in range(self.spatial_dim)]
+
+
+@register_pde_component("pde/mmEulerMass")
+class MultiMaterialEulerMassConservative(_MultiMaterialEulerBase):
+    """
+    Conservative mixture-mass equation in Cartesian coordinates:
+      ∂t(ρ) + ∇·(ρu) = 0
+    """
+    default_name = "mm_mass"
+
+    def __init__(
+        self,
+        name: Optional[str] = None,
+        spatial_dim: int = 2,
+        density_field: str = "Density",
+        velocity_fields: Optional[List[str]] = None,
+        **params: Any,
+    ):
+        super().__init__(
+            name=name or self.default_name,
+            spatial_dim=spatial_dim,
+            density_field=density_field,
+            velocity_fields=velocity_fields,
+            **params,
+        )
+        self.required_fields = (self.density_field, *self.velocity_fields)
+        self.required_time_fields = (self.density_field,)
+        self.required_grad_fields = (self.density_field, *self.velocity_fields)
+
+    def residual_scale(self, refs: Dict[str, float]) -> Optional[float]:
+        ref_rho = refs.get("density", 1.0)
+        ref_u = refs.get("velocity", 1.0)
+        ref_L = refs.get("length", 1.0)
+        eps = 1e-12
+        ref_t = ref_L / max(ref_u, eps)
+        return max(ref_rho / ref_t, ref_rho * ref_u / ref_L)
+
+    def residual(
+        self,
+        fields: Dict[str, torch.Tensor],
+        derivs: DerivativeCache,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> torch.Tensor:
+        rho = fields[self.density_field]
+        rho_t = derivs.time[self.density_field]
+
+        div_flux = 0.0
+        for axis in range(self.spatial_dim):
+            u_i = fields[self.velocity_fields[axis]]
+            drho_dxi = self._dx(derivs, self.density_field, axis)
+            dui_dxi = self._dx(derivs, self.velocity_fields[axis], axis)
+            div_flux = div_flux + u_i * drho_dxi + rho * dui_dxi
+
+        return rho_t + div_flux
+
+
+@register_pde_component("pde/mmEulerMomentum")
+class MultiMaterialEulerMomentumConservative(_MultiMaterialEulerBase):
+    """
+    Conservative momentum equation in Cartesian coordinates for component j:
+      ∂t(ρu_j) + Σ_i ∂_{x_i}(ρu_i u_j + p δ_{ij}) = 0
+    """
+    default_name = "mm_momentum"
+
+    def __init__(
+        self,
+        name: Optional[str] = None,
+        spatial_dim: int = 2,
+        direction: str = "x",
+        density_field: str = "Density",
+        pressure_field: str = "Pressure",
+        velocity_fields: Optional[List[str]] = None,
+        **params: Any,
+    ):
+        axis_by_dir = {"x": 0, "y": 1, "z": 2}
+        if direction not in axis_by_dir:
+            raise ValueError("MultiMaterialEulerMomentumConservative requires direction='x', 'y', or 'z'.")
+        axis = axis_by_dir[direction]
+        if axis >= spatial_dim:
+            raise ValueError(
+                f"direction='{direction}' is invalid for spatial_dim={spatial_dim}."
+            )
+        self.direction = direction
+        self.direction_axis = axis
+        super().__init__(
+            name=name or f"{self.default_name}_{direction}",
+            spatial_dim=spatial_dim,
+            density_field=density_field,
+            pressure_field=pressure_field,
+            velocity_fields=velocity_fields,
+            **params,
+        )
+        self.required_fields = (self.density_field, self.pressure_field, *self.velocity_fields)
+        self.required_time_fields = (self.density_field, self.velocity_fields[self.direction_axis])
+        self.required_grad_fields = (self.density_field, self.pressure_field, *self.velocity_fields)
+
+    def residual_scale(self, refs: Dict[str, float]) -> Optional[float]:
+        ref_rho = refs.get("density", 1.0)
+        ref_u = refs.get("velocity", 1.0)
+        ref_p = refs.get("pressure", 1.0)
+        ref_L = refs.get("length", 1.0)
+        eps = 1e-12
+        ref_t = ref_L / max(ref_u, eps)
+        return max(
+            ref_rho * ref_u / ref_t,
+            ref_rho * ref_u * ref_u / ref_L,
+            ref_p / ref_L,
+        )
+
+    def residual(
+        self,
+        fields: Dict[str, torch.Tensor],
+        derivs: DerivativeCache,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> torch.Tensor:
+        rho = fields[self.density_field]
+        p = fields[self.pressure_field]
+        u_j = fields[self.velocity_fields[self.direction_axis]]
+
+        rho_t = derivs.time[self.density_field]
+        u_j_t = derivs.time[self.velocity_fields[self.direction_axis]]
+        mom_t = rho_t * u_j + rho * u_j_t
+
+        div_flux = 0.0
+        for axis in range(self.spatial_dim):
+            u_i = fields[self.velocity_fields[axis]]
+            drho_dxi = self._dx(derivs, self.density_field, axis)
+            dui_dxi = self._dx(derivs, self.velocity_fields[axis], axis)
+            duj_dxi = self._dx(derivs, self.velocity_fields[self.direction_axis], axis)
+            dp_dxi = self._dx(derivs, self.pressure_field, axis)
+
+            term = u_i * u_j * drho_dxi + rho * u_j * dui_dxi + rho * u_i * duj_dxi
+            if axis == self.direction_axis:
+                term = term + dp_dxi
+            div_flux = div_flux + term
+
+        return mom_t + div_flux
+
+
+@register_pde_component("pde/mmEulerMomentumX")
+class MultiMaterialEulerMomentumXConservative(MultiMaterialEulerMomentumConservative):
+    default_name = "mm_momentum_x"
+
+    def __init__(self, name: Optional[str] = None, spatial_dim: int = 2, **params: Any):
+        super().__init__(
+            name=name or self.default_name,
+            spatial_dim=spatial_dim,
+            direction="x",
+            **params,
+        )
+
+
+@register_pde_component("pde/mmEulerMomentumY")
+class MultiMaterialEulerMomentumYConservative(MultiMaterialEulerMomentumConservative):
+    default_name = "mm_momentum_y"
+
+    def __init__(self, name: Optional[str] = None, spatial_dim: int = 2, **params: Any):
+        super().__init__(
+            name=name or self.default_name,
+            spatial_dim=spatial_dim,
+            direction="y",
+            **params,
+        )
+
+
+@register_pde_component("pde/mmEulerMomentumZ")
+class MultiMaterialEulerMomentumZConservative(MultiMaterialEulerMomentumConservative):
+    default_name = "mm_momentum_z"
+
+    def __init__(self, name: Optional[str] = None, spatial_dim: int = 3, **params: Any):
+        super().__init__(
+            name=name or self.default_name,
+            spatial_dim=spatial_dim,
+            direction="z",
+            **params,
+        )
+
+
+@register_pde_component("pde/mmEulerEnergy")
+class MultiMaterialEulerEnergyConservative(_MultiMaterialEulerBase):
+    """
+    Conservative total-energy equation in Cartesian coordinates:
+      ∂t(E) + ∇·((E + p)u) = 0
+
+    If `energy_from_eos=True`, E is reconstructed using a stiffened-gas closure.
+    """
+    default_name = "mm_energy"
+
+    def __init__(
+        self,
+        name: Optional[str] = None,
+        spatial_dim: int = 2,
+        density_field: str = "Density",
+        pressure_field: str = "Pressure",
+        velocity_fields: Optional[List[str]] = None,
+        energy_field: str = "Energy",
+        alpha_field: str = "Diffuse_Volume_Fraction_1",
+        energy_from_eos: bool = False,
+        eos_mode: str = "single_phase",
+        gamma: float = 1.4,
+        p_inf: float = 0.0,
+        gamma_gas: float = 1.4,
+        gamma_liquid: float = 4.4,
+        p_inf_gas: float = 0.0,
+        p_inf_liquid: float = 6.0e8,
+        **params: Any,
+    ):
+        super().__init__(
+            name=name or self.default_name,
+            spatial_dim=spatial_dim,
+            density_field=density_field,
+            pressure_field=pressure_field,
+            velocity_fields=velocity_fields,
+            energy_field=energy_field,
+            alpha_field=alpha_field,
+            **params,
+        )
+        self.energy_from_eos = bool(energy_from_eos)
+        self.eos_mode = str(eos_mode)
+        self.gamma = float(gamma)
+        self.p_inf = float(p_inf)
+        self.gamma_gas = float(gamma_gas)
+        self.gamma_liquid = float(gamma_liquid)
+        self.p_inf_gas = float(p_inf_gas)
+        self.p_inf_liquid = float(p_inf_liquid)
+
+        required_fields = [self.density_field, self.pressure_field, *self.velocity_fields]
+        required_time_fields = []
+        required_grad_fields = [self.pressure_field, *self.velocity_fields]
+
+        if self.energy_from_eos:
+            required_time_fields.extend([self.density_field, self.pressure_field, *self.velocity_fields])
+            required_grad_fields.append(self.density_field)
+            if self.eos_mode == "two_phase":
+                required_fields.append(self.alpha_field)
+                required_time_fields.append(self.alpha_field)
+                required_grad_fields.append(self.alpha_field)
+        else:
+            required_fields.append(self.energy_field)
+            required_time_fields.append(self.energy_field)
+            required_grad_fields.append(self.energy_field)
+
+        self.required_fields = tuple(dict.fromkeys(required_fields))
+        self.required_time_fields = tuple(dict.fromkeys(required_time_fields))
+        self.required_grad_fields = tuple(dict.fromkeys(required_grad_fields))
+
+    def residual_scale(self, refs: Dict[str, float]) -> Optional[float]:
+        ref_u = refs.get("velocity", 1.0)
+        ref_p = refs.get("pressure", 1.0)
+        ref_L = refs.get("length", 1.0)
+        ref_rho = refs.get("density", 1.0)
+        eps = 1e-12
+        ref_t = ref_L / max(ref_u, eps)
+        ref_E = max(ref_p, ref_rho * ref_u * ref_u)
+        return max(ref_E / ref_t, ref_E * ref_u / ref_L, ref_p * ref_u / ref_L)
+
+    def _single_phase_energy(
+        self,
+        rho: torch.Tensor,
+        p: torch.Tensor,
+        vel: List[torch.Tensor],
+        rho_t: torch.Tensor,
+        p_t: torch.Tensor,
+        vel_t: List[torch.Tensor],
+        rho_g: List[torch.Tensor],
+        p_g: List[torch.Tensor],
+        vel_g: List[List[torch.Tensor]],
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor]]:
+        if self.gamma <= 1.0:
+            raise ValueError("mmEulerEnergy: gamma must be > 1 for stiffened-gas closure.")
+        inv = 1.0 / (self.gamma - 1.0)
+        const = self.gamma * self.p_inf * inv
+
+        q2 = 0.0
+        q2_t = 0.0
+        q2_g = [0.0 for _ in range(self.spatial_dim)]
+        for i in range(self.spatial_dim):
+            q2 = q2 + vel[i] * vel[i]
+            q2_t = q2_t + 2.0 * vel[i] * vel_t[i]
+            for a in range(self.spatial_dim):
+                q2_g[a] = q2_g[a] + 2.0 * vel[i] * vel_g[i][a]
+
+        rho_e = inv * p + const
+        rho_e_t = inv * p_t
+        rho_e_g = [inv * p_g[a] for a in range(self.spatial_dim)]
+
+        E = rho_e + 0.5 * rho * q2
+        E_t = rho_e_t + 0.5 * (rho_t * q2 + rho * q2_t)
+        E_g = [rho_e_g[a] + 0.5 * (rho_g[a] * q2 + rho * q2_g[a]) for a in range(self.spatial_dim)]
+        return E, E_t, E_g
+
+    def _two_phase_energy(
+        self,
+        rho: torch.Tensor,
+        p: torch.Tensor,
+        alpha: torch.Tensor,
+        vel: List[torch.Tensor],
+        rho_t: torch.Tensor,
+        p_t: torch.Tensor,
+        alpha_t: torch.Tensor,
+        vel_t: List[torch.Tensor],
+        rho_g: List[torch.Tensor],
+        p_g: List[torch.Tensor],
+        alpha_g: List[torch.Tensor],
+        vel_g: List[List[torch.Tensor]],
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor]]:
+        if self.gamma_gas <= 1.0 or self.gamma_liquid <= 1.0:
+            raise ValueError("mmEulerEnergy: gamma_gas and gamma_liquid must be > 1.")
+
+        Ag = 1.0 / (self.gamma_gas - 1.0)
+        Al = 1.0 / (self.gamma_liquid - 1.0)
+        Bg = self.gamma_gas * self.p_inf_gas * Ag
+        Bl = self.gamma_liquid * self.p_inf_liquid * Al
+
+        A = alpha * Ag + (1.0 - alpha) * Al
+        B = alpha * Bg + (1.0 - alpha) * Bl
+
+        dA_dalpha = Ag - Al
+        dB_dalpha = Bg - Bl
+
+        q2 = 0.0
+        q2_t = 0.0
+        q2_g = [0.0 for _ in range(self.spatial_dim)]
+        for i in range(self.spatial_dim):
+            q2 = q2 + vel[i] * vel[i]
+            q2_t = q2_t + 2.0 * vel[i] * vel_t[i]
+            for a in range(self.spatial_dim):
+                q2_g[a] = q2_g[a] + 2.0 * vel[i] * vel_g[i][a]
+
+        rho_e = A * p + B
+        rho_e_t = A * p_t + dA_dalpha * alpha_t * p + dB_dalpha * alpha_t
+        rho_e_g = [
+            A * p_g[a] + dA_dalpha * alpha_g[a] * p + dB_dalpha * alpha_g[a]
+            for a in range(self.spatial_dim)
+        ]
+
+        E = rho_e + 0.5 * rho * q2
+        E_t = rho_e_t + 0.5 * (rho_t * q2 + rho * q2_t)
+        E_g = [rho_e_g[a] + 0.5 * (rho_g[a] * q2 + rho * q2_g[a]) for a in range(self.spatial_dim)]
+        return E, E_t, E_g
+
+    def residual(
+        self,
+        fields: Dict[str, torch.Tensor],
+        derivs: DerivativeCache,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> torch.Tensor:
+        rho = fields[self.density_field]
+        p = fields[self.pressure_field]
+        vel = [fields[vn] for vn in self.velocity_fields]
+
+        p_g = self._grad_phys(derivs, self.pressure_field)
+        du_diag = [self._dx(derivs, self.velocity_fields[a], a) for a in range(self.spatial_dim)]
+
+        if self.energy_from_eos:
+            rho_t = derivs.time[self.density_field]
+            p_t = derivs.time[self.pressure_field]
+            vel_t = [derivs.time[vn] for vn in self.velocity_fields]
+            rho_g = self._grad_phys(derivs, self.density_field)
+            vel_g = [self._grad_phys(derivs, vn) for vn in self.velocity_fields]
+
+            if self.eos_mode == "single_phase":
+                E, E_t, E_g = self._single_phase_energy(
+                    rho=rho,
+                    p=p,
+                    vel=vel,
+                    rho_t=rho_t,
+                    p_t=p_t,
+                    vel_t=vel_t,
+                    rho_g=rho_g,
+                    p_g=p_g,
+                    vel_g=vel_g,
+                )
+            elif self.eos_mode == "two_phase":
+                alpha = fields[self.alpha_field]
+                alpha_t = derivs.time[self.alpha_field]
+                alpha_g = self._grad_phys(derivs, self.alpha_field)
+                E, E_t, E_g = self._two_phase_energy(
+                    rho=rho,
+                    p=p,
+                    alpha=alpha,
+                    vel=vel,
+                    rho_t=rho_t,
+                    p_t=p_t,
+                    alpha_t=alpha_t,
+                    vel_t=vel_t,
+                    rho_g=rho_g,
+                    p_g=p_g,
+                    alpha_g=alpha_g,
+                    vel_g=vel_g,
+                )
+            else:
+                raise ValueError(
+                    f"mmEulerEnergy: unknown eos_mode '{self.eos_mode}'. Expected 'single_phase' or 'two_phase'."
+                )
+        else:
+            E = fields[self.energy_field]
+            E_t = derivs.time[self.energy_field]
+            E_g = self._grad_phys(derivs, self.energy_field)
+
+        div_flux = 0.0
+        for axis in range(self.spatial_dim):
+            div_flux = div_flux + vel[axis] * (E_g[axis] + p_g[axis]) + (E + p) * du_diag[axis]
+
+        return E_t + div_flux
+
+
+@register_pde_component("pde/mmEulerVolumeFraction")
+class MultiMaterialEulerVolumeFractionConservative(_MultiMaterialEulerBase):
+    """
+    Conservative gas volume-fraction transport in Cartesian coordinates:
+      ∂t(α) + ∇·(αu) = 0
+    """
+    default_name = "mm_volume_fraction"
+
+    def __init__(
+        self,
+        name: Optional[str] = None,
+        spatial_dim: int = 2,
+        alpha_field: str = "Diffuse_Volume_Fraction_1",
+        velocity_fields: Optional[List[str]] = None,
+        **params: Any,
+    ):
+        super().__init__(
+            name=name or self.default_name,
+            spatial_dim=spatial_dim,
+            velocity_fields=velocity_fields,
+            alpha_field=alpha_field,
+            **params,
+        )
+        self.required_fields = (self.alpha_field, *self.velocity_fields)
+        self.required_time_fields = (self.alpha_field,)
+        self.required_grad_fields = (self.alpha_field, *self.velocity_fields)
+
+    def residual_scale(self, refs: Dict[str, float]) -> Optional[float]:
+        ref_u = refs.get("velocity", 1.0)
+        ref_L = refs.get("length", 1.0)
+        eps = 1e-12
+        ref_t = ref_L / max(ref_u, eps)
+        return max(1.0 / ref_t, ref_u / ref_L)
+
+    def residual(
+        self,
+        fields: Dict[str, torch.Tensor],
+        derivs: DerivativeCache,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> torch.Tensor:
+        alpha = fields[self.alpha_field]
+        alpha_t = derivs.time[self.alpha_field]
+
+        div_flux = 0.0
+        for axis in range(self.spatial_dim):
+            u_i = fields[self.velocity_fields[axis]]
+            dalpha_dxi = self._dx(derivs, self.alpha_field, axis)
+            dui_dxi = self._dx(derivs, self.velocity_fields[axis], axis)
+            div_flux = div_flux + u_i * dalpha_dxi + alpha * dui_dxi
+
+        return alpha_t + div_flux
+
+
 @register_pde_component("pde/unsteadyContinuity")
 class UnsteadyContinuity2D(PDEComponent):
     """
@@ -1256,6 +1783,29 @@ class PDEResidualLoss(LossComponent):
                     {"type": "pde/eulerMomentumX"},
                     {"type": "pde/eulerMomentumY"},
                 ]
+            elif isinstance(pde, str) and pde in (
+                "MultiMaterialEulerConservative2D",
+                "CompressibleEulerMultimaterial2D",
+            ):
+                components = [
+                    {"type": "pde/mmEulerMass"},
+                    {"type": "pde/mmEulerMomentumX"},
+                    {"type": "pde/mmEulerMomentumY"},
+                    {"type": "pde/mmEulerEnergy"},
+                    {"type": "pde/mmEulerVolumeFraction"},
+                ]
+            elif isinstance(pde, str) and pde in (
+                "MultiMaterialEulerConservative3D",
+                "CompressibleEulerMultimaterial3D",
+            ):
+                components = [
+                    {"type": "pde/mmEulerMass"},
+                    {"type": "pde/mmEulerMomentumX"},
+                    {"type": "pde/mmEulerMomentumY"},
+                    {"type": "pde/mmEulerMomentumZ"},
+                    {"type": "pde/mmEulerEnergy"},
+                    {"type": "pde/mmEulerVolumeFraction"},
+                ]
             elif isinstance(pde, str) and pde in ("debugsystem", "DebugSystem2D"):
                 components = [
                     {"type": "pde/debugSystemEq1"},
@@ -1493,41 +2043,89 @@ class PDEResidualLoss(LossComponent):
         if self.residual_mask_grad_fields:
             required_grad_fields.update(self.residual_mask_grad_fields)
 
-        missing = [f for f in required_fields if f not in fields_full]
-        if missing:
-            raise ValueError(f"PDEResidualLoss: missing required fields: {missing}")
+        all_required = set().union(
+            required_fields,
+            required_time_fields,
+            required_grad_fields,
+            required_laplacian_fields,
+        )
+        available_fields = list(fields_full.keys())
+        resolved_field_map: Dict[str, str] = {}
+        unresolved: List[str] = []
+        for req in sorted(all_required):
+            resolved = _resolve_field_name(req, available_fields)
+            if resolved is None:
+                unresolved.append(req)
+            else:
+                resolved_field_map[req] = resolved
+        if unresolved:
+            raise ValueError(
+                "PDEResidualLoss: missing required fields: "
+                f"{unresolved}. Available fields: {available_fields}"
+            )
 
         t_idx: Optional[torch.Tensor] = None
         time_derivs: Dict[str, torch.Tensor] = {}
+        time_derivs_by_resolved: Dict[str, torch.Tensor] = {}
 
         for field in required_time_fields:
-            prev = prev_fields.get(field) if prev_fields is not None else None
-            ut, t_field = self.ops.time_derivative(
-                fields_full[field],
-                eval_on=self.eval_time,
-                prev=prev,
-            )
+            resolved = resolved_field_map[field]
+            if resolved in time_derivs_by_resolved:
+                ut = time_derivs_by_resolved[resolved]
+                t_field = t_idx if t_idx is not None else None
+            else:
+                prev = prev_fields.get(resolved) if prev_fields is not None else None
+                ut, t_field = self.ops.time_derivative(
+                    fields_full[resolved],
+                    eval_on=self.eval_time,
+                    prev=prev,
+                )
+                time_derivs_by_resolved[resolved] = ut
             if t_idx is None:
+                if t_field is None:
+                    raise RuntimeError("Internal error: missing time index while computing derivatives.")
                 t_idx = t_field
             elif not torch.equal(t_idx, t_field):
                 raise ValueError("PDEResidualLoss: time derivative indices are inconsistent across fields.")
             time_derivs[field] = ut
+            time_derivs[resolved] = ut
 
         if t_idx is None:
             T_full = next(iter(fields_full.values())).shape[1]
             t_idx = torch.arange(0, T_full, device=next(iter(fields_full.values())).device)
 
-        fields_n = {name: fields_full[name][:, t_idx] for name in required_fields}
+        fields_n: Dict[str, torch.Tensor] = {}
+        for name in required_fields:
+            resolved = resolved_field_map[name]
+            value = fields_full[resolved][:, t_idx]
+            fields_n[name] = value
+            fields_n[resolved] = value
 
         grads: Dict[str, List[torch.Tensor]] = {}
+        grads_by_resolved: Dict[str, List[torch.Tensor]] = {}
         for field in required_grad_fields:
-            g_full = self.ops.grad(fields_full[field])
-            grads[field] = [g[:, t_idx] for g in g_full]
+            resolved = resolved_field_map[field]
+            if resolved in grads_by_resolved:
+                g_eval = grads_by_resolved[resolved]
+            else:
+                g_full = self.ops.grad(fields_full[resolved])
+                g_eval = [g[:, t_idx] for g in g_full]
+                grads_by_resolved[resolved] = g_eval
+            grads[field] = g_eval
+            grads[resolved] = g_eval
 
         laplacian: Dict[str, torch.Tensor] = {}
+        laplacian_by_resolved: Dict[str, torch.Tensor] = {}
         for field in required_laplacian_fields:
-            lap_full = self.ops.laplacian(fields_full[field])
-            laplacian[field] = lap_full[:, t_idx]
+            resolved = resolved_field_map[field]
+            if resolved in laplacian_by_resolved:
+                lap_eval = laplacian_by_resolved[resolved]
+            else:
+                lap_full = self.ops.laplacian(fields_full[resolved])
+                lap_eval = lap_full[:, t_idx]
+                laplacian_by_resolved[resolved] = lap_eval
+            laplacian[field] = lap_eval
+            laplacian[resolved] = lap_eval
 
         return DerivativeCache(
             t_idx=t_idx,

@@ -427,7 +427,27 @@
           "hydra.run.dir=.",
           "hydra.output_subdir=null",
           "data_config=fluids/KS/1d_ks_data.yaml",
-          "model_config=UNet/default_unet",
+          "model_config=UNet/unet_1M",
+        ],
+      "env": {
+          "HYDRA_FULL_ERROR": "1",
+          "HYDRA_MAIN_DISABLE_RUN": "1"
+          }
+
+    },
+
+    {
+      "name": "train 2D_SB_UNet:",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "main.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+          "hydra.run.dir=.",
+          "hydra.output_subdir=null",
+          "data_config=fluids/Shock_Bubble/2d_shockbubble_data_default.yaml",
+          "model_config=UNet/unet_1M",
         ],
       "env": {
           "HYDRA_FULL_ERROR": "1",
