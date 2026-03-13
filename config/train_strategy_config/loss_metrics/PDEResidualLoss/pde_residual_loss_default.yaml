@@ -32,9 +32,18 @@ residual_mask:
   lambda1_beta: 1.0
 
 
-dt: 7.5e-7
+dt: 1.5e-7
 dx: 1.5e-4
 spatial_backend: "FDSpatialDerivatives"
+
+pde_params:
+  debug_mm_euler_on_labels: false
+  debug_mm_euler_max_calls: 1
+  debug_mm_euler_output_dir: ./temporary/mm_euler_label_debug
+  debug_mm_euler_sample_index: 0
+  debug_mm_euler_time_index: 0
+  debug_mm_euler_max_plots: 80
+  debug_mm_euler_clip_percent: 1.0
 
 reference_quantities:
   density: 1000.0

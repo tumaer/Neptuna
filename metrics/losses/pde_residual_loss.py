@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 import warnings
 from typing import Dict, List, Optional, Tuple, Union, Callable, Literal, Any
 from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
@@ -1655,7 +1656,7 @@ class PDEResidualLoss(LossComponent):
         name: Optional[str] = None,
         data_dim: Optional[int] = None,
         field_names: Optional[List[str]] = None,
-        pde_params: Optional[Dict[str, float]] = None,
+        pde_params: Optional[Dict[str, Any]] = None,
         reference_quantities: Optional[Dict[str, float]] = None,
         residual_scale_eps: float = 1e-8,
     ):
@@ -1691,6 +1692,18 @@ class PDEResidualLoss(LossComponent):
         self.residual_mask = residual_mask
         self.equation_weight_k1 = float(equation_weight_k1)
         self.pde_params = pde_params or {}
+        self._debug_mm_euler_on_labels = bool(self.pde_params.get("debug_mm_euler_on_labels", False))
+        self._debug_mm_euler_max_calls = int(self.pde_params.get("debug_mm_euler_max_calls", 1))
+        self._debug_mm_euler_call_count = 0
+        self._debug_mm_euler_output_dir = str(
+            self.pde_params.get("debug_mm_euler_output_dir", "./temporary/mm_euler_label_debug")
+        )
+        self._debug_mm_euler_sample_index = int(self.pde_params.get("debug_mm_euler_sample_index", 0))
+        self._debug_mm_euler_time_index = int(self.pde_params.get("debug_mm_euler_time_index", 0))
+        self._debug_mm_euler_max_plots = int(self.pde_params.get("debug_mm_euler_max_plots", 80))
+        self._debug_mm_euler_clip_percent = float(
+            self.pde_params.get("debug_mm_euler_clip_percent", 0.0)
+        )
 
         self.residual_masker: Optional[ResidualMasker] = None
         self.residual_mask_grad_fields: List[str] = []
@@ -1903,6 +1916,188 @@ class PDEResidualLoss(LossComponent):
         # Fallback
         return _SPATIAL_BACKEND_REGISTRY[name](**cfg)
 
+    def _compute_component_residuals(
+        self,
+        fields_full: Dict[str, torch.Tensor],
+        prev_fields: Optional[Dict[str, torch.Tensor]],
+        label_fields_full: Optional[Dict[str, torch.Tensor]] = None,
+    ) -> Tuple[DerivativeCache, Dict[str, torch.Tensor]]:
+        pde_params = {**self.pde_params, "eval_time": self.eval_time}
+        derivs = self._compute_derivatives(fields_full, prev_fields)
+
+        label_fields_n: Optional[Dict[str, torch.Tensor]] = None
+        if label_fields_full is not None:
+            label_fields_n = {
+                name: label_fields_full[name][:, derivs.t_idx]
+                for name in self.field_names
+                if name in label_fields_full
+            }
+
+        residuals: Dict[str, torch.Tensor] = {}
+        for comp in self.components:
+            comp_params = {**comp.params, **pde_params}
+            if label_fields_n is not None:
+                comp_params["label_fields"] = label_fields_n
+            res = comp.residual(derivs.fields_n, derivs, params=comp_params)
+            residuals[comp.name] = res
+
+        if self.residual_masker is not None:
+            residuals = self.residual_masker.apply_residuals(residuals, self.components, derivs)
+
+        return derivs, residuals
+
+    @staticmethod
+    def _is_mm_euler_component(comp: PDEComponent) -> bool:
+        return isinstance(comp, _MultiMaterialEulerBase)
+
+    def _collect_mm_debug_tensors(
+        self,
+        derivs: DerivativeCache,
+        residuals: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+        tensors: Dict[str, torch.Tensor] = {}
+        n_spatial = self.data_dim
+        if n_spatial is None:
+            mm_components = [c for c in self.components if self._is_mm_euler_component(c)]
+            if len(mm_components) > 0:
+                n_spatial = mm_components[0].spatial_dim
+        if n_spatial is None:
+            n_spatial = 2
+        axis_labels = _axis_labels_from_dim(int(n_spatial))
+
+        for comp in self.components:
+            if not self._is_mm_euler_component(comp):
+                continue
+            if comp.name in residuals:
+                tensors[f"residual/{comp.name}"] = residuals[comp.name]
+
+            for field in comp.required_fields:
+                if field in derivs.fields_n:
+                    tensors[f"field/{comp.name}/{field}"] = derivs.fields_n[field]
+
+            for field in comp.required_time_fields:
+                if field in derivs.time:
+                    tensors[f"time/{comp.name}/dt_{field}"] = derivs.time[field]
+
+            for field in comp.required_grad_fields:
+                if field in derivs.grads:
+                    for i, gi in enumerate(derivs.grads[field]):
+                        axis_name = axis_labels[i] if i < len(axis_labels) else f"axis{i}"
+                        tensors[f"grad/{comp.name}/d{field}_d{axis_name}"] = gi
+
+        return tensors
+
+    @staticmethod
+    def _safe_plot_name(key: str) -> str:
+        out = key.replace("/", "__")
+        out = out.replace(" ", "_")
+        return out
+
+    def _plot_mm_debug_tensors(self, tensors: Dict[str, torch.Tensor]) -> None:
+        if not tensors:
+            return
+
+        try:
+            import matplotlib.pyplot as plt
+            from matplotlib.colors import TwoSlopeNorm
+        except Exception:
+            warnings.warn(
+                "PDEResidualLoss debug plotting skipped because matplotlib is unavailable.",
+                RuntimeWarning,
+            )
+            return
+
+        os.makedirs(self._debug_mm_euler_output_dir, exist_ok=True)
+
+        max_plots = max(1, self._debug_mm_euler_max_plots)
+        n_plots = 0
+        for key in sorted(tensors.keys()):
+            if n_plots >= max_plots:
+                break
+            ten = tensors[key]
+            if not isinstance(ten, torch.Tensor) or ten.ndim < 3:
+                continue
+
+            b = min(max(0, self._debug_mm_euler_sample_index), ten.shape[0] - 1)
+            t = min(max(0, self._debug_mm_euler_time_index), ten.shape[1] - 1)
+            snap = ten[b, t].detach().float().cpu()
+
+            is_grad = key.startswith("grad/") or key.startswith("grad_")
+            is_residual = key.startswith("residual/") or key.startswith("residual_")
+            is_time = key.startswith("time/") or key.startswith("time_")
+            needs_centered_cmap = is_grad or is_residual or is_time
+
+            if is_residual:
+                snap = snap.abs()
+
+            norm = None
+            if needs_centered_cmap:
+                max_abs_tensor = snap.abs().reshape(-1)
+                clip_pct = max(0.0, min(49.9, self._debug_mm_euler_clip_percent))
+                if clip_pct > 0.0 and max_abs_tensor.numel() > 1:
+                    q_hi = 1.0 - (clip_pct / 100.0)
+                    max_abs = float(torch.quantile(max_abs_tensor, q_hi).item())
+                else:
+                    max_abs = float(max_abs_tensor.max().item())
+                if max_abs < 1e-12:
+                    max_abs = 1e-12
+                norm = TwoSlopeNorm(vmin=-max_abs, vcenter=0.0, vmax=max_abs)
+
+            fig = plt.figure(figsize=(5.5, 4.5))
+            if snap.ndim == 1:
+                ax = fig.add_subplot(111)
+                ax.plot(snap.numpy())
+                ax.set_xlabel("index")
+                ax.set_ylabel(key)
+            elif snap.ndim == 2:
+                ax = fig.add_subplot(111)
+                im = ax.imshow(
+                    snap.numpy(),
+                    origin="lower",
+                    aspect="auto",
+                    cmap="coolwarm",
+                    norm=norm,
+                )
+                fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            elif snap.ndim == 3:
+                z = snap.shape[0] // 2
+                ax = fig.add_subplot(111)
+                im = ax.imshow(
+                    snap[z].numpy(),
+                    origin="lower",
+                    aspect="auto",
+                    cmap="coolwarm",
+                    norm=norm,
+                )
+                fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+                ax.set_title(f"{key} (z={z})")
+            else:
+                plt.close(fig)
+                continue
+
+            if snap.ndim != 3:
+                ax.set_title(key)
+            fname = self._safe_plot_name(key) + ".png"
+            out_path = os.path.join(self._debug_mm_euler_output_dir, fname)
+            fig.tight_layout()
+            fig.savefig(out_path, dpi=140)
+            plt.close(fig)
+            n_plots += 1
+
+        meta_path = os.path.join(self._debug_mm_euler_output_dir, "debug_info.txt")
+        with open(meta_path, "a", encoding="utf-8") as f:
+            f.write(
+                f"run={self._debug_mm_euler_call_count} "
+                f"sample={self._debug_mm_euler_sample_index} "
+                f"time={self._debug_mm_euler_time_index} "
+                f"saved_plots={n_plots}\n"
+            )
+
+        print(
+            f"[PDEResidualLoss] Saved mmEuler label-debug plots to: {self._debug_mm_euler_output_dir} "
+            f"({n_plots} files)"
+        )
+
     def forward(
         self,
         model: nn.Module,
@@ -1930,23 +2125,25 @@ class PDEResidualLoss(LossComponent):
             for i, name in enumerate(self.field_names):
                 prev_fields[name] = input_frames[:, -1:, i, ...]   # (B,1,*spatial)
 
-        pde_params = {**self.pde_params, "eval_time": self.eval_time}
-        derivs = self._compute_derivatives(fields_full, prev_fields)
+        derivs, residuals = self._compute_component_residuals(
+            fields_full=fields_full,
+            prev_fields=prev_fields,
+            label_fields_full=label_fields_full,
+        )
 
-        label_fields_n: Optional[Dict[str, torch.Tensor]] = None
-        if label_fields_full is not None:
-            label_fields_n = {name: label_fields_full[name][:, derivs.t_idx] for name in self.field_names}
-
-        residuals: Dict[str, torch.Tensor] = {}
-        for comp in self.components:
-            comp_params = {**comp.params, **pde_params}
-            if label_fields_n is not None:
-                comp_params["label_fields"] = label_fields_n
-            res = comp.residual(derivs.fields_n, derivs, params=comp_params)
-            residuals[comp.name] = res
-
-        if self.residual_masker is not None:
-            residuals = self.residual_masker.apply_residuals(residuals, self.components, derivs)
+        if (
+            self._debug_mm_euler_on_labels
+            and label_fields_full is not None
+            and self._debug_mm_euler_call_count < self._debug_mm_euler_max_calls
+        ):
+            label_derivs, label_residuals = self._compute_component_residuals(
+                fields_full=label_fields_full,
+                prev_fields=prev_fields,
+                label_fields_full=label_fields_full,
+            )
+            mm_debug_tensors = self._collect_mm_debug_tensors(label_derivs, label_residuals)
+            self._plot_mm_debug_tensors(mm_debug_tensors)
+            self._debug_mm_euler_call_count += 1
 
         # Stack residuals into channel dim: (B,T_eval,Ceq,*spatial)
         eq_names = list(residuals.keys())
