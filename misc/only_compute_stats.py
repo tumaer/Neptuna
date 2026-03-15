@@ -7,13 +7,13 @@ from typing import Any
 """
 Example usage:
 1) For saving the stats in YAML format:
-python misc/compute_stats_parallel.py .../train.h5 --out-yaml <path_to_output_yaml> --log-channels Density
+python misc/compute_stats.py .../train.h5 --out-yaml <path_to_output_yaml> --log-channels Density
 2) For saving the stats in JSON format:
-python misc/compute_stats_parallel.py .../train.h5 --out-json <path_to_output_json> --log-channels Density
+python misc/compute_stats.py .../train.h5 --out-json <path_to_output_json> --log-channels Density
 3) For printing the stats in JSON format to the terminal:
-python misc/compute_stats_parallel.py .../train.h5 --log-channels Density
+python misc/compute_stats.py .../train.h5 --log-channels Density
 4) For combined statistics across multiple files:
-python misc/compute_stats_parallel.py .../train.h5 .../val.h5 --out-yaml <path_to_output_yaml>
+python misc/compute_stats.py .../train.h5 .../val.h5 --out-yaml <path_to_output_yaml>
 """
 # Ensure project root is importable when running this file directly.
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
