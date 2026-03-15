@@ -19,7 +19,7 @@ filter_features:
 conditioning_features:
   conditioning_in_channels: null #support deprecated
   conditioning_method: AdaNorm # AdaNorm_LSE AdaNorm_SE_per_param AdaNorm_1SE AdaNorm null
-  conditioning_parameter_names: ["Mas", "ugasf", "We"] # e.g. ["Mas", "ugasf", "We"]; null means use all parsed parameters
+  conditioning_parameter_names: null # e.g. ["Mas", "ugasf", "We"]; null means use all parsed parameters
   parameter_min_max_stats: null
   conditioning_mlp:
     mlp: False
