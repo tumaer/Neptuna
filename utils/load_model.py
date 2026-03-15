@@ -17,7 +17,7 @@ def _resolve_num_cond_params(data_config: Dict) -> int:
 
     param_stats = conditioning_cfg.get("parameter_min_max_stats")
     if param_stats is not None:
-        return len(param_stats)
+        return len(param_stats)-1
 
     raise ValueError(
         "Could not determine number of conditioning parameters. "

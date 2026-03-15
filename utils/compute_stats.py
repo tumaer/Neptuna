@@ -292,14 +292,19 @@ def _discover_metadata(first_h5_path: str, filter_groups: List[str] | None = Non
     return channel_names, problem_dimension
 
 
-def _parse_numeric_token(token: str) -> float:
+def _parse_numeric_token(token: str) -> float | None:
     """Extract a floating point number from an arbitrary string token.
 
     The token often contains a parameter name followed by its value, e.g.
     "Re1000" → 1000.0 or "M0.6" → 0.6.  This helper searches the first
     numeric substring (including optional sign and exponent) and converts it
-    to *float*.  If no numeric substring is found a *ValueError* is raised.
+    to *float*. Tokens that end with ``NaN`` are treated as placeholders and
+    ignored (returns ``None``). If no numeric substring is found a
+    *ValueError* is raised.
     """
+    if token.endswith("NaN"):
+        return np.nan
+
     match = re.search(r"[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?", token)
     if match:
         return float(match.group(0))
@@ -310,7 +315,7 @@ def compute_parameter_statistics(
     h5_paths: List[str],
     delimiter: str = "_",
     eps: float = 1e-12,
-) -> Tuple[np.ndarray, Dict[int, Dict[str, float]]]:
+) -> Dict[int, Dict[str, float]]:
     """Compute min-max normalised simulation parameters encoded in group names.
 
     The parameters are encoded directly in the HDF5 group names using a delimiter (default: ``_``).
@@ -336,13 +341,10 @@ def compute_parameter_statistics(
 
     Returns
     -------
-    Tuple[np.ndarray, Dict[int, Dict[str, float]]]
-        1. ``normalized_params`` – A 2-D ``np.ndarray`` with shape
-           *(N_groups, N_parameters)* containing the normalised parameters for
-           every discovered group **in the order encountered**.
-        2. ``param_ranges`` – A dictionary mapping the *parameter index* (int)
-           to a ``{"min": float, "max": float}`` dictionary describing the
-           range that was used for normalisation.
+    Dict[int, Dict[str, float]]
+        ``param_ranges`` – A dictionary mapping the *parameter index* (int) to
+        a ``{"min": float, "max": float}`` dictionary describing the range
+        computed from all groups.
 
     Notes
     -----
@@ -366,7 +368,15 @@ def compute_parameter_statistics(
                 tokens = grp_name.split(delimiter)
                 values: List[float] = []
                 for tok in tokens:
-                    values.append(_parse_numeric_token(tok))
+                    # Keep only parameter-like tokens that contain both
+                    # alphabetic characters and numeric characters, plus NaN tokens.
+                    has_letters_and_digits = bool(
+                        re.search(r"[A-Za-z]", tok) and re.search(r"\d", tok)
+                    )
+                    if not (has_letters_and_digits or "NaN" in tok):
+                        continue
+                    parsed_value = _parse_numeric_token(tok)
+                    values.append(parsed_value)
                 raw_params.append(values)
 
     if len(raw_params) == 0:
@@ -374,18 +384,18 @@ def compute_parameter_statistics(
 
     # Ensure parameter dimensionality is consistent
     n_params = len(raw_params[0])
-    if not all(len(p) == n_params for p in raw_params):
-        raise ValueError(
-            "Inconsistent number of parameters detected across group names."
-        )
+    # if not all(len(p) == n_params for p in raw_params):
+    #     raise ValueError(
+    #         "Inconsistent number of parameters detected across group names."
+    #     )
 
     raw_arr = np.asarray(raw_params, dtype=np.float64)  # (N, P)
 
     # ------------------------------------------------------------------
-    # Min-max normalisation per parameter dimension
+    # Min-max statistics per parameter dimension (ignoring missing entries)
     # ------------------------------------------------------------------
-    mins = raw_arr.min(axis=0)
-    maxs = raw_arr.max(axis=0)
+    mins = np.nanmin(raw_arr, axis=0)
+    maxs = np.nanmax(raw_arr, axis=0)
 
     # denom = maxs - mins
     # denom[denom == 0.0] = eps  # avoid divide-by-zero for constant parameters
@@ -396,6 +406,7 @@ def compute_parameter_statistics(
     param_ranges: Dict[int, Dict[str, float]] = {
         idx: {"min": float(mins[idx]), "max": float(maxs[idx])} for idx in range(n_params)
     }
+    param_ranges["max_number_of_parameters"] = raw_arr.shape[-1]
 
     return param_ranges
 
