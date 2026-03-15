@@ -2339,8 +2339,6 @@ class PDEResidualLoss(LossComponent):
         weighted = pen_red * component_weights
         weighted_per_equation = weighted.mean(dim=(0, 1)) * self.weight_schedule.base_weight
 
-        print(weighted)
-
         all_components = {eq_names[i]: weighted_per_equation[i] for i in range(len(eq_names))}
         loss_weighted = weighted.mean()
         loss_weighted = loss_weighted * self.weight_schedule.base_weight
