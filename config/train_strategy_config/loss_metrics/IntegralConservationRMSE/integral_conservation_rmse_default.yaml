@@ -2,9 +2,9 @@ use_boundary_fluxes: true
 normalization: none
 
 field_keys:
-  density: Density
-  velocity_x: Velocity_X
-  velocity_y: Velocity_Y
+  density: density
+  velocity_x: velocityX
+  velocity_y: velocityY
   velocity_z: Velocity_Z
   pressure: Pressure
   energy: Energy
@@ -14,20 +14,21 @@ field_keys:
 # Boundary components: boundary/<quantity>/<patch>
 components:
   # Domain components
-  - name: domain/mass
+  - name: domain/kinetic_energy
     weight: 1.0
   - name: domain/Px
     weight: 1.0
-  - name: boundary/mass/west
-    weight: 1.0
-  - name: boundary/mass/east
-    weight: 1.0
-  - name: boundary/mass/north
-    weight: 1.0
-  - name: domain/center_of_gravity_y
-    weight: 1.0
-  - name: boundary/Py/east
-    weight: 1.0
+  - name: domain/Py
+  #- name: boundary/mass/west
+  #  weight: 1.0
+  #- name: boundary/mass/east
+  #  weight: 1.0
+  #- name: boundary/mass/north
+  #  weight: 1.0
+  #- name: domain/center_of_gravity_y
+  #  weight: 1.0
+  #- name: boundary/Py/east
+  #  weight: 1.0
 
 # For 3D:
 #  - name: boundary/mass/top

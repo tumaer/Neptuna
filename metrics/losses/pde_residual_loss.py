@@ -591,6 +591,7 @@ class MultiMaterialEulerMomentumConservative(_MultiMaterialEulerBase):
         density_field: str = "Density",
         pressure_field: str = "Pressure",
         velocity_fields: Optional[List[str]] = None,
+        artificial_viscosity: float = 0.0,
         **params: Any,
     ):
         axis_by_dir = {"x": 0, "y": 1, "z": 2}
@@ -603,6 +604,7 @@ class MultiMaterialEulerMomentumConservative(_MultiMaterialEulerBase):
             )
         self.direction = direction
         self.direction_axis = axis
+        self.artificial_viscosity = float(artificial_viscosity)
         super().__init__(
             name=name or f"{self.default_name}_{direction}",
             spatial_dim=spatial_dim,
@@ -614,6 +616,7 @@ class MultiMaterialEulerMomentumConservative(_MultiMaterialEulerBase):
         self.required_fields = (self.density_field, self.pressure_field, *self.velocity_fields)
         self.required_time_fields = (self.density_field, self.velocity_fields[self.direction_axis])
         self.required_grad_fields = (self.density_field, self.pressure_field, *self.velocity_fields)
+        self.required_laplacian_fields = (self.velocity_fields[self.direction_axis],)
 
     def residual_scale(self, refs: Dict[str, float]) -> Optional[float]:
         ref_rho = refs.get("density", 1.0)
@@ -634,6 +637,7 @@ class MultiMaterialEulerMomentumConservative(_MultiMaterialEulerBase):
         derivs: DerivativeCache,
         params: Optional[Dict[str, Any]] = None,
     ) -> torch.Tensor:
+        params = params or {}
         rho = fields[self.density_field]
         p = fields[self.pressure_field]
         u_j = fields[self.velocity_fields[self.direction_axis]]
@@ -654,6 +658,19 @@ class MultiMaterialEulerMomentumConservative(_MultiMaterialEulerBase):
             if axis == self.direction_axis:
                 term = term + dp_dxi
             div_flux = div_flux + term
+
+        nu = float(self.artificial_viscosity)
+        if "mm_momentum_artificial_viscosity" in params:
+            nu = float(params["mm_momentum_artificial_viscosity"])
+        dir_key = f"mm_momentum_{self.direction}_artificial_viscosity"
+        if dir_key in params:
+            nu = float(params[dir_key])
+        if "artificial_viscosity" in params:
+            nu = float(params["artificial_viscosity"])
+
+        if abs(nu) > 0.0:
+            lap_u_j = derivs.laplacian[self.velocity_fields[self.direction_axis]]
+            return mom_t + div_flux - nu * lap_u_j
 
         return mom_t + div_flux
 
@@ -1493,6 +1510,10 @@ def robust_penalty(x: torch.Tensor, kind: Literal["l2", "huber"] = "l2", huber_d
 
 class ResidualMasker(nn.Module):
     """Base class for residual masking strategies."""
+    def __init__(self):
+        super().__init__()
+        self._debug_tensors: Dict[str, torch.Tensor] = {}
+
     def required_grad_fields(self) -> List[str]:
         return []
 
@@ -1512,6 +1533,9 @@ class ResidualMasker(nn.Module):
         derivs: "DerivativeCache",
     ) -> torch.Tensor:
         return penalty
+
+    def get_debug_tensors(self) -> Dict[str, torch.Tensor]:
+        return dict(self._debug_tensors)
 
 
 class EquationWeight(ResidualMasker):
@@ -1539,6 +1563,10 @@ class EquationWeight(ResidualMasker):
 
         denom = self.k1 * (div_u.abs() - div_u) + 1.0
         eq_weight = 1.0 / (denom + 1e-12)
+        self._debug_tensors = {
+            "mask/equation_weight/div_u": div_u.detach(),
+            "mask/equation_weight/factor": eq_weight.detach(),
+        }
         masked = dict(residuals)
         for comp in components:
             if isinstance(comp, _BoundaryConditionBase):
@@ -1592,6 +1620,7 @@ class GradientAnnihilated(ResidualMasker):
         derivs: "DerivativeCache",
     ) -> torch.Tensor:
         weights = []
+        debug_tensors: Dict[str, torch.Tensor] = {}
         for field_name, alpha_i, beta_i in zip(self.fields, self.alpha, self.beta):
             if field_name not in derivs.grads:
                 raise ValueError(
@@ -1600,15 +1629,21 @@ class GradientAnnihilated(ResidualMasker):
             grad_components = derivs.grads[field_name]
             grad_stack = torch.stack(grad_components, dim=0)
             g = torch.sqrt((grad_stack ** 2).sum(dim=0) + self.eps)
-            weights.append(1.0 / (1.0 + alpha_i * (g ** beta_i)))
+            w_i = 1.0 / (1.0 + alpha_i * (g ** beta_i))
+            weights.append(w_i)
+            debug_tensors[f"mask/gradient_annihilated/lambda_{field_name}"] = w_i.detach()
 
         lam = torch.stack(weights, dim=0).mean(dim=0)
         lam = lam.clamp_min(self.eps)
+        debug_tensors["mask/gradient_annihilated/lambda_mean"] = lam.detach()
 
         factors = []
         for comp in components:
             factors.append(torch.ones_like(lam) if isinstance(comp, _BoundaryConditionBase) else lam)
         factor_t = torch.stack(factors, dim=2)
+        for comp, factor in zip(components, factors):
+            debug_tensors[f"mask/gradient_annihilated/component_factor/{comp.name}"] = factor.detach()
+        self._debug_tensors = debug_tensors
         return penalty * factor_t
 
 
@@ -1704,6 +1739,18 @@ class PDEResidualLoss(LossComponent):
         self._debug_mm_euler_clip_percent = float(
             self.pde_params.get("debug_mm_euler_clip_percent", 0.0)
         )
+        self._debug_residual_mask_on = bool(self.pde_params.get("debug_residual_mask_on", False))
+        self._debug_residual_mask_max_calls = int(self.pde_params.get("debug_residual_mask_max_calls", 1))
+        self._debug_residual_mask_call_count = 0
+        self._debug_residual_mask_output_dir = str(
+            self.pde_params.get("debug_residual_mask_output_dir", "./temporary/residual_mask_debug")
+        )
+        self._debug_residual_mask_sample_index = int(self.pde_params.get("debug_residual_mask_sample_index", 0))
+        self._debug_residual_mask_time_index = int(self.pde_params.get("debug_residual_mask_time_index", 0))
+        self._debug_residual_mask_max_plots = int(self.pde_params.get("debug_residual_mask_max_plots", 40))
+        self._debug_residual_mask_clip_percent = float(
+            self.pde_params.get("debug_residual_mask_clip_percent", 0.0)
+        )
 
         self.residual_masker: Optional[ResidualMasker] = None
         self.residual_mask_grad_fields: List[str] = []
@@ -1724,12 +1771,43 @@ class PDEResidualLoss(LossComponent):
             elif mask_type == "GradientAnnihilated":
                 alpha_cfg = mask_cfg.get("lambda1_alpha", lambda1_alpha)
                 beta_cfg = mask_cfg.get("lambda1_beta", lambda1_beta)
-                fields_cfg = mask_cfg.get("lambda1_fields", lambda1_fields)
+                fields_cfg = mask_cfg.get("lambda1_fields", None)
+                fields_alias_cfg = mask_cfg.get("fields", None)
+                if fields_cfg is not None and fields_alias_cfg is not None and list(fields_cfg) != list(fields_alias_cfg):
+                    raise ValueError(
+                        "PDEResidualLoss: residual_mask provides both 'lambda1_fields' and 'fields' "
+                        "with different values. Please keep only one."
+                    )
+                if fields_cfg is None:
+                    fields_cfg = fields_alias_cfg
+                if fields_cfg is None:
+                    fields_cfg = lambda1_fields
+
                 if alpha_cfg is None or beta_cfg is None:
                     raise ValueError(
                         "PDEResidualLoss: GradientAnnihilated masking requires lambda1_alpha and lambda1_beta."
                     )
-                fields = fields_cfg or list(self.field_names)
+                fields_raw = list(fields_cfg) if fields_cfg is not None else list(self.field_names)
+                if len(fields_raw) == 0:
+                    raise ValueError(
+                        "PDEResidualLoss: GradientAnnihilated masking requires at least one field."
+                    )
+
+                fields: List[str] = []
+                unresolved_fields: List[str] = []
+                for field in fields_raw:
+                    resolved = _resolve_field_name(str(field), list(self.field_names))
+                    if resolved is None:
+                        unresolved_fields.append(str(field))
+                    elif resolved not in fields:
+                        fields.append(resolved)
+
+                if unresolved_fields:
+                    raise ValueError(
+                        "PDEResidualLoss: GradientAnnihilated masking has unknown fields "
+                        f"{unresolved_fields}. Available fields: {self.field_names}"
+                    )
+
                 self.residual_masker = _RESIDUAL_MASK_REGISTRY[mask_type](
                     fields=fields,
                     alpha=alpha_cfg,
@@ -1993,7 +2071,26 @@ class PDEResidualLoss(LossComponent):
         out = out.replace(" ", "_")
         return out
 
-    def _plot_mm_debug_tensors(self, tensors: Dict[str, torch.Tensor]) -> None:
+    def _collect_residual_mask_debug_tensors(self) -> Dict[str, torch.Tensor]:
+        if self.residual_masker is None:
+            return {}
+        tensors: Dict[str, torch.Tensor] = {}
+        for key, val in self.residual_masker.get_debug_tensors().items():
+            if isinstance(val, torch.Tensor):
+                tensors[key] = val
+        return tensors
+
+    def _plot_debug_tensors(
+        self,
+        tensors: Dict[str, torch.Tensor],
+        output_dir: str,
+        sample_index: int,
+        time_index: int,
+        max_plots: int,
+        clip_percent: float,
+        run_index: int,
+        tag: str,
+    ) -> None:
         if not tensors:
             return
 
@@ -2007,9 +2104,9 @@ class PDEResidualLoss(LossComponent):
             )
             return
 
-        os.makedirs(self._debug_mm_euler_output_dir, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
 
-        max_plots = max(1, self._debug_mm_euler_max_plots)
+        max_plots = max(1, max_plots)
         n_plots = 0
         for key in sorted(tensors.keys()):
             if n_plots >= max_plots:
@@ -2018,14 +2115,15 @@ class PDEResidualLoss(LossComponent):
             if not isinstance(ten, torch.Tensor) or ten.ndim < 3:
                 continue
 
-            b = min(max(0, self._debug_mm_euler_sample_index), ten.shape[0] - 1)
-            t = min(max(0, self._debug_mm_euler_time_index), ten.shape[1] - 1)
+            b = min(max(0, sample_index), ten.shape[0] - 1)
+            t = min(max(0, time_index), ten.shape[1] - 1)
             snap = ten[b, t].detach().float().cpu()
 
             is_grad = key.startswith("grad/") or key.startswith("grad_")
             is_residual = key.startswith("residual/") or key.startswith("residual_")
             is_time = key.startswith("time/") or key.startswith("time_")
-            needs_centered_cmap = is_grad or is_residual or is_time
+            is_mask = key.startswith("mask/") or key.startswith("mask_")
+            needs_centered_cmap = is_grad or is_residual or is_time or is_mask
 
             if is_residual:
                 snap = snap.abs()
@@ -2033,7 +2131,7 @@ class PDEResidualLoss(LossComponent):
             norm = None
             if needs_centered_cmap:
                 max_abs_tensor = snap.abs().reshape(-1)
-                clip_pct = max(0.0, min(49.9, self._debug_mm_euler_clip_percent))
+                clip_pct = max(0.0, min(49.9, clip_percent))
                 if clip_pct > 0.0 and max_abs_tensor.numel() > 1:
                     q_hi = 1.0 - (clip_pct / 100.0)
                     max_abs = float(torch.quantile(max_abs_tensor, q_hi).item())
@@ -2078,24 +2176,37 @@ class PDEResidualLoss(LossComponent):
             if snap.ndim != 3:
                 ax.set_title(key)
             fname = self._safe_plot_name(key) + ".png"
-            out_path = os.path.join(self._debug_mm_euler_output_dir, fname)
+            out_path = os.path.join(output_dir, fname)
             fig.tight_layout()
             fig.savefig(out_path, dpi=140)
             plt.close(fig)
             n_plots += 1
 
-        meta_path = os.path.join(self._debug_mm_euler_output_dir, "debug_info.txt")
+        meta_path = os.path.join(output_dir, "debug_info.txt")
         with open(meta_path, "a", encoding="utf-8") as f:
             f.write(
-                f"run={self._debug_mm_euler_call_count} "
-                f"sample={self._debug_mm_euler_sample_index} "
-                f"time={self._debug_mm_euler_time_index} "
-                f"saved_plots={n_plots}\n"
+                f"run={run_index} "
+                f"sample={sample_index} "
+                f"time={time_index} "
+                f"saved_plots={n_plots} "
+                f"tag={tag}\n"
             )
 
         print(
-            f"[PDEResidualLoss] Saved mmEuler label-debug plots to: {self._debug_mm_euler_output_dir} "
+            f"[PDEResidualLoss] Saved {tag} debug plots to: {output_dir} "
             f"({n_plots} files)"
+        )
+
+    def _plot_mm_debug_tensors(self, tensors: Dict[str, torch.Tensor]) -> None:
+        self._plot_debug_tensors(
+            tensors=tensors,
+            output_dir=self._debug_mm_euler_output_dir,
+            sample_index=self._debug_mm_euler_sample_index,
+            time_index=self._debug_mm_euler_time_index,
+            max_plots=self._debug_mm_euler_max_plots,
+            clip_percent=self._debug_mm_euler_clip_percent,
+            run_index=self._debug_mm_euler_call_count,
+            tag="mmEuler_label",
         )
 
     def forward(
@@ -2162,6 +2273,23 @@ class PDEResidualLoss(LossComponent):
         if self.residual_masker is not None:
             pen = self.residual_masker.apply_penalty(pen, eq_names, self.components, derivs)
 
+            if (
+                self._debug_residual_mask_on
+                and self._debug_residual_mask_call_count < self._debug_residual_mask_max_calls
+            ):
+                mask_debug_tensors = self._collect_residual_mask_debug_tensors()
+                self._plot_debug_tensors(
+                    tensors=mask_debug_tensors,
+                    output_dir=self._debug_residual_mask_output_dir,
+                    sample_index=self._debug_residual_mask_sample_index,
+                    time_index=self._debug_residual_mask_time_index,
+                    max_plots=self._debug_residual_mask_max_plots,
+                    clip_percent=self._debug_residual_mask_clip_percent,
+                    run_index=self._debug_residual_mask_call_count,
+                    tag="residual_mask",
+                )
+                self._debug_residual_mask_call_count += 1
+
         # Reduce over spatial dims -> (B,T_eval,Ceq)
         spatial_dims = list(range(3, pen.ndim))
         pen_red = pen.mean(dim=spatial_dims) if spatial_dims else pen  # (B,T_eval,Ceq)
@@ -2207,8 +2335,12 @@ class PDEResidualLoss(LossComponent):
             dtype=pen_red.dtype,
         ).view(1, 1, -1)
 
+
         weighted = pen_red * component_weights
         weighted_per_equation = weighted.mean(dim=(0, 1)) * self.weight_schedule.base_weight
+
+        print(weighted)
+
         all_components = {eq_names[i]: weighted_per_equation[i] for i in range(len(eq_names))}
         loss_weighted = weighted.mean()
         loss_weighted = loss_weighted * self.weight_schedule.base_weight
