@@ -8,13 +8,13 @@ from torch.nn.functional import conv1d, avg_pool1d, avg_pool2d, avg_pool3d, inte
 from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 
 try:  # Import the keops library, www.kernel-operations.io
-    # from pykeops.torch import generic_logsumexp, LazyTensor
-    # from pykeops.torch.cluster import (
-    #     grid_cluster,
-    #     cluster_ranges_centroids,
-    #     sort_clusters,
-    #     from_matrix,
-    # )
+    from pykeops.torch import generic_logsumexp, LazyTensor
+    from pykeops.torch.cluster import (
+        grid_cluster,
+        cluster_ranges_centroids,
+        sort_clusters,
+        from_matrix,
+    )
 
     keops_available = True
 except:
@@ -89,10 +89,8 @@ class SinkhornDivergence(LossComponent):
         # Get weight tensor with proper broadcasting
         weight_tensor = self.weight_schedule.get_loss_weight(original_shape).to(predictions.device)
         
-        # Apply weights to inputs (scale by sqrt to preserve Sinkhorn properties)
-        weight_sqrt = torch.sqrt(weight_tensor)
-        predictions_weighted = predictions * weight_sqrt
-        labels_weighted = labels * weight_sqrt
+        predictions_weighted = predictions
+        labels_weighted = labels
         
         if keep_bc_dims:
             B, T, C = predictions_weighted.shape[:3]
@@ -145,12 +143,13 @@ class SinkhornDivergence(LossComponent):
             )
             
             loss = divergence.mean()
+            weighted = loss * weight_tensor.mean()
         
         if not return_detailed:
-            return loss
+            return weighted
         
         # Sinkhorn divergence doesn't support detailed breakdown
-        return loss, {}
+        return weighted, {}
 
 
 # Custom method for reshaping tensors for Sinkhorn divergence
