@@ -220,6 +220,7 @@ def run(cfg):
         save_strategy=cfg["train_config"]["save_strategy"],  # switch to "epoch" once validation present
         save_steps=cfg["train_config"]["save_steps"],  # only used if save_strategy is "steps"
         save_total_limit=cfg["train_config"]["save_total_limit"],  # keep only last N checkpoints
+        save_only_model=cfg["train_config"]["save_only_model"], # If True, only save model weights (no optimizer/scheduler/trainer state)
         push_to_hub=cfg["train_config"]["push_to_hub"],  # push to Hugging Face Hub, requires login before (run `huggingface-cli login` in terminal)
         hub_strategy=cfg["train_config"]["hub_strategy"],  # push last checkpoint to Hub (alternatives: "end", "every_save", "checkpoint", "all_checkpoints")
         # ------------------------------------------------------------------
