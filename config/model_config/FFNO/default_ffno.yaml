@@ -1,0 +1,15 @@
+model_name: FFNO
+
+# Core architecture
+latent_channels: 32
+n_fno_layers: 4
+fno_modes: 16  # can also be a list for ND, e.g. [16, 16] or [16, 16, 16]
+
+# FFNO block settings
+factor: 4
+n_ff_layers: 2
+layer_norm: true
+
+# Framework-level normalization fields
+norm_layer_eps: 1e-5
+norm: 'batch' # layer, batch, group, identity

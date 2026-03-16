@@ -10,6 +10,6 @@ blocks_at_neck: null
 drop_path: 0.0
 layer_scale_init_value: 1e-6
 
-# Framework-level normalization fields (required by load_model)
+# Framework-level normalization fields
 norm_layer_eps: 1e-5
 norm: 'batch' # layer, batch, group, identity

@@ -176,6 +176,33 @@ def fetch_model(model_config: Dict,
                     )
         model = FNO(config=config)
 
+    elif model_name == "ffno":
+        from models.FFNO.ffno import FFNO
+        from models.FFNO.ffno_utils import FFNOConfig
+        config = FFNOConfig(
+                    dimension=data_config['dimension'],
+                    in_channels=len(data_config['filter_features']['filter_in_channels']),
+                    out_channels=len(data_config['filter_features']['filter_out_channels']),
+                    grid_resolution=data_config['grid_resolution'],
+                    sequence_info=data_config["sequence_info"],
+                    latent_channels=model_config['latent_channels'],
+                    num_fno_modes=model_config['fno_modes'],
+                    num_fno_layers=model_config['n_fno_layers'],
+                    factor=model_config['factor'],
+                    n_ff_layers=model_config['n_ff_layers'],
+                    layer_norm=model_config['layer_norm'],
+                    coord_features=data_config['coord_features'],
+                    conditioning_method=data_config['conditioning_features']['conditioning_method'],
+                    num_cond_params=num_cond_params,
+                    conditioning_mlp=data_config['conditioning_features']['conditioning_mlp']['mlp'],
+                    conditioning_hidden_size=data_config['conditioning_features']['conditioning_mlp']['hidden_size'] if data_config['conditioning_features']['conditioning_mlp']['mlp'] else None,
+                    conditioning_activation=data_config['conditioning_features']['conditioning_mlp']['activation'],
+                    conditioning_init=data_config['conditioning_features']['conditioning_mlp']['initialization'],
+                    norm_layer_eps=model_config['norm_layer_eps'],
+                    norm=model_config['norm']
+                    )
+        model = FFNO(config=config)
+
     elif model_name == "kfno": #TODO: Add conditioning parameter arguments
         from models.kFNO.kfno import kFNO
         from models.kFNO.kfno_utils import kFNOConfig
