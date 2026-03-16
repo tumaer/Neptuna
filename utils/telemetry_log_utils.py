@@ -429,13 +429,90 @@ class RuntimeTelemetryScope:
             self._telemetry_info["notes"].append(message)
 
     def _sample_xpu_util_power(self):
+        def _xpu_device_ids() -> List[int]:
+            try:
+                if self.world_size > 1:
+                    return [int(torch.xpu.current_device())]
+                return list(range(int(torch.xpu.device_count())))
+            except Exception:
+                return [0]
+
+        def _to_float(v):
+            try:
+                return float(v)
+            except Exception:
+                return None
+
+        def _collect_json_metric_values(payload, metric_name_substrings):
+            """Collect numeric metric values from nested xpu-smi JSON payload."""
+            wanted = [s.upper() for s in metric_name_substrings]
+            found = []
+
+            def _visit(node):
+                if isinstance(node, dict):
+                    mtype = str(node.get("metrics_type", "")).upper()
+                    if mtype and any(w in mtype for w in wanted):
+                        val = _to_float(node.get("value"))
+                        if val is not None:
+                            found.append(val)
+                    for child in node.values():
+                        _visit(child)
+                elif isinstance(node, list):
+                    for child in node:
+                        _visit(child)
+
+            _visit(payload)
+            return found
+
+        def _parse_stats_table_metric(out: str, label: str) -> List[float]:
+            """Parse values from xpu-smi stats table lines like:
+            | GPU Power (W) | Tile 0: 57; Tile 1: 58 |
+            """
+            vals = []
+            for raw in out.splitlines():
+                line = raw.strip()
+                if label.lower() not in line.lower():
+                    continue
+                # Extract all Tile values first (preferred).
+                tile_vals = re.findall(
+                    r"Tile\s+\d+\s*:\s*([0-9]+(?:\.[0-9]+)?)",
+                    line,
+                    flags=re.IGNORECASE,
+                )
+                for tv in tile_vals:
+                    v = _to_float(tv)
+                    if v is not None:
+                        vals.append(v)
+                # Fallback: capture a single scalar right side value if present.
+                if not vals:
+                    m = re.search(r"\|\s*([^|]+)\s*\|\s*([0-9]+(?:\.[0-9]+)?)\s*\|", line)
+                    if m:
+                        v = _to_float(m.group(2))
+                        if v is not None:
+                            vals.append(v)
+                if vals:
+                    break
+            return vals
+
+        def _run_cmd_with_retry(cmd: List[str], timeout_sec: float = 2.5) -> Optional[str]:
+            """Run command with one retry to smooth transient xpu-smi failures."""
+            try:
+                return subprocess.check_output(
+                    cmd, stderr=subprocess.DEVNULL, text=True, timeout=timeout_sec
+                )
+            except Exception:
+                pass
+            try:
+                return subprocess.check_output(
+                    cmd, stderr=subprocess.DEVNULL, text=True, timeout=max(4.0, timeout_sec)
+                )
+            except Exception:
+                return None
+
         # 1) Try PyTorch-native utilization if available.
         try:
             if hasattr(torch, "xpu") and hasattr(torch.xpu, "utilization"):
-                if self.world_size > 1:
-                    dev_ids = [int(torch.xpu.current_device())]
-                else:
-                    dev_ids = list(range(int(torch.xpu.device_count())))
+                dev_ids = _xpu_device_ids()
                 for dev_id in dev_ids:
                     try:
                         util = torch.xpu.utilization(dev_id)
@@ -447,44 +524,77 @@ class RuntimeTelemetryScope:
         except Exception:
             pass
 
-        # 2) Try xpu-smi if installed. Expected csv-like output lines:
-        #    <id>,<util>,<power>
+        # 2) Try xpu-smi if installed. Newer xpu-smi versions do not support:
+        #    -d all --format csv --show utilization,power
+        # Instead, query per-device stats and parse JSON/table outputs.
         if shutil.which("xpu-smi") is not None:
-            cmd = [
-                "xpu-smi",
-                "stats",
-                "-d",
-                "all",
-                "--format",
-                "csv",
-                "--show",
-                "utilization,power",
-            ]
-            try:
-                out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True, timeout=2.0)
-                parsed_any = False
-                for line in out.splitlines():
-                    parts = [p.strip() for p in line.split(",")]
-                    if len(parts) < 3:
-                        continue
-                    dev = parts[0]
+            dev_ids = _xpu_device_ids()
+            parsed_any = False
+            for dev_id in dev_ids:
+                util = None
+                pwr = None
+
+                # Prefer JSON stats when available.
+                cmd_json = ["xpu-smi", "stats", "-d", str(dev_id), "-j"]
+                try:
+                    out_json = _run_cmd_with_retry(cmd_json, timeout_sec=2.5)
+                    if out_json is None:
+                        raise RuntimeError("xpu-smi json stats unavailable")
+                    payload = json.loads(out_json)
+
+                    # Utilization candidates in descending preference.
+                    util_candidates = (
+                        _collect_json_metric_values(payload, ["GPU_UTILIZATION"])
+                        or _collect_json_metric_values(payload, ["COMPUTE_ENGINE_UTILIZATION"])
+                        or _collect_json_metric_values(payload, ["EU_ACTIVE"])
+                        or _collect_json_metric_values(payload, ["ENGINE_GROUP_COMPUTE"])
+                        or _collect_json_metric_values(payload, ["MEMORY_UTILIZATION"])
+                    )
+                    power_candidates = _collect_json_metric_values(payload, ["POWER"])
+
+                    if util_candidates:
+                        util = float(np.mean(util_candidates))
+                    if power_candidates:
+                        pwr = float(np.mean(power_candidates))
+                except Exception:
+                    pass
+
+                # Fallback to text stats parsing only when power is missing.
+                # This avoids doubling xpu-smi command pressure every sample on
+                # stacks where utilization is frequently N/A.
+                if pwr is None:
+                    cmd_txt = ["xpu-smi", "stats", "-d", str(dev_id)]
                     try:
-                        util = float(parts[1]) if parts[1] not in ("", "N/A", "na") else None
-                        pwr = float(parts[2]) if parts[2] not in ("", "N/A", "na") else None
+                        out_txt = _run_cmd_with_retry(cmd_txt, timeout_sec=2.5)
+                        if out_txt is None:
+                            raise RuntimeError("xpu-smi text stats unavailable")
+                        if util is None:
+                            util_vals = (
+                                _parse_stats_table_metric(out_txt, "GPU Utilization")
+                                or _parse_stats_table_metric(out_txt, "Compute Engine Util")
+                                or _parse_stats_table_metric(out_txt, "EU Array Active")
+                                or _parse_stats_table_metric(out_txt, "GPU Memory Util")
+                            )
+                            if util_vals:
+                                util = float(np.mean(util_vals))
+                        if pwr is None:
+                            pwr_vals = _parse_stats_table_metric(out_txt, "GPU Power")
+                            if pwr_vals:
+                                pwr = float(np.mean(pwr_vals))
                     except Exception:
-                        util, pwr = None, None
-                    if util is not None:
-                        self._gpu_samples[str(dev)]["util"].append(util)
-                        parsed_any = True
-                    if pwr is not None:
-                        self._gpu_samples[str(dev)]["power_w"].append(pwr)
-                        parsed_any = True
-                if parsed_any:
-                    self._telemetry_info["utilization_source"] = self._telemetry_info["utilization_source"] or "xpu-smi"
-                    self._telemetry_info["power_source"] = "xpu-smi"
-                    return
-            except Exception:
-                pass
+                        pass
+
+                if util is not None:
+                    self._gpu_samples[str(dev_id)]["util"].append(float(util))
+                    parsed_any = True
+                if pwr is not None:
+                    self._gpu_samples[str(dev_id)]["power_w"].append(float(pwr))
+                    parsed_any = True
+
+            if parsed_any:
+                self._telemetry_info["utilization_source"] = self._telemetry_info["utilization_source"] or "xpu-smi"
+                self._telemetry_info["power_source"] = self._telemetry_info["power_source"] or "xpu-smi"
+                return
 
         # 3) Try xpumcli (JSON/text). Parse best-effort util/power pairs.
         if shutil.which("xpumcli") is not None:
@@ -545,7 +655,11 @@ class RuntimeTelemetryScope:
         for raw in out.splitlines():
             line = raw.strip()
             # Best-effort parsing across macOS versions
-            m_util = re.search(r"(gpu\s*active|utili[sz]ation)\D+([0-9]+(?:\.[0-9]+)?)\s*%", line, flags=re.IGNORECASE)
+            m_util = re.search(
+                r"(gpu\s*active|utili[sz]ation|gpu\s*hw\s*active\s*residency|active\s*residency)\D+([0-9]+(?:\.[0-9]+)?)\s*%",
+                line,
+                flags=re.IGNORECASE,
+            )
             if m_util:
                 util = float(m_util.group(2))
             m_pwr = re.search(r"gpu\s*power\D+([0-9]+(?:\.[0-9]+)?)\s*(w|mw)", line, flags=re.IGNORECASE)

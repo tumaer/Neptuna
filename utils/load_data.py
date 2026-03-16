@@ -1100,16 +1100,24 @@ class TransientDataset(Dataset):
                 for val, param_idx in zip(raw_params, raw_param_indices):
                     stats_i = self.parameter_min_max_stats.get(param_idx)
                     norm_params.append((val - stats_i["min"]) / (stats_i["max"] - stats_i["min"] + _EPS))
+            
+                max_num_params = self.parameter_min_max_stats.get("max_number_of_parameters")
+                if max_num_params is not None and len(norm_params) < max_num_params:
+                    norm_params.extend([-1.0] * (max_num_params - len(norm_params)))
+                
                 self._group_to_cond_tensor[group_name] = torch.tensor(norm_params, dtype=torch.float32)
             # Validate that all normalized conditioning parameters are in [0, 1].
             out_of_range_groups = []
             for group_name, cond_tensor in self._group_to_cond_tensor.items():
-                if torch.any((cond_tensor < 0) | (cond_tensor > 1)):
+                if torch.any(((cond_tensor < 0) & (cond_tensor != -1)) | (cond_tensor > 1)):
                     out_of_range_groups.append(group_name)
             if out_of_range_groups:
-                raise ValueError(
-                    "All values inside _group_to_cond_tensor must be between 0 and 1. "
+                warnings.warn(
+                    "\033[93m"  # yellow
+                    "All values inside _group_to_cond_tensor must be between 0 and 1 with the exception of -1.0 which is used to indicate missing values. "
                     f"Found out-of-range values for groups: {out_of_range_groups[:5]}"
+                    "\033[0m",
+                    UserWarning,
                 )
     def __len__(self):
         """
@@ -1524,6 +1532,9 @@ class SteadyStateDataset(Dataset):
                     norm_params.append(norm_val)
                 else:
                     norm_params.append(val)
+            max_num_params = self.parameter_min_max_stats.get("max_number_of_parameters")
+            if max_num_params is not None and len(norm_params) < max_num_params:
+                norm_params.extend([-1.0] * (max_num_params - len(norm_params)))
             sample["conditioning_parameters"] = torch.tensor(norm_params, dtype=torch.float32)
 
         if conditioning_inputs is not None:
@@ -1915,12 +1926,13 @@ class TransientDatasetWithConditioningChannels(Dataset):
             norm_params = []
             for val, param_idx in zip(raw_params, raw_param_indices):
                 stats_i = self.parameter_min_max_stats.get(param_idx)
-                if stats_i is not None:
-                    denom = stats_i["max"] - stats_i["min"] + 1e-12
-                    norm_val = (val - stats_i["min"]) / denom
-                    norm_params.append(norm_val)
-                else:
-                    norm_params.append(val)
+                denom = stats_i["max"] - stats_i["min"] + 1e-12
+                norm_val = (val - stats_i["min"]) / denom
+                norm_params.append(norm_val)
+
+            max_num_params = self.parameter_min_max_stats.get("max_number_of_parameters")
+            if max_num_params is not None and len(norm_params) < max_num_params:
+                norm_params.extend([-1.0] * (max_num_params - len(norm_params)))
             sample["conditioning_parameters"] = torch.tensor(norm_params, dtype=torch.float32)
 
         if conditioning_inputs is not None:

@@ -63,6 +63,7 @@ def load_pretrained_model(model_config):
         "vit": ("models.ViT.vit", "ViT"),
         "kfno": ("models.kFNO.kfno", "kFNO"),
         "unettransformer": ("models.UNetTransformer.unettransformer", "UNetTransformer"),
+        "poseidon": ("models.Poseidon.poseidon", "Poseidon"),
     }
     
     if model_name not in model_registry:
@@ -115,15 +116,6 @@ def get_trainer(
     loss_config=None,
     compute_metrics=None
 ):
-    # Function to read train_batch_size from trainer_state.json
-    def get_train_batch_size(checkpoint_path):
-        trainer_state_path = os.path.join(checkpoint_path, "trainer_state.json")
-        if not os.path.exists(trainer_state_path):
-            raise FileNotFoundError(f"trainer_state.json not found in {checkpoint_path}")
-        with open(trainer_state_path, 'r') as f:
-            trainer_state = json.load(f)
-        return trainer_state["train_batch_size"]
-
     # Helper to read mixed precision flags from training_args.bin
     def get_mixed_precision_flags(checkpoint_path):
         training_args_path = os.path.join(checkpoint_path, "training_args.bin")
@@ -147,9 +139,6 @@ def get_trainer(
             print(f"Warning: could not load mixed precision flags from {training_args_path}: {exc}")
             return default_flags
 
-    # Extract train_batch_size from trainer_state.json
-    train_batch_size = get_train_batch_size(model_config["model_checkpoint_path"])
-
     # Read mixed precision flags from checkpoint
     mp_flags = get_mixed_precision_flags(model_config["model_checkpoint_path"])
 
@@ -157,10 +146,10 @@ def get_trainer(
     seed_value = int(data_config.get("seed", 0))
 
     use_batch_eval_metrics = infer_config.get("batch_eval_metrics", True)
-    # Use train_batch_size for per_device_eval_batch_size
+    per_device_eval_batch_size = int(infer_config["per_device_eval_batch_size"])
     args = TrainingArguments(
         output_dir=output_dir,
-        per_device_eval_batch_size=train_batch_size,
+        per_device_eval_batch_size=per_device_eval_batch_size,
         seed=seed_value,  # model-seed
         data_seed=seed_value,  # sampler-seed for SeedableRandomSampler
         eval_accumulation_steps=16,
@@ -187,18 +176,38 @@ def get_trainer(
 
     curriculum_block = {
         "name": "block_1",
-        "start_epoch": 0,
+        "start_epoch": -2,
     }
     if loss_config is not None:
         curriculum_block.update(OmegaConf.to_container(loss_config, resolve=True))
     else:
-        curriculum_block["train_loss"] = None
-    train_strategy_config = OmegaConf.create(
-        {
-            "curriculum": [curriculum_block],
-            "num_train_epochs": 5,
+        curriculum_block["train_loss"] = {
+            # Dummy loss config for inference-only mode so Trainer init can
+            # safely read train_loss_weighting_strategy fields.
+            "components": [],
+            "train_loss_weighting_strategy": {
+                "enabled": False,
+                "weight_per_channel": False,
+                "weight_sub_components": False,
+                "loss_history_interval": 1,
+                "grad_history_interval": 1,
+                "grad_stats_last_layer_only": False,
+                "grad_stats_layer_pattern": None,
+                "grad_stats_num_last_params": 2,
+            },
         }
-    )
+
+    if train_config is None:
+        train_config = OmegaConf.create({
+            "num_train_epochs": 5,
+        })
+
+    #dummy addition
+    train_strategy_config = OmegaConf.create({
+            "curriculum": [curriculum_block],
+            "num_train_epochs": 99999, #dummy value to avoid error
+            "num_epochs_between_eval": -1, #dummy value to avoid error
+        })
 
     trainer = Trainer(
         model=model,
@@ -886,7 +895,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
     solo_inference_dir = get_inference_dir_main_process_only(experiment_dir)
     _dbg(f"using solo_inference_dir={solo_inference_dir}")
 
-    runtime_sample_interval = float(infer_config.get("runtime_log_sample_interval_sec", 1.0))
+    runtime_sample_interval = float(infer_config.get("infer_telemetry_sample_interval_sec", 1.0))
     # `runtime_log_sections` stores already-aggregated section payloads keyed by
     # logical section name (e.g., `eval_loop_random_start`, `overall_inference`).
     runtime_log_sections: Dict[str, Dict] = {}

@@ -220,7 +220,7 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
         if cfg["data_config"]["conditioning_features"].get("parameter_min_max_stats") is None:
             h5_dir = cfg["data_config"]["dataset_directory_path"]
             h5_paths_params = [
-                os.path.join(h5_dir, fname) for fname in os.listdir(h5_dir) if fname.endswith(".h5")
+                os.path.join(h5_dir, fname) for fname in os.listdir(h5_dir) if fname.endswith("train.h5")
             ]
 
             if len(h5_paths_params) == 0:
@@ -234,6 +234,8 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
             # --- Basic schema validation of user-supplied stats ---------
             user_stats = cfg["data_config"]["conditioning_features"]["parameter_min_max_stats"]
             for idx, stat_dict in user_stats.items():
+                if idx == "max_number_of_parameters":
+                    continue
                 if not {
                     "min",
                     "max",
