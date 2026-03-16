@@ -496,6 +496,85 @@
             }
 
     },
+
+    {
+      "name": "train 1D_KS_ConvNeXt",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "main.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+          "hydra.run.dir=.",
+          "hydra.output_subdir=null",
+          "data_config=fluids/KS/1d_ks_data.yaml",
+          "model_config=ConvNeXt/default_convnext",
+        ],
+      "env": {
+          "HYDRA_FULL_ERROR": "1",
+          "HYDRA_MAIN_DISABLE_RUN": "1"
+          }
+
+    },
+
+    {
+        "name": "train 2D_KS_ConvNeXt:",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "main.py",
+        "console": "integratedTerminal",
+        "justMyCode": false,
+        "args": [
+            "hydra.run.dir=.",
+            "hydra.output_subdir=null",
+            "data_config=fluids/KS/2d_ks_data_default.yaml",
+            "model_config=ConvNeXt/default_convnext"
+          ],
+        "env": {
+            "HYDRA_FULL_ERROR": "1",
+            "HYDRA_MAIN_DISABLE_RUN": "1"
+            }
+
+    },
+
+    {
+        "name": "train 3D_KS_ConvNeXt:",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "main.py",
+        "console": "integratedTerminal",
+        "justMyCode": false,
+        "args": [
+            "hydra.run.dir=.",
+            "hydra.output_subdir=null",
+            "data_config=fluids/KS/3d_ks_data.yaml",
+            "model_config=ConvNeXt/default_convnext"
+          ],
+        "env": {
+            "HYDRA_FULL_ERROR": "1",
+            "HYDRA_MAIN_DISABLE_RUN": "1"
+            }
+    },
+
+    {
+      "name": "train 2D_SB_ConvNext:",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "main.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+          "hydra.run.dir=.",
+          "hydra.output_subdir=null",
+          "data_config=fluids/Shock_Bubble/2d_shockbubble_data_default.yaml",
+          "model_config=ConvNeXt/default_convnext"
+        ],
+      "env": {
+          "HYDRA_FULL_ERROR": "1",
+          "HYDRA_MAIN_DISABLE_RUN": "1"
+          }
+
+    },
     
     {
         "name": "train 3D_KS_UNet:",
