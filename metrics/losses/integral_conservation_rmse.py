@@ -391,7 +391,6 @@ class IntegralConservationRMSE(LossComponent):
         vel_y_key = self.field_keys['velocity_y']
         vel_z_key = self.field_keys['velocity_z']
         energy_key = self.field_keys['energy']
-        vort_key = self.field_keys['vorticity']
 
         registry["mass"] = TotalMass(density_key=density_key)
         registry["Px"] = MomentumComponent(direction="x", density_key=density_key, vel_key=vel_x_key)
@@ -418,8 +417,16 @@ class IntegralConservationRMSE(LossComponent):
             name="energy",
         )
 
+        enstrophy_spacings = None
+        if hasattr(self, "dx") and hasattr(self, "dy"):
+            if hasattr(self, "dz") and (self.data_dim or 2) >= 3:
+                enstrophy_spacings = [self.dx, self.dy, self.dz]
+            else:
+                enstrophy_spacings = [self.dx, self.dy]
+
         registry["enstrophy"] = Enstrophy(
-            vort_key=vort_key,
+            vel_keys=vel_keys,
+            spacings=enstrophy_spacings,
             name="enstrophy",
         )
 
@@ -995,15 +1002,82 @@ class KineticEnergy(DomainQuantity):
 
 
 class Enstrophy(DomainQuantity):
-    """Domain-integrated enstrophy: Ω = ∫ 0.5 |ω|² dV"""
+    """
+    Domain-integrated enstrophy: Ω = ∫ 0.5 |ω|² dV.
 
-    def __init__(self, vort_key: str = "Vorticity", name: str = "enstrophy"):
-        super().__init__(name=name, required_fields=[vort_key])
-        self.vort_key = vort_key
+    Vorticity ω is computed from velocity using central finite differences
+    with periodic boundaries (via torch.roll), similar to the finite
+    difference approach used in H1 semi-norm utilities.
+    """
+
+    def __init__(
+        self,
+        vel_keys: Sequence[str] = ("Velocity_X", "Velocity_Y", "Velocity_Z"),
+        spacings: Optional[Sequence[float]] = None,
+        name: str = "enstrophy",
+    ):
+        super().__init__(name=name, required_fields=list(vel_keys))
+        self.vel_keys = tuple(vel_keys)
+        self.spacings = tuple(spacings) if spacings is not None else None
+
+    @staticmethod
+    def _central_diff(u: torch.Tensor, dim: int, dx: float) -> torch.Tensor:
+        u_plus = torch.roll(u, shifts=-1, dims=dim)
+        u_minus = torch.roll(u, shifts=1, dims=dim)
+        return (u_plus - u_minus) / (2.0 * dx)
 
     def __call__(self, fields: Dict[str, torch.Tensor], dv: torch.Tensor) -> torch.Tensor:
-        omega = fields[self.vort_key]
-        enstrophy_density = 0.5 * omega**2
+        n_spatial = len(self.vel_keys)
+        if n_spatial not in (1, 2, 3):
+            raise ValueError(
+                f"Enstrophy: unsupported velocity dimensionality {n_spatial}."
+            )
+
+        spacings = (
+            list(self.spacings)
+            if self.spacings is not None
+            else [1.0] * n_spatial
+        )
+        if len(spacings) != n_spatial:
+            raise ValueError(
+                f"Enstrophy: len(spacings)={len(spacings)} must match "
+                f"len(vel_keys)={n_spatial}."
+            )
+
+        # In 1D, vorticity is identically zero.
+        if n_spatial == 1:
+            u = fields[self.vel_keys[0]]
+            omega_sq = torch.zeros_like(u)
+
+        elif n_spatial == 2:
+            u = fields[self.vel_keys[0]]  # x-component
+            v = fields[self.vel_keys[1]]  # y-component
+            dx, dy = spacings
+
+            dv_dx = self._central_diff(v, dim=2, dx=dx)
+            du_dy = self._central_diff(u, dim=3, dx=dy)
+            omega_z = dv_dx - du_dy
+            omega_sq = omega_z**2
+
+        else:  # n_spatial == 3
+            u = fields[self.vel_keys[0]]  # x-component
+            v = fields[self.vel_keys[1]]  # y-component
+            w = fields[self.vel_keys[2]]  # z-component
+            dx, dy, dz = spacings
+
+            dw_dy = self._central_diff(w, dim=3, dx=dy)
+            dv_dz = self._central_diff(v, dim=4, dx=dz)
+            du_dz = self._central_diff(u, dim=4, dx=dz)
+            dw_dx = self._central_diff(w, dim=2, dx=dx)
+            dv_dx = self._central_diff(v, dim=2, dx=dx)
+            du_dy = self._central_diff(u, dim=3, dx=dy)
+
+            omega_x = dw_dy - dv_dz
+            omega_y = du_dz - dw_dx
+            omega_z = dv_dx - du_dy
+            omega_sq = omega_x**2 + omega_y**2 + omega_z**2
+
+        enstrophy_density = 0.5 * omega_sq
         return integrate_over_domain(enstrophy_density, dv)
 
 
