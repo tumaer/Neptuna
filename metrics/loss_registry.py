@@ -17,6 +17,7 @@ from metrics.losses import (
     NegativityLoss,
     ShockRMSE,
     PDEResidualLoss,
+    DropletOuterRadius,
 )
 
 # Loss registry with metadata:
@@ -140,6 +141,13 @@ LOSS_REGISTRY = {
         "config_path": "loss_metrics/PDEResidualLoss/",
         "default_config": "pde_residual_loss_default",
         "sub_components": True,
+    },
+    "DropletOuterRadius": {
+        "class": DropletOuterRadius,
+        "default_name": "DropletOuterRadius",
+        "config_path": "loss_metrics/DropletOuterRadius/",
+        "default_config": "droplet_outer_radius_default",
+        "channel_aggregation": "sqrt",
     },
 }
 

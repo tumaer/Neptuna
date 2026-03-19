@@ -15,6 +15,7 @@ from .mean_relative_error import MeanRelativeError
 from .negativity_loss import NegativityLoss
 from .shock_rmse import ShockRMSE
 from .pde_residual_loss import PDEResidualLoss
+from .droplet_outer_radius import DropletOuterRadius
 
 __all__ = [
     'MAE',
@@ -34,4 +35,5 @@ __all__ = [
     'NegativityLoss',
     'ShockRMSE',
     'PDEResidualLoss',
+    'DropletOuterRadius',
 ]

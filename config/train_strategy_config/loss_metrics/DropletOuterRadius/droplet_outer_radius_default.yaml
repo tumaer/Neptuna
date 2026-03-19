@@ -1,0 +1,20 @@
+density_key: Density
+edge: south
+direction: positive
+error_mode: l2   # l1 or l2
+clamp_negative_predictions: true
+epsilon: 1.0e-8
+
+# DropletOuterRadius metric (mirrors legacy LaserDroplet outer-radius)
+#
+# Requires density channel and 2D data shaped as (B, T, C, H, W).
+# Radius proxy is extracted by detecting transitions in density and converted 
+# to normalized radius by dividing by the inferred edge-axis length.
+#
+# Edge convention:
+#   west/east  -> x-min / x-max boundary
+#   south/north -> y-min / y-max boundary
+#
+# Direction:
+#   positive -> use positive jumps in edge profile difference
+#   negative -> use negative jumps in edge profile difference
