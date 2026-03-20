@@ -71,7 +71,7 @@ def fetch_loss_metric(data_config, loss_dict) -> CompositeLoss:
     field_names = data_config.filter_features.filter_out_channels
     norm_stats = data_config.data_normalization_stats
     norm_strategy = data_config.data_normalization_strategy
-    log_transform_channels = data_config.log_transform_channels
+    log_transform_channels = data_config.log_transform_channels if hasattr(data_config, "log_transform_channels") else []
     is_residual = False
     
     for component_cfg in loss_dict.components:
