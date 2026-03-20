@@ -2,12 +2,15 @@ do_infer: True
 debug: False  # Set true or use INFERENCE_DEBUG=1 to enable _dbg prints
 metrics_device: cuda:0 # Device for rollout metric computation (e.g. cuda:0, xpu:0, mps, cpu). Null = auto (cuda:0/xpu:0/mps if available, else cpu)
 batch_eval_metrics: True
-inference_directory: /home/maxsa/cfd_bench/sample_inference/infer_streaming_test
-dataset_directory_path: null # if null, will use the dataset_directory_path from data_config.json inside the experiment directory.
+per_device_eval_batch_size: 8
+inference_directory: /Users/harish/Desktop/cfd_bench/ckpt_poseidon
+#dataset_directory_path: /Users/harish/Desktop/cfd_bench/data/fluids/LD_sample_5gp_train_1gp_test_ID # if null, will use the dataset_directory_path from data_config.json inside the experiment directory.
+# inference_directory: /Users/harish/Desktop/cfd_bench/checkpoints/Aerobreakup_2D_ScOT_17032026_162328
+dataset_directory_path: /Users/harish/Desktop/cfd_bench/data/fluids/Aerobreakup_DPUVVoS_const_sigma/2D
 filter_features:
   infer_filter_frames: [null, null]
   infer_filter_groups: null
-n_infer_rollouts: 4
+n_infer_rollouts: 2
 n_infer_plot_examples: 2
 plot_orientation: vertical # Plot orientation for inference plots. Options: vertical, horizontal
 infer_from_random_timestep: False
