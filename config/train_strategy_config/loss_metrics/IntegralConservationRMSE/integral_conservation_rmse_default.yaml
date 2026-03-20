@@ -2,35 +2,87 @@ use_boundary_fluxes: true
 normalization: none
 
 field_keys:
-  density: Density
+  density: density
   velocity_x: Velocity_X
   velocity_y: Velocity_Y
   velocity_z: Velocity_Z
   pressure: Pressure
   energy: Energy
+  # Kept for backward compatibility; enstrophy now uses velocity gradients.
   vorticity: Vorticity
 
 # Domain components: domain/<quantity>
 # Boundary components: boundary/<quantity>/<patch>
 components:
   # Domain components
-  - name: domain/mass
+  - name: domain/enstrophy
     weight: 1.0
-  - name: domain/Px
-    weight: 1.0
-  - name: boundary/mass/west
-    weight: 1.0
-  - name: boundary/mass/east
-    weight: 1.0
-  - name: boundary/mass/north
-    weight: 1.0
-  - name: domain/center_of_gravity_y
-    weight: 1.0
-  - name: boundary/Py/east
-    weight: 1.0
+  #- name: domain/Px
+  #  weight: 1.0
+  #- name: domain/Py
+  #- name: boundary/mass/west
+  #  weight: 1.0
+  #- name: boundary/mass/east
+  #  weight: 1.0
+  #- name: boundary/mass/north
+  #  weight: 1.0
+  #- name: domain/center_of_gravity_y
+  #  weight: 1.0
+  #- name: boundary/Py/east
+  #  weight: 1.0
 
 # For 3D:
 #  - name: boundary/mass/top
 #    weight: 1.0
 #  - name: boundary/mass/bottom
 #    weight: 1.0
+
+
+# ---------------------------------------------------
+# Component naming convention:
+#   - Domain integral:   domain/<quantity>
+#   - Boundary integral: boundary/<quantity>/<patch>
+#
+# Boundary components are only valid when:
+#   use_boundary_fluxes: true
+#
+# Available domain quantities (domain/<quantity>):
+#   - mass
+#       ∫ rho dV
+#   - Px, Py, Pz
+#       ∫ rho u_i dV
+#   - kinetic_energy
+#       ∫ 0.5 rho |u|^2 dV
+#   - energy
+#       ∫ E dV
+#   - enstrophy
+#       ∫ 0.5 |curl(u)|^2 dV
+#       (computed from velocity gradients via finite differences)
+#   - divergence
+#       ∫ |div(u)|^2 dV
+#   - center_of_gravity_x, center_of_gravity_y, center_of_gravity_z
+#       (∫ x_i rho dV) / (∫ rho dV)
+#
+# Available boundary quantities (boundary/<quantity>/<patch>):
+#   - mass
+#       ∫_Γ rho (u·n) dS
+#   - Px, Py, Pz
+#       ∫_Γ [rho u_i (u·n) + p n_i] dS
+#   - energy
+#       ∫_Γ (E + p)(u·n) dS
+#
+# Patch names by spatial dimensionality:
+#   1D: west, east
+#   2D: west, east, south, north
+#   3D: west, east, south, north, bottom, top
+#
+# Field requirements by quantity:
+#   - mass: density
+#   - Px/Py/Pz: density + matching velocity component
+#   - kinetic_energy: density + velocity components for active data_dim
+#   - energy: energy
+#   - enstrophy: velocity components for active data_dim
+#   - divergence: velocity components for active data_dim
+#   - boundary mass: density + velocity components
+#   - boundary Px/Py/Pz: density + velocity components (+ pressure if present)
+#   - boundary energy: energy + pressure + velocity components

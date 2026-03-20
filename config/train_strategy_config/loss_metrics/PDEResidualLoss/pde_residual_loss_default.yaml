@@ -1,42 +1,72 @@
 components:
-  - type: pde/unsteadyContinuity
-    weight: 1.0
-  - type: pde/debugSystemEq1
-    weight: 1.0
-  - type: pde/debugSystemEq2
-    weight: 1.0
-  #NEW: BCs
-  - type: bc/dirichlet
-    weight: 1.0
-    boundary: north
-    field: "Velocity_Y"
-  - type: bc/neumann
-    weight: 1.0
-    boundary: east
-    field: "Velocity_Y"
-  - type: bc/neumann
-    weight: 1.0
-    boundary: east
-    field: "Velocity_Y"
-    name: "bc/neumann_test"
-  - type: bc/periodic
-    weight: 1.0
-    axis: 1
+  - type: pde/mmEulerMass
+    weight: 1e-3
+  - type: pde/mmEulerMomentumX
+    weight: 1e-5
+  - type: pde/mmEulerMomentumY
+    weight: 1e-5
+  - type: pde/mmEulerVolumeFraction
+    weight: 1e-3
+
+  #- type: bc/dirichlet
+  #  weight: 1.0
+  #  boundary: north
+  #  field: "Velocity_Y"
+  #- type: bc/neumann
+  #  weight: 1.0
+  #  boundary: east
+  #  field: "Velocity_Y"
+  #- type: bc/neumann
+  #  weight: 1.0
+  #  boundary: east
+  #  field: "Velocity_Y"
+  #  name: "bc/neumann_test"
+  #- type: bc/periodic
+  #  weight: 1.0
+  #  axis: 1
 
 residual_mask:
   type: "GradientAnnihilated" #null, EquationWeight, GradientAnnihilated
   equation_weight_k1: 10.0
-  lambda1_alpha: 1.0
-  lambda1_beta: 1.0
+  lambda1_alpha: 3e-17
+  lambda1_beta: 3.0
+  # Fields used to build lambda; defaults to all model fields if omitted.
+  # You can also use key "fields" as an alias.
+  lambda1_fields:
+    - density
+    - velocityX
+    - velocityY
+    - pressure  
 
-
-dt: 1.0
-dx: 1.0
+dt: 1.5e-7
+dx: 1.5e-4
 spatial_backend: "FDSpatialDerivatives"
+
+pde_params:
+  # Optional global overrides for momentum artificial viscosity
+  mm_momentum_artificial_viscosity: 0.0
+  # mm_momentum_x_artificial_viscosity: 0.0
+  # mm_momentum_y_artificial_viscosity: 0.0
+
+  debug_mm_euler_on_labels: false
+  debug_mm_euler_max_calls: 1
+  debug_mm_euler_output_dir: ./temporary/mm_euler_label_debug
+  debug_mm_euler_sample_index: 0
+  debug_mm_euler_time_index: 0
+  debug_mm_euler_max_plots: 80
+  debug_mm_euler_clip_percent: 1.0
+
+  debug_residual_mask_on: false
+  debug_residual_mask_max_calls: 1
+  debug_residual_mask_output_dir: ./temporary/residual_mask_debug
+  debug_residual_mask_sample_index: 0
+  debug_residual_mask_time_index: 0
+  debug_residual_mask_max_plots: 40
+  debug_residual_mask_clip_percent: 1.0
 
 reference_quantities:
   density: 1000.0
   velocity: 100.0
   pressure: 100000.0
-  length: 100.0
+  length: 0.001
 residual_scale_eps: 1e-8

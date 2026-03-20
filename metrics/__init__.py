@@ -20,6 +20,7 @@ from .losses import (
     NegativityLoss,
     ShockRMSE,
     PDEResidualLoss,
+    DropletOuterRadius,
 )
 
 from .weighting_strategies import (
@@ -57,6 +58,7 @@ __all__ = [
     'NegativityLoss',
     'ShockRMSE',
     'PDEResidualLoss',
+    'DropletOuterRadius',
     'GradNorm',
     'InverseDirichlet',
     'LearningRateAnnealing',

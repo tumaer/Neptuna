@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import math
 from typing import List, Optional, Dict, Union, Tuple, Literal
 
 import torch
@@ -187,7 +188,8 @@ class NormalizationHelper(nn.Module):
         norm_strategy: str,
         channel_names: List[str],
         is_residual: bool = False,
-        residual_suffix: str = "_residual"
+        residual_suffix: str = "_residual",
+        log_transform_channels: Optional[List[str]] = None
     ):
         """
         Args:
@@ -213,6 +215,9 @@ class NormalizationHelper(nn.Module):
         self.channel_names = channel_names
         self.is_residual = is_residual
         self.residual_suffix = residual_suffix
+        self.log_transform_channels = {
+            name.lower() for name in (log_transform_channels or [])
+        }
         
         # Build lookup keys (with residual suffix if needed)
         self.stat_keys = [
@@ -220,6 +225,19 @@ class NormalizationHelper(nn.Module):
             for name in channel_names
         ]
         self._loss_norm_cache: Dict[Tuple[str, float], float] = {}
+
+    def _is_log_transform_channel(self, channel_name: str) -> bool:
+        return channel_name.lower() in self.log_transform_channels
+
+    def _get_stats_for_channel(self, c_idx: int, ch_name: str) -> Dict[str, float]:
+        stat_key = self.stat_keys[c_idx]
+        if self._is_log_transform_channel(ch_name):
+            stat_key = f"log_{stat_key}"
+
+        if stat_key not in self.norm_stats:
+            raise ValueError(f"Missing normalization stats for channel: {stat_key}")
+
+        return self.norm_stats[stat_key]
 
     def denormalize(self, tensor: torch.Tensor) -> torch.Tensor:
         if self.norm_strategy == 'no_normalization':
@@ -234,36 +252,37 @@ class NormalizationHelper(nn.Module):
             if "mask" in ch_name.lower():
                 continue
                 
-            stat_key = self.stat_keys[c_idx]
-            if stat_key not in self.norm_stats:
-                raise ValueError(f"Missing normalization stats for channel: {stat_key}")
-            
-            stats = self.norm_stats[stat_key]
+            stats = self._get_stats_for_channel(c_idx, ch_name)
+            if channel_axis == 2:
+                channel_tensor = tensor[:, :, c_idx]
+            else:
+                channel_tensor = tensor[:, c_idx]
             
             if self.norm_strategy == 'z_normalization':
                 mean = stats.get('mean', 0.0)
                 std = stats.get('std', 1.0)
-                if channel_axis == 2:
-                    result[:, :, c_idx] = tensor[:, :, c_idx] * (std + eps) + mean
-                else:
-                    result[:, c_idx] = tensor[:, c_idx] * (std + eps) + mean
+                denorm_channel = channel_tensor * (std + eps) + mean
                     
             elif self.norm_strategy == 'min_max_normalization':
                 min_val = stats.get('min', 0.0)
                 max_val = stats.get('max', 1.0)
                 range_val = max_val - min_val
-                if channel_axis == 2:
-                    result[:, :, c_idx] = tensor[:, :, c_idx] * (range_val + eps) + min_val
-                else:
-                    result[:, c_idx] = tensor[:, c_idx] * (range_val + eps) + min_val
+                denorm_channel = channel_tensor * (range_val + eps) + min_val
                     
             elif self.norm_strategy == 'robust_normalization':
                 median = stats.get('median', 0.0)
                 iqr = stats.get('iqr', 1.0)
-                if channel_axis == 2:
-                    result[:, :, c_idx] = tensor[:, :, c_idx] * (iqr + eps) + median
-                else:
-                    result[:, c_idx] = tensor[:, c_idx] * (iqr + eps) + median
+                denorm_channel = channel_tensor * (iqr + eps) + median
+            else:
+                denorm_channel = channel_tensor
+
+            if self._is_log_transform_channel(ch_name):
+                denorm_channel = torch.exp(denorm_channel)
+
+            if channel_axis == 2:
+                result[:, :, c_idx] = denorm_channel
+            else:
+                result[:, c_idx] = denorm_channel
         
         return result
 
@@ -280,36 +299,37 @@ class NormalizationHelper(nn.Module):
             if "mask" in ch_name.lower():
                 continue
                 
-            stat_key = self.stat_keys[c_idx]
-            if stat_key not in self.norm_stats:
-                raise ValueError(f"Missing normalization stats for channel: {stat_key}")
-            
-            stats = self.norm_stats[stat_key]
+            stats = self._get_stats_for_channel(c_idx, ch_name)
+            if channel_axis == 2:
+                channel_tensor = tensor[:, :, c_idx]
+            else:
+                channel_tensor = tensor[:, c_idx]
+
+            if self._is_log_transform_channel(ch_name):
+                channel_tensor = torch.log(torch.clamp_min(channel_tensor, eps))
             
             if self.norm_strategy == 'z_normalization':
                 mean = stats.get('mean', 0.0)
                 std = stats.get('std', 1.0)
-                if channel_axis == 2:
-                    result[:, :, c_idx] = (tensor[:, :, c_idx] - mean) / (std + eps)
-                else:
-                    result[:, c_idx] = (tensor[:, c_idx] - mean) / (std + eps)
+                norm_channel = (channel_tensor - mean) / (std + eps)
                     
             elif self.norm_strategy == 'min_max_normalization':
                 min_val = stats.get('min', 0.0)
                 max_val = stats.get('max', 1.0)
                 range_val = max_val - min_val
-                if channel_axis == 2:
-                    result[:, :, c_idx] = (tensor[:, :, c_idx] - min_val) / (range_val + eps)
-                else:
-                    result[:, c_idx] = (tensor[:, c_idx] - min_val) / (range_val + eps)
+                norm_channel = (channel_tensor - min_val) / (range_val + eps)
                     
             elif self.norm_strategy == 'robust_normalization':
                 median = stats.get('median', 0.0)
                 iqr = stats.get('iqr', 1.0)
-                if channel_axis == 2:
-                    result[:, :, c_idx] = (tensor[:, :, c_idx] - median) / (iqr + eps)
-                else:
-                    result[:, c_idx] = (tensor[:, c_idx] - median) / (iqr + eps)
+                norm_channel = (channel_tensor - median) / (iqr + eps)
+            else:
+                norm_channel = channel_tensor
+
+            if channel_axis == 2:
+                result[:, :, c_idx] = norm_channel
+            else:
+                result[:, c_idx] = norm_channel
         
         return result
 
@@ -350,30 +370,31 @@ class NormalizationHelper(nn.Module):
         if "mask" in channel_name.lower():
             return value
         
-        stat_key = self.stat_keys[idx]
-        if stat_key not in self.norm_stats:
-            raise ValueError(f"Missing normalization stats for channel: {stat_key}")
-        
-        stats = self.norm_stats[stat_key]
+        stats = self._get_stats_for_channel(idx, channel_name)
         eps = 1e-12
         
         if self.norm_strategy == 'z_normalization':
             mean = stats.get('mean', 0.0)
             std = stats.get('std', 1.0)
-            return value * (std + eps) + mean
+            denorm_value = value * (std + eps) + mean
             
         elif self.norm_strategy == 'min_max_normalization':
             min_val = stats.get('min', 0.0)
             max_val = stats.get('max', 1.0)
             range_val = max_val - min_val
-            return value * (range_val + eps) + min_val
+            denorm_value = value * (range_val + eps) + min_val
             
         elif self.norm_strategy == 'robust_normalization':
             median = stats.get('median', 0.0)
             iqr = stats.get('iqr', 1.0)
-            return value * (iqr + eps) + median
-        
-        return value
+            denorm_value = value * (iqr + eps) + median
+        else:
+            denorm_value = value
+
+        if self._is_log_transform_channel(channel_name):
+            denorm_value = math.exp(denorm_value)
+
+        return denorm_value
 
     def normalize_scalar(self, value: float, channel_name: str) -> float:
         """
@@ -390,28 +411,28 @@ class NormalizationHelper(nn.Module):
         if "mask" in channel_name.lower():
             return value
         
-        stat_key = self.stat_keys[idx]
-        if stat_key not in self.norm_stats:
-            raise ValueError(f"Missing normalization stats for channel: {stat_key}")
-        
-        stats = self.norm_stats[stat_key]
+        stats = self._get_stats_for_channel(idx, channel_name)
         eps = 1e-12
+
+        transformed_value = value
+        if self._is_log_transform_channel(channel_name):
+            transformed_value = math.log(max(value, eps))
         
         if self.norm_strategy == 'z_normalization':
             mean = stats.get('mean', 0.0)
             std = stats.get('std', 1.0)
-            return (value - mean) / (std + eps)
+            return (transformed_value - mean) / (std + eps)
             
         elif self.norm_strategy == 'min_max_normalization':
             min_val = stats.get('min', 0.0)
             max_val = stats.get('max', 1.0)
             range_val = max_val - min_val
-            return (value - min_val) / (range_val + eps)
+            return (transformed_value - min_val) / (range_val + eps)
             
         elif self.norm_strategy == 'robust_normalization':
             median = stats.get('median', 0.0)
             iqr = stats.get('iqr', 1.0)
-            return (value - median) / (iqr + eps)
+            return (transformed_value - median) / (iqr + eps)
         
         return value
     

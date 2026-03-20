@@ -1,0 +1,72 @@
+# For details on the parameters, refer to data_config-->example_data_config.yaml
+dataset_name: Shock_Bubble
+dataset_directory_path: ./data/fluids/Shock_Bubble_5_DPUVD1D2Vf
+seed: 42
+dimension: 2
+grid_resolution: null
+eval_groups: null #["Mas3.4780_We59625.7412"]
+is_steady_state_prediction: False 
+sequence_info: [3, 1, 5]
+# Available channels for Shock_Bubble: ["Density", "Pressure", "Schlieren", "Velocity_X", "Velocity_Y", "Vorticity"]
+filter_features:
+  train_filter_frames: null
+  train_filter_groups: null
+  infer_filter_frames: null
+  infer_filter_groups: null
+  filter_in_channels: null #["Density", "Velocity_X", "Velocity_Y"]
+  filter_out_channels: null #["Density", "Velocity_X", "Velocity_Y"]
+#NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels
+conditioning_features:
+  conditioning_in_channels: null #support deprecated
+  conditioning_method: null #AdaNorm # AdaNorm_LSE AdaNorm_SE_per_param AdaNorm_1SE AdaNorm null
+  conditioning_parameter_names: null #["Mas", "ugasf", "We"] # e.g. ["Mas", "ugasf", "We"]; null means use all parsed parameters
+  parameter_min_max_stats: null
+  conditioning_mlp:
+    mlp: False
+    hidden_size: null
+    activation: gelu
+    initialization: null
+residual_config: null
+  # add_base_value_with_raw_loss: True
+  # add_predicted_value_with_diff_loss: False
+  # add_predicted_value_with_raw_loss: False
+coord_features: True
+data_normalization_strategy: min_max_normalization
+log_transform_channels: [] #include the statistics for the log-transformed channels
+#NOTE: Statistics are according to sequence_stride = 5 for the dataset: Aerobreakup_DPUVVoS_const_sigma
+data_normalization_stats:
+  density:
+    mean: 1074.4613816556923
+    std: 254.9715936370103
+    min: 6.022352090347631e-09
+    max: 1966.4258339392995
+  density_1:
+    mean: 1080.7674987380794
+    std: 241.73863325064218
+    min: 0.0
+    max: 1966.4258339392995
+  density_2:
+    mean: 0.9420386381943067
+    std: 11.544427761490525
+    min: 0.0
+    max: 1011.7515984677058
+  diffuse_volume_fraction_1:
+    mean: 0.9636704274784584
+    std: 0.18412880038231663
+    min: 0.0
+    max: 1.0
+  pressure:
+    mean: 734948976.8332871
+    std: 1110337674.0395322
+    min: -533653421.74828744
+    max: 20420507192.16508
+  velocityX:
+    mean: 327.34112967125066
+    std: 447.8451157412796
+    min: -8853.85468517215
+    max: 10933.477851503896
+  velocityY:
+    mean: -3.5316000704816246
+    std: 156.6631815902707
+    min: -8606.341110779333
+    max: 10470.365473430236

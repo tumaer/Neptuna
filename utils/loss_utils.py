@@ -71,6 +71,7 @@ def fetch_loss_metric(data_config, loss_dict) -> CompositeLoss:
     field_names = data_config.filter_features.filter_out_channels
     norm_stats = data_config.data_normalization_stats
     norm_strategy = data_config.data_normalization_strategy
+    log_transform_channels = data_config.log_transform_channels
     is_residual = False
     
     for component_cfg in loss_dict.components:
@@ -80,7 +81,8 @@ def fetch_loss_metric(data_config, loss_dict) -> CompositeLoss:
             field_names,
             norm_stats,
             norm_strategy,
-            is_residual
+            is_residual,
+            log_transform_channels
         )
         loss_components.append(loss_component)
     
@@ -93,7 +95,8 @@ def _create_loss_component(
     field_names: List[str],
     norm_stats: Dict,
     norm_strategy: str,
-    is_residual: bool
+    is_residual: bool,
+    log_transform_channels: List[str]
 ) -> LossComponent:
     """
     Recursively create a loss component, handling nested composites.
@@ -115,7 +118,8 @@ def _create_loss_component(
                     field_names,
                     norm_stats,
                     norm_strategy,
-                    is_residual
+                    is_residual,
+                    log_transform_channels
                 )
                 sub_components.append(sub_comp)
         
@@ -124,6 +128,7 @@ def _create_loss_component(
             norm_strategy=norm_strategy,
             channel_names=field_names,
             is_residual=is_residual,
+            log_transform_channels=log_transform_channels
         )
         
         return NestedCompositeLoss(
@@ -150,6 +155,7 @@ def _create_loss_component(
         norm_strategy=norm_strategy,
         channel_names=field_names,
         is_residual=is_residual,
+        log_transform_channels=log_transform_channels
     )
     
     # Load metric-specific config
