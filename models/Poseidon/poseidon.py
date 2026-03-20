@@ -161,13 +161,16 @@ class ConvNeXtBlock(nn.Module):
         )  # was gamma before
         self.drop_path = Swinv2DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
-    def forward(self, x, time):
+    def forward(self, x, time, input_dimensions=None):
         batch_size, sequence_length, hidden_size = x.shape
         #! assumes square images
-        input_dim = math.floor(sequence_length**0.5)
+        if input_dimensions is None:
+            input_height, input_width = math.floor(sequence_length**0.5)
+        else:
+            input_height, input_width = input_dimensions
 
         input = x
-        x = x.reshape(batch_size, input_dim, input_dim, hidden_size)
+        x = x.reshape(batch_size, input_height, input_width, hidden_size)
         x = x.permute(0, 3, 1, 2)
         x = self.dwconv(x)
         x = x.permute(0, 2, 3, 1)  # (N, C, H, W) -> (N, H, W, C)
@@ -193,13 +196,16 @@ class ResNetBlock(nn.Module):
         self.bn1 = nn.BatchNorm2d(dim)
         self.bn2 = nn.BatchNorm2d(dim)
 
-    def forward(self, x, time):
+    def forward(self, x, time, input_shape=None):
         batch_size, sequence_length, hidden_size = x.shape
         #! assumes square images
-        input_dim = math.floor(sequence_length**0.5)
+        if input_shape is None:
+            input_height, input_width = math.floor(sequence_length**0.5)
+        else:
+            input_height, input_width = input_shape
 
         input = x
-        x = x.reshape(batch_size, input_dim, input_dim, hidden_size)
+        x = x.reshape(batch_size, input_height, input_width, hidden_size)
         x = x.permute(0, 3, 1, 2)
         x = self.conv1(x)
         x = self.bn1(x)
@@ -709,7 +715,8 @@ class ScOTPatchUnmerging(nn.Module):
         output_height, output_width = output_dimensions
         batch_size, seq_len, hidden_size = input_feature.shape
         #! assume square image
-        input_height = input_width = math.floor(seq_len**0.5)
+        input_height = output_height // 2
+        input_width = output_width // 2
         input_feature = self.upsample(input_feature)
         input_feature = input_feature.reshape(
             batch_size, input_height, input_width, 2, 2, hidden_size // 2
@@ -986,6 +993,7 @@ class ScOTEncoder(nn.Module):
         all_hidden_states = () if output_hidden_states else None
         all_reshaped_hidden_states = () if output_hidden_states else None
         all_self_attentions = () if output_attentions else None
+        all_shapes = []
 
         if output_hidden_states:
             batch_size, _, hidden_size = hidden_states.shape
@@ -1024,6 +1032,7 @@ class ScOTEncoder(nn.Module):
             output_dimensions = layer_outputs[2]
 
             input_dimensions = (output_dimensions[-2], output_dimensions[-1])
+            all_shapes.append(input_dimensions)
 
             if output_hidden_states and output_hidden_states_before_downsampling:
                 batch_size, _, hidden_size = hidden_states_before_downsampling.shape
@@ -1222,8 +1231,9 @@ class ScOT(Swinv2PreTrainedModel):
         self.num_features = int(config.embed_dim * 2 ** (self.num_layers_encoder - 1))
 
         self.embeddings = ScOTEmbeddings(config, use_mask_token=use_mask_token)
-        self.encoder = ScOTEncoder(config, self.embeddings.patch_grid)
-        self.decoder = ScOTDecoder(config, self.embeddings.patch_grid)
+        self.grid = self.embeddings.patch_grid
+        self.encoder = ScOTEncoder(config, self.grid)
+        self.decoder = ScOTDecoder(config, self.grid)
         self.patch_recovery = ScOTPatchRecovery(config)
 
         if config.residual_model == "convnext":
@@ -1287,7 +1297,7 @@ class ScOT(Swinv2PreTrainedModel):
 
     def forward(
         self,
-        input_data: Optional[torch.FloatTensor] = None, #changed to input_data from pixel_values
+        input_data: Optional[torch.FloatTensor] = None,
         time: Optional[torch.FloatTensor] = None,
         bool_masked_pos: Optional[torch.BoolTensor] = None,
         head_mask: Optional[torch.FloatTensor] = None,
@@ -1301,6 +1311,10 @@ class ScOT(Swinv2PreTrainedModel):
             return_dict if return_dict is not None else self.config.use_return_dict
         )
 
+        #! Add time if not provided
+        if time is None:
+            time = torch.Tensor([0]).to(input_data.device)
+
         output_attentions = (
             output_attentions
             if output_attentions is not None
@@ -1312,7 +1326,7 @@ class ScOT(Swinv2PreTrainedModel):
             else self.config.output_hidden_states
         )
 
-        if pixel_values is None:
+        if input_data is None:
             raise ValueError("pixel_values cannot be None")
 
         head_mask = self.get_head_mask(
@@ -1326,17 +1340,17 @@ class ScOT(Swinv2PreTrainedModel):
             head_mask_encoder, head_mask_decoder = head_mask.split(
                 [self.num_layers_encoder, self.num_layers_decoder]
             )
-
-        image_size = pixel_values.shape[2]
+        batch, input_seq, input_channels, *spatial = input_data.shape
+        input_data = input_data.reshape(batch, input_seq * input_channels, *spatial)
         # image must be square
-        if image_size != self.config.image_size:
-            if image_size < self.config.image_size:
-                pixel_values = self._upsample(pixel_values, self.config.image_size)
-            else:
-                pixel_values = self._downsample(pixel_values, self.config.image_size)
+        # if image_size != self.config.image_size:
+        #     if image_size < self.config.image_size:
+        #         input_data = self._upsample(input_data, self.config.image_size)
+        #     else:
+        #         input_data = self._downsample(input_data, self.config.image_size)
 
         embedding_output, input_dimensions = self.embeddings(
-            pixel_values, bool_masked_pos=bool_masked_pos, time=time
+            input_data, bool_masked_pos=bool_masked_pos, time=time
         )
 
         encoder_outputs = self.encoder(
@@ -1352,6 +1366,8 @@ class ScOT(Swinv2PreTrainedModel):
 
         if return_dict:
             skip_states = list(encoder_outputs.hidden_states[1:])
+            shapes = list(encoder_outputs.reshaped_hidden_states[1:])
+            shapes = [(s.shape[-2], s.shape[-1]) for s in shapes]
         else:
             skip_states = list(encoder_outputs[1][1:])
 
@@ -1360,13 +1376,15 @@ class ScOT(Swinv2PreTrainedModel):
                 if isinstance(block, nn.Identity):
                     skip_states[i] = block(skip_states[i])
                 else:
-                    skip_states[i] = block(skip_states[i], time)
+                    skip_states[i] = block(
+                        skip_states[i], time, input_dimensions=shapes[i]
+                    )
 
         #! assumes square images
-        input_dim = math.floor(skip_states[-1].shape[1] ** 0.5)
+        # input_dim = math.floor(skip_states[-1].shape[1] ** 0.5)
         decoder_output = self.decoder(
             skip_states[-1],
-            (input_dim, input_dim),
+            shapes[-1],
             time=time,
             skip_states=skip_states[:-1],
             head_mask=head_mask_decoder,
@@ -1380,103 +1398,106 @@ class ScOT(Swinv2PreTrainedModel):
         # The following can be used for learning just the residual for time-dependent problems
         if self.config.learn_residual:
             if self.config.num_channels > self.config.num_out_channels:
-                pixel_values = pixel_values[:, 0 : self.config.num_out_channels]
-            prediction += pixel_values
+                input_data = input_data[:, 0 : self.config.num_out_channels]
+            prediction += input_data
 
-        if image_size != self.config.image_size:
-            if image_size > self.config.image_size:
-                prediction = self._upsample(prediction, image_size)
-            else:
-                prediction = self._downsample(prediction, image_size)
+        # if image_size != self.config.image_size:
+        #     if image_size > self.config.image_size:
+        #         prediction = self._upsample(prediction, image_size)
+        #     else:
+        #         prediction = self._downsample(prediction, image_size)
 
-        if pixel_mask is not None:
-            prediction[pixel_mask] = labels[pixel_mask].type_as(prediction)
-        loss = None
-        if labels is not None:
-            if self.config.p == 1:
-                loss_fn = nn.functional.l1_loss
-            elif self.config.p == 2:
-                loss_fn = nn.functional.mse_loss
-            else:
-                raise ValueError("p must be 1 or 2")
-            if self.config.channel_slice_list_normalized_loss is not None:
-                loss = torch.mean(
-                    torch.stack(
-                        [
-                            loss_fn(
-                                prediction[
-                                    :,
-                                    self.config.channel_slice_list_normalized_loss[
-                                        i
-                                    ] : self.config.channel_slice_list_normalized_loss[
-                                        i + 1
-                                    ],
-                                ],
-                                labels[
-                                    :,
-                                    self.config.channel_slice_list_normalized_loss[
-                                        i
-                                    ] : self.config.channel_slice_list_normalized_loss[
-                                        i + 1
-                                    ],
-                                ],
-                            )
-                            / (
-                                loss_fn(
-                                    labels[
-                                        :,
-                                        self.config.channel_slice_list_normalized_loss[
-                                            i
-                                        ] : self.config.channel_slice_list_normalized_loss[
-                                            i + 1
-                                        ],
-                                    ],
-                                    torch.zeros_like(
-                                        labels[
-                                            :,
-                                            self.config.channel_slice_list_normalized_loss[
-                                                i
-                                            ] : self.config.channel_slice_list_normalized_loss[
-                                                i + 1
-                                            ],
-                                        ]
-                                    ),
-                                )
-                                + 1e-10
-                            )
-                            for i in range(
-                                len(self.config.channel_slice_list_normalized_loss) - 1
-                            )
-                        ]
-                    )
-                )
-            else:
-                loss = loss_fn(prediction, labels)
+        return prediction
 
-        if not return_dict:
-            output = (prediction,) + decoder_output[1:] + encoder_outputs[1:]
-            return ((loss,) + output) if loss is not None else output
+        # ! commented out from the original code
+        # if pixel_mask is not None:
+        #     prediction[pixel_mask] = labels[pixel_mask].type_as(prediction)
+        # loss = None
+        # if labels is not None:
+        #     if self.config.p == 1:
+        #         loss_fn = nn.functional.l1_loss
+        #     elif self.config.p == 2:
+        #         loss_fn = nn.functional.mse_loss
+        #     else:
+        #         raise ValueError("p must be 1 or 2")
+        #     if self.config.channel_slice_list_normalized_loss is not None:
+        #         loss = torch.mean(
+        #             torch.stack(
+        #                 [
+        #                     loss_fn(
+        #                         prediction[
+        #                             :,
+        #                             self.config.channel_slice_list_normalized_loss[
+        #                                 i
+        #                             ] : self.config.channel_slice_list_normalized_loss[
+        #                                 i + 1
+        #                             ],
+        #                         ],
+        #                         labels[
+        #                             :,
+        #                             self.config.channel_slice_list_normalized_loss[
+        #                                 i
+        #                             ] : self.config.channel_slice_list_normalized_loss[
+        #                                 i + 1
+        #                             ],
+        #                         ],
+        #                     )
+        #                     / (
+        #                         loss_fn(
+        #                             labels[
+        #                                 :,
+        #                                 self.config.channel_slice_list_normalized_loss[
+        #                                     i
+        #                                 ] : self.config.channel_slice_list_normalized_loss[
+        #                                     i + 1
+        #                                 ],
+        #                             ],
+        #                             torch.zeros_like(
+        #                                 labels[
+        #                                     :,
+        #                                     self.config.channel_slice_list_normalized_loss[
+        #                                         i
+        #                                     ] : self.config.channel_slice_list_normalized_loss[
+        #                                         i + 1
+        #                                     ],
+        #                                 ]
+        #                             ),
+        #                         )
+        #                         + 1e-10
+        #                     )
+        #                     for i in range(
+        #                         len(self.config.channel_slice_list_normalized_loss) - 1
+        #                     )
+        #                 ]
+        #             )
+        #         )
+        #     else:
+        #         loss = loss_fn(prediction, labels)
 
-        return ScOTOutput(
-            loss=loss,
-            output=prediction,
-            hidden_states=(
-                decoder_output.hidden_states + encoder_outputs.hidden_states
-                if output_hidden_states is not None and output_hidden_states is True
-                else None
-            ),
-            attentions=(
-                decoder_output.attentions + encoder_outputs.attentions
-                if output_attentions is not None and output_attentions is True
-                else None
-            ),
-            reshaped_hidden_states=(
-                decoder_output.reshaped_hidden_states
-                + encoder_outputs.reshaped_hidden_states
-                if output_hidden_states is not None and output_hidden_states is True
-                else None
-            ),
-        )
+        # if not return_dict:
+        #     output = (prediction,) + decoder_output[1:] + encoder_outputs[1:]
+        #     return ((loss,) + output) if loss is not None else output
+
+        # return ScOTOutput(
+        #     loss=loss,
+        #     output=prediction,
+        #     hidden_states=(
+        #         decoder_output.hidden_states + encoder_outputs.hidden_states
+        #         if output_hidden_states is not None and output_hidden_states is True
+        #         else None
+        #     ),
+        #     attentions=(
+        #         decoder_output.attentions + encoder_outputs.attentions
+        #         if output_attentions is not None and output_attentions is True
+        #         else None
+        #     ),
+        #     reshaped_hidden_states=(
+        #         decoder_output.reshaped_hidden_states
+        #         + encoder_outputs.reshaped_hidden_states
+        #         if output_hidden_states is not None and output_hidden_states is True
+        #         else None
+        #     ),
+        # )
 
 
 # Backward-compatible exports for Poseidon model naming.
