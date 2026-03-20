@@ -11,11 +11,11 @@ class DropletOuterRadius(LossComponent):
 	Droplet outer-radius error metric derived from density.
 	  1) Extract density field.
 	  2) Slice a configurable boundary edge (west/east/south/north).
-	  3) Compute `axis_diff = axis[..., :1] - axis[..., :-1]`.
-	  4) Find the last positive/negative block start index along the remaining axis.
+	  3) Compute local density jumps along the edge axis.
+	  4) Find the two strongest jump points and keep the farthest point.
 	  5) Convert to normalized radius by dividing by axis length.
 
-	Supports L1 and L2-style reductions over the resulting radius difference.
+	Supports MAE and RMSE-style reductions over the resulting radius difference.
 	"""
 
 	def __init__(
@@ -28,8 +28,7 @@ class DropletOuterRadius(LossComponent):
 		density_key: str = "Density",
 		grid_resolution: Optional[Union[int, float, List[Union[int, float]], Tuple[Union[int, float], ...]]] = None,
 		edge: Literal["west", "east", "south", "north"] = "west",
-		direction: Literal["positive", "negative", "postive"] = "positive",
-		error_mode: Literal["l1", "l2"] = "l2",
+		metric_mode: Literal["mae", "rmse"] = "rmse",
 		clamp_negative_predictions: bool = True,
 		epsilon: float = 1e-8,
 	):
@@ -44,13 +43,15 @@ class DropletOuterRadius(LossComponent):
 		self.density_key = density_key
 		self.grid_resolution = grid_resolution
 		self.edge = edge
-		self.error_mode = error_mode
+		self.metric_mode = str(metric_mode).lower()
 		self.clamp_negative_predictions = clamp_negative_predictions
 		self.epsilon = epsilon
-		self.direction =  direction
 
-		if self.error_mode not in ("l1", "l2"):
-			raise ValueError(f"DropletOuterRadius: unsupported error_mode '{error_mode}'. Use 'l1' or 'l2'.")
+		if self.metric_mode not in ("mae", "rmse"):
+			raise ValueError(
+				f"DropletOuterRadius: unsupported metric_mode '{self.metric_mode}'. "
+				"Use 'mae' or 'rmse'."
+			)
 
 		if self.edge not in ("west", "east", "south", "north"):
 			raise ValueError(
@@ -58,45 +59,10 @@ class DropletOuterRadius(LossComponent):
 				"Use one of: west, east, south, north."
 			)
 
-		if self.direction not in ("positive", "negative"):
-			raise ValueError(
-				f"DropletOuterRadius: unsupported direction '{direction}'. "
-				"Use 'positive' or 'negative'."
-			)
-
 		if self.field_names is not None and self.density_key not in self.field_names:
 			raise ValueError(
 				f"DropletOuterRadius: density_key '{self.density_key}' not found in field_names={self.field_names}."
 			)
-
-	@staticmethod
-	def _idx_finder(x: torch.Tensor, direction: str = "positive") -> torch.Tensor:
-		"""
-		Find the last directional block-start index along the last dimension.
-
-		Returns -1 when no positive block exists.
-		"""
-		if direction == "positive":
-			mask = x > 0
-		elif direction == "negative":
-			mask = x < 0
-		else:
-			raise ValueError(f"DropletOuterRadius: invalid direction '{direction}'.")
-
-		prev = torch.cat(
-			[torch.zeros_like(mask[..., :1], dtype=torch.bool), ~mask[..., :-1]],
-			dim=-1,
-		)
-		block_starts = mask & prev
-
-		idx_last = block_starts.shape[-1] - 1 - torch.argmax(
-			block_starts.flip(dims=[-1]).to(torch.int64),
-			dim=-1,
-		)
-
-		has_block = block_starts.any(dim=-1)
-		minus_one = torch.full_like(idx_last, -1)
-		return torch.where(has_block, idx_last, minus_one)
 
 	def _extract_density(self, tensor: torch.Tensor) -> torch.Tensor:
 		"""Extract density field with shape (B, T, 1, H, W)."""
@@ -178,18 +144,26 @@ class DropletOuterRadius(LossComponent):
 		else:  # north
 			axis_slice = rho[..., -1, :]  # y-max -> (B, T, 1, W)
 
-		axis_diff = axis_slice[..., :1] - axis_slice[..., :-1]  # (B, T, 1, H-1)
-
-		idx = self._idx_finder(axis_diff, direction=self.direction).to(dtype=rho.dtype)
-
-		# Infer normalization scale directly from tensor geometry
-		axis_len = float(axis_slice.shape[-1])
+		axis_len = axis_slice.shape[-1]
 		if axis_len <= 0:
 			raise ValueError(
 				f"DropletOuterRadius: inferred axis length must be > 0, got {axis_len}."
 			)
+		if axis_len == 1:
+			# Single-point axis has no jump; radius defaults to edge index 0.
+			idx = torch.zeros_like(axis_slice[..., 0], dtype=rho.dtype)
+			return idx / float(axis_len)
 
-		return idx / axis_len
+		# Compute local jump magnitudes between adjacent samples.
+		axis_jump = torch.abs(axis_slice[..., 1:] - axis_slice[..., :-1])  # (B, T, 1, L-1)
+		k = min(2, axis_jump.shape[-1])
+		topk_indices = torch.topk(axis_jump, k=k, dim=-1, largest=True).indices
+
+		# Convert jump index i (between i and i+1) to point index i+1, then take farthest point.
+		candidate_points = topk_indices + 1
+		idx = candidate_points.max(dim=-1).values.to(dtype=rho.dtype)
+
+		return idx / float(axis_len)
 
 	def forward(
 		self,
@@ -227,7 +201,7 @@ class DropletOuterRadius(LossComponent):
 
 		diff = pred_radius - true_radius  # (B, T, 1)
 
-		if self.error_mode == "l1":
+		if self.metric_mode == "mae":
 			elem = torch.abs(diff)
 		else:
 			elem = diff ** 2
@@ -245,9 +219,9 @@ class DropletOuterRadius(LossComponent):
 		else:
 			reduce_dims = list(range(1, weighted.ndim))  # per-sample scalar
 
-		per_sample = weighted.mean(dim=reduce_dims)
-		if self.error_mode == "l2":
-			per_sample = torch.sqrt(per_sample + self.epsilon)
+		per_sample = weighted.mean(dim=reduce_dims)  #per_sample -> (B,)
+		if self.metric_mode == "rmse":
+			per_sample = torch.sqrt(per_sample)
 
 		total_loss = per_sample if keep_bc_dims else per_sample.mean()
 
@@ -259,14 +233,14 @@ class DropletOuterRadius(LossComponent):
 
 		# Per timestep: reduce batch + channel
 		per_timestep = weighted_for_detailed.mean(dim=(0, 2))
-		if self.error_mode == "l2":
-			per_timestep = torch.sqrt(per_timestep + self.epsilon)
+		if self.metric_mode == "rmse":
+			per_timestep = torch.sqrt(per_timestep)
 		detailed["per_timestep"] = per_timestep if preserve_component_grads else per_timestep.detach()
 
 		# Per channel: reduce batch + time (channel dimension is size 1)
 		per_channel = weighted_for_detailed.mean(dim=(0, 1))
-		if self.error_mode == "l2":
-			per_channel = torch.sqrt(per_channel + self.epsilon)
+		if self.metric_mode == "rmse":
+			per_channel = torch.sqrt(per_channel)
 		detailed["per_channel"] = per_channel if preserve_component_grads else per_channel.detach()
 
 		# Optional diagnostics

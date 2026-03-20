@@ -1,7 +1,6 @@
 density_key: Density
-edge: south
-direction: positive
-error_mode: l2   # l1 or l2
+edge: west
+metric_mode: rmse   # mae or rmse
 clamp_negative_predictions: true
 epsilon: 1.0e-8
 
@@ -14,7 +13,3 @@ epsilon: 1.0e-8
 # Edge convention:
 #   west/east  -> x-min / x-max boundary
 #   south/north -> y-min / y-max boundary
-#
-# Direction:
-#   positive -> use positive jumps in edge profile difference
-#   negative -> use negative jumps in edge profile difference
