@@ -6,9 +6,11 @@ from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 
 class InterfaceRMSE(LossComponent):
     """
-    Interface RMSE loss: computes RMSE for density field only within a specified range.
+    Interface RMSE loss: computes RMSE for all fields within a density-defined interface region.
     
     Useful for focusing on interface regions between fluids with sharp density jumps.
+    The interface mask is derived from the density field and then applied to errors
+    from all channels/fields.
 
     Based on IRMSE concept from "Bubbleformer: Forecasting Boiling with Transformers"
     https://arxiv.org/abs/2507.21244
@@ -113,20 +115,17 @@ class InterfaceRMSE(LossComponent):
             
         Returns:
             If return_detailed=False: scalar loss tensor.
-            If return_detailed=True: (loss, detailed_dict) where detailed_dict contains:
-                - 'mask_fraction': fraction of cells in interface region
-                - 'unweighted_rmse': RMSE before weighting (normalized)
-                - 'physical_rmse': RMSE in physical units
+            If return_detailed=True: (loss, detailed_dict).
         """
         # Extract density field (normalized)
-        pred_density_norm = self._extract_density(predictions)
         true_density_norm = self._extract_density(labels)
         
         # Create soft mask for interface region (using normalized range)
         mask = self._create_interface_mask(true_density_norm)
+        mask_bc = mask.unsqueeze(2)  # (B, T, 1, *spatial), broadcast over channels
         
-        # Compute masked squared error in normalized space
-        squared_error_norm = (pred_density_norm - true_density_norm) ** 2
+        # Compute squared error in normalized space
+        squared_error_norm = (predictions - labels) ** 2
 
         norm_error = self.norm_helper.normalize_error(
                 squared_error_norm,
@@ -136,18 +135,19 @@ class InterfaceRMSE(LossComponent):
                 self.eps
             )
 
-        masked_squared_error = norm_error * mask
+        masked_squared_error = norm_error * mask_bc
 
-        # Compute per-sample RMSE over masked regions
-        reduce_dims = list(range(1, mask.ndim))
+        # Compute per-sample RMSE over masked regions (time + spatial reduction)
+        reduce_dims = [1] + list(range(3, masked_squared_error.ndim))
         num = masked_squared_error.sum(dim=reduce_dims)
-        denom = mask.sum(dim=reduce_dims)
+        denom = mask_bc.sum(dim=reduce_dims)
 
         per_sample_rmse_norm = torch.sqrt(num / (denom + self.eps))
         if keep_bc_dims:
-            # Keep batch and channel dims (density-only => C=1)
-            unweighted_rmse_norm = per_sample_rmse_norm.unsqueeze(-1)  # (B, 1)
+            # Keep batch and channel dims
+            unweighted_rmse_norm = per_sample_rmse_norm  # (B, C)
         else:
+            # Aggregate over batch and channels
             unweighted_rmse_norm = per_sample_rmse_norm.mean()
         
         # Apply weight schedule
