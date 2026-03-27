@@ -37,57 +37,8 @@ import csv
 import ast
 import socket
 import platform
-
-
-def load_pretrained_model(model_config):
-    """
-    Factory function to load any pretrained model based on model_name in config.
-    
-    Args:
-        model_config: Dictionary containing model configuration with 'model_name' and 'model_checkpoint_path'
-    
-    Returns:
-        Loaded pretrained model instance
-    """
-    model_name = model_config.get("model_name", "").lower()
-    checkpoint_path = model_config["model_checkpoint_path"]
-    
-    # Map model names to their corresponding classes
-    model_registry = {
-        "unet": ("models.UNet.unet", "UNet"),
-        "fno": ("models.FNO.fno", "FNO"),
-        "resnet": ("models.ResNet.resnet", "ResNet"),
-        "autodeeponet": ("models.DeepONet.deeponet", "AutoDeepONet"),
-        "cno": ("models.CNO.cno", "CNO"),
-        "scot": ("models.ScOT.scot", "ScOT"),
-        "vit": ("models.ViT.vit", "ViT"),
-        "kfno": ("models.kFNO.kfno", "kFNO"),
-        "unettransformer": ("models.UNetTransformer.unettransformer", "UNetTransformer"),
-        "poseidon": ("models.Poseidon.poseidon", "Poseidon"),
-    }
-    
-    if model_name not in model_registry:
-        supported_models = ", ".join(model_registry.keys())
-        raise ValueError(f"Model '{model_name}' is not supported for inference loading. Supported models: {supported_models}")
-    
-    module_path, class_name = model_registry[model_name]
-    
-    # Dynamic import and model loading
-    import importlib
-    module = importlib.import_module(module_path)
-    model_class = getattr(module, class_name)
-    
-    model, loading_info = model_class.from_pretrained(
-        checkpoint_path,
-        output_loading_info=True,
-        ignore_mismatched_sizes=False,
-        local_files_only=True,
-    )
-
-    assert not loading_info["missing_keys"], f"Missing keys: {loading_info['missing_keys']}"
-    assert not loading_info["unexpected_keys"], f"Unexpected keys: {loading_info['unexpected_keys']}"
-
-    return model
+from models.model_registry import load_pretrained_model
+# *Only models mentioned in the model_registry.py can be used for inference*
 
 def build_train_and_infer_loss(loss_config, data_config, device: torch.device):
     """
@@ -1034,7 +985,9 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
     
     if infer_config["infer_from_random_timestep"]:
         if IS_MAIN_PROCESS:
-            print(" \n Running inference rollouts using random windows sliced across the test trajectory...")
+            print("-" * 79)
+            print("\033[1;36m\nRunning inference rollouts using random windows sliced across the test trajectory...\033[0m")
+            print("-" * 79)
         _dbg("starting random-start inference branch")
         trainer.set_eval_or_test_rollout_steps(
             rollout_steps=infer_config["n_infer_rollouts"], output_all_steps=True
@@ -1235,7 +1188,9 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
 
     if infer_config["infer_from_ic"]:
         if IS_MAIN_PROCESS:
-            print(" \n Running inference rollouts using windows starting from the initial conditions...")
+            print("-" * 79)
+            print("\033[1;36m\nRunning inference rollouts using windows starting from the initial conditions...\033[0m")
+            print("-" * 79)
         _dbg("starting ic-start inference branch")
         trainer.set_eval_or_test_rollout_steps(
             rollout_steps=infer_config["n_infer_rollouts"], output_all_steps=True

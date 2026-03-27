@@ -64,6 +64,28 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     """
 
     # ------------------------------------------------------------------
+    # 0) Finetune: replace cfg["model_config"] from checkpoint config.json
+    # ------------------------------------------------------------------
+    train_type = cfg["train_config"]["train_type_config"].get("train_type", "train_from_scratch")
+    if train_type == "finetune":
+        checkpoint_path = cfg["train_config"]["train_type_config"]["finetune_checkpoint_path"]
+        checkpoint_config_path = os.path.join(checkpoint_path, "config.json")
+        with open(checkpoint_config_path, "r", encoding="utf-8") as f:
+            checkpoint_model_config = json.load(f)
+
+        checkpoint_model_config["model_name"] = str(
+            checkpoint_model_config["architectures"][0]
+        ).lower()
+        checkpoint_model_config["model_checkpoint_path"] = checkpoint_path
+        OmegaConf.update(
+            cfg,
+            "model_config",
+            checkpoint_model_config,
+            merge=False,
+            force_add=True,
+        )
+
+    # ------------------------------------------------------------------
     # 1) Output directory
     # ------------------------------------------------------------------
     out_dir = cfg["output_log_config"]["logging"]["output_dir"]

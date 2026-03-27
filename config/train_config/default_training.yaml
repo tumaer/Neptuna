@@ -1,6 +1,11 @@
 ########################################################
 # Training parameters
 ########################################################
+train_type_config: 
+  #options are finetune, train_from_scratch
+  train_type : "finetune"
+  #path to the checkpoint to finetune from, ignored if training from scratch
+  finetune_checkpoint_path: /Users/harish/Desktop/cfd_bench/ckpt_poseidon/checkpoint-1000
 #use_cpu
 use_cpu: False
 # Batch size for train and eval

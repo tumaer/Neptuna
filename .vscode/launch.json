@@ -18,90 +18,28 @@
     },
 
     {
-      "name": "Loss debug 2D_AB",
+      "name": "finetune 2D_Aerobreakup_poseidon_T",
       "type": "debugpy",
       "request": "launch",
-      "program": "loss_debug.py",
+      "program": "main.py",
       "console": "integratedTerminal",
-      "justMyCode": true,
+      "justMyCode": false,
       "args": [
+          "hydra.run.dir=.",
+          "hydra.output_subdir=null",
           "data_config=fluids/Aerobreakup/2d_aerobreakup_data_default.yaml",
+          "data_config.conditioning_features.conditioning_method=null",
+          "data_config.filter_features.filter_in_channels=[\"Density\", \"Velocity_X\", \"Velocity_Y\", \"Pressure\"]",
+          "data_config.filter_features.filter_out_channels=[\"Density\", \"Velocity_X\", \"Velocity_Y\", \"Pressure\"]",
+          "data_config.sequence_info=[1, 1, 5]"
         ],
       "env": {
           "HYDRA_FULL_ERROR": "1",
-          "HYDRA_MAIN_DISABLE_RUN": "1"
+          "HYDRA_MAIN_DISABLE_RUN": "1",
+          "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "2.0"   // “-1” disables the warning entirely
           }
 
-  },
-
-  {
-    "name": "scot debug 2D_KS",
-    "type": "debugpy",
-    "request": "launch",
-    "program": "main.py",
-    "console": "integratedTerminal",
-    "justMyCode": true,
-    "args": [
-        "data_config=fluids/KS/2d_ks_data_default.yaml",
-        "model_config=ScOT/scot_1M"
-      ],
-    "env": {
-        "HYDRA_FULL_ERROR": "1",
-        "HYDRA_MAIN_DISABLE_RUN": "1"
-        }
-
-},
-
-  {
-    "name": "Loss debug 3D_KS",
-    "type": "debugpy",
-    "request": "launch",
-    "program": "loss_debug.py",
-    "console": "integratedTerminal",
-    "justMyCode": true,
-    "args": [
-        "data_config=fluids/KS/3d_ks_data.yaml",
-      ],
-    "env": {
-        "HYDRA_FULL_ERROR": "1",
-        "HYDRA_MAIN_DISABLE_RUN": "1"
-        }
-
-  },
-
-  {
-    "name": "Loss debug 2D_KS",
-    "type": "debugpy",
-    "request": "launch",
-    "program": "main.py",
-    "console": "integratedTerminal",
-    "justMyCode": false,
-    "args": [
-        "data_config=fluids/KS/2d_ks_data_default.yaml",
-      ],
-    "env": {
-        "HYDRA_FULL_ERROR": "1",
-        "HYDRA_MAIN_DISABLE_RUN": "1"
-        }
-
-  },
-
-  {
-    "name": "Loss debug 1D_KS",
-    "type": "debugpy",
-    "request": "launch",
-    "program": "loss_debug.py",
-    "console": "integratedTerminal",
-    "justMyCode": true,
-    "args": [
-        "data_config=fluids/KS/1d_ks_data.yaml",
-      ],
-    "env": {
-        "HYDRA_FULL_ERROR": "1",
-        "HYDRA_MAIN_DISABLE_RUN": "1"
-        }
-
-  },
+    },
 
     {
       "name": "train 2D_Aerobreakup_ScoT",

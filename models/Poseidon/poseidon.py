@@ -29,7 +29,7 @@ class ScOTOutput(ModelOutput):
     reshaped_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
 
 
-class ScOTConfig(PretrainedConfig):
+class PoseidonConfig(PretrainedConfig):
     """https://github.com/huggingface/transformers/blob/v4.35.2/src/transformers/models/swinv2/configuration_swinv2.py"""
 
     model_type = "swinv2"
@@ -1215,12 +1215,12 @@ class ScOTDecoder(nn.Module):
         )
 
 
-class ScOT(Swinv2PreTrainedModel):
+class Poseidon(Swinv2PreTrainedModel):
     """Inspired by https://github.com/huggingface/transformers/blob/v4.35.2/src/transformers/models/swinv2/modeling_swinv2.py#L1129"""
 
     main_input_name = "input_data"
     conditioning_input_name = "conditioning_input_data"
-    config_class = ScOTConfig
+    config_class = PoseidonConfig
 
     def __init__(self, config, use_mask_token=False):
         super().__init__(config)
@@ -1498,8 +1498,3 @@ class ScOT(Swinv2PreTrainedModel):
         #         else None
         #     ),
         # )
-
-
-# Backward-compatible exports for Poseidon model naming.
-PoseidonConfig = ScOTConfig
-Poseidon = ScOT
