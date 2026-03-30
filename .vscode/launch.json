@@ -18,6 +18,29 @@
     },
 
     {
+      "name": "finetune 2D_KS_poseidon_T_20M",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "main.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+          "hydra.run.dir=.",
+          "hydra.output_subdir=null",
+          // model_config and data_config are taken from checkpoint-999999/config.json and data_config.json respectively.
+          // Please fix the dataset path in data_config.json
+          "train_config.train_type_config.train_type=finetune",
+          "train_config.train_type_config.finetune_checkpoint_path=./ckpt_2DKS_poseidon_T_20M/checkpoint-999999"
+        ],
+      "env": {
+          "HYDRA_FULL_ERROR": "1",
+          "HYDRA_MAIN_DISABLE_RUN": "1",
+          "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "2.0"   // “-1” disables the warning entirely
+          }
+
+    },
+
+    {
       "name": "finetune 2D_Aerobreakup_poseidon_T_20M",
       "type": "debugpy",
       "request": "launch",

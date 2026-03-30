@@ -1145,7 +1145,21 @@ class Poseidon(Swinv2PreTrainedModel):
             head_mask_encoder, head_mask_decoder = head_mask.split(
                 [self.num_layers_encoder, self.num_layers_decoder]
             )
+        # Pad channel dimension up to 4 and unpad on return.
+        # Disallow more than 4 channels.
         batch, input_seq, input_channels, *spatial = input_data.shape
+        orig_c = int(input_channels)
+        if orig_c > 4:
+            raise NotImplementedError(
+                f"Poseidon currently supports up to 4 channels; got {orig_c} (shape {tuple(input_data.shape)})"
+            )
+        if orig_c < 4:
+            pad_c = 4 - orig_c
+            zeros_shape = (batch, input_seq, pad_c, *spatial)
+            input_data = torch.cat([input_data, input_data.new_zeros(zeros_shape)], dim=2)
+
+        # Recompute input_channels because we may have padded.
+        input_channels = int(input_data.shape[2])
         input_data = input_data.reshape(batch, input_seq * input_channels, *spatial)
         # image must be square
         # if image_size != self.config.image_size:
@@ -1212,6 +1226,9 @@ class Poseidon(Swinv2PreTrainedModel):
         #     else:
         #         prediction = self._downsample(prediction, image_size)
 
+        # Unpad channels back to original count
+        if orig_c < 4:
+            prediction = prediction[:, :orig_c, ...]
         return prediction
 
         # ! commented out from the original code

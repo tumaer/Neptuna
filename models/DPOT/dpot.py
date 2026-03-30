@@ -333,23 +333,6 @@ class DPOTNet3D(nn.Module):
     def __init__(
         self,
         config: DPOTConfig,
-        # img_size=224,
-        # patch_size=16,
-        # mixing_type="afno",
-        # in_channels=1,
-        # out_channels=3,
-        # in_timesteps=1,
-        # out_timesteps=1,
-        # n_blocks=4,
-        # embed_dim=768,
-        # out_layer_dim=32,
-        # depth=12,
-        # modes=32,
-        # mlp_ratio=1.0,
-        # n_cls=1,
-        # normalize=False,
-        # act="gelu",
-        # time_agg="exp_mlp",
     ):
         super().__init__()
 
