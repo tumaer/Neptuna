@@ -16,6 +16,8 @@ MODEL_REGISTRY = {
     "scot3D": ("models.ScOT.scot3D", "ScOT3D"),
     "vit": ("models.ViT.vit", "ViT"),
     "kfno": ("models.kFNO.kfno", "kFNO"),
+    "ffno": ("models.FFNO.ffno", "FFNO"),
+    "convnext": ("models.ConvNeXt.convnext", "ConvNeXt"),
     "unettransformer": ("models.UNetTransformer.unettransformer", "UNetTransformer"),
     "poseidon": ("models.Poseidon.poseidon", "Poseidon"), #entry without model size suffix needed for inference
     "poseidon_t": ("models.Poseidon.poseidon", "Poseidon"),
