@@ -18,7 +18,7 @@
     },
 
     {
-      "name": "finetune 2D_Aerobreakup_poseidon_T",
+      "name": "finetune 2D_Aerobreakup_poseidon_T_20M",
       "type": "debugpy",
       "request": "launch",
       "program": "main.py",
@@ -27,11 +27,10 @@
       "args": [
           "hydra.run.dir=.",
           "hydra.output_subdir=null",
-          "data_config=fluids/Aerobreakup/2d_aerobreakup_data_default.yaml",
-          "data_config.conditioning_features.conditioning_method=null",
-          "data_config.filter_features.filter_in_channels=[\"Density\", \"Velocity_X\", \"Velocity_Y\", \"Pressure\"]",
-          "data_config.filter_features.filter_out_channels=[\"Density\", \"Velocity_X\", \"Velocity_Y\", \"Pressure\"]",
-          "data_config.sequence_info=[1, 1, 5]"
+          // model_config and data_config are taken from checkpoint-999999/config.json and data_config.json respectively.
+          // Please fix the dataset path in data_config.json
+          "train_config.train_type_config.train_type=finetune",
+          "train_config.train_type_config.finetune_checkpoint_path=./ckpt_AB_poseidon_T_20M/checkpoint-999999"
         ],
       "env": {
           "HYDRA_FULL_ERROR": "1",
@@ -41,6 +40,75 @@
 
     },
 
+    {
+      "name": "finetune 2D_Aerobreakup_poseidon_B_158M",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "main.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+          "hydra.run.dir=.",
+          "hydra.output_subdir=null",
+          // model_config and data_config are taken from checkpoint-999999/config.json and data_config.json respectively.
+          // Please fix the dataset path in data_config.json
+          "train_config.train_type_config.train_type=finetune",
+          "train_config.train_type_config.finetune_checkpoint_path=./ckpt_AB_poseidon_B_158M/checkpoint-999999"
+        ],
+      "env": {
+          "HYDRA_FULL_ERROR": "1",
+          "HYDRA_MAIN_DISABLE_RUN": "1",
+          "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "2.0"   // “-1” disables the warning entirely
+          }
+
+    },
+
+    {
+      "name": "finetune 2D_Aerobreakup_DPOT_S_30M",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "main.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+          "hydra.run.dir=.",
+          "hydra.output_subdir=null",
+          // model_config and data_config are taken from checkpoint-999999/config.json and data_config.json respectively.
+          // Please fix the dataset path in data_config.json
+          "train_config.train_type_config.train_type=finetune",
+          "train_config.train_type_config.finetune_checkpoint_path=/Users/harish/Desktop/cfd_bench/ckpt_AB_DPOT_S_30M/checkpoint-999999"
+        ],
+      "env": {
+          "HYDRA_FULL_ERROR": "1",
+          "HYDRA_MAIN_DISABLE_RUN": "1",
+          "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "2.0"   // “-1” disables the warning entirely
+          }
+
+    },
+
+    {
+      "name": "finetune 2D_Aerobreakup_DPOT_M_122M",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "main.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+          "hydra.run.dir=.",
+          "hydra.output_subdir=null",
+          // model_config and data_config are taken from checkpoint-999999/config.json and data_config.json respectively.
+          // Please fix the dataset path in data_config.json
+          "train_config.train_type_config.train_type=finetune",
+          "train_config.train_type_config.finetune_checkpoint_path=./ckpt_AB_DPOT_M_122M/checkpoint-999999"
+        ],
+      "env": {
+          "HYDRA_FULL_ERROR": "1",
+          "HYDRA_MAIN_DISABLE_RUN": "1",
+          "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "2.0"   // “-1” disables the warning entirely
+          }
+
+    },
+    
     {
       "name": "train 2D_Aerobreakup_ScoT",
       "type": "debugpy",
