@@ -4,7 +4,8 @@ import os
 
 import torch
 import torch.nn.functional as F
-
+from collections import OrderedDict
+from models.DPOT.dpot_utils import dpot_load_3d_components_from_2d
 MODEL_REGISTRY = {
     "unet": ("models.UNet.unet", "UNet"),
     "fno": ("models.FNO.fno", "FNO"),
@@ -117,7 +118,6 @@ def _reconcile_state_dict(loaded_sd, model_sd):
 
     return reconciled
 
-
 def _load_pth_state_dict(pth_path, model_class, config):
     """Load a .pth file, extract and remap its state dict, then reconcile
     shape mismatches against a freshly initialized model."""
@@ -125,8 +125,48 @@ def _load_pth_state_dict(pth_path, model_class, config):
     state_dict = _extract_state_dict(raw)
 
     tmp_model = model_class(config)
-    state_dict = _remap_state_dict_keys(state_dict, tmp_model)
-    state_dict = _reconcile_state_dict(state_dict, tmp_model.state_dict())
+
+    # ------------------------------------------------------------------
+    # DPOT 2D -> 3D fine-tuning: load compatible components and adapt
+    # 2D MLP conv weights to 3D by unsqueezing the final spatial dim.
+    # This is only applied when the target model is 3D and the source
+    # checkpoint appears to be 2D (e.g. 4D conv weights in block MLPs).
+    # ------------------------------------------------------------------
+    try:
+        target_dim = getattr(config, "dimension", None)
+        is_target_3d = int(target_dim) == 3
+    except Exception:
+        is_target_3d = False
+
+    if is_target_3d and hasattr(tmp_model, "dpot"):
+        # If the source dict is already prefixed (rare), strip it back to
+        # the inner-module key space expected by the helper.
+        inner_sd = state_dict
+        if any(isinstance(k, str) and k.startswith("dpot.") for k in inner_sd.keys()):
+            inner_sd = {k[len("dpot."):]: v for k, v in inner_sd.items() if isinstance(k, str) and k.startswith("dpot.")}
+
+        # Heuristic: if any block MLP conv weights are 4D, treat source as 2D.
+        looks_2d = False
+        for k, v in inner_sd.items():
+            if not isinstance(k, str):
+                continue
+            if "blocks." in k and "mlp" in k and "weight" in k and hasattr(v, "ndim") and v.ndim == 4:
+                looks_2d = True
+                break
+
+        if looks_2d:
+            dpot_load_3d_components_from_2d(
+                tmp_model.dpot,
+                inner_sd,
+                components=["blocks", "time_agg"],
+            )
+            state_dict = tmp_model.state_dict()
+        else:
+            state_dict = _remap_state_dict_keys(state_dict, tmp_model)
+            state_dict = _reconcile_state_dict(state_dict, tmp_model.state_dict())
+    else:
+        state_dict = _remap_state_dict_keys(state_dict, tmp_model)
+        state_dict = _reconcile_state_dict(state_dict, tmp_model.state_dict())
     del tmp_model
 
     return state_dict

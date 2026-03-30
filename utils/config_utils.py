@@ -107,6 +107,13 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
             force_add=True,
         )
 
+        # Ensure the instantiated model matches the *target* dataset (e.g. 3D fine-tune).
+        # The checkpoint's config.json may be 2D; we override with the loaded data_config.
+        if "dimension" in checkpoint_data_config:
+            OmegaConf.update(cfg, "model_config.dimension", checkpoint_data_config["dimension"], merge=False, force_add=True)
+        # if "grid_resolution" in checkpoint_data_config:
+        #     OmegaConf.update(cfg, "model_config.grid_resolution", checkpoint_data_config["grid_resolution"], merge=False, force_add=True)
+
     # ------------------------------------------------------------------
     # 1) Output directory
     # ------------------------------------------------------------------
