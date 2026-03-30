@@ -23,6 +23,9 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     This function mutates the input configuration in-place, performing several
     essential preprocessing steps before training can begin:
 
+    0. If train_type is finetune: replace ``model_config`` from the checkpoint's
+       ``config.json`` and ``data_config`` from ``data_config.json`` in the parent
+       folder of ``finetune_checkpoint_path``.
     1. Derive output directory path when not specified
     2. Populate grid resolution from dataset if missing
     3. Compute normalization statistics if not provided
@@ -62,6 +65,54 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     Channel filtering is performed using keyword matching where channel names
     are included if they start with any of the specified filter keywords.
     """
+
+    # ------------------------------------------------------------------
+    # 0) Finetune: replace cfg["model_config"] from checkpoint config.json
+    #    and cfg["data_config"] from data_config.json in the parent directory
+    #    of finetune_checkpoint_path (e.g. .../run/checkpoint-5 -> .../run/data_config.json)
+    # ------------------------------------------------------------------
+    train_type = cfg["train_config"]["train_type_config"].get("train_type", "train_from_scratch")
+    if train_type == "finetune":
+        checkpoint_path = cfg["train_config"]["train_type_config"]["finetune_checkpoint_path"]
+        checkpoint_path = os.path.abspath(checkpoint_path)
+        checkpoint_config_path = os.path.join(checkpoint_path, "config.json")
+        with open(checkpoint_config_path, "r", encoding="utf-8") as f:
+            checkpoint_model_config = json.load(f)
+
+        checkpoint_model_config["model_name"] = str(
+            checkpoint_model_config["architectures"][0]
+        )
+        checkpoint_model_config["model_checkpoint_path"] = checkpoint_path
+        OmegaConf.update(
+            cfg,
+            "model_config",
+            checkpoint_model_config,
+            merge=False,
+            force_add=True,
+        )
+
+        data_config_path = os.path.join(os.path.dirname(checkpoint_path), "data_config.json")
+        if not os.path.isfile(data_config_path):
+            raise FileNotFoundError(
+                "Finetuning requires data_config.json in the directory above "
+                f"finetune_checkpoint_path; missing: {data_config_path}"
+            )
+        with open(data_config_path, "r", encoding="utf-8") as f:
+            checkpoint_data_config = json.load(f)
+        OmegaConf.update(
+            cfg,
+            "data_config",
+            checkpoint_data_config,
+            merge=False,
+            force_add=True,
+        )
+
+        # Ensure the instantiated model matches the *target* dataset (e.g. 3D fine-tune).
+        # The checkpoint's config.json may be 2D; we override with the loaded data_config.
+        if "dimension" in checkpoint_data_config:
+            OmegaConf.update(cfg, "model_config.dimension", checkpoint_data_config["dimension"], merge=False, force_add=True)
+        # if "grid_resolution" in checkpoint_data_config:
+        #     OmegaConf.update(cfg, "model_config.grid_resolution", checkpoint_data_config["grid_resolution"], merge=False, force_add=True)
 
     # ------------------------------------------------------------------
     # 1) Output directory

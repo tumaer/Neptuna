@@ -25,6 +25,7 @@ wandb/
 *.csv
 data_config.json
 config.json
+config_with_comments.json
 model.safetensors
 rng_state.pth
 trainer_state.json

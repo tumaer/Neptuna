@@ -1,6 +1,92 @@
 import torch
 from transformers.trainer import EvalPrediction
 import torch.distributed as dist
+from omegaconf import ListConfig
+
+_CLEANUP_DONE = False
+
+
+def _resolve_metric_for_best_model(metric_cfg) -> str | None:
+    """Return the metric identifier string, preferring name over type."""
+
+    def _from_entry(entry):
+        name = entry.get("name", None)
+        mtype = entry.get("type", None)
+        # if name is None then returns the type otherwise returns the name
+        return name or mtype
+
+    if isinstance(metric_cfg, (list, tuple, ListConfig)):
+        if len(metric_cfg) == 0:
+            raise ValueError("metric_cfg is empty")
+        return _from_entry(metric_cfg[0])
+
+    return _from_entry(metric_cfg)
+
+
+def get_device_string() -> str:
+    """Return a human-readable device identifier for logging."""
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        try:
+            idx = torch.xpu.current_device()
+            name = torch.xpu.get_device_name(idx)
+            return f"xpu:{idx} ({name})"
+        except Exception:
+            return "xpu"
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps:0"
+    if torch.cuda.is_available():
+        idx = torch.cuda.current_device()
+        name = torch.cuda.get_device_name(idx)
+        return f"cuda:{idx} ({name})"
+    return "cpu"
+
+
+def get_metric_device() -> torch.device:
+    """Return the best available device for metrics (XPU > CUDA > CPU)."""
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        idx = torch.xpu.current_device()
+        return torch.device(f"xpu:{idx}")
+    if torch.cuda.is_available():
+        idx = torch.cuda.current_device()
+        return torch.device(f"cuda:{idx}")
+    return torch.device("cpu")
+
+
+def cleanup_distributed(rank: int) -> None:
+    """Best-effort teardown so distributed/XPU jobs exit cleanly."""
+    global _CLEANUP_DONE
+    if _CLEANUP_DONE:
+        return
+    _CLEANUP_DONE = True
+    try:
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            torch.xpu.synchronize()
+    except Exception as exc:
+        print(f"[rank {rank}] torch.xpu.synchronize() failed: {exc}", flush=True)
+
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+    except Exception as exc:
+        print(f"[rank {rank}] torch.cuda.synchronize() failed: {exc}", flush=True)
+
+    if dist.is_available() and dist.is_initialized():
+        try:
+            dist.destroy_process_group()
+        except Exception as exc:
+            print(f"[rank {rank}] dist.destroy_process_group() failed: {exc}", flush=True)
+
+    try:
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            torch.xpu.empty_cache()
+    except Exception as exc:
+        print(f"[rank {rank}] torch.xpu.empty_cache() failed: {exc}", flush=True)
+
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception as exc:
+        print(f"[rank {rank}] torch.cuda.empty_cache() failed: {exc}", flush=True)
 
 class StreamingMetrics:
     def __init__(self, trainer, mode):

@@ -1,6 +1,11 @@
 ########################################################
 # Training parameters
 ########################################################
+train_type_config: 
+  #options are finetune, train_from_scratch
+  train_type : train_from_scratch
+  #path to the checkpoint folder to finetune from, ignored if training from scratch
+  finetune_checkpoint_path: null
 #use_cpu
 use_cpu: False
 # Batch size for train and eval

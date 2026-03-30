@@ -132,22 +132,22 @@ class PretrainedConfig(PretrainedConfig_):
 
     def __init__(
         self,
-        in_channels: int = 1,       # Number of input_channels
-        out_channels: int = 1,      # Number of output channels
-        dimension: int = 1,
-        grid_resolution: Union[int, List[int], Tuple[int]] = [160], # Input and Output spatial size (required )
-        sequence_info: Optional[List[int]] = [1,1,1],
-        coord_features: bool = True,
-        latent_channels: int = 32,
-        include_input_seq_len: bool = True,
-        norm: str = 'identity',
+        in_channels: int=1,       # Number of input_channels
+        out_channels: int=1,      # Number of output channels
+        dimension: int=1,
+        grid_resolution: Union[int, List[int], Tuple[int]]=[160], # Input and Output spatial size (required )
+        sequence_info: Optional[List[int]]=[1, 1, 1],
+        latent_channels: int=-1,
+        norm: str = 'none',
         conditioning_method: Optional[str] = None,
         num_cond_params: int = 0,
         conditioning_mlp: bool = False,
         conditioning_hidden_size: Optional[int] = None,
-        conditioning_activation: str = 'gelu',
+        conditioning_activation: str = 'none',
         conditioning_init: str = None,
         norm_layer_eps: float = 1e-5,
+        coord_features: bool = False,
+        include_input_seq_len: bool = True,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -172,7 +172,7 @@ class PretrainedConfig(PretrainedConfig_):
         self.conditioning_init = conditioning_init
         self.norm = norm
         self.norm_layer_eps = norm_layer_eps
-        if norm not in ['layer', 'batch', 'group', 'identity']:
+        if norm not in ['layer', 'batch', 'group', 'identity', 'none']:
             raise ValueError(f'{norm} norm is not in the specified list of allowed norms')
 
         self.coord_features = coord_features
