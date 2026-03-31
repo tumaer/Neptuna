@@ -53,13 +53,25 @@ def visualize_dataset_structure(data_path):
         # ------------------------------------------------------------------
         # Recursively print the structure
         # ------------------------------------------------------------------
-        def print_structure(name, obj):
-            if isinstance(obj, h5py.Group):
-                print(f"Group: {name}")
-            elif isinstance(obj, h5py.Dataset):
-                print(f"  Field: {name} - Shape: {obj.shape}, Dtype: {obj.dtype}")
+        # def print_structure(name, obj):
+        #     if isinstance(obj, h5py.Group):
+        #         print(f"Group: {name}")
+        #     elif isinstance(obj, h5py.Dataset):
+        #         print(f"  Field: {name} - Shape: {obj.shape}, Dtype: {obj.dtype}")
 
-        f.visititems(print_structure)
+        # f.visititems(print_structure)
+
+        def read_h5(group, prefix=""):
+            for key in group:
+                item = group[key]
+                path = f"{prefix}/{key}" if prefix else key
+
+                if isinstance(item, h5py.Dataset):
+                    print(f"  Field: {key} - Shape: {item.shape}, Dtype: {item.dtype}, Compression: {item.compression}")
+                elif isinstance(item, h5py.Group):
+                    print(f"Group: {key}")
+                    read_h5(item, path)
+        read_h5(f)
 
 # -----------------------------------------------------------------------------
 # Usage (terminal):
