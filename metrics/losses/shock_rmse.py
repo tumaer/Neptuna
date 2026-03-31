@@ -2,8 +2,6 @@ from typing import Dict, List, Optional, Tuple, Union, Literal
 import torch
 from torch import nn
 import torch.nn.functional as F
-import matplotlib.pyplot as plt
-import numpy as np
 from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 from .h1_semi_norm import spatial_gradient, spatial_gradient3d
 
@@ -22,7 +20,7 @@ class ShockRMSE(LossComponent):
         data_dim: Dimensionality of spatial data (1, 2, or 3).
         field_names: List of field names matching channel dimension.
         gradient_threshold: Threshold range [min, max] for gradient magnitude in physical units.
-                          Only regions where min <= |∇label| <= max contribute to loss.
+                  Applied to the selected `threshold_field_key` only.
         threshold_softness: Smoothness of sigmoid transition (fraction of range width).
                            Smaller = sharper transition, larger = softer.
         blur_sigma: Standard deviation for Gaussian blur (in grid cells).
@@ -30,15 +28,15 @@ class ShockRMSE(LossComponent):
         gradient_mode: Mode for gradient computation ('sobel' or 'diff').
         normalization: Type of batch-wise normalization ('none', 'magnitude', 'variance').
         epsilon: Small constant for numerical stability.
-        per_channel_thresholds: Optional dict mapping channel names to individual thresholds.
-                               If None, uses gradient_threshold for all channels.
+        per_channel_thresholds: Optional dict mapping channel names to thresholds.
+                       If provided, threshold for `threshold_field_key` overrides
+                       `gradient_threshold`.
         value_range: Optional dict mapping channel names to [min, max] value ranges.
                     Only pixels where min <= label <= max are considered for gradient masking.
                     Useful to exclude interface boundaries (e.g., air-water) from shock detection.
                     Values are in physical units.
-        visualize: If True, creates visualization plots during forward pass (for debugging).
-        viz_channel_idx: Channel index to visualize (default: 0).
-        viz_save_dir: Directory to save visualization plots (default: None, just shows).
+        threshold_field_key: Field name used to build the shock mask. The resulting
+                    mask is broadcast and applied to all fields.
     """
     
     def __init__(
@@ -56,6 +54,7 @@ class ShockRMSE(LossComponent):
         epsilon: float = 1e-8,
         per_channel_thresholds: Optional[Dict[str, Tuple[float, float]]] = None,
         value_range: Optional[Dict[str, Tuple[float, float]]] = None,
+        threshold_field_key: Optional[str] = None,
     ):
         super().__init__(
             weight=weight,
@@ -73,6 +72,7 @@ class ShockRMSE(LossComponent):
         self.epsilon = epsilon
         self.per_channel_thresholds = per_channel_thresholds or {}
         self.value_range = value_range or {}
+        self.threshold_field_key = threshold_field_key
         
         # Validate gradient_threshold
         if len(self.gradient_threshold) != 2:
@@ -88,69 +88,82 @@ class ShockRMSE(LossComponent):
                 f"gradient_threshold[0] must be < gradient_threshold[1], got {self.gradient_threshold}"
             )
         
-        # Normalize thresholds to model space
-        self._normalized_thresholds = self._prepare_thresholds()
-        self._normalized_value_ranges = self._prepare_value_ranges()
+        # Resolve channel used to build mask and normalize thresholds/ranges.
+        self._threshold_field_idx = self._resolve_threshold_field_idx()
+        self._normalized_threshold = self._prepare_threshold()
+        self._normalized_value_range = self._prepare_value_range()
 
-    def _prepare_thresholds(self) -> Dict[int, Tuple[float, float]]:
-        """
-        Convert physical gradient thresholds to normalized space and map to channel indices.
-        
-        Returns:
-            Dict mapping channel index to (min_threshold, max_threshold) in normalized units.
-        """
+    def _resolve_threshold_field_idx(self) -> int:
+        """Resolve the channel index used to compute the shock mask."""
         if self.field_names is None:
-            # Use global threshold for all channels (index agnostic)
-            return {-1: self.gradient_threshold}
-        
-        normalized = {}
-        
-        # Process per-channel thresholds
-        for ch_name, threshold in self.per_channel_thresholds.items():
-            if ch_name not in self.field_names:
-                continue
-            
-            ch_idx = self.field_names.index(ch_name)
-            # Use thresholds directly without normalization
-            normalized[ch_idx] = (threshold[0], threshold[1])
-        
-        # Set default threshold for channels without specific thresholds
-        for idx, ch_name in enumerate(self.field_names):
-            if idx not in normalized:
-                # Use thresholds directly without normalization
-                normalized[idx] = (self.gradient_threshold[0], self.gradient_threshold[1])
-        
-        return normalized
+            return 0
 
-    def _prepare_value_ranges(self) -> Dict[int, Tuple[float, float]]:
+        if self.threshold_field_key is None:
+            return 0
+
+        if self.threshold_field_key in self.field_names:
+            return self.field_names.index(self.threshold_field_key)
+
+        raise ValueError(
+            f"threshold_field_key '{self.threshold_field_key}' not found in field_names: {self.field_names}"
+        )
+
+    def _prepare_threshold(self) -> Tuple[float, float]:
         """
-        Convert physical value ranges to normalized space and map to channel indices.
+        Prepare gradient thresholds for the single mask field.
         
         Returns:
-            Dict mapping channel index to (min_value, max_value) in normalized units.
+            (min_threshold, max_threshold)
+        """
+        # If per-channel thresholds are provided and contain
+        # the mask field, use that threshold for mask generation.
+        if self.field_names is not None and self.per_channel_thresholds:
+            field_name = self.field_names[self._threshold_field_idx]
+            if field_name in self.per_channel_thresholds:
+                threshold = self.per_channel_thresholds[field_name]
+                return (threshold[0], threshold[1])
+
+            # Case-insensitive lookup.
+            field_name_lower = field_name.lower()
+            for ch_name, threshold in self.per_channel_thresholds.items():
+                if ch_name.lower() == field_name_lower:
+                    return (threshold[0], threshold[1])
+
+        return (self.gradient_threshold[0], self.gradient_threshold[1])
+
+    def _prepare_value_range(self) -> Optional[Tuple[float, float]]:
+        """
+        Convert value range (for the mask field) to normalized space.
+        
+        Returns:
+            (min_value, max_value) in normalized units, or None.
         """
         if not self.value_range or self.field_names is None:
-            return {}
-        
-        normalized = {}
-        
-        for ch_name, value_range in self.value_range.items():
-            if ch_name not in self.field_names:
-                continue
-            
-            ch_idx = self.field_names.index(ch_name)
-            
-            # Convert physical value range to normalized space
-            if self.norm_helper is not None:
-                min_val_norm = self.norm_helper.normalize_scalar(value_range[0], ch_name)
-                max_val_norm = self.norm_helper.normalize_scalar(value_range[1], ch_name)
-            else:
-                min_val_norm = value_range[0]
-                max_val_norm = value_range[1]
-            
-            normalized[ch_idx] = (min_val_norm, max_val_norm)
-        
-        return normalized
+            return None
+
+        field_name = self.field_names[self._threshold_field_idx]
+
+        selected_range = None
+        if field_name in self.value_range:
+            selected_range = self.value_range[field_name]
+        else:
+            field_name_lower = field_name.lower()
+            for ch_name, value_range in self.value_range.items():
+                if ch_name.lower() == field_name_lower:
+                    selected_range = value_range
+                    break
+
+        if selected_range is None:
+            return None
+
+        if self.norm_helper is not None:
+            min_val_norm = self.norm_helper.normalize_scalar(selected_range[0], field_name)
+            max_val_norm = self.norm_helper.normalize_scalar(selected_range[1], field_name)
+        else:
+            min_val_norm = selected_range[0]
+            max_val_norm = selected_range[1]
+
+        return (min_val_norm, max_val_norm)
 
     def _compute_gradient_magnitude(self, tensor: torch.Tensor) -> torch.Tensor:
         """
@@ -200,86 +213,58 @@ class ShockRMSE(LossComponent):
         
         return grad_mag
 
-    def _create_value_mask(self, labels: torch.Tensor) -> torch.Tensor:
+    def _create_value_mask(self, label_field: torch.Tensor) -> torch.Tensor:
         """
-        Create soft mask for value range filtering.
+        Create soft mask for value range filtering on the selected mask field.
         
         Args:
-            labels: Label tensor, shape (B, T, C, *spatial).
+            label_field: Label tensor for the selected field, shape (B, T, *spatial).
             
         Returns:
-            Soft mask in [0, 1], same shape as labels. Fully differentiable.
+            Soft mask in [0, 1], same shape as label_field. Fully differentiable.
         """
-        b, t, c = labels.shape[:3]
-        mask = torch.ones_like(labels)
-        
-        # Apply per-channel value ranges
-        for ch_idx, (val_min_norm, val_max_norm) in self._normalized_value_ranges.items():
-            range_width = val_max_norm - val_min_norm
-            softness = self.threshold_softness * range_width
-            
-            # Get label values for this channel
-            label_ch = labels[:, :, ch_idx]
-            
-            # Soft thresholding using sigmoids (fully differentiable)
-            # Lower boundary: sigmoid((label - val_min) / softness)
-            # Upper boundary: sigmoid((val_max - label) / softness)
-            lower_mask = torch.sigmoid((label_ch - val_min_norm) / (softness + self.epsilon))
-            upper_mask = torch.sigmoid((val_max_norm - label_ch) / (softness + self.epsilon))
-            
-            # Combine: mask ≈ 1 when val_min < label < val_max, smooth transitions outside
-            mask[:, :, ch_idx] = lower_mask * upper_mask
-        
-        return mask
+        if self._normalized_value_range is None:
+            return torch.ones_like(label_field)
 
-    def _create_shock_mask(self, gradient_magnitude: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        val_min_norm, val_max_norm = self._normalized_value_range
+        range_width = val_max_norm - val_min_norm
+        softness = self.threshold_softness * range_width
+
+        lower_mask = torch.sigmoid((label_field - val_min_norm) / (softness + self.epsilon))
+        upper_mask = torch.sigmoid((val_max_norm - label_field) / (softness + self.epsilon))
+
+        return lower_mask * upper_mask
+
+    def _create_shock_mask(self, gradient_magnitude: torch.Tensor, label_field: torch.Tensor) -> torch.Tensor:
         """
-        Create soft mask for shock regions using sigmoid functions.
+        Create soft mask for shock regions using a single selected field.
         
         Args:
-            gradient_magnitude: Gradient magnitude tensor, shape (B, T, C, *spatial).
-            labels: Label tensor, shape (B, T, C, *spatial).
+            gradient_magnitude: Gradient magnitude of selected field, shape (B, T, *spatial).
+            label_field: Label values of selected field, shape (B, T, *spatial).
             
         Returns:
-            Soft mask in [0, 1], same shape as gradient_magnitude. Fully differentiable.
+            Soft mask in [0, 1], same shape as selected field. Fully differentiable.
         """
-        b, t, c = gradient_magnitude.shape[:3]
         mask = torch.ones_like(gradient_magnitude)
-        
-        # First, apply value range filtering if configured
-        if self._normalized_value_ranges:
-            value_mask = self._create_value_mask(labels)
-            mask = mask * value_mask
-        
-        # Apply per-channel gradient thresholds
-        for ch_idx in range(c):
-            if ch_idx in self._normalized_thresholds:
-                grad_min_norm, grad_max_norm = self._normalized_thresholds[ch_idx]
-            elif -1 in self._normalized_thresholds:
-                # Use global threshold
-                grad_min_norm, grad_max_norm = self._normalized_thresholds[-1]
-            else:
-                continue
-            
-            range_width = grad_max_norm - grad_min_norm
-            softness = self.threshold_softness * range_width
-            
-            # Get gradient magnitude for this channel
-            grad_ch = gradient_magnitude[:, :, ch_idx]
-            
-            # Soft thresholding using sigmoids (fully differentiable)
-            # Lower boundary: sigmoid((grad - grad_min) / softness)
-            # Upper boundary: sigmoid((grad_max - grad) / softness)
-            lower_mask = torch.sigmoid((grad_ch - grad_min_norm) / (softness + self.epsilon))
-            upper_mask = torch.sigmoid((grad_max_norm - grad_ch) / (softness + self.epsilon))
-            
-            # Combine: mask ≈ 1 when grad_min < grad < grad_max, smooth transitions outside
-            # Multiply with existing mask (which includes value filtering)
-            mask[:, :, ch_idx] = mask[:, :, ch_idx] * lower_mask * upper_mask
+
+        # Apply value-range filtering on selected field if configured.
+        value_mask = self._create_value_mask(label_field)
+        mask = mask * value_mask
+
+        grad_min_norm, grad_max_norm = self._normalized_threshold
+
+        range_width = grad_max_norm - grad_min_norm
+        softness = self.threshold_softness * range_width
+
+        lower_mask = torch.sigmoid((gradient_magnitude - grad_min_norm) / (softness + self.epsilon))
+        upper_mask = torch.sigmoid((grad_max_norm - gradient_magnitude) / (softness + self.epsilon))
+
+        mask = mask * lower_mask * upper_mask
         
         # Apply Gaussian blur if requested (adds additional spatial smoothing)
         if self.blur_sigma > 0:
-            mask = self._apply_gaussian_blur(mask, self.blur_sigma)
+            mask = self._apply_gaussian_blur(mask.unsqueeze(2), self.blur_sigma).squeeze(2)
         
         return mask
 
@@ -348,6 +333,20 @@ class ShockRMSE(LossComponent):
         
         return mask_blurred
 
+    def _extract_threshold_field(self, tensor: torch.Tensor) -> torch.Tensor:
+        """Extract the field used for mask generation, shape (B, T, *spatial)."""
+        if tensor.ndim < 4:
+            raise ValueError(
+                f"Expected tensor with shape (B, T, C, ...), got {tensor.shape}"
+            )
+
+        if self._threshold_field_idx >= tensor.shape[2]:
+            raise ValueError(
+                f"threshold field index {self._threshold_field_idx} is out of bounds for C={tensor.shape[2]}"
+            )
+
+        return tensor.select(dim=2, index=self._threshold_field_idx)
+
 
     def forward(
         self,
@@ -375,22 +374,25 @@ class ShockRMSE(LossComponent):
                 - 'per_timestep': per-timestep breakdown (if applicable)
                 - 'per_channel': per-channel breakdown (if applicable)
         """
-        # Compute gradient magnitude of labels (normalized space)
-        label_grad_mag = self._compute_gradient_magnitude(labels)
-        
-        # Create soft mask for shock regions (includes value range filtering)
-        mask = self._create_shock_mask(label_grad_mag, labels)
+        # Compute gradient magnitude on one selected field only.
+        label_field = self._extract_threshold_field(labels)  # (B, T, *spatial)
+        label_field_for_grad = label_field.unsqueeze(2)  # (B, T, 1, *spatial)
+        label_grad_mag = self._compute_gradient_magnitude(label_field_for_grad).squeeze(2)
+
+        # Create mask from selected field and broadcast to all channels.
+        mask = self._create_shock_mask(label_grad_mag, label_field)  # (B, T, *spatial)
+        mask_bc = mask.unsqueeze(2)  # (B, T, 1, *spatial)
         
         # Compute squared error in normalized space
         squared_error = (predictions - labels) ** 2
         
         # Apply mask
-        masked_squared_error = squared_error * mask
+        masked_squared_error = squared_error * mask_bc
         
         # Compute mean over masked regions
         if keep_bc_dims:
             reduce_dims = [1] + list(range(3, masked_squared_error.ndim))
-            mask_sum = mask.sum(dim=reduce_dims)
+            mask_sum = mask_bc.sum(dim=reduce_dims)
             mse_sum = masked_squared_error.sum(dim=reduce_dims)
             unweighted_rmse = torch.sqrt(mse_sum / (mask_sum + self.epsilon))
             unweighted_rmse = torch.where(
@@ -399,7 +401,7 @@ class ShockRMSE(LossComponent):
                 torch.zeros_like(unweighted_rmse),
             )
         else:
-            mask_sum = mask.sum()
+            mask_sum = mask_bc.sum() * predictions.shape[2]
             if mask_sum > self.epsilon:
                 unweighted_rmse = torch.sqrt(masked_squared_error.sum() / mask_sum)
             else:
@@ -416,7 +418,8 @@ class ShockRMSE(LossComponent):
         
         # Conditionally detach based on preserve_component_grads
         squared_error_for_detailed = squared_error if preserve_component_grads else squared_error.detach()
-        mask_for_detailed = mask if preserve_component_grads else mask.detach()
+        mask_for_detailed = mask_bc if preserve_component_grads else mask_bc.detach()
+        mask_for_detailed = mask_for_detailed.expand_as(squared_error_for_detailed)
         weight_scalar = self.weight_schedule.base_weight
         
         # Add mask statistics
@@ -425,7 +428,7 @@ class ShockRMSE(LossComponent):
         detailed['mask_fraction'] = mask_sum_for_detailed / total_elements
         
         # Per-timestep breakdown (if mask has sufficient elements)
-        if (mask.sum() > self.epsilon) and predictions.ndim >= 2:
+        if (mask_for_detailed.sum() > self.epsilon) and predictions.ndim >= 2:
             timesteps = predictions.shape[1]
             per_timestep = []
             for t in range(timesteps):
@@ -440,7 +443,7 @@ class ShockRMSE(LossComponent):
             detailed['per_timestep'] = torch.stack(per_timestep)
         
         # Per-channel breakdown (if mask has sufficient elements)
-        if (mask.sum() > self.epsilon) and predictions.ndim >= 3:
+        if (mask_for_detailed.sum() > self.epsilon) and predictions.ndim >= 3:
             channels = predictions.shape[2]
             per_channel = []
             for c in range(channels):

@@ -1,11 +1,7 @@
 gradient_threshold: [1.0, 5.0]  # [min, max] gradient magnitude in physical units
+threshold_field_key: density  # field used to compute the shock mask; mask is then applied to all fields
 threshold_softness: 0.01  # Smoothness of transition (fraction of range width)
 blur_sigma: 2.0  # Gaussian blur sigma (0 = disabled)
 gradient_mode: diff  # 'sobel' or 'diff'
 normalization: none  # 'none', 'magnitude', or 'variance'
 epsilon: 1.0e-8
-
-# Optional: per-channel thresholds
-# per_channel_thresholds:
-#   Density: [0.5, 5.0]
-#   Pressure: [1.0, 10.0]
