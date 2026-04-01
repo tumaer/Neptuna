@@ -3,7 +3,7 @@
 ########################################################
 
 # Total number of epochs to train.
-num_train_epochs: 2
+num_train_epochs: 128
 # Compute metrics batch-wise
 batch_eval_metrics: True
 # Run end-of-epoch evaluation every N epochs (**cannot be changed to steps**)
@@ -11,6 +11,8 @@ num_epochs_between_eval: 1
 # Metric for checkpointing the weights during validation.
 metric_for_best_model:     
   - type: RMSE
+    weight: 1.0
+  - type: SSIM
     weight: 1.0
 # Curriculum blocks for epoch-wise training.
 curriculum:

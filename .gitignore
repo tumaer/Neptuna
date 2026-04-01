@@ -31,6 +31,7 @@ trainer_state.json
 training_args.bin
 bash_folder
 .vscode
+launch.json
 ckpt
 Sahba_Helpers
 
