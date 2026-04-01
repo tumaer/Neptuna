@@ -1,0 +1,6 @@
+model_name: resnet
+num_blocks: [1, 1, 1, 1]
+latent_channels: 112
+activation_fn_name: gelu
+norm_layer_eps: 1e-5
+norm: 'layer' # layer, batch, group, identity

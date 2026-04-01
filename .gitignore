@@ -33,3 +33,10 @@ bash_folder
 .vscode
 ckpt
 Sahba_Helpers
+
+bash_folder
+sample_inference
+temporary
+loss_debug.py
+loss_config.json
+*.pth

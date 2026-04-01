@@ -42,9 +42,11 @@ Notes:
 import torch
 from transformers import PretrainedConfig as PretrainedConfig_
 import json
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Type, Union
 from omegaconf import OmegaConf
 from torch import nn
+import math
+from abc import abstractmethod
 
 
 class PretrainedConfig(PretrainedConfig_):
@@ -138,14 +140,18 @@ class PretrainedConfig(PretrainedConfig_):
         coord_features: bool = True,
         latent_channels: int = 32,
         include_input_seq_len: bool = True,
-        conditioning: str = None,
         norm: str = 'identity',
+        conditioning_method: Optional[str] = None,
         num_cond_params: int = 0,
+        conditioning_mlp: bool = False,
+        conditioning_hidden_size: Optional[int] = None,
+        conditioning_activation: str = 'gelu',
+        conditioning_init: str = None,
         norm_layer_eps: float = 1e-5,
         **kwargs
     ):
         super().__init__(**kwargs)
-    
+        
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.dimension = dimension
@@ -159,7 +165,11 @@ class PretrainedConfig(PretrainedConfig_):
         self.latent_channels = latent_channels
 
         self.num_cond_params = num_cond_params
-        self.conditioning = conditioning
+        self.conditioning_method = conditioning_method
+        self.conditioning_mlp = conditioning_mlp
+        self.conditioning_hidden_size = conditioning_hidden_size
+        self.conditioning_activation = conditioning_activation
+        self.conditioning_init = conditioning_init
         self.norm = norm
         self.norm_layer_eps = norm_layer_eps
         if norm not in ['layer', 'batch', 'group', 'identity']:
@@ -236,35 +246,6 @@ class SequentialWithKwargs(nn.Sequential):
             x = module(x)
         return x
 
-# Adapted from https://github.com/camlab-ethz/poseidon
-class ConditionalLayer(nn.Module):
-    def __init__(self, input_dim, num_cond_params, channel_at_last_position):
-        super().__init__()
-        self.num_cond_params = num_cond_params
-        # instead of using nn.Parameter like in LayerNorm, weight and bias are learned linear functions of time (-> they vary with time)
-        self.weight = nn.Linear(num_cond_params, input_dim)
-        self.bias = nn.Linear(num_cond_params, input_dim)
-        self.single_input_dim = input_dim
-        self.channel_at_last_position = channel_at_last_position
-    def forward(self, x, **kwargs):
-
-        if "conditioning_parameters" in kwargs:
-            cond_params = kwargs["conditioning_parameters"]
-        else:
-            raise ValueError("There is no conditioning_parameter in the dataset.")  
-
-        if self.channel_at_last_position:
-            B, *spatial_dims, C = x.shape
-            gamma = self.weight(cond_params).view(B, *[1] * len(spatial_dims), C)
-            beta = self.bias(cond_params).view(B, *[1] * len(spatial_dims), C)
-        else:
-            B, C, *spatial_dims = x.shape
-            gamma = self.weight(cond_params).view(B, C, *[1] * len(spatial_dims))
-            beta = self.bias(cond_params).view(B, C, *[1] * len(spatial_dims))
-
-        out = gamma * x + beta #Affine Transformation
-        return out
-
 def get_num_groups(num_channels: int, max_groups: int = 16) -> int:
     """
     Return the largest number of groups ≤ max_groups that divides num_channels.
@@ -333,6 +314,15 @@ class BatchNormChannelLast(nn.Module):
             x = x.permute(0, 4, 1, 2, 3)
             x = self.bn(x)
             x = x.permute(0, 2, 3, 4, 1)
+        elif self.dim == 6:
+            # ADDED FOR 3D kFNO
+            # x: (N, D1, D2, D3, D4, C) → (N, C, D1, D2, D3*D4)
+            N, D1, D2, D3, D4, C = x.shape
+            x = x.permute(0, 5, 1, 2, 3, 4)
+            x = x.reshape(N, C, D1, D2, D3*D4)
+            x = self.bn(x)
+            x = x.reshape(N, C, D1, D2, D3, D4)
+            x = x.permute(0, 2, 3, 4, 5, 1)
         return x
 
 class GroupNormChannelLast(nn.Module):
@@ -387,9 +377,348 @@ class GroupNormChannelLast(nn.Module):
             x = x.permute(0, 4, 1, 2, 3)
             x = self.gn(x)
             x = x.permute(0, 2, 3, 4, 1)
+        elif self.dim == 6:
+            # ADDED FOR 3D kFNO
+            x = x.permute(0, 5, 1, 2, 3, 4) # (N, D1, D2, D3, D4, C) → (N, C, D1, D2, D3, D4)
+            x = self.gn(x)
+            x = x.permute(0, 2, 3, 4, 5, 1)
         else:
             raise ValueError(f"Unsupported dimension: {self.dim}")
         return x
+
+class WrappedBatchNorm6D(nn.Module):
+    """Helper for applying BatchNorm3D to 6D tensors with channel in front."""
+    def __init__(self, num_channels, **kwargs):
+        super().__init__()
+        self.bn = nn.BatchNorm3d(num_channels, **kwargs)
+    
+    def forward(self, x):
+        # x: (N, C, D1, D2, D3, D4) → reshape to (N, C, D1, D2, D3*D4)
+        orig_shape = x.shape
+        N, C = orig_shape[0], orig_shape[1]
+        x = x.reshape(N, C, orig_shape[2], orig_shape[3], -1)
+        x = self.bn(x)
+        # Restore original shape
+        x = x.reshape(orig_shape)
+        return x
+
+class ConditioningLayer(nn.Module):
+    """ Abstract interface for all ConditionalLayer (conditioning methods) """
+    name: str 
+
+    def __init__(self, input_dim, channel_at_last_position, config) -> None:
+        super().__init__()
+        self.input_dim = input_dim
+        self.channel_at_last_position = channel_at_last_position
+        self.num_cond_params = config.num_cond_params
+        self.mlp = config.conditioning_mlp
+        self.hidden_size = config.conditioning_hidden_size
+        self.activation = config.conditioning_activation
+        self.init_strategy = config.conditioning_init
+
+        if self.mlp:
+            if self.activation.lower() == 'relu':
+                self.activation = nn.ReLU
+            elif self.activation.lower() == 'gelu':
+                self.activation = nn.GELU
+            elif self.activation.lower() == 'tanh':
+                self.activation = nn.Tanh
+            elif self.activation.lower() == 'leaky relu':
+                self.activation = nn.LeakyReLU
+            else:
+                raise ValueError(f"{self.activation} is not a supported activation function.")
+
+    def init_weights(self):
+        if self.init_strategy is None:
+            pass
+        elif self.init_strategy == 'zero':
+            for module in self.modules():
+                if isinstance(module, nn.Linear):
+                    nn.init.constant_(module.weight, 0.0)
+                    nn.init.constant_(module.bias, 0.0)
+        elif self.init_strategy == 'gaussian':
+            for module in self.modules():
+                if isinstance(module, nn.Linear):
+                    nn.init.normal_(module.weight, std=0.001)
+                    nn.init.constant_(module.bias, 0.0)
+        else:
+            raise ValueError(f"{self.init_strategy} is not a supported initialization method.")
+        
+    @abstractmethod
+    def conditioning_param_embedding(self, x, cond_params):
+        """Abstract forward method for the conditional layer."""
+        raise NotImplementedError
+    
+    def forward(self, x, **kwargs):
+        """ Default forward method """
+        if "conditioning_parameters" in kwargs:
+            cond_params = kwargs["conditioning_parameters"]
+        else:
+            raise ValueError("There is no conditioning_parameters in the dataset, but a conditioning_method is specified. Set it to 'None' if conditioning should not be applied." )  
+        if self.weight is None or self.bias is None:
+            raise ValueError("MLPs weights and bias are not properly initialized.")
+
+        scale, shift = self.conditioning_param_embedding(x, cond_params)
+
+        if self.channel_at_last_position:
+            B, *spatial_dims, C = x.shape
+            gamma = self.weight(scale).view(B, *[1] * len(spatial_dims), C)
+            beta = self.bias(shift).view(B, *[1] * len(spatial_dims), C)
+        else:
+            B, C, *spatial_dims = x.shape
+            gamma = self.weight(scale).view(B, C, *[1] * len(spatial_dims))
+            beta = self.bias(shift).view(B, C, *[1] * len(spatial_dims))
+        if self.init_strategy is None:
+            out = gamma * x + beta #Affine Transformation
+        else:
+            out = (gamma + 1) * x + beta 
+        return out
+
+_CONDITIONING_REGISTRY: dict[str, Type[ConditioningLayer]] = {}
+
+def register_conditioning_method(name: str):
+    """Decorator to register a new ConditioningLayer."""
+
+    def decorator(cls: Type[ConditioningLayer]) -> Type[ConditioningLayer]:
+        if name in _CONDITIONING_REGISTRY:
+            raise ValueError(f"ConditioningLayer '{name}' already registered.")
+        _CONDITIONING_REGISTRY[name] = cls
+        cls.name = name
+        return cls
+
+    return decorator
+
+def build_conditioning_method(conditioning_method: str, input_dim, channel_at_last_position, config) -> ConditioningLayer:
+    try:
+        return _CONDITIONING_REGISTRY[conditioning_method](input_dim, channel_at_last_position, config)
+    except KeyError:
+        raise ValueError(f"Unknown conditioning method '{conditioning_method}'. Abailable: {list(_CONDITIONING_REGISTRY)}")   
+    
+@register_conditioning_method("AdaNorm")
+class AdaNorm(ConditioningLayer):
+    # Adapted from https://github.com/ethanjperez/film
+    def __init__(self, input_dim, channel_at_last_position, config):
+        super().__init__(input_dim, channel_at_last_position, config)
+
+        # instead of using nn.Parameter like in LayerNorm, weight and bias are learned linear functions of time (-> they vary with time)
+        if self.mlp:
+            if self.hidden_size is None:
+                self.hidden_size = input_dim * 4
+
+            self.weight = nn.Sequential(
+                    nn.Linear(self.num_cond_params, self.hidden_size),
+                    self.activation(),
+                    nn.Linear(self.hidden_size, input_dim),
+                )
+            self.bias = nn.Sequential(
+                    nn.Linear(self.num_cond_params, self.hidden_size),
+                    self.activation(),
+                    nn.Linear(self.hidden_size, input_dim),
+                )
+        else:
+            self.weight = nn.Linear(self.num_cond_params, input_dim)
+            self.bias = nn.Linear(self.num_cond_params, input_dim)
+
+        self.init_weights()
+
+    def conditioning_param_embedding(self, x, cond_param):
+        return cond_param, cond_param
+    
+
+@register_conditioning_method("AdaNorm_1SE")
+class AdaNorm_1SE(ConditioningLayer):
+    # TODO Adapted from 
+    def __init__(self, input_dim, channel_at_last_position, config):
+        super().__init__(input_dim, channel_at_last_position, config)
+        
+        self.hidden_channels = 2 * input_dim
+        if self.mlp:
+            if self.hidden_size is None:
+                self.hidden_size = input_dim * 4
+            self.weight = nn.Sequential(
+                    nn.Linear(self.hidden_channels * self.num_cond_params, self.hidden_size),
+                    self.activation(),
+                    nn.Linear(self.hidden_size, input_dim),
+                )
+            self.bias = nn.Sequential(
+                    nn.Linear(self.hidden_channels * self.num_cond_params, self.hidden_size),
+                    self.activation(),
+                    nn.Linear(self.hidden_size, input_dim),
+                )
+        else:
+            self.weight = nn.Linear(self.hidden_channels * self.num_cond_params, input_dim) 
+            self.bias = nn.Linear(self.hidden_channels * self.num_cond_params, input_dim)
+        
+        self.init_weights()
+
+    def conditioning_param_embedding(self, x, cond_params, max_period=10000):
+        # sinusoidal embedding with max period 10000
+        half = self.hidden_channels // 2
+        freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half).to(
+            device=cond_params.device
+        )
+        args = (cond_params[:, :, None].float() * freqs[None, None, :]).flatten(1)
+        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+        if self.hidden_channels % 2:
+            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+        return embedding, embedding
+
+@register_conditioning_method("AdaNorm_SE_per_param")   
+class AdaNorm_SE_per_param(ConditioningLayer):
+    def __init__(self, input_dim, channel_at_last_position, config):
+        super().__init__(input_dim, channel_at_last_position, config)
+
+        self.hidden_channels = 2 * input_dim
+        if self.mlp:
+            if self.hidden_size is None:
+                self.hidden_size = 4 * input_dim
+            self.cond_emb = nn.ModuleList(
+            [   
+                nn.Sequential(
+                    nn.Linear(self.hidden_channels, self.hidden_size),
+                    self.activation(),
+                    nn.Linear(self.hidden_size, 2 * input_dim),
+                )
+                for _ in range(self.num_cond_params)
+            ]
+            )
+        else:
+            self.cond_emb = nn.ModuleList(
+            [   
+                nn.Linear(self.hidden_channels, 2 * input_dim)
+                for _ in range(self.num_cond_params)
+            ]
+            )
+        self.weight = nn.Identity()
+        self.bias = nn.Identity()
+
+        self.init_weights()
+
+    def conditioning_param_embedding(self, x, cond_params):
+        # parameterwise sinusoidal embedding with max period 10000
+
+        def sinusoidal_embedding(param, dim, max_period=10000):
+            # Taken from https://github.com/pdearena/pdearena
+            half = dim // 2
+            freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32, device=param.device) / half).to(
+                device=param.device
+            )
+            args = param[:, None].float() * freqs[None, :]
+            embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+            if dim % 2:
+                embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+            return embedding
+
+        embedding = torch.zeros(cond_params.shape[0], self.hidden_channels, device=cond_params.device)
+        for i in range(cond_params.shape[1]):
+            embed_step = sinusoidal_embedding(cond_params[:, i], self.hidden_channels)
+            embedding += self.cond_emb[i](embed_step)
+
+        scale, shift = torch.chunk(embedding, 2, dim=1)
+        if self.channel_at_last_position:
+            B, *spatial_dims, C = x.shape
+            scale = scale.view(B, *[1] * len(spatial_dims), C)
+            shift = shift.view(B, *[1] * len(spatial_dims), C)
+        else:
+            B, C, *spatial_dims = x.shape
+            scale = scale.view(B, C, *[1] * len(spatial_dims))
+            shift = shift.view(B, C, *[1] * len(spatial_dims))
+        return scale, shift
+
+
+@register_conditioning_method("AdaNorm_LSE")
+class AdaNorm_LSE(ConditioningLayer):
+    def __init__(self, input_dim, channel_at_last_position, config):
+        super().__init__(input_dim, channel_at_last_position, config)
+
+        self.hidden_channels = 4 * input_dim
+        if self.mlp:
+            if self.hidden_size is None:
+                self.hidden_size = 4 * input_dim
+            self.embedding = nn.Sequential(
+                        nn.Linear(self.num_cond_params, 16 * self.num_cond_params),
+                        self.activation(),
+                        nn.Linear(16 * self.num_cond_params, 1),
+                    )
+            self.adaLN_modulation = nn.Sequential(
+                        nn.Linear(self.hidden_channels, self.hidden_size),
+                        self.activation(),
+                        nn.Linear(self.hidden_size, 2 * input_dim),
+                    )
+        else:
+            self.embedding = nn.Linear(self.num_cond_params, 1)
+            self.adaLN_modulation = nn.Linear(self.hidden_channels, 2 * input_dim)
+
+        self.weight = nn.Identity()
+        self.bias = nn.Identity()
+
+        self.init_weights()
+
+    def conditioning_param_embedding(self, x, cond_params):
+        def sinusoidal_embedding(cond_params: torch.Tensor, dim, max_period=10000):
+            half = dim // 2
+            freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32, device=cond_params.device) / half).to(
+                device=cond_params.device
+            )
+            args = cond_params.float() * freqs
+            embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+            if dim % 2:
+                embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+            return embedding
+        
+        cond_parameter = self.embedding(cond_params)
+        embedding = sinusoidal_embedding(cond_parameter, self.hidden_channels)
+        embedding = self.adaLN_modulation(embedding)
+
+        shift, scale = embedding.chunk(2, dim=1)
+        if self.channel_at_last_position:
+            B, *spatial_dims, C = x.shape
+            shift = shift.view(B, *[1] * len(spatial_dims), C)
+            scale = scale.view(B, *[1] * len(spatial_dims), C)
+        else:
+            B, C, *spatial_dims = x.shape
+            shift = shift.view(B, C, *[1] * len(spatial_dims))
+            scale = scale.view(B, C, *[1] * len(spatial_dims))
+
+        return scale, shift
+
+@register_conditioning_method("EmbeddingAdaNorm")
+class EmbeddingAdaNorm(ConditioningLayer):
+    def __init__(self, input_dim, channel_at_last_position, config):
+        super().__init__(input_dim, channel_at_last_position, config)
+
+        # instead of using nn.Parameter like in LayerNorm, weight and bias are learned linear functions of time (-> they vary with time)
+        if self.mlp:
+            if self.hidden_size is None:
+                self.hidden_size = input_dim * 4
+
+            self.weight = nn.Sequential(
+                    nn.Linear(self.num_cond_params * 64, self.hidden_size),
+                    self.activation(),
+                    nn.Linear(self.hidden_size, input_dim),
+                )
+            self.bias = nn.Sequential(
+                    nn.Linear(self.num_cond_params * 64, self.hidden_size),
+                    self.activation(),
+                    nn.Linear(self.hidden_size, input_dim),
+                )
+        else:
+            self.weight = nn.Linear(self.num_cond_params * 64, input_dim)
+            self.bias = nn.Linear(self.num_cond_params * 64, input_dim)
+
+        self.param_embedding = nn.Embedding(num_embeddings=self.num_cond_params, embedding_dim=64)
+
+        self.init_weights()
+
+    def conditioning_param_embedding(self, x, cond_param):
+        param_indices = torch.arange(self.num_cond_params, device=cond_param.device)
+        param_embeds = self.param_embedding(param_indices)
+        param_embeds = param_embeds.unsqueeze(0).expand(x.shape[0], -1, -1)
+
+        values = cond_param.unsqueeze(-1)
+        scaled = param_embeds * values
+        flat = scaled.reshape(x.shape[0], -1)
+        return flat, flat
 
 class CustomNorm(nn.Module):
     """Factory wrapper that chooses an appropriate normalization layer.
@@ -421,29 +750,33 @@ class CustomNorm(nn.Module):
         # Basic validation
         if num_channels <= 0:
             raise ValueError("num_channels must be positive")
-        if array_length not in (3, 4, 5):
+        if array_length not in (3, 4, 5, 6):
             raise ValueError("array_length must be 3, 4, or 5 (including batch dimension)")
 
         self.num_channels = num_channels
         self.array_length = array_length
         self.channel_at_last_position = channel_at_last_position
-        self.conditioning = config.conditioning
+        self.conditioning_method = config.conditioning_method
 
         # Optional conditional affine transformation before normalization
-        if self.conditioning:
-            self.cond_layer = ConditionalLayer(
-                num_channels,  # channels being scaled/shifted
-                num_cond_params=config.num_cond_params,
-                channel_at_last_position=channel_at_last_position,
-            )
+        if self.conditioning_method is not None:
+            self.cond_layer = build_conditioning_method(
+                    conditioning_method=self.conditioning_method,
+                    input_dim=num_channels,  # channels being scaled/shifted
+                    channel_at_last_position=channel_at_last_position,
+                    config=config
+                )
+            affine = False
+        else:
+            affine = True
 
         # Select the actual normalization layer
-        self.norm = self._build_norm_layer(config)
+        self.norm = self._build_norm_layer(config, affine=affine)
 
     # ------------------------------------------------------------------
     # Helper methods
     # ------------------------------------------------------------------
-    def _build_norm_layer(self, config):
+    def _build_norm_layer(self, config, affine):
         """Return a concrete ``torch.nn.Module`` implementing the norm."""
 
         eps = config.norm_layer_eps  # convenience alias
@@ -452,25 +785,27 @@ class CustomNorm(nn.Module):
         # -------------------- LAYER NORM --------------------
         if norm_type == "layer":
             if self.channel_at_last_position:
-                return nn.LayerNorm(self.num_channels, eps=eps)
+                return nn.LayerNorm(self.num_channels, elementwise_affine=affine, eps=eps)
             else:  # channel-first → use GroupNorm with 1 group (InstanceNorm)
-                return nn.GroupNorm(1, self.num_channels, eps=eps)
+                return nn.GroupNorm(1, self.num_channels, affine=affine, eps=eps)
 
         # -------------------- BATCH NORM --------------------
         if norm_type == "batch":
             if self.channel_at_last_position:
                 return BatchNormChannelLast(
-                    dim=self.array_length, num_channels=self.num_channels, eps=eps
+                    dim=self.array_length, num_channels=self.num_channels, affine=affine, eps=eps
                 )
             # channel-first mapping by spatial rank
-            bn_cls_map = {3: nn.BatchNorm1d, 4: nn.BatchNorm2d, 5: nn.BatchNorm3d}
+            bn_cls_map = {3: nn.BatchNorm1d, 4: nn.BatchNorm2d, 5: nn.BatchNorm3d, 6: nn.BatchNorm3d}
             try:
                 bn_cls = bn_cls_map[self.array_length]
             except KeyError:
                 raise ValueError(
                     f"Unsupported tensor rank {self.array_length} for batch norm"
                 )
-            return bn_cls(self.num_channels, eps=eps)
+            if self.array_length == 6:
+                return WrappedBatchNorm6D(self.num_channels, affine=affine, eps=eps) #TODO: Check if affine is needed for 6D tensors
+            return bn_cls(self.num_channels, affine=affine, eps=eps)
 
         # -------------------- GROUP NORM --------------------
         if norm_type == "group":
@@ -480,10 +815,11 @@ class CustomNorm(nn.Module):
                     dim=self.array_length,
                     num_channels=self.num_channels,
                     num_groups=num_groups,
+                    affine=affine,
                     eps=eps,
                 )
             else:
-                return nn.GroupNorm(num_groups=num_groups, num_channels=self.num_channels, eps=eps)
+                return nn.GroupNorm(num_groups=num_groups, num_channels=self.num_channels, affine=affine, eps=eps)
 
         # -------------------- IDENTITY (No Normalization) --------------------
         if norm_type == "identity":
@@ -496,6 +832,9 @@ class CustomNorm(nn.Module):
     # Forward
     # ------------------------------------------------------------------
     def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:  # type: ignore[override]
-        if self.conditioning:
+        if self.conditioning_method is not None:
+            x = self.norm(x)
             x = self.cond_layer(x, **kwargs)
-        return self.norm(x)
+            return x
+        else:
+            return self.norm(x)

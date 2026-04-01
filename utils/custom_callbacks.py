@@ -49,7 +49,6 @@ Example Usage:
 Configuration Options:
     The callbacks support various configuration options through training arguments:
     - plot_after_epoch: Epoch threshold(s) for enabling plotting (int or list)
-    - n_eval_plot_examples: Number of validation examples to plot (default varies by callback)
     - trial_number: Trial identifier for hyperparameter optimization
     - run_name: W&B run name for experiment organization
 
@@ -62,6 +61,9 @@ Notes:
 from transformers.integrations.integration_utils import WandbCallback as WandbCallback_
 from transformers.integrations.integration_utils import rewrite_logs, is_torch_xla_available
 from transformers.trainer_callback import CallbackHandler as CallbackHandler_
+from transformers.trainer_callback import DefaultFlowCallback as DefaultFlowCallback_
+from transformers.trainer_utils import IntervalStrategy, SaveStrategy
+from transformers.training_args import TrainingArguments
 from transformers.trainer_callback import TrainerCallback as TrainerCallback_
 from transformers.trainer_callback import TrainerControl as TrainerControl_
 from dataclasses import dataclass
@@ -70,13 +72,18 @@ from transformers.integrations.integration_utils import logger
 from omegaconf import ListConfig
 import tempfile
 # Import high-level preprocessing helper
-from utils.plot_progress import plot_examples, preprocess_for_plotting, build_info_strings
+from utils.plot_progress import preprocess_for_plotting, build_info_strings, strip_validation_loss
+from utils.plot_progress import LayoutConfig, Slice3DConfig, create_plotter
 from transformers.trainer_callback import TrainerCallback
 from transformers.trainer_callback import TrainerState
 import os
 from PIL import Image
 from pathlib import Path
-
+from typing import Dict, List, Optional
+import torch
+from metrics.loss_weighting_strategies import LossWeightingStrategyBase
+import torch.distributed as dist
+from itertools import zip_longest
 class CallbackHandler(CallbackHandler_):
     """
     Extended callback handler with support for custom evaluation and plotting events.
@@ -165,7 +172,6 @@ class CallbackHandler(CallbackHandler_):
         """
         return self.call_event("on_plot", args, state, control, **kwargs)
 
-
 class NaNCallback(TrainerCallback):
     """
     Callback to stop training if NaN is encountered in the loss. Training will stop at the nearest step where on_log is called.
@@ -182,7 +188,6 @@ class NaNCallback(TrainerCallback):
             control.should_evaluate = False
             control.should_save = False
             control.should_plot = False
-
 
 class WandbCallback(WandbCallback_):
     """
@@ -559,6 +564,7 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
         self.eval_dataset = kwargs['eval_dataset']
         self.data_config = kwargs['data_config']
         self.train_config = kwargs['train_config']
+        self.train_strategy_config = kwargs['train_strategy_config']
         self.scheduler_config = kwargs['scheduler_config']
         self.output_log_config = kwargs['output_log_config']
         self.model_config = kwargs['model_config']
@@ -607,6 +613,14 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
         - Logs to W&B if enabled in configuration
         - Includes metadata like epoch, step, and performance indicators
         """
+
+        RANK = int(os.environ.get("RANK", -1))
+        IS_MAIN_PROCESS = RANK in [-1, 0]
+        
+        if not IS_MAIN_PROCESS:
+            control.should_plot = False
+            return control
+
         # Only plot if an evaluation just happened before this save
         if control.should_plot:
             ##NOTE: This plotting is not present in the base class
@@ -644,7 +658,7 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
             # Also flag this condition so we can mark the saved image as "best".
             best_plot_at_train_end = False
             try:
-                final_epoch = self.train_config.get("num_train_epochs", None)
+                final_epoch = self.train_strategy_config.get("num_train_epochs", None)
                 if final_epoch is not None and kwargs["best_plot_at_train_end"]:
                     should_plot = True
                     best_plot_at_train_end = True
@@ -684,29 +698,48 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
                     scheduler_config=self.scheduler_config
                 )
 
-                fig_dict = plot_examples(
-                            inputs_renormed,
-                            predictions_renormed,
-                            labels_renormed,
-                            only_input_channel_names,
-                            output_channel_names,
-                            conditioning_input_array=conditioning_inputs_renormed,
-                            conditioning_input_channel_names=conditioning_input_channel_names,
-                            ndim=self.data_config["dimension"],
-                            stride=self.data_config["sequence_info"][-1],
-                            extra_info=run_dir.split('/')[-2],
-                            checkpoint_step=state.global_step,
-                            epoch=round(state.epoch, 3),
-                            num_examples=self.train_config["n_eval_plot_examples"], #NOTE: plotting is slow
-                            save_dir=output_dir,
-                            log_to_wandb=self.output_log_config["logging"]["wandb"],
-                            # Save with "_best.png" suffix only for final-epoch plots
-                            best_plot_at_train_end=best_plot_at_train_end,
-                            model_info=model_info_str,
-                            data_info=data_info_str,
-                            train_info=train_info_str,
-                            scheduler_info=scheduler_info_str
-                        )
+                loss_config_for_plotting = strip_validation_loss(self.train_strategy_config)
+
+                layout_config = LayoutConfig(
+                    base_visual_size=3.5,
+                    margin_between_plots_h=0.65,
+                    margin_between_plots_v=0.65
+                )
+
+                slice_config = Slice3DConfig(
+                    slice_axis=0,
+                    num_slices=4
+                )
+                
+                #plotter used during validation
+                plotter = create_plotter(
+                    orientation=self.train_config.get("plot_orientation", "vertical"),
+                    input_array=inputs_renormed,
+                    prediction_array=predictions_renormed,
+                    target_array=labels_renormed,
+                    input_channel_names=only_input_channel_names,
+                    output_channel_names=output_channel_names,
+                    conditioning_input_array=conditioning_inputs_renormed,
+                    conditioning_channel_names=conditioning_input_channel_names,
+                    checkpoint_step=state.global_step,
+                    epoch=round(state.epoch, 3),
+                    extra_info=run_dir.split('/')[-2],
+                    ndim=self.data_config["dimension"],
+                    slice_config=slice_config,
+                    num_examples=1,
+                    stride=self.data_config["sequence_info"][-1],
+                    save_dir=output_dir,
+                    log_to_wandb=self.output_log_config["logging"]["wandb"],
+                    best_plot_at_train_end=best_plot_at_train_end,
+                    layout_config=layout_config,
+                    include_relative_error=True,
+                    model_info=model_info_str,
+                    data_info=data_info_str,
+                    train_info=train_info_str,
+                    loss_config=loss_config_for_plotting
+                )
+                
+                fig_dict = plotter.plot()
 
                 # If W&B logging is enabled, log the figures now.
                 if self.output_log_config["logging"].get("wandb", False) and wandb.run is not None:
@@ -754,95 +787,709 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
         # regardless of W&B being on or off and happens before W&B is
         # finished by its own callback.
         # --------------------------------------------------------------
-        
-        try:
-            logger.info("\n One last validation with the best model to save the plot with _best.png suffix.")
-            trainer = getattr(self, "trainer", None)
-            try:
-                # Temporarily suppress metric logging to W&B so we don't overwrite
-                # the final-epoch metrics with this last validation pass.
-                callbacks = []
-                try:
-                    callbacks = list(getattr(trainer.callback_handler, "callbacks", []) or [])
-                except Exception:
-                    callbacks = []
-                wandb_callbacks = [cb for cb in callbacks if isinstance(cb, WandbCallback)]
-                # Enable suppression for the duration of this evaluate + plotting sequence
-                for cb in wandb_callbacks:
-                    try:
-                        cb.suppress_metrics_logging = True
-                    except Exception:
-                        pass
+        logger.info("\n One last validation with the best model to save the plot with _best.png suffix.")
+        trainer = getattr(self, "trainer", None)
 
-                try:
-                    # Force logging with the best epoch during this final evaluate
-                    setattr(trainer, "_force_best_epoch_for_logging", True)
-                    _ = trainer.evaluate()
-                finally:
-                    # Always restore suppression flag
-                    try:
-                        setattr(trainer, "_force_best_epoch_for_logging", False)
-                    except Exception:
-                        pass
-                    for cb in wandb_callbacks:
-                        try:
-                            cb.suppress_metrics_logging = False
-                        except Exception:
-                            pass
-                # ----------------------------------------------------------
-                # After evaluation, reload TrainerState from the best/latest
-                # checkpoint-# directory inside the run directory.
-                # ----------------------------------------------------------
-                try:
-                    # Build run directory (may be nested by trial name during HPO)
-                    run_dir = os.path.join(
-                        trainer.args.output_dir,
-                        trainer.state.trial_name,
-                    ) if getattr(trainer.state, "trial_name", None) else trainer.args.output_dir
+        # Temporarily suppress metric logging to W&B so we don't overwrite
+        # the final-epoch metrics with this last validation pass.
+        callbacks = list(getattr(getattr(trainer, "callback_handler", None), "callbacks", []) or [])
+        wandb_callbacks = [cb for cb in callbacks if isinstance(cb, WandbCallback)]
+        for cb in wandb_callbacks:
+            if hasattr(cb, "suppress_metrics_logging"):
+                cb.suppress_metrics_logging = True
 
-                    # Prefer the best checkpoint path recorded by TrainerState
-                    ckpt_path = getattr(trainer.state, "best_model_checkpoint", None)
+        # Force logging with the best epoch during this final evaluate
+        ################################
+        trainer.last_evaluate()
+        ################################
+        setattr(trainer, "_force_best_epoch_for_logging", False)
+        for cb in wandb_callbacks:
+            if hasattr(cb, "suppress_metrics_logging"):
+                cb.suppress_metrics_logging = False
 
-                    if ckpt_path and os.path.isdir(ckpt_path):
-                        state_path = os.path.join(ckpt_path, "trainer_state.json")
-                        if os.path.isfile(state_path):
-                            trainer.state = TrainerState.load_from_json(state_path)
-                except Exception as ie:
-                    logger.warning(f"Could not reload TrainerState from checkpoint: {ie}")
-                # Flag a plot pass and enforce best-suffix saving. We suppress metric
-                # logging again during the plot logging, since trainer.log will invoke
-                # callback on_log; we only want plot_* entries to go through.
-                for cb in wandb_callbacks:
-                    try:
-                        cb.suppress_metrics_logging = True
-                    except Exception:
-                        pass
-                try:
-                    # Ensure that the epoch we log corresponds to the best checkpoint's epoch
-                    setattr(trainer, "_force_best_epoch_for_logging", True)
-                    trainer.control.should_plot = True
-                    self.on_plot(
-                        trainer.args, trainer.state, trainer.control, is_new_best_metric=True, model=trainer.model, best_plot_at_train_end=True
-                    )
-                finally:
-                    try:
-                        setattr(trainer, "_force_best_epoch_for_logging", False)
-                    except Exception:
-                        pass
-                    for cb in wandb_callbacks:
-                        try:
-                            cb.suppress_metrics_logging = False
-                        except Exception:
-                            pass
-            except Exception as e:
-                logger.warning(f"Final validation/plotting failed: {e}")
-        except Exception as e:
-            logger.warning(f"Final validation block failed: {e}")
+        # ----------------------------------------------------------
+        # After evaluation, reload TrainerState from the best/latest
+        # checkpoint-# directory inside the run directory.
+        # ----------------------------------------------------------
+        run_dir = os.path.join(
+            trainer.args.output_dir,
+            trainer.state.trial_name,
+        ) if getattr(trainer.state, "trial_name", None) else trainer.args.output_dir
+
+        # Prefer the best checkpoint path recorded by TrainerState
+        ckpt_path = getattr(trainer.state, "best_model_checkpoint", None)
+        if ckpt_path and os.path.isdir(ckpt_path):
+            state_path = os.path.join(ckpt_path, "trainer_state.json")
+            if os.path.isfile(state_path):
+                trainer.state = TrainerState.load_from_json(state_path)
+
+        # Flag a plot pass and enforce best-suffix saving. We suppress metric
+        # logging again during the plot logging, since trainer.log will invoke
+        # callback on_log; we only want plot_* entries to go through.
+        for cb in wandb_callbacks:
+            if hasattr(cb, "suppress_metrics_logging"):
+                cb.suppress_metrics_logging = True
+
+        # Ensure that the epoch we log corresponds to the best checkpoint's epoch
+        setattr(trainer, "_force_best_epoch_for_logging", True)
+        trainer.control.should_plot = True
+        self.on_plot(
+            trainer.args, trainer.state, trainer.control, is_new_best_metric=True, model=trainer.model, best_plot_at_train_end=True
+        )
+        setattr(trainer, "_force_best_epoch_for_logging", False)
+        for cb in wandb_callbacks:
+            if hasattr(cb, "suppress_metrics_logging"):
+                cb.suppress_metrics_logging = False
 
         # Reset local state
         self._plotted_thresholds = set()
         self._should_plot = False
 
+class LossStatisticsCallback(TrainerCallback):
+    """
+    Callback to accumulate loss values during training and evaluation.
+    
+    Efficiently handles distributed training by accumulating losses on GPU
+    during training and only transferring/aggregating at epoch end.
+    """
+    
+    def __init__(self, collect_train_losses: bool = True, grad_stats: List = [], collect_gradients: bool = False, trainer=None):
+        self.collect_train_losses = collect_train_losses
+        self.grad_stats = grad_stats
+        self.train_losses: Dict[str, List[float]] = {}
+        self.eval_losses: Dict[str, List[float]] = {}
+        self.grad_stats_history: Dict[str, Dict[str, List[float]]] = {}
+        self.trainer = trainer
+        #self.current_epoch = -1
+        #self.trainer = None
+        self.collect_gradients = collect_gradients
+    
+    def on_epoch_begin(self, args, state, control, **kwargs):
+        """Initialize loss accumulator at start of epoch."""
+        self.train_losses = {}
+        self.grad_stats_history = {}
+        #self.current_epoch = state.epoch
+        
+        # Initialize fresh accumulator for this epoch
+        #if self.trainer is not None:
+        self.trainer._detailed_loss_accumulator = {} 
+        if self.collect_gradients:
+            self.trainer._gradient_accumulator = {}
+            self.trainer._grad_stat_names = self.grad_stats
+            self.trainer._collect_gradients = True
+    
+    def on_epoch_end(self, args, state, control, **kwargs):
+        """Transfer and aggregate losses and gradient norms at end of epoch."""
+        # if self.trainer is None:
+        #     return
+        
+        # Transfer losses
+        if self.collect_train_losses:
+            self._transfer_losses()
+        
+        # Transfer gradient norms
+        if self.collect_gradients:
+            self._transfer_gradient_stats()
+        
+        # Clear accumulators to free GPU memory
+        if hasattr(self.trainer, '_detailed_loss_accumulator'):
+            self.trainer._detailed_loss_accumulator = {}
+        if hasattr(self.trainer, '_gradient_accumulator'):
+            self.trainer._gradient_accumulator = {}
+
+        # Log loss/grad histories to W&B (rank 0 only)
+        self._log_histories_to_wandb(state)
+    
+    def _transfer_losses(self):
+        """Transfer loss values from GPU to CPU."""
+        if not hasattr(self.trainer, '_detailed_loss_accumulator'):
+            return
+        
+        accumulator = self.trainer._detailed_loss_accumulator
+        
+        if not accumulator:
+            return
+        
+        # Transfer from GPU to CPU and convert to Python floats
+        for component_name, loss_tensors in accumulator.items():
+            if component_name not in self.train_losses:
+                self.train_losses[component_name] = []
+            
+            # Stack tensors and transfer to CPU in one operation
+            if loss_tensors:
+                stacked = torch.stack(loss_tensors)  # [num_steps]
+                cpu_values = stacked.cpu().tolist()  # Single transfer to CPU
+                self.train_losses[component_name].extend(cpu_values)
+    
+    def _transfer_gradient_stats(self):
+        """Transfer gradient stats from GPU to CPU (parallel to loss transfer)."""
+        if not hasattr(self.trainer, '_gradient_accumulator'):
+            return
+        
+        accumulator = self.trainer._gradient_accumulator
+        
+        if not accumulator:
+            return
+        
+        # Transfer from GPU to CPU and convert to Python floats
+        for component_name, stat_dict in accumulator.items():
+            if component_name not in self.grad_stats_history:
+                self.grad_stats_history[component_name] = {}
+            
+            for stat_name, stat_tensors in stat_dict.items():
+                if stat_name not in self.grad_stats_history[component_name]:
+                    self.grad_stats_history[component_name][stat_name] = []
+                
+                if stat_tensors:
+                    stacked = torch.stack(stat_tensors)
+                    cpu_values = stacked.cpu().tolist()
+                    self.grad_stats_history[component_name][stat_name].extend(cpu_values)
+
+    def _log_histories_to_wandb(self, state: TrainerState) -> None:
+        """Log loss and gradient stat histories to W&B via Trainer.log."""
+        trainer = getattr(self, "trainer", None)
+        if trainer is None or not hasattr(trainer, "log"):
+            return
+
+        is_distributed = dist.is_initialized()
+        rank = dist.get_rank() if is_distributed else 0
+
+        # IMPORTANT: all ranks must participate in the gather_object calls below.
+        # We aggregate first on *every* rank, then only rank 0 logs to W&B.
+        log_dict: Dict[str, float] = {}
+
+        loss_history = self.get_loss_history(source='train', aggregate_distributed=True)
+        for component_name, losses in loss_history.items():
+            if not losses:
+                continue
+            loss_tensor = torch.tensor(losses)
+            log_dict[f"loss_history/{component_name}"] = float(loss_tensor.mean())
+
+        grad_stats = self.get_grad_stats_history(aggregate_distributed=True)
+        for component_name, stat_dict in grad_stats.items():
+            for stat_name, values in stat_dict.items():
+                if not values:
+                    continue
+                values_tensor = torch.tensor(values)
+                prefix = f"grad_stats_history/{component_name}/{stat_name}"
+                log_dict[f"{prefix}"] = float(values_tensor.mean())
+        
+        if is_distributed and rank != 0:
+            return
+
+        if log_dict:
+            log_dict["histories/epoch"] = float(state.epoch) if state.epoch is not None else -1.0
+            trainer.log(log_dict)
+
+    
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        """Accumulate loss values from evaluation metrics."""
+        if metrics is None:
+            return
+        
+        for key, value in metrics.items():
+            clean_key = key.replace('eval_', '') if key.startswith('eval_') else key
+            
+            if clean_key in ['loss', 'runtime', 'samples_per_second', 
+                            'steps_per_second', 'epoch', 'step', 'loop_time']:
+                continue
+            
+            if not isinstance(value, (int, float)):
+                continue
+            
+            if clean_key not in self.eval_losses:
+                self.eval_losses[clean_key] = []
+            self.eval_losses[clean_key].append(float(value))
+    
+    def _aggregate_distributed_losses(self, losses: Dict[str, List[float]]) -> Dict[str, List[float]]:
+        """
+        Aggregate losses across all distributed processes.
+        
+        Called at epoch end, after GPU->CPU transfer.
+        
+        Args:
+            losses: Dictionary of component names to loss lists
+            
+        Returns:
+            Aggregated losses from all ranks (broadcast to all ranks)
+        """
+        if not dist.is_initialized():
+            return losses
+        
+        world_size = dist.get_world_size()
+        rank = dist.get_rank()
+
+        logger.info(
+            f"[LossStatisticsCallback][rank {rank}/{world_size}] Aggregating losses across ranks"
+        )
+        
+        # Gather all losses on rank 0
+        gathered = [None] * world_size
+        dist.gather_object(losses, gathered if rank == 0 else None, dst=0)
+
+        combined_losses = {}
+        if rank == 0:
+            # Combine losses from all processes
+            for process_losses in gathered:
+                if process_losses is None:
+                    continue
+                for component_name, loss_list in process_losses.items():
+                    if component_name not in combined_losses:
+                        combined_losses[component_name] = []
+            
+            # Interleave per-rank histories: first elements from each rank,
+            # then second elements, etc.
+            for component_name in list(combined_losses.keys()):
+                per_rank_lists = [
+                    pl.get(component_name, []) if pl is not None else []
+                    for pl in gathered
+                ]
+                interleaved = []
+                for row in zip_longest(*per_rank_lists, fillvalue=None):
+                    for v in row:
+                        if v is not None:
+                            interleaved.append(v)
+                combined_losses[component_name] = interleaved
+
+            summary = {k: len(v) for k, v in combined_losses.items()}
+            logger.info(
+                f"[LossStatisticsCallback][rank {rank}] Combined loss counts: {summary}"
+            )
+
+        # Broadcast combined losses to all ranks so everyone is in sync
+        obj_list = [combined_losses]
+        dist.broadcast_object_list(obj_list, src=0)
+        if rank != 0:
+            recv_summary = {k: len(v) for k, v in obj_list[0].items()}
+            logger.info(
+                f"[LossStatisticsCallback][rank {rank}] Received combined loss counts: {recv_summary}"
+            )
+        return obj_list[0]
+
+    def _aggregate_distributed_grad_stats(
+        self, grad_stats: Dict[str, Dict[str, List[float]]]
+    ) -> Dict[str, Dict[str, List[float]]]:
+        """
+        Aggregate gradient statistics across all distributed processes.
+
+        Returns:
+            Aggregated grad stats from all ranks (broadcast to all ranks)
+        """
+        if not dist.is_initialized():
+            return grad_stats
+
+        world_size = dist.get_world_size()
+        rank = dist.get_rank()
+
+        logger.info(
+            f"[LossStatisticsCallback][rank {rank}/{world_size}] Aggregating gradient stats across ranks"
+        )
+
+        gathered = [None] * world_size
+        dist.gather_object(grad_stats, gathered if rank == 0 else None, dst=0)
+
+        combined: Dict[str, Dict[str, List[float]]] = {}
+        if rank == 0:
+            for process_stats in gathered:
+                if process_stats is None:
+                    continue
+                for component_name, stat_dict in process_stats.items():
+                    if component_name not in combined:
+                        combined[component_name] = {}
+                    for stat_name, values in stat_dict.items():
+                        if stat_name not in combined[component_name]:
+                            combined[component_name][stat_name] = []
+            
+            # Interleave per-rank histories for each component/stat.
+            for component_name, stat_dict in list(combined.items()):
+                for stat_name in list(stat_dict.keys()):
+                    per_rank_lists = [
+                        ps.get(component_name, {}).get(stat_name, []) if ps is not None else []
+                        for ps in gathered
+                    ]
+                    interleaved = []
+                    for row in zip_longest(*per_rank_lists, fillvalue=None):
+                        for v in row:
+                            if v is not None:
+                                interleaved.append(v)
+                    combined[component_name][stat_name] = interleaved
+
+            summary = {
+                comp: {stat: len(vals) for stat, vals in stats.items()}
+                for comp, stats in combined.items()
+            }
+            logger.info(
+                f"[LossStatisticsCallback][rank {rank}] Combined grad stat counts: {summary}"
+            )
+
+        obj_list = [combined]
+        dist.broadcast_object_list(obj_list, src=0)
+        if rank != 0:
+            recv_summary = {
+                comp: {stat: len(vals) for stat, vals in stats.items()}
+                for comp, stats in obj_list[0].items()
+            }
+            logger.info(
+                f"[LossStatisticsCallback][rank {rank}] Received grad stat counts: {recv_summary}"
+            )
+        return obj_list[0]
+    
+    def get_grad_stats_history(self, aggregate_distributed: bool = True) -> Dict[str, Dict[str, List[float]]]:
+        """
+        Get accumulated gradient stats history.
+
+        Returns
+        -------
+        Dict[str, Dict[str, List[float]]]
+            Dictionary mapping component -> stat -> list of values
+        """
+        if aggregate_distributed and dist.is_initialized():
+            return self._aggregate_distributed_grad_stats(self.grad_stats_history)
+        
+        return {k: {sk: sv.copy() for sk, sv in v.items()} for k, v in self.grad_stats_history.items()}
+
+    # Back-compat helper (norm-only)
+    def get_gradient_norm_history(self, aggregate_distributed: bool = True) -> Dict[str, List[float]]:
+        grad_stats = self.get_grad_stats_history(aggregate_distributed=aggregate_distributed)
+        return {k: v.get("norm", []) for k, v in grad_stats.items()}
+
+    def get_loss_history(self, source: str = 'train', aggregate_distributed: bool = True) -> Dict[str, List[float]]:
+        """
+        Get raw loss history for the current epoch.
+        
+        Args:
+            source: Either 'train', 'eval', or 'both'
+            aggregate_distributed: Whether to aggregate across distributed processes
+            
+        Returns:
+            Dictionary mapping component names to lists of loss values
+        """
+        if source == 'train':
+            losses = self.train_losses.copy()
+        elif source == 'eval':
+            losses = self.eval_losses.copy()
+        # elif source == 'both':
+        #     combined = self.train_losses.copy()
+        #     for key, values in self.eval_losses.items():
+        #         if key in combined:
+        #             combined[key].extend(values)
+        #         else:
+        #             combined[key] = values
+        #     losses = combined
+        else:
+            raise ValueError(f"Invalid source: {source}")
+        
+        # Aggregate across distributed processes if needed
+        if aggregate_distributed and dist.is_initialized():
+            losses = self._aggregate_distributed_losses(losses)
+        
+        return losses
+
+class AdaptiveWeightCallback(TrainerCallback):
+    """
+    Callback to update loss weights using a weight scheduler.
+    
+    Can use training losses, evaluation losses, or both for weight updates.
+    """
+    
+    def __init__(
+        self,
+        loss_weighting_strategy: LossWeightingStrategyBase,
+        stats_callback: LossStatisticsCallback,
+        trainer=None,
+        loss_source: str = 'train',  # 'train', 'eval', or 'both'
+        use_gradients: bool = False,
+        curriculum_start_epochs: List[int] = [0],
+        grad_stats: List = [],
+        weight_per_channel: bool = False,
+        weight_sub_components: bool = False,
+    ):
+        """
+        Args:
+            loss_weighting_strategy: Scheduler to compute new weights
+            stats_callback: Callback collecting loss statistics
+            trainer: Reference to trainer (set after trainer creation)
+            loss_source: Which losses to use for weight updates ('train', 'eval', or 'both')
+        """
+        self.loss_weighting_strategy = loss_weighting_strategy
+        self.stats_callback = stats_callback
+        self.trainer = trainer
+        #self.last_update_epoch = -1
+        self.loss_source = loss_source
+        self.use_gradients = use_gradients
+        self.curriculum_start_epochs = curriculum_start_epochs
+        self.weight_per_channel = weight_per_channel
+        self.weight_sub_components = weight_sub_components
+        self.grad_stats = list(grad_stats) if grad_stats is not None else []
+        
+        if loss_source not in ['train', 'eval', 'both']:
+            raise ValueError(f"loss_source must be 'train', 'eval', or 'both', got {loss_source}")
+    
+    def _filter_loss_history(
+        self,
+        loss_history: Dict[str, List[float]],
+        training_components: set
+    ) -> Dict[str, List[float]]:
+        """
+        Filter loss history to include only relevant components based on flags.
+        
+        Args:
+            loss_history: Full history dictionary with all loss components
+            training_components: Set of base component names being trained
+            
+        Returns:
+            Filtered history including base components and optionally hierarchical ones
+        """
+        filtered = {}
+        
+        for name, losses in loss_history.items():
+            # Check if this is a base component
+            if name in training_components:
+                filtered[name] = losses
+                continue
+            
+            # Check if this is a hierarchical component (contains '/')
+            if '/' in name:
+                # Extract base component name (before first '/')
+                base_name = name.split('/')[0]
+                
+                # Only include if base component is being trained
+                if base_name not in training_components:
+                    continue
+                
+                # Check if it's a per-channel component
+                if '/channel_' in name:
+                    if self.weight_per_channel:
+                        filtered[name] = losses
+                # Otherwise it's a per-component
+                elif self.weight_sub_components:
+                    filtered[name] = losses
+        
+        return filtered
+
+    def _update_loss_weights(
+        self, 
+        current_epoch: int, 
+        loss_history: Dict[str, List[float]],
+        grad_stats_history: Optional[Dict[str, Dict[str, List[float]]]] = None,
+        source_label: str = 'train'
+    ):
+        """Helper method to perform weight update."""
+        if not loss_history:
+            logger.warning(f"[AdaptiveWeightCallback] No {source_label} loss history for epoch {current_epoch}")
+            return False
+
+        is_distributed = dist.is_initialized()
+        rank = dist.get_rank() if is_distributed else 0
+        world_size = dist.get_world_size() if is_distributed else 1
+        
+        # Get current loss weights
+        # Only the train loss function metrics are used for weight updates, but the loss history source can be train or eval.
+        current_weights = self.trainer.loss_fn.get_loss_weight_dict()
+
+        training_component_names = set(current_weights.keys()) #TODO_MAX:
+        
+        # Only filter if using eval losses (train losses are already filtered during collection)
+        if source_label == 'train' or self.loss_source == 'train':
+            filtered_loss_history = loss_history
+            filtered_grad_stats_history = grad_stats_history
+        else:
+            filtered_loss_history = self._filter_loss_history(loss_history, training_component_names)
+            filtered_grad_stats_history = None
+            if grad_stats_history is not None:
+                filtered_grad_stats_history = self._filter_grad_stats_history(
+                    grad_stats_history, training_component_names
+                )
+
+        if not filtered_loss_history:
+            logger.warning(
+                f"[AdaptiveWeightCallback] No matching loss components in {source_label} loss history\n"
+                f"  Loss components: {training_component_names}\n"
+                f"  Available in {source_label}: {set(loss_history.keys())}"
+            )
+            return False
+        
+        # Compute new loss weights only on rank 0, then broadcast
+        new_weights = None
+        if (not is_distributed) or rank == 0:
+            new_weights = self.loss_weighting_strategy.step(
+                epoch=current_epoch,
+                loss_history=filtered_loss_history,
+                current_weights=current_weights,
+                grad_stats_history=filtered_grad_stats_history
+            )
+
+        if is_distributed:
+            obj_list = [new_weights]
+            dist.broadcast_object_list(obj_list, src=0)
+            new_weights = obj_list[0]
+        
+        # Apply new loss weights if scheduler returned them
+        if new_weights is None:
+            return False
+        
+        self.trainer.loss_fn.update_loss_weights(new_weights)
+        self.last_update_epoch = current_epoch
+
+        # Log weights to W&B via Trainer log (if available)
+        self._log_loss_weights(new_weights, current_epoch)
+        
+        # Collect all weight information for table formatting
+        table_rows = []
+        
+        for component_name, weight_dict in new_weights.items():
+            base_weight = weight_dict.get('base_weight', 1.0)
+            
+            # Only add row if we have statistics for this component
+            if component_name in filtered_loss_history:
+                losses_tensor = torch.tensor(filtered_loss_history[component_name])
+                mean_loss = float(losses_tensor.mean())
+                std_loss = float(losses_tensor.std())
+                num_samples = len(filtered_loss_history[component_name])
+                stats_str = f"mean={mean_loss:.4e}, std={std_loss:.4e}, n={num_samples}"
+                
+                table_rows.append({
+                    'component': component_name,
+                    'weight': f"{base_weight:.4f}",
+                    'statistics': stats_str
+                })
+            
+            # Per-channel weights if present
+            if 'channel_weights' in weight_dict:
+                channel_weights = weight_dict['channel_weights']
+                for ch_idx in range(len(channel_weights)):
+                    ch_key = f"{component_name}/channel_{ch_idx}"
+                    
+                    # Only add row if we have statistics for this channel
+                    if ch_key in filtered_loss_history:
+                        ch_weight = float(channel_weights[ch_idx])
+                        ch_losses = torch.tensor(filtered_loss_history[ch_key])
+                        ch_mean = float(ch_losses.mean())
+                        ch_std = float(ch_losses.std())
+                        ch_n = len(filtered_loss_history[ch_key])
+                        ch_stats_str = f"mean={ch_mean:.4e}, std={ch_std:.4e}, n={ch_n}"
+                        
+                        table_rows.append({
+                            'component': f"  └─ channel_{ch_idx}",
+                            'weight': f"{ch_weight:.4f}",
+                            'Loss history statistics': ch_stats_str
+                        })
+            
+            # Per-component weights if present
+            if 'component_weights' in weight_dict:
+                component_weights = weight_dict['component_weights']
+                for sub_name, sub_weight in component_weights.items():
+                    comp_key = f"{component_name}/{sub_name}"
+                    
+                    # Only add row if we have statistics for this sub-component
+                    if comp_key in filtered_loss_history:
+                        comp_losses = torch.tensor(filtered_loss_history[comp_key])
+                        comp_mean = float(comp_losses.mean())
+                        comp_std = float(comp_losses.std())
+                        comp_n = len(filtered_loss_history[comp_key])
+                        comp_stats_str = f"mean={comp_mean:.4e}, std={comp_std:.4e}, n={comp_n}"
+                        
+                        table_rows.append({
+                            'component': f"  └─ {sub_name}",
+                            'weight': f"{sub_weight:.4f}",
+                            'statistics': comp_stats_str
+                        })
+        
+        # Calculate column widths and print table
+        if table_rows:
+            max_component_len = max(len(row['component']) for row in table_rows)
+            max_weight_len = max(len(row['weight']) for row in table_rows)
+            max_stats_len = max(len(row['statistics']) for row in table_rows)
+            
+            # Add some padding
+            component_width = max(max_component_len, len("Component")) + 2
+            weight_width = max(max_weight_len, len("Weight")) + 2
+            stats_width = max(max_stats_len, len("Statistics")) + 2
+            
+            # Print table header
+            header = f"{'Component':<{component_width}} {'Weight':<{weight_width}} {'Statistics':<{stats_width}}"
+            separator = "─" * len(header)
+            logger.info(separator)
+            logger.info(header)
+            logger.info(separator)
+            
+            # Print table rows
+            for row in table_rows:
+                logger.info(f"{row['component']:<{component_width}} {row['weight']:<{weight_width}} {row['statistics']:<{stats_width}}")
+            
+            logger.info(separator)
+        
+        return True
+
+    def _log_loss_weights(self, weight_dict: Dict[str, Dict], epoch: int) -> None:
+        """
+        Log loss weights to W&B (through Trainer.log) in a flat, readable format.
+
+        Args:
+            weight_dict: Nested weight dict from CompositeLoss.get_loss_weight_dict()
+            epoch: Current epoch number
+        """
+        trainer = getattr(self, "trainer", None)
+        if trainer is None or not hasattr(trainer, "log"):
+            return
+
+        log_dict: Dict[str, float] = {}
+
+        for component_name, cfg in weight_dict.items():
+            base_weight = float(cfg.get("base_weight", 1.0))
+            log_dict[f"loss_weights/{component_name}"] = base_weight
+
+            if "channel_weights" in cfg:
+                channel_weights = cfg["channel_weights"]
+                for ch_idx in range(len(channel_weights)):
+                    log_dict[
+                        f"loss_weights/{component_name}/channel_{ch_idx}"
+                    ] = float(channel_weights[ch_idx])
+
+            if "component_weights" in cfg:
+                for sub_name, sub_weight in cfg["component_weights"].items():
+                    log_dict[
+                        f"loss_weights/{component_name}/{sub_name}"
+                    ] = float(sub_weight)
+
+        if log_dict:
+            log_dict["loss_weights/epoch"] = float(epoch)
+            trainer.log(log_dict)
+
+    def on_epoch_end(self, args, state, control, **kwargs): #This happens before on_evaluate
+        """Update weights at end of epoch using "training" losses."""
+        next_epoch = round(state.epoch)
+        #skip update_loss_weights if the curriculum block changes in the next epoch.
+        if next_epoch in self.curriculum_start_epochs:
+            return
+        
+        if self.loss_source == 'train':
+            next_epoch = int(state.epoch)
+            train_losses = self.stats_callback.get_loss_history(source=self.loss_source)
+            
+            grad_stats_history = None
+            if self.use_gradients:
+                grad_stats_history = self.stats_callback.get_grad_stats_history()
+
+            self._update_loss_weights(
+                next_epoch, 
+                train_losses, 
+                grad_stats_history=grad_stats_history,
+                source_label='train'
+            )
+    
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        """Update weights after evaluation, optionally combining with training losses."""        
+        # Get appropriate loss history based on configuration (LossStatisticsCallback collects both train and eval losses)
+        next_epoch = round(state.epoch)
+        if next_epoch in self.curriculum_start_epochs:
+            return
+        # Update the train loss weights using the eval loss history for the next epoch.
+        else:
+            if self.loss_source == 'eval':
+                #if state.epoch is not None else -1
+                loss_history = self.stats_callback.get_loss_history(source=self.loss_source)
+                self._update_loss_weights(next_epoch, loss_history, source_label=self.loss_source)
 
 # ------------------------------------------------------------------
 # Extend the 🤗 Transformers callback interface with an optional

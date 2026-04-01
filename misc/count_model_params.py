@@ -53,7 +53,13 @@ def build_synthetic_data_config(dimension: int = 2) -> Dict[str, Any]:
         "conditioning_features": {
             # Default to no conditioning parameters
             "conditioning_in_channels": [],
-            "include_conditioning_parameters": False,
+            "conditioning_method": None,
+            "conditioning_mlp": {
+                "mlp": False,
+                "hidden_size": None,
+                "activation": "gelu",
+                "initialization": None,
+                },
             "num_cond_params": 0,
             "parameter_min_max_stats": None,
         },

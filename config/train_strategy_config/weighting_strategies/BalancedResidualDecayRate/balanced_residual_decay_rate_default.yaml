@@ -1,0 +1,7 @@
+beta_c: 0.9
+beta_w: 0.9
+bias_correction: true
+use_effective_smoothing_for_skips: true
+min_weight: 0.01
+max_weight: 100.0
+epsilon: 1e-8

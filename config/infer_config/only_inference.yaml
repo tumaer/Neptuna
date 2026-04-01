@@ -1,9 +1,14 @@
 do_infer: True
-inference_directory: ./checkpoints
+debug: False  # Set true or use INFERENCE_DEBUG=1 to enable _dbg prints
+metrics_device: mps # Device for rollout metric computation (e.g. cuda:0, xpu:0, mps, cpu). Null = auto (cuda:0/xpu:0/mps if available, else cpu)
+batch_eval_metrics: True
+inference_directory: /Users/harish/Desktop/cfd_bench/checkpoints
+dataset_directory_path: ./data/fluids/Aerobreakup_DPUVVoS_const_sigma/2D # if null, will use the dataset_directory_path from data_config.json inside the experiment directory.
 filter_features:
   infer_filter_frames: [null, null]
   infer_filter_groups: null
-n_infer_rollouts: 9
-n_infer_plot_examples: 2
+n_infer_rollouts: 8
+n_infer_plot_examples: 6
+plot_orientation: vertical # Plot orientation for inference plots. Options: vertical, horizontal
 infer_from_random_timestep: True
 infer_from_ic: True
