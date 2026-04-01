@@ -31,3 +31,5 @@ trainer_state.json
 training_args.bin
 bash_folder
 .vscode
+ckpt
+MLX_ckpts
