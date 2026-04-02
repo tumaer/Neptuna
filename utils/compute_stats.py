@@ -732,7 +732,7 @@ def _process_single_file(
     frame_stride: int,
     on_fly_stats: bool,
     log_transform_channels: List[str] | None = None,
-) -> Dict[str, _StatsAggregator]:
+) -> tuple[Dict[str, _StatsAggregator], int]:
     """Compute per-channel aggregators for *one* HDF5 file (worker)."""
 
     log_channels_set = set(log_transform_channels or [])
@@ -756,10 +756,12 @@ def _process_single_file(
     epsilon = 1e-10
 
     with h5py.File(path, "r") as f:
+        groups_processed = 0
         for grp_name in f:
             if filter_groups is not None and grp_name not in filter_groups:
                 continue
             grp = f[grp_name]
+            groups_processed += 1
             for field_name in grp:
                 field = grp[field_name]
                 ch_dim = field.shape[1]
@@ -830,7 +832,7 @@ def _process_single_file(
     if residual_aggs is not None:
         aggs.update(residual_aggs)
 
-    return aggs
+    return aggs, groups_processed
 
 
 def _merge_aggregator_dicts(a: Dict[str, _StatsAggregator], b: Dict[str, _StatsAggregator]) -> Dict[str, _StatsAggregator]:
@@ -891,20 +893,95 @@ def compute_statistics_parallel(
     # Launch workers
     # ------------------------------------------------------------------
     import itertools as _it
+    from concurrent.futures import as_completed
+    try:
+        from tqdm.auto import tqdm as _tqdm  # type: ignore
+    except Exception:
+        _tqdm = None
 
-    with ProcessPoolExecutor(max_workers=num_workers) as pool:
-        agg_dicts = list(
-            pool.map(
-                _process_single_file,
-                h5_paths,
-                _it.repeat(residual_config),
-                _it.repeat(filter_groups),
-                _it.repeat(filter_frames),
-                _it.repeat(frame_stride),
-                _it.repeat(on_fly_stats),
-                _it.repeat(log_transform_channels),
+    # If we're effectively running one file, do a true per-group tqdm in-process
+    # (multiprocessing can't provide fine-grained progress without IPC and can
+    # be unstable with many concurrent HDF5 opens).
+    if len(h5_paths) == 1 or (num_workers is not None and num_workers <= 1):
+        path = h5_paths[0]
+        with h5py.File(path, "r") as f:
+            grp_names = [g for g in f.keys() if filter_groups is None or g in filter_groups]
+        if not grp_names:
+            raise ValueError(
+                "None of the provided HDF5 files contained any of the requested groups "
+                f"filter_groups={filter_groups}."
             )
-        )
+
+        done = grp_names
+        if _tqdm is not None:
+            done = _tqdm(done, total=len(grp_names), desc="Computing statistics", unit="group")
+
+        agg_dicts: list[Dict[str, _StatsAggregator]] = []
+        for g in done:
+            # reuse existing worker logic by restricting filter_groups to [g]
+            d, _n = _process_single_file(
+                path,
+                residual_config,
+                [g],
+                filter_frames,
+                frame_stride,
+                on_fly_stats,
+                log_transform_channels,
+            )
+            if d:
+                agg_dicts.append(d)
+    else:
+        # Multi-file parallelism (stable) with progress measured in groups.
+        # tqdm advances by the number of groups completed in each finished file.
+        group_counts: dict[str, int] = {}
+        total_groups = 0
+        for p in h5_paths:
+            try:
+                with h5py.File(p, "r") as f:
+                    if filter_groups is None:
+                        c = len(list(f.keys()))
+                    else:
+                        c = sum(1 for g in filter_groups if g in f)
+                group_counts[p] = c
+                total_groups += c
+            except OSError:
+                group_counts[p] = 0
+
+        if total_groups == 0:
+            raise ValueError(
+                "None of the provided HDF5 files contained any of the requested groups "
+                f"filter_groups={filter_groups}."
+            )
+
+        pbar = None
+        if _tqdm is not None:
+            pbar = _tqdm(total=total_groups, desc="Computing statistics", unit="group")
+
+        agg_dicts = []
+        with ProcessPoolExecutor(max_workers=num_workers) as pool:
+            futures = [
+                pool.submit(
+                    _process_single_file,
+                    p,
+                    residual_config,
+                    filter_groups,
+                    filter_frames,
+                    frame_stride,
+                    on_fly_stats,
+                    log_transform_channels,
+                )
+                for p in h5_paths
+            ]
+
+            for fut in as_completed(futures):
+                d, n_groups = fut.result()
+                if d:
+                    agg_dicts.append(d)
+                if pbar is not None:
+                    pbar.update(n_groups)
+
+        if pbar is not None:
+            pbar.close()
 
     # ------------------------------------------------------------------
     # Merge aggregator dictionaries
