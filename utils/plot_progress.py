@@ -261,8 +261,9 @@ class LayoutCalculator(ABC):
         self.slice_config = slice_config or Slice3DConfig()
     
     @abstractmethod
-    def calculate(self, spatial_shape: tuple, num_sections: int, 
-                  num_time_steps: int, ndim: int) -> dict:
+    def calculate(self, spatial_shape: tuple, num_sections: int,
+                  num_time_steps: int, ndim: int,
+                  channel_count: int = 1) -> dict:
         """Calculate layout parameters.
         
         Returns
@@ -272,7 +273,8 @@ class LayoutCalculator(ABC):
         """
         pass
     
-    def _get_visual_dimensions(self, spatial_shape: tuple, ndim: int) -> Tuple[float, float]:
+    def _get_visual_dimensions(self, spatial_shape: tuple, ndim: int,
+                               channel_count: int = 1) -> Tuple[float, float]:
         """Calculate visual dimensions of plot content based on data aspect ratio.
         
         For 3D data, accounts for the complete grid of slices.
@@ -318,21 +320,27 @@ class LayoutCalculator(ABC):
                 is_vertical = isinstance(self, VerticalLayoutCalculator)
                 
                 if is_vertical:
-                    # Vertical layout: slices stack vertically
-                    # Width: single slice width (channels side-by-side handled by renderer)
-                    # Height: all slices stacked + internal spacing
+                    # Vertical layout: slices stack vertically and channels are
+                    # laid out side-by-side inside each plot cell.
+                    wspace_inches = single_slice_width * 0.15
                     hspace_inches = single_slice_height * 0.25
-                    visual_width = single_slice_width
+                    visual_width = (
+                        channel_count * single_slice_width +
+                        max(channel_count - 1, 0) * wspace_inches
+                    )
                     visual_height = (num_slices * single_slice_height + 
                                 (num_slices - 1) * hspace_inches)
                 else:
-                    # Horizontal layout: slices side-by-side
-                    # Width: all slices in a row + internal spacing
-                    # Height: single row height
+                    # Horizontal layout: slices side-by-side while channels are
+                    # stacked vertically inside each plot cell.
                     wspace_inches = single_slice_width * 0.15
+                    hspace_inches = single_slice_height * 0.25
                     visual_width = (num_slices * single_slice_width + 
                                 (num_slices - 1) * wspace_inches)
-                    visual_height = single_slice_height
+                    visual_height = (
+                        channel_count * single_slice_height +
+                        max(channel_count - 1, 0) * hspace_inches
+                    )
                 
             else:
                 visual_width = self.config.base_visual_size * self.slice_config.num_slices
@@ -347,11 +355,14 @@ class LayoutCalculator(ABC):
 class VerticalLayoutCalculator(LayoutCalculator):
     """Layout calculator for vertical orientation (time as rows)."""
     
-    def calculate(self, spatial_shape: tuple, num_columns: int, 
-                  num_rows: int, ndim: int, is_timestamp: List[bool] = None) -> dict:
+    def calculate(self, spatial_shape: tuple, num_columns: int,
+                  num_rows: int, ndim: int, is_timestamp: List[bool] = None,
+                  channel_count: int = 1) -> dict:
         
         # Get visual dimensions from data shape
-        visual_width, visual_height = self._get_visual_dimensions(spatial_shape, ndim)
+        visual_width, visual_height = self._get_visual_dimensions(
+            spatial_shape, ndim, channel_count=channel_count
+        )
         
         # Colorbar is horizontal (below each plot)
         colorbar_space = self.config.colorbar_thickness + self.config.colorbar_gap
@@ -403,11 +414,14 @@ class VerticalLayoutCalculator(LayoutCalculator):
 class HorizontalLayoutCalculator(LayoutCalculator):
     """Layout calculator for horizontal orientation (time as columns)."""
     
-    def calculate(self, spatial_shape: tuple, num_rows: int, 
-                  num_columns: int, ndim: int, is_timestamp: List[bool] = None) -> dict:
+    def calculate(self, spatial_shape: tuple, num_rows: int,
+                  num_columns: int, ndim: int, is_timestamp: List[bool] = None,
+                  channel_count: int = 1) -> dict:
         
         # Get visual dimensions from data shape
-        visual_width, visual_height = self._get_visual_dimensions(spatial_shape, ndim)
+        visual_width, visual_height = self._get_visual_dimensions(
+            spatial_shape, ndim, channel_count=channel_count
+        )
         
         # Colorbar is horizontal (below each plot)
         colorbar_space = self.config.colorbar_thickness + self.config.colorbar_gap
@@ -486,17 +500,16 @@ class Renderer1D(DataRenderer):
 
 
 class Renderer2D(DataRenderer):
-    """Renderer for 2D data with automatic aspect ratio handling."""
+    """Renderer for 2D data with rectangular-domain-safe aspect handling."""
     
     def render(self, ax: plt.Axes, data: np.ndarray, channel_names: List[str],
                vmin: Optional[np.ndarray] = None, vmax: Optional[np.ndarray] = None,
                cbar_config: Optional[ColorbarConfig] = None) -> Optional[List[plt.Axes]]:
         
         C = data.shape[0]
-        h, w = data[0].shape
         
-        # Use 'auto' aspect to let axes determine aspect from data
-        aspect = 'auto'
+        # Preserve geometric proportions so rectangular domains are not stretched.
+        aspect = 'equal'
         
         use_vlims = vmin is not None and vmax is not None
         
@@ -639,7 +652,7 @@ class Renderer3D(DataRenderer):
                     else:
                         sub_ax = fig.add_subplot(gs[s_idx, c])
                     
-                    im = sub_ax.imshow(slice_data, cmap="coolwarm", aspect='auto',
+                    im = sub_ax.imshow(slice_data, cmap="coolwarm", aspect='equal',
                                       origin='lower', **_safe_vlims(c))
                     
                     # Title: show channel and slice position
@@ -673,7 +686,7 @@ class Renderer3D(DataRenderer):
                     else:
                         sub_ax = fig.add_subplot(gs[c, s_idx])
                     
-                    im = sub_ax.imshow(slice_data, cmap="coolwarm", aspect='auto',
+                    im = sub_ax.imshow(slice_data, cmap="coolwarm", aspect='equal',
                                       origin='lower', **_safe_vlims(c))
                     
                     # Title: show channel name and slice position
@@ -1105,7 +1118,13 @@ class VerticalPlotter(BasePlotter):
             total_cols = len(col_widths)
             layout_calculator = self._create_layout_calculator()
             layout_params = layout_calculator.calculate(
-                spatial_shape, total_cols, nrows, self.ndim, is_timestamp
+                spatial_shape, total_cols, nrows, self.ndim, is_timestamp,
+                channel_count=max(
+                    len(self.input_channel_names),
+                    len(self.output_channel_names),
+                    len(self.conditioning_channel_names) if self.conditioning_channel_names else 0,
+                    1,
+                ),
             )
             
             # Create figure with absolute positioning
@@ -1373,7 +1392,13 @@ class HorizontalPlotter(BasePlotter):
             total_rows = len(row_heights)
             layout_calculator = self._create_layout_calculator()
             layout_params = layout_calculator.calculate(
-                spatial_shape, total_rows, max_time_steps, self.ndim, is_timestamp
+                spatial_shape, total_rows, max_time_steps, self.ndim, is_timestamp,
+                channel_count=max(
+                    len(self.input_channel_names),
+                    len(self.output_channel_names),
+                    len(self.conditioning_channel_names) if self.conditioning_channel_names else 0,
+                    1,
+                ),
             )
             
             # Create figure
