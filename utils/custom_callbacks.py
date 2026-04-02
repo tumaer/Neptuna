@@ -455,6 +455,7 @@ class TrainingJsonLoggerCallback(TrainerCallback):
             self._runtime_scope_full = RuntimeTelemetryScope(
                 name="training_runtime_full",
                 sample_interval_sec=self.telemetry_sample_interval_sec,
+                reset_peak_memory_on_start=False,
             )
             self._runtime_scope_full.start()
 

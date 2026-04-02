@@ -164,12 +164,21 @@ class RuntimeTelemetryScope:
                 `aggregate_runtime_report()`.
     """
 
-    def __init__(self, name: str, sample_interval_sec: float = 5.0):
+    def __init__(
+        self,
+        name: str,
+        sample_interval_sec: float = 5.0,
+        *,
+        reset_peak_memory_on_start: bool = True,
+    ):
         # Human-readable scope label (for example: "eval_random_start").
         self.name = name
 
         # Keep a lower bound to avoid very aggressive polling.
         self.sample_interval_sec = max(0.01, float(sample_interval_sec))
+        # CUDA/XPU peak-memory counters are process-global. Nested scopes may
+        # need to observe the current peak without resetting it.
+        self.reset_peak_memory_on_start = bool(reset_peak_memory_on_start)
 
         # Snapshot runtime context once at construction.
         self.backend = detect_runtime_backend()
@@ -250,19 +259,21 @@ class RuntimeTelemetryScope:
         self._running = True
         self._start_ts = time.perf_counter()
 
-        # Reset accelerator peak-memory counters at scope start so reported
-        # peaks are local to this scope window.
-        if self.backend == "cuda":
-            try:
-                torch.cuda.reset_peak_memory_stats()
-            except Exception:
-                pass
-        elif self.backend == "xpu":
-            try:
-                if hasattr(torch.xpu, "reset_peak_memory_stats"):
-                    torch.xpu.reset_peak_memory_stats()
-            except Exception:
-                pass
+        # Reset accelerator peak-memory counters at scope start only when this
+        # scope owns the measurement window. The counters are process-global, so
+        # resetting inside nested scopes would clobber outer full-run scopes.
+        if self.reset_peak_memory_on_start:
+            if self.backend == "cuda":
+                try:
+                    torch.cuda.reset_peak_memory_stats()
+                except Exception:
+                    pass
+            elif self.backend == "xpu":
+                try:
+                    if hasattr(torch.xpu, "reset_peak_memory_stats"):
+                        torch.xpu.reset_peak_memory_stats()
+                except Exception:
+                    pass
 
         self._stop_event.clear()
         # Background sampler keeps runtime overhead low and decoupled from the

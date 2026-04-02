@@ -630,6 +630,7 @@ def run(cfg):
             overall_runtime_scope = RuntimeTelemetryScope(
                 name="overall_inference",
                 sample_interval_sec=runtime_sample_interval,
+                reset_peak_memory_on_start=False,
             )
             overall_runtime_scope.start()
             overall_runtime_start_wall = now_local_iso()
