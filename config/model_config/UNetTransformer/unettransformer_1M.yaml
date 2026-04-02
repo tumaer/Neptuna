@@ -1,0 +1,14 @@
+model_name: UNetTransformer
+latent_channels: 24
+num_grids: 3 # Number of levels of mesh resolution
+downsample_method: 'average'
+activation_fn_name: gelu
+channel_multiplier: [1,2,2]
+attention_concat_all: False #Set to True for channel_attention blocks in decoder
+attention_concat_type: 'se' # 'se', 'm-se', 'ec', 'm-ec', null #Only channel attention
+norm_layer_eps: 1e-5
+norm: 'layer' # layer, batch, group (see model_utils.py for max_groups), identity
+window_size: 4 #Swin and WCG attention window size
+num_heads: 4 # for both channel attention and attention in residual blocks
+attention_type: 'swin' # 'swin' 'local_window' 'linattention' 'sea', null (local window is the wcg, only square inputs)
+use_dca: False #attention in the skip connection (code not included, check lo_develop)

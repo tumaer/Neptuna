@@ -4,9 +4,9 @@ seed: 42
 dataset_directory_path: ./data/fluids/KS/2D
 dimension: 2
 grid_resolution: null 
-eval_groups: ["seed 000049"]
+eval_groups: null
 is_steady_state_prediction: False
-sequence_info: [2, 1, 1]
+sequence_info: [3, 2, 1]
 # available channels for KS: ['velocity']
 filter_features:
   train_filter_frames: null
@@ -17,15 +17,21 @@ filter_features:
   filter_out_channels: null
 #NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels
 conditioning_features:
-  conditioning_in_channels: null
-  include_conditioning_parameters: False
-  num_cond_params: null
+  conditioning_in_channels: null #support deprecated
+  conditioning_method: null # AdaNorm_LSE AdaNorm_SE_per_param AdaNorm_1SE AdaNorm null
+  conditioning_parameter_names: null # e.g. ["Mas", "ugasf", "We"]; null means use all parsed parameters
   parameter_min_max_stats: null
+  conditioning_mlp:
+    mlp: False
+    hidden_size: null
+    activation: gelu
+    initialization: null
 residual_config: null
   # add_base_value_with_raw_loss: True
   # add_predicted_value_with_diff_loss: False
   # add_predicted_value_with_raw_loss: False
 coord_features: True
+log_transform_channels: []
 data_normalization_strategy: z_normalization
 data_normalization_stats:
   velocity:

@@ -19,6 +19,9 @@
         "output_log_config=wandb_log.yaml"
       ],
     },
+    // Use IntelliSense to learn about possible attributes.
+    // 
+
     {
       "name": "Only Inference",
       "type": "debugpy",

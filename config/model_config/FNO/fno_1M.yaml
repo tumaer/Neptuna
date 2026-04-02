@@ -10,4 +10,4 @@ padding: 8
 padding_type: 'constant' #constant,reflect, replicate or circular
 activation_fn_name: 'gelu'
 norm_layer_eps: 1e-5
-norm: 'batch' # layer, batch, group (see model_utils.py for max_groups), identity
+norm: 'layer' # layer, batch, group (see model_utils.py for max_groups), identity

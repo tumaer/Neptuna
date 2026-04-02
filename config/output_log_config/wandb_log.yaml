@@ -1,10 +1,11 @@
 logging: 
   output_dir: null
-  checkpoint_prefix: null # Optional prefix for checkpoints directory, should be a string
-  wandb: True  
-  wandb_project: 'MLX' #just this one
+  checkpoint_prefix: "2" # Optional prefix for checkpoints directory, should be a string
+  wandb: True
+  wandb_project: 'TemporalEncoding'
   wandb_run_name: null
   disable_progress_bar: True
-  wandb_api_key: '05af6488ea711b206b3f56375c4d7fe69bd6a66d'
+  wandb_api_key: 05af6488ea711b206b3f56375c4d7fe69bd6a66d
+  wandb_offline: False
   # if wandb is already setup and logged into the machine, then api key is obtained as follows:
-  # python -c "import wandb; print(wandb.Api().api_key)"  
+  # python -c "import wandb; print(wandb.Api().api_key)"

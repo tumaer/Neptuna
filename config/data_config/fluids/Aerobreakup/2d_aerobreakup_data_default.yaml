@@ -1,61 +1,72 @@
 # For details on the parameters, refer to data_config-->example_data_config.yaml
 dataset_name: Aerobreakup
-dataset_directory_path: ./data/fluids/Aerobreakup_DPUVVoS/2D
+dataset_directory_path: ./data/fluids/Aerobreakup_DPUVVoS_const_sigma/2D
 seed: 42
 dimension: 2
 grid_resolution: null
-eval_groups: null
+eval_groups: null #["Mas3.4780_We59625.7412"]
 is_steady_state_prediction: False 
-sequence_info: [1, 1, 5]
+sequence_info: [4, 1, 5]
 # Available channels for Aerobreakup: ["Density", "Pressure", "Schlieren", "Velocity_X", "Velocity_Y", "Vorticity"]
 filter_features:
   train_filter_frames: null
   train_filter_groups: null
   infer_filter_frames: null
   infer_filter_groups: null
-  filter_in_channels: null
-  filter_out_channels: null
+  filter_in_channels: ["Density", "Velocity_X", "Velocity_Y"]
+  filter_out_channels: ["Density", "Velocity_X", "Velocity_Y"]
 #NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels
 conditioning_features:
-  conditioning_in_channels: null
-  include_conditioning_parameters: False
-  num_cond_params: null
+  conditioning_in_channels: null #support deprecated
+  conditioning_method: AdaNorm # AdaNorm_LSE AdaNorm_SE_per_param AdaNorm_1SE AdaNorm null
+  conditioning_parameter_names: ["Mas", "ugasf", "We"] # e.g. ["Mas", "ugasf", "We"]; null means use all parsed parameters
   parameter_min_max_stats: null
+  conditioning_mlp:
+    mlp: False
+    hidden_size: null
+    activation: gelu
+    initialization: null
 residual_config: null
   # add_base_value_with_raw_loss: True
   # add_predicted_value_with_diff_loss: False
   # add_predicted_value_with_raw_loss: False
 coord_features: True
-data_normalization_strategy: z_normalization
-#NOTE: Statistics are according to sequence_stride = 5
+data_normalization_strategy: min_max_normalization
+log_transform_channels: [] #include the statistics for the log-transformed channels
+#NOTE: Statistics are according to sequence_stride = 5 for the dataset: Aerobreakup_DPUVVoS_const_sigma
 data_normalization_stats:
   Density:
-    mean: 83.33162437995082
-    std: 269.420102937082
-    min: 0.4107901177015075
-    max: 1004.1108081220093
+    mean: 83.33301341817466
+    std: 269.4179685161369
+    min: 0.42125036082297695
+    max: 1004.1364431381502
   Pressure:
-    mean: 592008.2094240573
-    std: 605112.7013391693
-    min: -4350961.485024929
-    max: 8856365.6638062
+    mean: 592111.7453107495
+    std: 605304.5436878504
+    min: -4485923.347120523
+    max: 8911903.317688227
   Schlieren:
-    mean: 371672.7765653216
-    std: 3620035.2535395394
+    mean: 372271.7915082011
+    std: 3622607.8502204027
     min: 0.0
-    max: 55955355.28965796
+    max: 56256205.80270014
   Velocity_X:
-    mean: -3.6010844316246753
-    std: 88.62828894297455
-    min: -561.2317582929994
-    max: 780.3227694469102
+    mean: -3.602899728294646
+    std: 88.66981325357713
+    min: -560.9816606398294
+    max: 787.5509011558574
   Velocity_Y:
-    mean: 321.6043573946111
-    std: 344.0918270179068
-    min: -999.8758150190431
-    max: 1695.5617260034319
+    mean: 321.56880553138046
+    std: 344.1734140845195
+    min: -1001.7817263045215
+    max: 1696.9350169115341
   Vorticity:
-    mean: 402167.6854025066
-    std: 1550129.5940915134
+    mean: 402254.761644045
+    std: 1550456.9190509676
     min: 0.0
-    max: 45238240.011306755
+    max: 46891514.7837993
+  log_Density:
+    mean: 1.4615374682913955
+    std: 1.708981374048561
+    min: -0.8645279407628714
+    max: 6.911883190558159

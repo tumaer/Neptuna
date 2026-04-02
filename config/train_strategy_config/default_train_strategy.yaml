@@ -1,0 +1,198 @@
+########################################################
+# Training strategy configuration
+########################################################
+
+# Total number of epochs to train.
+num_train_epochs: 128
+# Compute metrics batch-wise
+batch_eval_metrics: True
+# Run end-of-epoch evaluation every N epochs (**cannot be changed to steps**)
+num_epochs_between_eval: 1
+# Metric for checkpointing the weights during validation.
+metric_for_best_model:     
+  - type: RMSE
+    weight: 1.0
+  - type: SSIM
+    weight: 1.0
+# Curriculum blocks for epoch-wise training.
+curriculum:
+  - name: block_1
+    start_epoch: 0
+    train_loss:
+      components:
+        - type: MSE
+          weight: 1.0
+          name: "MSE_train"
+      train_loss_weighting_strategy:
+        enabled: false 
+      
+    validation_loss:
+      components:
+        - type: RMSE
+          weight: 1.0
+
+  # - name: block_1
+  #   start_epoch: 0
+  #   train_loss:
+  #     components:
+  #       - type: MSE
+  #       - type: MAE
+  #     train_loss_weighting_strategy:
+  #       enabled: true  # Set to true to enable
+  #       type: GradNorm
+  #       grad_stats_last_layer_only: true
+  #       weight_sub_components: false
+  #       weight_per_channel: false
+  #       loss_history_interval: 10
+  #       grad_history_interval: 10
+      
+  #   validation_loss:
+  #     components:
+  #       - type: RMSE
+
+  # - name: block_2
+  #   start_epoch: 2
+  #   train_loss:
+  #     components:
+  #       - type: H1SemiNorm
+  #         weight: 0.5
+
+  #   validation_loss:
+  #     components:
+  #       - type: H2SemiNorm
+  #         weight: 1.0
+  #       - type: CompositeLoss
+  #         weight: 1.0
+  #         name: "SSIM_L2_Composite"
+  #         sub_components:
+  #           - type: SSIM
+  #             weight: 0.7
+  #           - type: MSE
+  #             weight: 0.3
+  
+  
+  
+  # - name: block_2
+  #   start_epoch: 2
+  #   train_loss:
+  #     components:
+  #       - type: RMSE
+  #         weight: 0.5
+  #       - type: H1SemiNorm
+  #         weight: 0.5
+  #     train_loss_weighting_strategy:
+  #       enabled: false  # Set to true to enable
+  #       type: SoftAdapt
+  #       loss_source: 'eval' # 'train' OR 'eval'
+      
+  #   validation_loss: #TODO: Add loss components from train loss mertrics of this block in validation
+  #     components:
+  #       - type: WaveletBinnedRMSE
+  #         weight: 1.0
+  #       - type: PearsonCorrelationLoss
+  #         weight: 1.0
+  #       - type: RMSE
+  #         weight: 1.0
+  #       - type: H1SemiNorm
+  #         weight: 1.0
+
+  # - name: block_3
+  #   start_epoch: 4
+  #   train_loss:
+  #     components:
+  #       - type: H2SemiNorm
+  #         weight: 0.5
+  #     train_loss_weighting_strategy:
+  #       enabled: false  # Set to true to enable
+  #       #type: SoftAdapt
+  #       #loss_source: 'eval' # 'train' OR 'eval'
+      
+  #   validation_loss: #TODO: Add loss components from train loss mertrics of this block in validation
+  #     components:
+  #       - type: VRMSE
+  #         weight: 1.0
+  #       - type: NRMSE
+  #         weight: 1.0
+
+
+# ------------------------------------------------
+# Loss metric setup guidelines
+# ------------------------------------------------
+
+# train_loss aggregates all loss components specified under it into a scalar value.
+# eval_loss and infer_loss report each component separately.
+
+# Each loss component is a dictionary with the following fields.
+# Mandatory:
+# - type: Name of the loss class (see metrics/losses)
+# Optional:
+#   name: Custom name for the loss component
+#   config_file: Name of a custom config file for the loss component settings
+#   weight: Base scalar weight (default: 1.0)
+#   timestep_weights: List of per-timestep weights, length T (optional)
+#   channel_weights: List of per-channel weights, length C (optional)
+
+# Composite metrics can be reported for validation/inference using the type 
+# "CompositeLoss" and specifying the components as "sub-components".
+
+# Example: plain RMSE (default config, weight=1.0)
+# - type: RMSE
+
+# Example: RMSE with per-channel weighting
+# - type: RMSE
+#   weight: 1.0
+#   channel_weights: [1.0, 1.0, 0.5]
+
+# Example: VRMSE (RMSE using the config loss_metrics/RMSE/vrmse.yaml)
+# - type: RMSE
+#   name: VRMSE
+#   config_file: vrmse
+
+# Example: reporting a SSIM/MSE composite loss for eval
+# - type: CompositeLoss
+#   weight: 1.0
+#   name: "SSIM_MSE_Composite"
+#   sub_components:
+#     - type: SSIM
+#       weight: 0.7
+#     - type: MSE
+#       weight: 0.3
+
+# ------------------------------------------------
+# Loss weighting setup guidelines
+# ------------------------------------------------
+
+# Mandatory:
+#   enabled: Set to true to enable the adaptive loss weighting
+#   type: Name of the weighting strategy class (see metrics/weighting_strategies)
+# Optional:
+#   config_file: Custom path to a config file for the weighting strategy
+#   grad_stats_last_layer_only: If true, only backpropagate over the last layer when compupting per-component gradient statistics
+#   weight_sub_components: If true, apply the weighting strategy to sub-components of a composite loss (if applicable)
+#   weight_per_channel: If true, apply the weighting strategy separately for each channel (if applicable)
+#   loss_history_interval: Number of steps between recording loss history for the weighting strategy
+#   grad_history_interval: Number of steps between recording gradient history for the weighting strategy (if applicable)
+
+# Example: SoftAdapt (loss-based strategy)
+# train_loss_weighting_strategy:
+#   enabled: true
+#   type: SoftAdapt
+#   loss_history_interval: 10
+
+# Example: GradNorm (gradient-based strategy), weighted per-channel
+# train_loss_weighting_strategy:
+#   enabled: true
+#   type: GradNorm
+#   grad_stats_last_layer_only: true
+#   weight_per_channel: true
+#   loss_history_interval: 10
+#   grad_history_interval: 10
+
+# Note: for per-channel weighting, the relevant loss components must be initialized with channel_weights.
+# E.g., for MSE with 3 channels and per-channel weighting, the config would look like:
+# - type: MSE
+#   weight: 1.0
+#   channel_weights: [1.0, 1.0, 1.0]
+
+# Note: if you want to compute and log per-component or per-channel losses and gradient stats without 
+# applying adaptive weighting, you can set enabled: true with type: LogOnly (leaves the weights unchanged)
