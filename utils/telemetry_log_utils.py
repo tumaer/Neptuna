@@ -946,6 +946,48 @@ def aggregate_runtime_report(local_report: Dict, global_samples: Optional[int] =
     return aggregated
 
 
+def merge_overall_inference_accel_peak_from_eval_sections(runtime_log_sections: Dict[str, Dict]) -> None:
+    """Set ``overall_inference.peak_memory.accelerator_peak_allocated_gb_max`` from eval scopes.
+
+    The ``overall_inference`` scope spans setup plus both eval branches, so its sampled
+    accelerator peak is not comparable to per-eval-loop peaks. This overwrites that
+    field with the maximum of the values from ``eval_loop_random_start`` and
+    ``eval_loop_ic_start`` when those sections exist (one or both).
+
+    If neither section provides a numeric ``accelerator_peak_allocated_gb_max``, the
+    overall_inference value is left unchanged.
+    """
+    overall = runtime_log_sections.get("overall_inference")
+    if not isinstance(overall, dict):
+        return
+
+    vals: List[float] = []
+    for key in ("eval_loop_random_start", "eval_loop_ic_start"):
+        sec = runtime_log_sections.get(key)
+        if not isinstance(sec, dict):
+            continue
+        pm = sec.get("peak_memory")
+        if not isinstance(pm, dict):
+            continue
+        v = pm.get("accelerator_peak_allocated_gb_max")
+        if v is None:
+            continue
+        try:
+            vals.append(float(v))
+        except (TypeError, ValueError):
+            continue
+
+    if not vals:
+        return
+
+    peak_merge = max(vals)
+    om = overall.get("peak_memory")
+    if not isinstance(om, dict):
+        overall["peak_memory"] = {"accelerator_peak_allocated_gb_max": peak_merge}
+    else:
+        om["accelerator_peak_allocated_gb_max"] = peak_merge
+
+
 def write_runtime_log(log_path: str, payload: Dict) -> None:
     """Atomically write inference runtime telemetry to JSON.
 

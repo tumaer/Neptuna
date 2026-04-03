@@ -54,6 +54,7 @@ from utils.telemetry_log_utils import (
     get_rank_world,
     aggregate_runtime_report,
     detect_runtime_backend,
+    merge_overall_inference_accel_peak_from_eval_sections,
     write_runtime_log,
     estimate_local_sample_count,
     now_local_iso,
@@ -991,6 +992,7 @@ def run(cfg):
                 overall_runtime_scope.build_local_report(local_samples=runtime_local_samples_total),
                 global_samples=runtime_global_samples_total if runtime_global_samples_total > 0 else None,
             )
+            merge_overall_inference_accel_peak_from_eval_sections(runtime_log_sections)
             _rank_now, _world_now = get_rank_world()
 
             runtime_log_payload = {
