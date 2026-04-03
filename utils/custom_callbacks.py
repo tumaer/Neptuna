@@ -316,6 +316,54 @@ class TrainingJsonLoggerCallback(TrainerCallback):
         except Exception:
             return None
 
+    def _max_peak_memory_from_records(self):
+        """Return max peak-memory values from per-record telemetry blocks.
+
+        This makes end-of-run peak memory robust to final-scope sampling gaps
+        by deriving the run-level max from already persisted interval records.
+        """
+        if not isinstance(self._payload, dict):
+            return {}
+        records = self._payload.get("records", [])
+        if not isinstance(records, list):
+            return {}
+
+        cpu_values = []
+        accel_values = []
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            peak_memory = rec.get("peak_memory", {})
+            if not isinstance(peak_memory, dict):
+                continue
+            cpu_v = self._safe_float(peak_memory.get("cpu_peak_rss_gb_max"))
+            accel_v = self._safe_float(peak_memory.get("accelerator_peak_allocated_gb_max"))
+            if cpu_v is not None:
+                cpu_values.append(cpu_v)
+            if accel_v is not None:
+                accel_values.append(accel_v)
+
+        out = {}
+        if cpu_values:
+            out["cpu_peak_rss_gb_max"] = max(cpu_values)
+        if accel_values:
+            out["accelerator_peak_allocated_gb_max"] = max(accel_values)
+        return out
+
+    def _merge_final_peak_memory(self, runtime_peak_memory):
+        """Merge runtime end-scope peak with per-record max peaks."""
+        merged = {}
+        if isinstance(runtime_peak_memory, dict):
+            merged.update(runtime_peak_memory)
+        record_max = self._max_peak_memory_from_records()
+        for key, record_val in record_max.items():
+            runtime_val = self._safe_float(merged.get(key))
+            if runtime_val is None:
+                merged[key] = record_val
+            else:
+                merged[key] = max(runtime_val, record_val)
+        return merged
+
     def _estimate_seen_samples(self, args, global_step: int) -> Optional[float]:
         """Estimate cumulative seen training samples from global step."""
         trainer = getattr(self, "trainer", None)
@@ -627,9 +675,15 @@ class TrainingJsonLoggerCallback(TrainerCallback):
             if self._payload is not None:
                 self._payload["final_device_telemetry"] = final_full_telemetry.get("device_telemetry", {})
                 self._payload["final_telemetry_sampling"] = final_full_telemetry.get("telemetry_sampling", {})
-                self._payload["final_peak_memory"] = final_full_telemetry.get("peak_memory", {})
+                self._payload["final_peak_memory"] = self._merge_final_peak_memory(
+                    final_full_telemetry.get("peak_memory", {})
+                )
 
         if self._payload is not None:
+            # Always enforce final peak-memory as max across all interval blocks.
+            self._payload["final_peak_memory"] = self._merge_final_peak_memory(
+                self._payload.get("final_peak_memory", {})
+            )
             self._payload["training_end_local"] = now_local_iso()
             if self._train_start_perf is not None:
                 self._payload["training_elapsed_min"] = max(0.0, time.perf_counter() - self._train_start_perf) / 60.0
