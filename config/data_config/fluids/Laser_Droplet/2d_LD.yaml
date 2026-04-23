@@ -6,15 +6,15 @@ dimension: 2
 grid_resolution: null
 eval_groups: null
 is_steady_state_prediction: False 
-sequence_info: [5, 1, 5]
+sequence_info: [5, 4, 5]
 # Available channels for LaserDroplet: ["Pressure", "Energy", "Density", "Velocity_X", "Velocity_Y", "Schlieren"]
 filter_features:
   train_filter_frames: null
   train_filter_groups: null
   infer_filter_frames: null
   infer_filter_groups: null
-  filter_in_channels: ["Density"]
-  filter_out_channels: ["Density"]
+  filter_in_channels: ["Density", "Pressure"]
+  filter_out_channels: ["Density","Pressure"]
 #NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels
 conditioning_features:
   conditioning_in_channels: null #support deprecated
