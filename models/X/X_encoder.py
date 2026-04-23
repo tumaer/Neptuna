@@ -1,8 +1,3 @@
-"""
-This decoder Module is by default a mirrored Swin-based encoder. 
-The additional option is to deactivate attention layers. (TODO)
-Also, including symmetrical time blocks in decoder can be tested.
-"""
 
 import torch
 from torch import nn
@@ -18,54 +13,63 @@ from transformers.models.swinv2.modeling_swinv2 import (
 
 )
 
-class X_UnMerging(nn.Module): # TODO verify with source code
+class X_Merging(nn.Module):
 
     def __init__(
-        self,
-        config,
-        input_resolution: Tuple[int],
-        dim: int,
-        norm_layer: nn.Module = nn.LayerNorm,
+        self, 
+        config, 
+        input_resolution: Tuple[int], 
+        dim: int, 
+        norm_layer: nn.LayerNorm
     ) -> None:
         super().__init__()
-        self.input_resolution = input_resolution 
-        self.dim = dim 
-        self.upsample = nn.Linear(dim, 2 * dim, bias=False) 
-        self.mixup = nn.Linear(dim // 2, dim // 2, bias=False) 
-        self.norm = nn.LayerNorm(dim//2) 
+        self.input_resolution = input_resolution
+        self.dim = dim
+        self.reduction = nn.Linear(4 * dim, 2 * dim, bias=False)
+        self.norm = norm_layer(2 * dim)
 
-    def maybe_crop(self, input_feature, H, W):
-        H_in, W_in = input_feature.shape[2], input_feature.shape[3] 
-        if H_in > H:
-            input_feature = input_feature[:, :H, :, :]
-        if W_in > W:
-            input_feature = input_feature[:, :, :W, :]
+  
+
+    def maybe_pad(self, input_feature, height, width):
+        should_pad = (height % 2 == 1) or (width % 2 == 1)  
+        if should_pad:
+            pad_values = (0, 0, 0, width % 2, 0, height % 2) # TODO check if C is last
+            input_feature = nn.functional.pad(input_feature, pad_values)
+
         return input_feature
 
     def forward(
         self,
-        input_feature: torch.Tensor, 
-        output_dimensions: Tuple[int, int], 
+        input_feature: torch.Tensor,
+        input_dimensions: Tuple[int, int],
         **kwargs
     ) -> torch.Tensor:
-        
-        H, W = output_dimensions 
-  
-        batch_size, _, in_channels= input_feature.shape 
+        _, _, _, height, width = input_dimensions 
+        # `dim` is height * width
+        batch_size, dim, in_channels = input_feature.shape 
 
-        input_feature = self.upsample(input_feature) 
+        input_feature = input_feature.view(batch_size, height, width, in_channels) 
+        # pad input to be divisible by width and height, if needed
+        input_feature = self.maybe_pad(input_feature, height, width) # here: no padding needed
+        # [batch_size, height/2, width/2, in_channels]
+        # splitting into 4 groups: (even rows, even cols), (odd rows, even cols), (even rows, odd cols), (odd rows, odd cols)
+        input_feature_0 = input_feature[:, 0::2, 0::2, :] 
+        # [batch_size, height/2, width/2, in_channels]
+        input_feature_1 = input_feature[:, 1::2, 0::2, :] 
+        # [batch_size, height/2, width/2, in_channels]
+        input_feature_2 = input_feature[:, 0::2, 1::2, :] 
+        # [batch_size, height/2, width/2, in_channels]
+        input_feature_3 = input_feature[:, 1::2, 1::2, :] 
+        # [batch_size, height/2 * width/2, 4*in_channels]
+        input_feature = torch.cat(
+            [input_feature_0, input_feature_1, input_feature_2, input_feature_3], -1
+        ) # 16, 16, 16, 192 (48*4)
+        input_feature = input_feature.view(
+            batch_size, -1, 4 * in_channels # 16, 256, 192
+        )  # [batch_size, height/2 * width/2, 4*C]
 
-        input_feature = input_feature.reshape(
-            batch_size, H//2, W//2, 2, 2, in_channels //2
-        )
-        input_feature = input_feature.permute(0, 1, 3, 2, 4, 5).reshape(batch_size, H, W, in_channels //2) 
-
-        input_feature = self.maybe_crop(input_feature, H, W) # crop in case the feature does not have the specified dim
-        input_feature = input_feature.reshape(batch_size, -1, in_channels // 2) 
-
-        input_feature = self.mixup(self.norm(input_feature)) 
-
-
+        input_feature = self.reduction(input_feature) # 16, 256, 96 # 4 * dim -> 2 * dim
+        input_feature = self.norm(input_feature, **kwargs) # 16, 256, 96
 
         return input_feature
 
@@ -121,7 +125,7 @@ class TimeBlock(nn.Module):
 
         return x
 
-class X_DecoderBlock(nn.Module):
+class X_EncoderBlock(nn.Module):
 
     def __init__(self, config, dim, patch_dimensions, num_heads, dpr, shift_size):
 
@@ -227,7 +231,7 @@ class X_DecoderBlock(nn.Module):
         shortcut = hidden_states
         
         B, _, C = hidden_states.shape
-        X, Y = input_dimensions 
+        _,_,_, X, Y = input_dimensions 
         
         hidden_states = hidden_states.reshape(B, X, Y, C) # shape: (B', X, Y, C), B'=B*T
 
@@ -294,14 +298,14 @@ class X_DecoderBlock(nn.Module):
 
         return outputs
 
-class X_DecdoerStage(nn.Module):
+class X_EncdoerStage(nn.Module):
 
-    def __init__(self, config, dim, patch_dimensions, depth, num_heads, dpr, upsample):
+    def __init__(self, config, dim, patch_dimensions, depth, num_heads, dpr, downsample):
         super().__init__()
 
         self.blocks = nn.ModuleList([
 
-                X_DecoderBlock(config=config,
+                X_EncoderBlock(config=config,
                                dim=dim,
                                patch_dimensions=patch_dimensions,
                                num_heads=num_heads,
@@ -309,22 +313,22 @@ class X_DecdoerStage(nn.Module):
                                shift_size=[0, 0] if (i % 2 == 0) else (config.window_size[0]//2, config.window_size[1]//2)
                                )
 
-                for i in reversed(range(depth))
+                for i in range(depth)
 
         ])
 
-        if upsample is not None:
+        if downsample is not None:
 
-            self.upsample = upsample(config=config, input_resolution=patch_dimensions,  dim=dim, norm_layer=nn.LayerNorm)
+            self.downsample = downsample(config=config, input_resolution=patch_dimensions,  dim=dim, norm_layer=nn.LayerNorm)
         else:
 
-            self.upsample = None
+            self.downsample = None
 
     def forward(self, input, input_dimensions, **kwargs):
 
         # shape of input: B*T, C, XY
         
-        X, Y = input_dimensions 
+        _, _, _, X, Y = input_dimensions 
 
         for block in self.blocks:
 
@@ -337,11 +341,11 @@ class X_DecdoerStage(nn.Module):
 
         hidden_state_before_ds = input
 
-        if self.upsample is not None:
+        if self.downsample is not None:
 
-            input = self.upsample(input, output_dimensions=(2*input_dimensions[0], 2*input_dimensions[1]))
+            input = self.downsample(input, input_dimensions)
 
-            output_dimensions = (X, Y, X*2, Y*2)
+            output_dimensions = (X, Y, X//2, Y//2)
 
         else:
 
@@ -353,13 +357,11 @@ class X_DecdoerStage(nn.Module):
         
         return stage_output
 
-class X_Decoder(nn.Module):
+class X_Encoder(nn.Module):
 
     def __init__(self, config, patch_dimensions):
 
         super().__init__()
-
-        self.config = config    
         
         self.num_stages = len(config.depths)
         self.split_type = config.split_type 
@@ -374,8 +376,23 @@ class X_Decoder(nn.Module):
         ) 
         self.dpr_ED = [ 
             x.item()
-            for x in self.dpr_encode_decode[self.dpr_encode_decode.shape[0] // 2: ] 
+            for x in self.dpr_encode_decode[: self.dpr_encode_decode.shape[0] // 2] 
         ]
+
+
+        self.stages = nn.ModuleList([
+
+            X_EncdoerStage(config=config,
+                           dim=int(self.hidden_features * 2 ** i),
+                           patch_dimensions= (patch_dimensions[1]//(2**i), patch_dimensions[2]//(2**i)),
+                           depth=config.depths[i],
+                           num_heads=config.num_heads[i],
+                           dpr=self.dpr_ED[sum(config.depths[:i]): sum(config.depths[:i+1])],
+                           downsample=X_Merging if (i < self.num_stages-1) else None
+                           )
+
+            for i in range(self.num_stages)
+        ])
 
 
         if self.split_type=="encoder":
@@ -385,92 +402,51 @@ class X_Decoder(nn.Module):
                 TimeBlock(config=config, 
                           patch_dimensions=patch_dimensions, 
                           dpr=self.dpr[i])
-                for i in reversed(range(self.num_time_blocks))
+                for i in range(self.num_time_blocks)
             ])
-
-
-        self.stages = nn.ModuleList([
-
-            X_DecdoerStage(config=config,
-                           dim=int(self.hidden_features * 2 ** i),
-                           patch_dimensions= (patch_dimensions[1]//(2**i), patch_dimensions[2]//(2**i)),
-                           depth=config.depths[i],
-                           num_heads=config.num_heads[i],
-                           dpr=self.dpr_ED[sum(config.depths[i+1:]): sum(config.depths[i:])],
-                           upsample=X_UnMerging if i != 0 else None
-                           )
-
-            for i in reversed(range(self.num_stages))
-        ])
-
-        
-
-
             
 
-    def forward(self, input, input_dimensions, skip_states, output_hidden_states: Optional[bool] = True, **kwargs):
+    def forward(self, input, input_dimensions, output_hidden_states: Optional[bool] = True, **kwargs):
 
-        # input_dimensions: num_t_patch, num_x_patch, num_y_patch >> coming from prop
-        # input shape: [B*num_xy_patch, num_t_patch, C_embedd] TODO
-       
+        # input_dimensions: B, C_embedd, num_t_patch, num_x_patch, num_y_patch >> coming from embeddder.
+        # input shape: [B, C_embedd, num_txy_patch] TODO
+        # for cases: 
+        # feature
+        # condition 
+        # twoencoder first reshape to [B*num_t_patch, num_xy_patch, C_embedd] 
 
-        B, seq_len, C = input.shape
-        num_x_patch, num_y_patch = input_dimensions
+        B, C, T, X, Y = input.shape
 
         
-        # do NOT care of hidden_states getting saved in decoder
-        # if output_hidden_states:
 
-        #     all_hidden_states = ()
-        #     all_reshaped_hidden_states = ()
+        if output_hidden_states:
 
-        # else:
+            all_hidden_states = ()
+            all_reshaped_hidden_states = ()
 
-        #     all_hidden_states = None
-        #     all_reshaped_hidden_states = None
+        else:
 
-
-        # if output_hidden_states:  
-
-        #     all_hidden_states += (input,) 
-
-        #     reshaped_hidden_states = input.reshape(B, C, T, input_dimensions[3], input_dimensions[4])
-        #     all_reshaped_hidden_states += (reshaped_hidden_states,)
+            all_hidden_states = None
+            all_reshaped_hidden_states = None
 
 
+        if output_hidden_states:  
 
-        # input = input.permute(0, 2, 3, 4, 1).reshape(B*T, X*Y, C)
+            all_hidden_states += (input,) 
+
+            reshaped_hidden_states = input.reshape(B, C, T, input_dimensions[3], input_dimensions[4])
+            all_reshaped_hidden_states += (reshaped_hidden_states,)
+
+
+
+        input = input.permute(0, 2, 3, 4, 1).reshape(B*T, X*Y, C)
 
 
         # for cases: feature - condition - STjoint - STFattn - STFhead it goes single encoder
         # for case: two encoders we need two for loops like below.
-
-
-        if self.split_type=="encoder":
             
+        for stage in self.stages:
 
-            for i, time_block in enumerate(self.time_blocks):
-
-                if i!=0 and skip_states[len(skip_states) - i] is not None:
-
-                    input = input + skip_states[len(skip_states) - i]
-
-                time_block_output = time_block(input=input)
-                input = time_block_output
-
-                # if output_hidden_states:
-
-                #     all_hidden_states += (time_block_output,)
-                #     reshaped_hidden_states = time_block_output.reshape(Batch //num_t_patch, num_x_patch, num_y_patch, num_t_patch, hidden_features_last)
-                #     reshaped_hidden_states = reshaped_hidden_states.permute(0, 4, 3, 1, 2)
-                #     all_reshaped_hidden_states += (reshaped_hidden_states,)
-            
-        input = input.reshape(-1, num_x_patch, num_y_patch, seq_len, C).permute(0, 3, 1, 2, 4)
-        input = input.reshape(-1, num_x_patch*num_y_patch, C)
-        
-        for i, stage in enumerate(self.stages):
-
-            input = input + skip_states[len(skip_states) - len(self.time_blocks) - i]
 
             stage_outputs = stage(
                 input=input,
@@ -480,30 +456,60 @@ class X_Decoder(nn.Module):
 
 
             input = stage_outputs[0]  
-            # hidden_state_before_ds = stage_outputs[1] 
+            hidden_state_before_ds = stage_outputs[1] 
             output_dimensions = stage_outputs[2]
-            input_dimensions = (output_dimensions[-2], output_dimensions[-1]) # TODO only spatial dims
+            input_dimensions = (B, C, T, output_dimensions[-2], output_dimensions[-1]) # TODO only spatial dims
             
 
-            # if output_hidden_states:
+            if output_hidden_states:
 
-            #     all_hidden_states += (hidden_state_before_ds,)
+                all_hidden_states += (hidden_state_before_ds,)
 
 
-            #     B_, _, C = hidden_state_before_ds.shape
-            #     reshaped_hidden_states = hidden_state_before_ds.reshape(B, T, output_dimensions[1], output_dimensions[1], C)
-            #     reshaped_hidden_states = reshaped_hidden_states.permute(0, 4, 1, 2, 3)
-            #     all_reshaped_hidden_states += (reshaped_hidden_states,)
+                B_, _, C = hidden_state_before_ds.shape
+                reshaped_hidden_states = hidden_state_before_ds.reshape(B, T, output_dimensions[1], output_dimensions[1], C)
+                reshaped_hidden_states = reshaped_hidden_states.permute(0, 4, 1, 2, 3)
+                all_reshaped_hidden_states += (reshaped_hidden_states,)
 
         
         
-        decoded = input
+        last_hidden_state = input
+        
+        if self.split_type=="encoder":
+
+            
+
+            _, _, num_t_patch, num_x_patch, num_y_patch = input_dimensions
+            # hidden_features_last = self.hidden_features * 2 ** (self.num_stages-1)
+
+            Batch, _, hidden_features_last = input.shape
+
+            input = input.reshape(-1, num_t_patch, num_x_patch*num_y_patch, hidden_features_last).permute(0, 2, 1, 3)
+            input = input.reshape(-1, num_t_patch, hidden_features_last)
+
+            for i, time_block in enumerate(self.time_blocks):
+
+                time_block_output = time_block(input=input)
+                input = time_block_output
+
+                if output_hidden_states:
+
+                    all_hidden_states += (time_block_output,)
+                    reshaped_hidden_states = time_block_output.reshape(Batch //num_t_patch, num_x_patch, num_y_patch, num_t_patch, hidden_features_last)
+                    reshaped_hidden_states = reshaped_hidden_states.permute(0, 4, 3, 1, 2)
+                    all_reshaped_hidden_states += (reshaped_hidden_states,)
 
 
-        return decoded
-    
-        # the same entry to encoder is reconstructed in reverse fashion.
-        # ready to go to patch recovery
+        
+        output = [
+            last_hidden_state, 
+            time_block_output if self.split_type=="encoder" else None,
+            all_hidden_states, 
+            all_reshaped_hidden_states
+        ] 
+
+
+        return output
 
                 
 

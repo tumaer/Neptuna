@@ -4,6 +4,10 @@ from typing import List, Optional, Tuple
 import torch
 from torch import nn
 from transformers.pytorch_utils import meshgrid
+from transformers.models.swinv2.modeling_swinv2 import (
+    Swinv2Attention,
+    Swinv2DropPath
+)
 
 
 
@@ -12,14 +16,16 @@ class Attention_1D(nn.Module):
 
     """
     Full Seq Attention + Relative Position Bias (RPB) (based on Swin V2 and HuggingFace's implementation of it)
+    TODO try APE
     """
 
-    def __init__(self, config, dim, seq_len , num_heads):
+    def __init__(self, config, dim):
 
         super().__init__()
 
         self.config = config
-        self.seq_len = seq_len
+        seq_len = math.ceil(config.sequence_info[0]/config.patch_time)
+        num_heads = config.num_heads_time
         self.num_heads = num_heads
 
 
@@ -36,36 +42,41 @@ class Attention_1D(nn.Module):
         
         # mlp to generate continuous relative position bias
         self.continuous_position_bias_mlp = nn.Sequential(
-            nn.Linear(2, 512, bias=True), nn.ReLU(inplace=True), nn.Linear(512, num_heads, bias=False)
+            nn.Linear(1, 512, bias=True), nn.ReLU(inplace=True), nn.Linear(512, num_heads, bias=False)
         )
 
+
+        ####################################################
+        # happens in forward 
+        ####################################################
         # relative_coords_table: shape [1, 2*seq_len - 1, 1]
-        relative_coords_t = torch.arange(-(seq_len - 1), seq_len, dtype=torch.float32)
-        relative_coords_table = relative_coords_t.view(1, 2 * seq_len - 1, 1)
+        # relative_coords_t = torch.arange(-(seq_len - 1), seq_len, dtype=torch.float32)
+        # relative_coords_table = relative_coords_t.view(1, 2 * seq_len - 1, 1)
 
-        # normalize
-        relative_coords_table /= (seq_len - 1)
+        # # normalize
+        # relative_coords_table /= (seq_len - 1)
 
-        # map roughly to [-8, 8]
-        relative_coords_table *= 8
+        # # map roughly to [-8, 8]
+        # relative_coords_table *= 8
 
-        # log-scaled transform, same spirit as Swin V2
-        relative_coords_table = (
-            torch.sign(relative_coords_table)
-            * torch.log2(torch.abs(relative_coords_table) + 1.0)
-            / math.log2(8)
-        )
+        # # log-scaled transform, same spirit as Swin V2
+        # relative_coords_table = (
+        #     torch.sign(relative_coords_table)
+        #     * torch.log2(torch.abs(relative_coords_table) + 1.0)
+        #     / math.log2(8)
+        # )
 
-        relative_coords_table = relative_coords_table.to(
-            next(self.continuous_position_bias_mlp.parameters()).dtype
-        )
-        self.register_buffer("relative_coords_table", relative_coords_table, persistent=False)
+        # relative_coords_table = relative_coords_table.to(
+        #     next(self.continuous_position_bias_mlp.parameters()).dtype
+        # )
+        # self.register_buffer("relative_coords_table", relative_coords_table, persistent=False)
 
-        # pairwise relative position index: shape [seq_len, seq_len]
-        coords_t = torch.arange(seq_len)
-        relative_coords = coords_t[:, None] - coords_t[None, :]   # [T, T]
-        relative_position_index = relative_coords + (seq_len - 1) # shift to [0, 2T-2]
-        self.register_buffer("relative_position_index", relative_position_index, persistent=False)
+        # # pairwise relative position index: shape [seq_len, seq_len]
+        # coords_t = torch.arange(seq_len)
+        # relative_coords = coords_t[:, None] - coords_t[None, :]   # [T, T]
+        # relative_position_index = relative_coords + (seq_len - 1) # shift to [0, 2T-2]
+        # self.register_buffer("relative_position_index", relative_position_index, persistent=False)
+        ######################################################
 
 
         self.query = nn.Linear(self.all_head_size, self.all_head_size, bias=config.qkv_bias)
@@ -102,8 +113,38 @@ class Attention_1D(nn.Module):
         logit_scale = torch.clamp(self.logit_scale, max=math.log(1.0 / 0.01)).exp()
         attention_scores = attention_scores * logit_scale
 
-        relative_coords_table = self.relative_coords_table.to(device=device)
-        relative_position_index = self.relative_position_index.to(device=device)
+
+        ################################################
+
+        # relative_coords_table: shape [1, 2*seq_len - 1, 1]
+        relative_coords_t = torch.arange(-(seq_len - 1), seq_len, dtype=torch.float32)
+        relative_coords_table = relative_coords_t.view(1, 2 * seq_len - 1, 1)
+
+        # normalize
+        relative_coords_table /= (seq_len - 1)
+
+        # map roughly to [-8, 8]
+        relative_coords_table *= 8
+
+        # log-scaled transform, same spirit as Swin V2
+        relative_coords_table = (
+            torch.sign(relative_coords_table)
+            * torch.log2(torch.abs(relative_coords_table) + 1.0)
+            / math.log2(8)
+        )
+
+        relative_coords_table = relative_coords_table.to(
+            next(self.continuous_position_bias_mlp.parameters()).dtype
+        )
+
+        coords_t = torch.arange(seq_len)
+        relative_coords = coords_t[:, None] - coords_t[None, :]   # [T, T]
+        relative_position_index = relative_coords + (seq_len - 1) # shift to [0, 2T-2]
+
+        ################################################
+
+        relative_coords_table = relative_coords_table.to(device=device)
+        relative_position_index = relative_position_index.to(device=device)
 
         # add position bias
         relative_position_bias_table = self.continuous_position_bias_mlp(relative_coords_table).view(
@@ -134,7 +175,7 @@ class Attention_1D(nn.Module):
         output = self.dense(output)
         output = self.dropout2(output)
 
-        outputs =  (output,)
+        outputs =  (output,) # NOTE for output attentions
         
         return outputs
 
@@ -170,18 +211,18 @@ class Attention_2D(nn.Module):
         self.logit_scale = nn.Parameter(torch.log(10 * torch.ones((num_heads, 1, 1)))) # taken from SwinV2 in Huggingface
 
         self.continuous_position_bias_mlp = nn.Sequential(
-            nn.Linear(3, 512, bias=True), nn.ReLU(inplace=True), nn.Linear(512, num_heads, bias=False)
+            nn.Linear(2, 512, bias=True), nn.ReLU(inplace=True), nn.Linear(512, num_heads, bias=False)
         )
 
        
-        relative_coords_h = torch.arange(-(self.window_size[0] - 1), self.window_size[1], dtype=torch.int64).float()
-        relative_coords_w = torch.arange(-(self.window_size[1] - 1), self.window_size[2], dtype=torch.int64).float()
+        relative_coords_h = torch.arange(-(self.window_size[0] - 1), self.window_size[0], dtype=torch.int64).float()
+        relative_coords_w = torch.arange(-(self.window_size[1] - 1), self.window_size[1], dtype=torch.int64).float()
         relative_coords_table = (
             torch.stack(meshgrid([relative_coords_h, relative_coords_w], indexing="ij"))
             .permute(1, 2, 0)
             .contiguous()
             .unsqueeze(0)
-        )  # [1, 2*window_height - 1, 2*window_width - 1, 2]
+        )  # [1, 2*window[0] - 1, 2*window[1] - 1, 2]
 
 
         # normalize to -1, 1
@@ -217,9 +258,12 @@ class Attention_2D(nn.Module):
         self.query = nn.Linear(self.all_head_size, self.all_head_size, bias=config.qkv_bias)
         self.key = nn.Linear(self.all_head_size, self.all_head_size, bias=False)
         self.value = nn.Linear(self.all_head_size, self.all_head_size, bias=config.qkv_bias)
-        self.dropout1 = nn.Dropout(config.attention_probs_dropout_prob)
+        self.dropout1 = nn.Dropout(config.attention_probs_dropout_prob) # >> NOTE this is drop OUT
         self.dense = nn.Linear(dim, dim)
-        self.dropout2 = nn.Dropout(config.attention_probs_dropout_prob)
+        self.dropout2 = nn.Dropout(config.attention_probs_dropout_prob) # >> NOTE this is drop OUT
+
+        
+      
 
 
     def transpose_for_scores(self, x):
