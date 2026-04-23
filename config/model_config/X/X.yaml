@@ -2,10 +2,10 @@ model_name: X
 patch_space: [4, 4] # patch embedding resolution: resolution/patch_size -> padding if not divisible
 patch_time: 2
 latent_features: 27
-latent_time: 10
-depths: [2, 4, 2] # ~1M parameters
-num_heads: [3, 6, 12]
-skip_connections: [2, 2, 0]
+latent_time: 5
+depths: [2, 3, 2, 2] # ~1M parameters
+num_heads: [3, 3, 6, 12]
+skip_connections: [2, 2, 1, 0]
 window_size: [8, 8] # (window_size - patch_embedding_resolution % window_size) % window_size -> padding before window-based self-attention
 mlp_ratio: 2.0
 qkv_bias: True
