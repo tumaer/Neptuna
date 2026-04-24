@@ -40,22 +40,22 @@ class X_Config(PretrainedConfig):
 
     def __init__(
             self,
-            latent_time,
-            patch_space,
-            patch_time,
-            depths,
-            num_heads,
-            skip_connections,
-            skip_connections_time,
-            window_size,
-            mlp_ratio,
-            num_time_blocks,
-            num_heads_time,
-            embed_type,
-            encode_type,
-            split_type,
-            dpr_space,
-            dpr_time,
+            latent_time=None,
+            patch_space=None,
+            patch_time=None,
+            depths=None,
+            num_heads=None,
+            skip_connections=None,
+            skip_connections_time=None,
+            window_size=None,
+            mlp_ratio=None,
+            num_time_blocks=None,
+            num_heads_time=None,
+            embed_type=None,
+            encode_type=None,
+            split_type=None,
+            dpr_space=None,
+            dpr_time=None,
             qkv_bias=True,
             qk_scale=None,
             hidden_dropout_prob=0.0,
@@ -68,8 +68,6 @@ class X_Config(PretrainedConfig):
             learn_residual=False,  # learn the residual for time-dependent problems
             output_hidden_states: bool = False,
             output_attentions: bool = False,
-           
-
             **kwargs,
             ):
         
