@@ -25,7 +25,15 @@ class Koopman_Operator(nn.Module):
         self.dim = dim # number of windows N in [B, N, C]
         self.scale = (1 / (dim * dim))
         self.modes = modes
-        self.koopman_matrix = nn.Parameter(self.scale * torch.rand(dim, dim, self.modes, dtype=torch.cfloat))
+        # self.koopman_matrix = nn.Parameter(self.scale * torch.rand(dim, dim, self.modes, dtype=torch.cfloat))
+
+        # need to fix the c64 type of the matrix above:
+        self.koopman_matrix_real = nn.Parameter(
+            self.scale * torch.rand(dim, dim, modes)
+        )
+        self.koopman_matrix_imag = nn.Parameter(
+            self.scale * torch.rand(dim, dim, modes)
+        )
 
 
     # Complex multiplication
@@ -35,12 +43,18 @@ class Koopman_Operator(nn.Module):
     
 
     def forward(self, x):
+
+        koopman_matrix = torch.complex(
+            self.koopman_matrix_real,
+            self.koopman_matrix_imag,
+        )
+
         # x.shape [B, _N, latent_dim]
         # Fourier Transform
         x_ft = torch.fft.rfft(x) # [B, _N, latent_dim//2+1]
         # Koopman Operator Time Marching
         out_ft = torch.zeros(x_ft.shape, dtype=torch.cfloat, device = x.device)
-        out_ft[:, :, :self.modes] = self.time_marching(x_ft[:, :, :self.modes], self.koopman_matrix)
+        out_ft[:, :, :self.modes] = self.time_marching(x_ft[:, :, :self.modes], koopman_matrix)
         #Inverse Fourier Transform
         x = torch.fft.irfft(out_ft) # shape [B, _N, latent_dim]
 
