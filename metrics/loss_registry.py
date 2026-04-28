@@ -12,6 +12,7 @@ from metrics.losses import (
     WaveletBinnedRMSE,
     IntegralConservationRMSE,
     RMSE,
+    RMSE_Ch,
     InterfaceRMSE,
     MeanRelativeError,
     NegativityLoss,
@@ -108,6 +109,13 @@ LOSS_REGISTRY = {
         "config_path": "loss_metrics/RMSE/",
         "default_config": "rmse_default",
         "channel_aggregation": "sqrt",
+    },
+    "RMSE_Ch": {
+        "class": RMSE_Ch,
+        "default_name": "RMSE_Ch",
+        "config_path": "loss_metrics/RMSE_Ch/",
+        "default_config": "rmse_default",
+        # "channel_aggregation": "sqrt",
     },
     "InterfaceRMSE": {
         "class": InterfaceRMSE,

@@ -10,17 +10,17 @@ batch_eval_metrics: True
 num_epochs_between_eval: 1
 # Metric for checkpointing the weights during validation.
 metric_for_best_model:     
-  - type: RMSE
+  - type: RMSE_Ch
     weight: 1.0
-  - type: SSIM
-    weight: 1.0
+  # - type: SSIM
+  #   weight: 1.0
 # Curriculum blocks for epoch-wise training.
 curriculum:
   - name: block_1
     start_epoch: 0
     train_loss:
       components:
-        - type: MSE
+        - type: RMSE_Ch
           weight: 1.0
           name: "MSE_train"
       train_loss_weighting_strategy:
@@ -28,7 +28,7 @@ curriculum:
       
     validation_loss:
       components:
-        - type: RMSE
+        - type: RMSE_Ch
           weight: 1.0
 
   # - name: block_1

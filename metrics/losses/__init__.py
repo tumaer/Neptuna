@@ -10,6 +10,7 @@ from .multilevel_wavelet_loss import MultilevelWaveletLoss
 from .wavelet_binned_rmse import WaveletBinnedRMSE
 from .integral_conservation_rmse import IntegralConservationRMSE
 from .rmse import RMSE
+from .rmse_ch import RMSE_Ch
 from .interface_rmse import InterfaceRMSE
 from .mean_relative_error import MeanRelativeError
 from .negativity_loss import NegativityLoss
@@ -29,6 +30,7 @@ __all__ = [
     'WaveletBinnedRMSE',
     'IntegralConservationRMSE',
     'RMSE',
+    'RMSE_Ch',
     'InterfaceRMSE',
     'MeanRelativeError',
     'NegativityLoss',
