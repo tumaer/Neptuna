@@ -1,6 +1,6 @@
 # For details on the parameters, refer to data_config-->example_data_config.yaml
 dataset_name: LaserDroplet
-dataset_directory_path: /local/disk/szehisaadat/Neptuna/data/fluids/LaserDroplet/2D
+dataset_directory_path: /local/disk1/szehisaadat/MainRepos/Neptuna/data/fluids/LaserDroplet/2D
 seed: 42
 dimension: 2
 grid_resolution: null
@@ -10,11 +10,11 @@ sequence_info: [5, 4, 5]
 # Available channels for LaserDroplet: ["Pressure", "Energy", "Density", "Velocity_X", "Velocity_Y", "Schlieren"]
 filter_features:
   train_filter_frames: null
-  train_filter_groups: ["hp9.3651e+09_lp8.0028e+05_gasrad1.3880e-06_dropradmin1.0000e-05_dropradmax1.0000e-05", "hp9.8723e+09_lp8.2215e+05_gasrad2.1492e-07_dropradmin1.1055e-05_dropradmax1.4980e-05"]
+  train_filter_groups: ["hp1.0140e+09_lp8.3920e+05_gasrad1.2402e-06_dropradmin1.0000e-05_dropradmax1.0000e-05", "hp1.0495e+09_lp1.9138e+05_gasrad8.8400e-07_dropradmin1.2508e-05_dropradmax1.5276e-05", "hp1.0789e+09_lp3.8278e+05_gasrad2.6665e-07_dropradmin1.0000e-05_dropradmax1.0000e-05"]
   infer_filter_frames: null
-  infer_filter_groups: ["hp9.6043e+09_lp5.0332e+05_gasrad1.2105e-06_dropradmin1.0000e-05_dropradmax1.0000e-05"]
-  filter_in_channels: ["Density", "Pressure"]
-  filter_out_channels: ["Density","Pressure"]
+  infer_filter_groups: ["hp1.3968e+09_lp9.8281e+05_gasrad8.1941e-07_dropradmin1.0000e-05_dropradmax1.0000e-05", "hp1.9706e+09_lp7.7600e+05_gasrad6.5839e-07_dropradmin1.2601e-05_dropradmax1.4214e-05", "hp3.0180e+09_lp3.3000e+05_gasrad1.3171e-06_dropradmin1.3453e-05_dropradmax1.5583e-05"]
+  filter_in_channels: ["Density", "Pressure", "Energy"]
+  filter_out_channels: ["Density","Pressure","Energy"]
 #NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels
 conditioning_features:
   conditioning_in_channels: null #support deprecated

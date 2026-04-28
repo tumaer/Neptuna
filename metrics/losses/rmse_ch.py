@@ -84,51 +84,55 @@ class RMSE_Ch(LossComponent):
 
             group_losses.append(error / (scale + 1e-10))
 
-        loss = torch.sqrt(torch.mean(torch.stack(group_losses)))
+        loss_for_detail = torch.concat(group_losses, dim=2)
 
-        return loss
+        total_loss = torch.sqrt(torch.mean(torch.stack(group_losses)))
+
+        if not return_detailed:
+            return total_loss
 
         ############################################
 
-        # Compute element-wise squared error
-        sq_error = (predictions - labels) ** 2
+        # # Compute element-wise squared error
+        # sq_error = (predictions - labels) ** 2
 
-        # Normalize error if specified
-        norm_error = self.norm_helper.normalize_error(
-                sq_error,
-                labels,
-                self.data_dim,
-                self.normalization,
-                self.epsilon
-            )
+        # # Normalize error if specified
+        # norm_error = self.norm_helper.normalize_error(
+        #         sq_error,
+        #         labels,
+        #         self.data_dim,
+        #         self.normalization,
+        #         self.epsilon
+        #     )
 
-        # Get broadcastable weight tensor
-        weight_tensor = self.weight_schedule.get_loss_weight(norm_error.shape).to(predictions.device)
+        # # Get broadcastable weight tensor
+        # weight_tensor = self.weight_schedule.get_loss_weight(norm_error.shape).to(predictions.device)
         
-        # Apply weights
-        weighted_sq = norm_error * weight_tensor
+        # # Apply weights
+        # weighted_sq = norm_error * weight_tensor
 
-        # Keep batch and channel dims (for rollout metrics)
-        if keep_bc_dims:
-            reduce_dims = [1] + list(range(3, weighted_sq.ndim))
-        else:
-            reduce_dims = list(range(1, weighted_sq.ndim))
+        # # Keep batch and channel dims (for rollout metrics)
+        # if keep_bc_dims:
+        #     reduce_dims = [1] + list(range(3, weighted_sq.ndim))
+        # else:
+        #     reduce_dims = list(range(1, weighted_sq.ndim))
 
-        # Reduce and take square root
-        per_sample_mse = self._reduce(weighted_sq, reduce_dims)
-        per_sample_rmse = torch.sqrt(per_sample_mse + self.epsilon)
+        # # Reduce and take square root
+        # per_sample_mse = self._reduce(weighted_sq, reduce_dims)
+        # per_sample_rmse = torch.sqrt(per_sample_mse + self.epsilon)
 
-        # Aggregate over samples
-        total_loss = per_sample_rmse if keep_bc_dims else self._reduce(per_sample_rmse)
+        # # Aggregate over samples
+        # total_loss = per_sample_rmse if keep_bc_dims else self._reduce(per_sample_rmse)
 
-        # Return single scalar (or tensor) loss
-        if not return_detailed:
-            return total_loss
+        # # Return single scalar (or tensor) loss
+        # if not return_detailed:
+        #     return total_loss
 
         # ========================================================
         # Build detailed breakdown (for logging/loss weighting)
         # ========================================================
         detailed: Dict[str, torch.Tensor] = {}
+        weighted_sq = loss_for_detail
 
         # Conditionally detach based on preserve_component_grads
         weighted_sq_for_detailed = weighted_sq if preserve_component_grads else weighted_sq.detach()
