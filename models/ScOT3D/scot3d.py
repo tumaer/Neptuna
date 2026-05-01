@@ -290,11 +290,12 @@ class ScOT3DPatchRecovery(nn.Module):
         # only to change the T
 
         self.T_out = config.sequence_info[1] # output sequence length
+        # self.T_patch_out = math.ceil(resolution[0]/patch_size[0])
 
 
         self.change_T_out = nn.Conv3d(
-            in_channels=resolution[0]//patch_size[0] + resolution[0] % patch_size[0], # 3
-            out_channels=self.T_out, # 1
+            in_channels=resolution[0]//patch_size[0] + resolution[0] % patch_size[0], 
+            out_channels=self.T_out, 
             kernel_size=1,
             stride=1
         ) 
@@ -303,8 +304,8 @@ class ScOT3DPatchRecovery(nn.Module):
         self.projection = nn.ConvTranspose3d(
             in_channels=hidden_size, # 27
             out_channels=out_channels, # 1
-            kernel_size=(self.T_out, patch_size[1], patch_size[2]), # (2, 4, 4)
-            stride=(self.T_out, patch_size[1], patch_size[2]), # (2, 4, 4)
+            kernel_size=(1, patch_size[1], patch_size[2]), # (2, 4, 4)
+            stride=(1, patch_size[1], patch_size[2]), # (2, 4, 4)
             # padding=(3, 0, 0),
             # output_padding=(1, 0, 0),
         )
