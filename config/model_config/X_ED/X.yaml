@@ -1,0 +1,27 @@
+model_name: X_ED
+patch_space: [4, 4] # patch embedding resolution: resolution/patch_size -> padding if not divisible
+patch_time: 2
+latent_features: 27
+latent_time: 5
+depths: [2, 4, 3, 2] # ~1M parameters
+num_heads: [3, 3, 6, 12]
+skip_connections: [2, 2, 1, 0]
+window_size: [8, 8] # (window_size - patch_embedding_resolution % window_size) % window_size -> padding before window-based self-attention
+mlp_ratio: 2.0
+qkv_bias: True
+hidden_dropout_prob: 0.0
+attention_dropout_prob: 0.0
+dpr_space: 0.1
+dpr_time: 0.1
+hidden_act: "gelu"
+initializer_range: 0.02
+residual_model: "convnext" # convnext or resnet
+norm_layer_eps: 1e-5
+norm: 'layer' # layer, batch, group (see model_utils.py for max_groups), identity
+num_time_blocks: 3
+embed_type: "separate"
+encode_type: "split"
+split_type: "encoder"
+num_heads_time: 2
+operator_size: 8 # coming from KNO paper
+skip_connections_time: 2

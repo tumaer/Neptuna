@@ -291,6 +291,35 @@ def fetch_model(model_config: Dict,
                     norm=model_config['norm']
                     )
         model = UNet(config=config)
+
+    elif model_name == "unet_time":
+        from models.UNet_Time.unet import UNet
+        from models.UNet_Time.unet_utils import UNetConfig
+
+        config = UNetConfig(
+                    dimension=data_config['dimension'],
+                    in_channels=len(data_config['filter_features']['filter_in_channels']),
+                    out_channels=len(data_config['filter_features']['filter_out_channels']),
+                    grid_resolution=data_config['grid_resolution'], 
+                    sequence_info=data_config["sequence_info"], 
+                    latent_channels=model_config['latent_channels'],
+                    channel_multiplier=model_config['channel_multiplier'],
+                    is_attn=model_config['is_attn'],
+                    mid_attn=model_config['mid_attn'],
+                    n_blocks=model_config['n_blocks'],
+                    use1x1=model_config['use1x1'],
+                    activation_fn_name=model_config['activation_fn_name'],
+                    coord_features=data_config['coord_features'],
+                    conditioning_method=data_config['conditioning_features']['conditioning_method'],
+                    num_cond_params=num_cond_params,
+                    conditioning_mlp=data_config['conditioning_features']['conditioning_mlp']['mlp'],
+                    conditioning_hidden_size=data_config['conditioning_features']['conditioning_mlp']['hidden_size'] if data_config['conditioning_features']['conditioning_mlp']['mlp'] else None,
+                    conditioning_activation=data_config['conditioning_features']['conditioning_mlp']['activation'],
+                    conditioning_init=data_config['conditioning_features']['conditioning_mlp']['initialization'],
+                    norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
+                    norm=model_config['norm']
+                    )
+        model = UNet(config=config)
     
     elif model_name == "deeponet_ffn":
         from models.DeepONet.deeponet import AutoDeepONet
@@ -612,6 +641,55 @@ def fetch_model(model_config: Dict,
     elif model_name == 'x':
         from models.X.X_embedder import X_Config
         from models.X.X import X
+
+        if data_config['dimension'] != 2:
+            raise ValueError("Model is not yet implemented for other dimension than 2")
+        
+        config = X_Config(
+                    patch_space=model_config['patch_space'],
+                    patch_time=model_config['patch_time'],
+                    in_channels=len(data_config['filter_features']['filter_in_channels']),
+                    out_channels=len(data_config['filter_features']['filter_out_channels']),
+                    grid_resolution=data_config['grid_resolution'],
+                    dimension=data_config['dimension'],
+                    sequence_info=data_config['sequence_info'],
+                    latent_channels=model_config['latent_features'], # base dimensionality of patch embeddings (size of feature vector used to represent each patch)
+                    latent_time=model_config['latent_time'], # dimensionality of time embedding
+                    depths=model_config['depths'], #number of transformer blocks in encoder / decoder stages e.g. 4 stages each with 4 transformer blocks
+                    num_heads=model_config['num_heads'], # used in Swinv2SelfAttention (HF) (see ScOTEncoder: each stage has own num_heads
+                    # number of separate attention machanisms run in parallel; attend to different local spatial features inside each window
+                    skip_connections=model_config['skip_connections'], # depth of skip connections
+                    skip_connections_time=model_config['skip_connections_time'],
+                    window_size=model_config['window_size'], # defines spatial region over which self-attention is computed in one local block instead of expensive global self-attention
+                    mlp_ratio=model_config['mlp_ratio'], # used in Swinv2Intermediate (HF) to expand hidden state (model gets more capacity to learn non-linear transformations
+                    qkv_bias=model_config['qkv_bias'], # disable / enable bias in self-attention (Q = X @ W_Q + b_Q; K = X @ W_K + b_K; V = X @ W_V + b_V) # used in Swinv2SelfAttention (HF)
+                    hidden_dropout_prob=model_config['hidden_dropout_prob'],  # default # for the dropout in ScOT embedding
+                    attention_probs_dropout_prob=model_config['attention_dropout_prob'],  # default # dropout in Swinv2SelfAttention (HF)
+                    dpr_space=model_config['dpr_space'], # used to create drop path for each ScOTEncodeStage in Encoder and ScOTDecodeStage in Decoder, is max. value
+                    dpr_time=model_config['dpr_time'],
+                    hidden_act=model_config['hidden_act'], # hidden activation function in Swinv2Intermediate (HF)
+                    initializer_range=model_config['initializer_range'], # Swinv2PreTrainedModel (HF), std of normal distribution to initialize weights
+                    residual_model=model_config['residual_model'], # either convnext or resnet
+                    output_hidden_states=False,
+                    output_attentions=False,
+                    coord_features=data_config['coord_features'],
+                    # conditioning=data_config['conditioning_features']['include_conditioning_parameters'] , # if True ConditionalLayerNorm is used otherwise LayerNorm
+                    # num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
+                    norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
+                    norm=model_config['norm'],
+                    num_time_blocks=model_config['num_time_blocks'],
+                    embed_type=model_config['embed_type'],
+                    encode_type=model_config['encode_type'],
+                    split_type=model_config['split_type'],
+                    num_heads_time=model_config['num_heads_time'],
+                    operator_size = model_config['operator_size']
+
+                    )
+        model = X(config)
+
+    elif model_name == 'x_ed':
+        from models.X_ED.X_embedder import X_Config
+        from models.X_ED.X import X
 
         if data_config['dimension'] != 2:
             raise ValueError("Model is not yet implemented for other dimension than 2")
