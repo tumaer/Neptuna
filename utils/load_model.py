@@ -687,9 +687,9 @@ def fetch_model(model_config: Dict,
                     )
         model = X(config)
 
-    elif model_name == 'x_ed':
-        from models.X_ED.X_embedder import X_Config
-        from models.X_ED.X import X
+    elif model_name == 'x_ae':
+        from models.X_AE.X_embedder import X_Config
+        from models.X_AE.X import X
 
         if data_config['dimension'] != 2:
             raise ValueError("Model is not yet implemented for other dimension than 2")

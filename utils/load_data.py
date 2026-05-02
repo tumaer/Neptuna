@@ -1042,6 +1042,7 @@ class TransientDataset(Dataset):
         self.include_conditioning_parameters = kwargs.get("include_conditioning_parameters", False)
         self.parameter_min_max_stats = kwargs.get("parameter_min_max_stats", None)
         self.conditioning_parameter_names = kwargs.get("conditioning_parameter_names")
+        self.training_type = kwargs.get("training_type", None) 
         self._h5 = None
         if self.conditioning_parameter_names is not None:
             if not isinstance(self.conditioning_parameter_names, (list, ListConfig)) or not all(isinstance(x, str) for x in self.conditioning_parameter_names):
@@ -1065,12 +1066,18 @@ class TransientDataset(Dataset):
                 self.stride,
                 dtype=np.int64,
             )
-            label_idx = np.arange(
-                start_idx + (self.input_seq_len * self.stride),
-                end_idx + 1,
-                self.stride,
-                dtype=np.int64,
-            )
+            if self.training_type=="autoencoder":
+                label_idx=input_idx
+
+            else:
+
+                label_idx = np.arange(
+                        start_idx + (self.input_seq_len * self.stride),
+                        end_idx + 1,
+                        self.stride,
+                        dtype=np.int64,
+                    )
+
             self._index_items.append((group_name, input_idx, label_idx))
 
         # Cache channel transformation plan to reduce string/dict work in __getitem__.

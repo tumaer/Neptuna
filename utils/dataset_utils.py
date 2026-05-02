@@ -63,6 +63,7 @@ def make_datasets(cfg: DictConfig, mode: str = "train"):
         infer_from_random_timestep=infer_cfg["infer_from_random_timestep"],
         infer_from_ic=infer_cfg["infer_from_ic"],
         log_transform_channels=data_cfg["log_transform_channels"],
+        training_type=train_cfg["training_type"],
     )
     
 
