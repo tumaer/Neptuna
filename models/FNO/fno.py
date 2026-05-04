@@ -1,3 +1,7 @@
+"""
+Copied and adpated from https://github.com/neuraloperator/neuraloperator
+"""
+
 from typing import List, Tuple
 import torch
 import torch.nn as nn

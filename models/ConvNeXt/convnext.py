@@ -1,3 +1,7 @@
+"""
+Copied and adpated from https://github.com/facebookresearch/ConvNeXt
+"""
+
 import torch
 from torch import Tensor
 from transformers import PreTrainedModel

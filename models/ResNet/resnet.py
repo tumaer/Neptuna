@@ -1,3 +1,7 @@
+"""
+Copied and adpated from https://github.com/pdearena/pdearena
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

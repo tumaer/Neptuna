@@ -1,3 +1,7 @@
+"""
+Copied and adpated from https://github.com/huggingface/transformers/blob/main/src/transformers/models/vit/modeling_vit.py
+"""
+
 from typing import Optional, Tuple, Union
 from transformers import PreTrainedModel
 from transformers.modeling_outputs import BaseModelOutput

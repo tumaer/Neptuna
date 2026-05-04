@@ -1,3 +1,7 @@
+"""
+Copied and adpated from https://github.com/pdearena/pdearena
+"""
+
 from typing import List, Tuple, Union, Optional
 import torch
 from torch import Tensor
@@ -40,7 +44,6 @@ class UNet(PreTrainedModel):
     - Configurable normalization and activation functions
     - Flexible input/output sequence handling
     """
-    #TODO: Do this for all models
     main_input_name = "input_data"
     conditioning_input_name = "conditioning_input_data"
     config_class = UNetConfig

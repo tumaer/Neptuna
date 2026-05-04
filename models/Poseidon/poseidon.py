@@ -1,3 +1,7 @@
+"""
+Copied and adpated from https://github.com/camlab-ethz/poseidon
+"""
+
 from transformers import Swinv2PreTrainedModel
 from transformers.models.swinv2.modeling_swinv2 import (
     Swinv2EncoderOutput,
