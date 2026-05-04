@@ -1,7 +1,7 @@
-gradient_threshold: [1.0, 5.0]  # [min, max] gradient magnitude in physical units
-threshold_field_key: density  # field used to compute the shock mask; mask is then applied to all fields
-threshold_softness: 0.01  # Smoothness of transition (fraction of range width)
-blur_sigma: 2.0  # Gaussian blur sigma (0 = disabled)
+gradient_threshold: [0.3, 4.0]  # [min, max] gradient magnitude in physical units, threshold for SABW, SRBA and SDBA
+threshold_field_key: pressure  # field used to compute the shock mask; mask is then applied to all fields
+threshold_softness: 0.03  # Smoothness of transition (fraction of range width)
+blur_sigma: 1.5  # Gaussian blur sigma (0 = disabled)
 gradient_mode: diff  # 'sobel' or 'diff'
 normalization: none  # 'none', 'magnitude', or 'variance'
 epsilon: 1.0e-8

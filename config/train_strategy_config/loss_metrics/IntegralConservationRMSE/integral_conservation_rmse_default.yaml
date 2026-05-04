@@ -2,11 +2,11 @@ use_boundary_fluxes: true
 normalization: none
 
 field_keys:
-  density: Density
-  velocity_x: Velocity_X
-  velocity_y: Velocity_Y
-  velocity_z: Velocity_Z
-  pressure: Pressure
+  density: density
+  velocity_x: velocityX
+  velocity_y: velocityY
+  velocity_z: velocityZ
+  pressure: pressure
   energy: Energy
   # Kept for backward compatibility; enstrophy (aka Vorticity Production) now uses velocity gradients.
   vorticity: Vorticity
@@ -17,21 +17,40 @@ components:
   # Domain components
   - name: domain/enstrophy
     weight: 1.0
+  - name: domain/Px
+    weight: 1.0
+  - name: domain/Py
+    weight: 1.0
   - name: domain/kinetic_energy
     weight: 1.0
-  # - name: domain/center_of_gravity_y
-  #   weight: 1.0
+  - name: boundary/mass/west
+    weight: 1.0
+  - name: boundary/mass/east
+    weight: 1.0
+  - name: boundary/mass/north
+    weight: 1.0
+  - name: boundary/mass/south
+    weight: 1.0
+  - name: boundary/Px/west
+    weight: 1.0
+  - name: boundary/Px/east
+    weight: 1.0
+  - name: boundary/Px/north
+    weight: 1.0
+  - name: boundary/Px/south
+    weight: 1.0
+  - name: boundary/Py/west
+    weight: 1.0
+  - name: boundary/Py/east
+    weight: 1.0
+  - name: boundary/Py/north
+    weight: 1.0
+  - name: boundary/Py/south
+    weight: 1.0
   - name: domain/center_of_gravity_x
     weight: 1.0
-  #- name: domain/Py
-  #- name: boundary/mass/west
-  #  weight: 1.0
-  #- name: boundary/mass/east
-  #  weight: 1.0
-  #- name: boundary/mass/north
-  #  weight: 1.0
-  #- name: boundary/Py/east
-  #  weight: 1.0
+  - name: domain/center_of_gravity_y
+    weight: 1.0
 
 # For 3D:
 #  - name: boundary/mass/top
