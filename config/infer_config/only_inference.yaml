@@ -1,17 +1,30 @@
+########################################################
+# * This is the configuration file for separately performing 
+# * inference for the trained models of a given dataset.
+# * For directly continuing with inference after training, use the default_infer.yaml file.
+########################################################
 do_infer: True
 debug: False  # Set true or use INFERENCE_DEBUG=1 to enable _dbg prints
 metrics_device: null # Device for rollout metric computation (e.g. cuda:0, xpu:0, mps, cpu). Null = auto (cuda:0/xpu:0/mps if available, else cpu)
 batch_eval_metrics: True
 per_device_eval_batch_size: 8
-#inference_directory: /Users/harish/Desktop/cfd_bench/ckpt_poseidon
-#dataset_directory_path: /Users/harish/Desktop/cfd_bench/data/fluids/LD_sample_5gp_train_1gp_test_ID # if null, will use the dataset_directory_path from data_config.json inside the experiment directory.
 inference_directory: null
-dataset_directory_path: null
+dataset_directory_path: null # if null, will use the dataset_directory_path from data_config.json inside the experiment directory.
 filter_features:
   infer_filter_frames: [null, null]
   infer_filter_groups: null
-n_infer_rollouts: 2
+n_infer_rollouts: 3
 n_infer_plot_examples: 2
 plot_orientation: vertical # Plot orientation for inference plots. Options: vertical, horizontal
 infer_from_random_timestep: False
 infer_from_ic: True
+########################################################
+# * To compute the maximum number of rollouts:
+# max_numbe_of_timesteps_of_a_given_trajectory = [[[number_of_input_snapshots + number_of_output_snapshots - 1 + (number_of_rollouts * number_of_output_snapshots)]*stride_between_snapshots] + 1
+
+# * Multiple trained model directoies (of the same dataset) can be placed inside a meta directory, whose path can be provided as the inference_directory.
+
+# * The dataset_directory_path should contain a file named test.h5 on which inference will be performed.
+
+# * The metrics to be used in infernce should be specified in the infer_loss.yaml file.
+########################################################

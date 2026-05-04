@@ -1,5 +1,5 @@
 do_infer: False
-metrics_device: mps
+metrics_device: null
 batch_eval_metrics: True
 filter_features:
   infer_filter_frames: [null, null]
@@ -7,6 +7,6 @@ filter_features:
 n_infer_rollouts: 2
 n_infer_plot_examples: 2
 infer_telemetry_sample_interval_sec: 1.0
-plot_orientation: horizontal # Plot orientation for inference plots. Options: vertical, horizontal
+plot_orientation: horizontal
 infer_from_random_timestep: False
 infer_from_ic: True
