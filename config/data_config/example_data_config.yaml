@@ -125,6 +125,7 @@ conditioning_features:
     # activation function for the conditioning MLP. Only relevant if mlp is True.
     # Options: relu, gelu, tanh, leaky_relu
 
+# Experimental
 residual_config: null
   add_base_value_with_raw_loss:
   #Type: bool 
@@ -142,6 +143,8 @@ data_normalization_strategy:
 data_normalization_stats: null 
 # Type: Dict
 # if not provided, will be computed automatically from the dataset
+# Note: It is recommended to compute the statistics once and paste them in the data_config to avoid re-computation of stats.
+# Statistics can be computed by executing the script: misc/compute_stats.py <path_to train.h5 file>
 # Example:
     # density:
     #   mean: 0.9992666901623488

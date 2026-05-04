@@ -1,0 +1,75 @@
+# For details on the parameters, refer to data_config-->example_data_config.yaml
+dataset_name: 2D_SDBA_SSOO
+dataset_directory_path: ./data/<path_to_folder_containing_train.h5_and_test.h5>
+seed: 42
+dimension: 2
+grid_resolution: null
+eval_groups: null
+is_steady_state_prediction: False 
+sequence_info: [4, 1, 10]
+# Available channels for Shock_Droplet: ["density", "density_1", "density_2", "pressure", "diffuse_volume_fraction_1", "velocityX", "velocityY"]
+# density_1 is the phasic density of the droplet and density_2 is the phasic density of air
+filter_features:
+  train_filter_frames: null
+  train_filter_groups: null
+  infer_filter_frames: null
+  infer_filter_groups: null
+  filter_in_channels: null
+  filter_out_channels: null
+#NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels
+conditioning_features:
+  conditioning_in_channels: null #support deprecated, please keep to null
+  conditioning_method: null #AdaNorm # AdaNorm_LSE, AdaNorm_SE_per_param, AdaNorm_1SE, AdaNorm and null
+  conditioning_parameter_names: null
+  parameter_min_max_stats: null
+  conditioning_mlp:
+    mlp: False
+    hidden_size: null
+    activation: gelu
+    initialization: null
+residual_config: null #experimental
+coord_features: True #appends x and y normalized coordinate grid to the fields/channels
+data_normalization_strategy: z_normalization
+log_transform_channels: ["density"] #include the statistics for the log-transformed channels
+#Note: Statistics are for 256x256 grid resolution.
+data_normalization_stats:
+  density:
+    mean: 29.52693800523996
+    std: 158.1623372193836
+    min: 0.037737416724576964
+    max: 1004.0445698456685
+  density_1:
+    mean: 2.729845628276579
+    std: 1.8897127932931177
+    min: 0.0
+    max: 19.469010971671704
+  density_2:
+    mean: 37.85506398260291
+    std: 190.85902921141934
+    min: 0.0
+    max: 1013.9662328689692
+  diffuse_volume_fraction_1:
+    mean: 0.973184817636266
+    std: 0.15853815477447333
+    min: 0.0
+    max: 1.0
+  pressure:
+    mean: 517840.8301129427
+    std: 614401.0579962748
+    min: -6258630.564119816
+    max: 15981358.728616793
+  velocityX:
+    mean: 321.13578003131886
+    std: 316.51901609069483
+    min: -1604.649924196292
+    max: 1844.5558053599984
+  velocityY:
+    mean: -1.7494825553835434
+    std: 128.39753456554985
+    min: -1447.9413375816903
+    max: 1529.4800589753597
+  log_density:
+    mean: 1.013494132845741
+    std: 1.1632887920696118
+    min: -3.277103190653782
+    max: 6.911791691542929
