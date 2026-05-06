@@ -116,6 +116,7 @@ class X_Embedder(nn.Module):
 
 
         self.C_embedd = config.latent_channels
+        self.norm = nn.LayerNorm(self.C_embedd)
         self.T_embedd = config.latent_time
         self.T_in = math.ceil(config.sequence_info[0]/config.patch_time)
         self.patch = [config.patch_time, config.patch_space[0], config.patch_space[1]]
@@ -193,13 +194,13 @@ class X_Embedder(nn.Module):
 
                                        stride=to_3tuple(config.patch_time,config.patch_space))
             
-            self.embed_t = nn.Conv3d(in_channels=self.T_in,
+            # self.embed_t = nn.Conv3d(in_channels=self.T_in,
 
-                                       out_channels=self.T_embedd,
+            #                            out_channels=self.T_embedd,
 
-                                       kernel_size=(1, 1, 1),
+            #                            kernel_size=(1, 1, 1),
 
-                                       stride=(1, 1, 1))
+            #                            stride=(1, 1, 1))
 
  
 
@@ -306,9 +307,10 @@ class X_Embedder(nn.Module):
 
 
         x_embedded = self.embed(x) # either a nn.Con2d or a nn.Conv3d
-        x_embedded = x_embedded.permute(0, 2, 1, 3, 4)
-        x_t_embedded = self.embed_t(x_embedded)
-        x_embedded = x_t_embedded.permute(0, 2, 1, 3, 4)
+        x_embedded = self.norm(x_embedded)
+        # x_embedded = x_embedded.permute(0, 2, 1, 3, 4)
+        # x_t_embedded = self.embed_t(x_embedded)
+        # x_embedded = x_t_embedded.permute(0, 2, 1, 3, 4)
         embedded_dims = x_embedded.shape
 
 
