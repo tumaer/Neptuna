@@ -17,7 +17,7 @@ mix_precision_config:
   bf16: False
   tf32: False
 #number of workers for dataloader
-dataloader_num_workers: 2
+dataloader_num_workers: 4
 #gradient accumulation steps for increasing effective batch size
 gradient_accumulation_steps: 1
 ########################################################
@@ -25,11 +25,11 @@ gradient_accumulation_steps: 1
 ########################################################
 # % of train.h5 dataset used for evaluation
 #Validation, log and save strategies: 
-eval_strategy: "steps" #options are steps, epoch or no.
+eval_strategy: "epoch" #options are steps, epoch or no.
 eval_steps: 15 #only used if eval_strategy is steps
-logging_strategy: "steps" #options are steps, epoch or no.
+logging_strategy: "epoch" #options are steps, epoch or no.
 logging_steps: 15 #only used if logging_strategy is steps
-save_strategy: "steps" #options are steps, epoch or no 
+save_strategy: "epoch" #options are steps, epoch or no 
 #NOTE: save_strategy must be same as eval_strategy for loading the best model at the end for one last validation to obtain the best plot.
 save_steps: 15 #only used if save_strategy is steps
 save_total_limit: 1 #Limits the total amount of checkpoints to the best two. Deletes the older checkpoints in the output_dir.
@@ -44,7 +44,7 @@ n_eval_rollouts: 4
 # If a single float is provided, plotting will be done continously after this epoch is reached.
 # If a list is provided, plotting will be done "once" after each epoch in the list.
 # If null, then plotting is done after every validation step.
-plot_after_epoch: null
+plot_after_epoch: [99999]
 # Plot orientation for validation plots. Options: vertical, horizontal
 plot_orientation: vertical
 # Profile training using torch.profiler

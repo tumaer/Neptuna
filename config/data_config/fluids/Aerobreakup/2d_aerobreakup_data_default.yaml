@@ -1,20 +1,20 @@
 # For details on the parameters, refer to data_config-->example_data_config.yaml
 dataset_name: Aerobreakup
-dataset_directory_path: ./data/fluids/Aerobreakup_DPUVVoS_const_sigma/2D
+dataset_directory_path: /local/disk1/work/codes/Neptuna/fluidverse_data/Aerobreakup_const_sigma/2D
 seed: 42
 dimension: 2
 grid_resolution: null
 eval_groups: null #["Mas3.4780_We59625.7412"]
 is_steady_state_prediction: False 
-sequence_info: [4, 1, 5]
+sequence_info: [1, 1, 5]
 # Available channels for Aerobreakup: ["Density", "Pressure", "Schlieren", "Velocity_X", "Velocity_Y", "Vorticity"]
 filter_features:
   train_filter_frames: null
   train_filter_groups: null
   infer_filter_frames: null
   infer_filter_groups: null
-  filter_in_channels: ["Density", "Velocity_X", "Velocity_Y"]
-  filter_out_channels: ["Density", "Velocity_X", "Velocity_Y"]
+  filter_in_channels: ["Density", "Pressure", "Velocity_X", "Velocity_Y"]
+  filter_out_channels: ["Density", "Pressure", "Velocity_X", "Velocity_Y"]
 #NOTE: For transient simulations, filter_in_channels = filter_out_channels+conditioning_in_channels
 conditioning_features:
   conditioning_in_channels: null #support deprecated
@@ -31,42 +31,42 @@ residual_config: null
   # add_predicted_value_with_diff_loss: False
   # add_predicted_value_with_raw_loss: False
 coord_features: True
-data_normalization_strategy: min_max_normalization
-log_transform_channels: [] #include the statistics for the log-transformed channels
+data_normalization_strategy: z_normalization
+log_transform_channels: ["Density"] #include the statistics for the log-transformed channels
 #NOTE: Statistics are according to sequence_stride = 5 for the dataset: Aerobreakup_DPUVVoS_const_sigma
 data_normalization_stats:
   Density:
-    mean: 83.33301341817466
-    std: 269.4179685161369
-    min: 0.42125036082297695
-    max: 1004.1364431381502
+    mean: 83.5370348630229
+    std: 269.64227179225634
+    min: 0.4020328889016915
+    max: 1004.4333580995886
   Pressure:
-    mean: 592111.7453107495
-    std: 605304.5436878504
-    min: -4485923.347120523
-    max: 8911903.317688227
+    mean: 607559.0824722446
+    std: 605491.2098556767
+    min: -10380680.368083239
+    max: 9535650.917331934
   Schlieren:
-    mean: 372271.7915082011
-    std: 3622607.8502204027
+    mean: 370885.78636042884
+    std: 3615964.6878070366
     min: 0.0
-    max: 56256205.80270014
+    max: 56455261.032936215
   Velocity_X:
-    mean: -3.602899728294646
-    std: 88.66981325357713
-    min: -560.9816606398294
+    mean: -4.043352383286654
+    std: 89.5079282226165
+    min: -589.0099928597
     max: 787.5509011558574
   Velocity_Y:
-    mean: 321.56880553138046
-    std: 344.1734140845195
-    min: -1001.7817263045215
-    max: 1696.9350169115341
+    mean: 333.4784506764429
+    std: 343.79194928969696
+    min: -1011.6848359388082
+    max: 1815.5210752815374
   Vorticity:
-    mean: 402254.761644045
-    std: 1550456.9190509676
+    mean: 409564.31917685445
+    std: 1570136.9544324523
     min: 0.0
-    max: 46891514.7837993
+    max: 52380387.14511884
   log_Density:
-    mean: 1.4615374682913955
-    std: 1.708981374048561
-    min: -0.8645279407628714
-    max: 6.911883190558159
+    mean: 1.4861745578542194
+    std: 1.7001501966378016
+    min: -0.911221380521345
+    max: 6.912178838698859

@@ -1,6 +1,6 @@
 defaults:
-  - data_config: fluids/KS/2d_ks_data_default
-  - model_config: UNet/unet_1M
+  - data_config: fluids/Aerobreakup/2d_aerobreakup_data_default
+  - model_config: CNO/cno_1M
   - output_log_config: default_output_log
   - scheduler_config: default_scheduler
   - train_config: default_training

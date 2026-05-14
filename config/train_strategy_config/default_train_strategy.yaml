@@ -3,7 +3,7 @@
 ########################################################
 
 # Total number of epochs to train.
-num_train_epochs: 0.15
+num_train_epochs: 1
 # Compute metrics batch-wise
 batch_eval_metrics: True
 # Run end-of-epoch evaluation every N epochs (**cannot be changed to steps**)
