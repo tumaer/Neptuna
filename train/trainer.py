@@ -5,6 +5,7 @@ from typing import List, Optional, Dict, Tuple, Union, Any
 from transformers.trainer import *
 from transformers import Trainer as Trainer_
 import numpy as np
+from utils.compute_stats import re_normalize_data, normalize_data
 from utils.load_data import fetch_dataset
 from utils.custom_callbacks import (
     WandbCallback,
@@ -28,6 +29,7 @@ import os
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"           
 import h5py
 import time
+
 
 
 def compute_curriculum_start_epochs(train_strategy_config) -> list:
@@ -122,6 +124,15 @@ class Trainer(Trainer_):
         #self.original_label_seq_len = self.data_config.sequence_info[1] #number of predicted timesteps from the model (#no rollout timesteps considered)
         
         self.get_prediction_loss_for_eval_windows = False #TODO: Find a way to not hardcode this.
+        self.num_epochs_between_eval = max(
+            1,
+            int(
+                self.train_strategy_config.get(
+                    "num_epochs_between_eval",
+                    self.train_config.get("num_epochs_between_eval", 1),
+                )
+            ),
+        )
 
         self.residual_config = self.data_config["residual_config"]
 
@@ -173,7 +184,7 @@ class Trainer(Trainer_):
             self.optimizer,
             self.lr_scheduler,
         )
-        # Initialize loss function from the first train strategy block. (#TODO: START HERE: Update the train_loss_fn and eval_loss_fn from each epoch block
+        # Initialize loss function from the first train strategy block.
         self.loss_fn = self.get_loss_fn(self.train_strategy_config.curriculum[0].train_loss)
 
         # Flag to indicate if detailed losses should be collected for adaptive weighting
@@ -181,6 +192,17 @@ class Trainer(Trainer_):
 
         # Flag to indicate if component-wise gradient norms should be collected for adaptive weighting
         self._collect_gradients = getattr(self, '_collect_gradients', False)
+        self._grad_stat_names = getattr(self, '_grad_stat_names', [])
+
+        self._weight_per_channel = self.train_strategy_config.curriculum[0].train_loss.train_loss_weighting_strategy.get("weight_per_channel", False)
+        self._weight_sub_components = self.train_strategy_config.curriculum[0].train_loss.train_loss_weighting_strategy.get("weight_sub_components", False)
+        self._loss_history_interval = self.train_strategy_config.curriculum[0].train_loss.train_loss_weighting_strategy.get("loss_history_interval", 1)
+        self._grad_history_interval = self.train_strategy_config.curriculum[0].train_loss.train_loss_weighting_strategy.get("grad_history_interval", 1)
+        
+        # Configuration for gradient statistics computation
+        self._grad_stats_last_layer_only = self.train_strategy_config.curriculum[0].train_loss.train_loss_weighting_strategy.get("grad_stats_last_layer_only", False)
+        self._grad_stats_layer_pattern = self.train_strategy_config.curriculum[0].train_loss.train_loss_weighting_strategy.get("grad_stats_layer_pattern", None)
+        self._grad_stats_num_last_params = self.train_strategy_config.curriculum[0].train_loss.train_loss_weighting_strategy.get("grad_stats_num_last_params", 2)
 
         # Inject a reference to this Trainer into all registered callbacks so they can
         # access training context (datasets, model, args, etc.).
@@ -199,7 +221,8 @@ class Trainer(Trainer_):
                     setattr(cb, "trainer", self)
             except Exception:
                 pass
-
+    
+    ##custom function, not inside transformers library
     def get_loss_fn(self, loss_config):
         """
         Build a training loss function from a train_loss config block and place
@@ -217,9 +240,10 @@ class Trainer(Trainer_):
             )
             return loss_fn.to(device)
 
-        logger.warning("No loss_config provided, using default MSE loss")
+        logger.warning("No loss_config provided, using default MSE loss") # ? Is this true during only_inference??
         return None
 
+    #custom function, not inside transformers library
     def _get_train_strategy_block_for_epoch(
         self,
         epoch: Optional[int] = None,
@@ -271,6 +295,7 @@ class Trainer(Trainer_):
 
         return selected
 
+    #custom function, not inside transformers library
     def _compute_raw_prediction(self, prediction: torch.Tensor, base_value: torch.Tensor):
         """
         Compute raw predictions from residual predictions using vectorized operations.
@@ -315,6 +340,7 @@ class Trainer(Trainer_):
             new_base_value = base_value
         return raw_prediction, new_base_value
     
+    #custom function, not inside transformers library
     def _rebuild_datasets(self):
         """
         Recreate training and evaluation datasets with updated hyperparameters.
@@ -334,6 +360,7 @@ class Trainer(Trainer_):
             conditioning_in_channels=self.data_config["conditioning_features"]["conditioning_in_channels"],
             include_conditioning_parameters=self.data_config["conditioning_features"]["include_conditioning_parameters"],
             parameter_min_max_stats=self.data_config["conditioning_features"]["parameter_min_max_stats"],
+            conditioning_parameter_names=self.data_config["conditioning_features"].get("conditioning_parameter_names", None),
             filter_out_channels=self.data_config["filter_features"]["filter_out_channels"],
             data_normalization_stats=self.data_config["data_normalization_stats"],
             data_normalization_strategy=self.data_config["data_normalization_strategy"],
@@ -346,149 +373,53 @@ class Trainer(Trainer_):
         )
         
     ##overrides the one in the  base class from transformers library
-    def get_train_dataloader(self) -> DataLoader:
-        """
-        Create and return the training dataloader with custom sampling strategy.
+    def _get_dataloader(
+        self,
+        dataset: Dataset,
+        description: str,
+        batch_size: int,
+        sampler_fn: Optional[Callable[[Dataset], torch.utils.data.Sampler]] = None,
+        is_training: bool = False,
+        dataloader_key: Optional[str] = None,
+    ) -> DataLoader:
+        """Create a [`~torch.utils.data.DataLoader`] from the given dataset."""
 
-        Returns
-        -------
-        DataLoader
-            Configured training dataloader with custom sampler and collation.
-        """
-        if self.train_dataset is None:
-            raise ValueError("Trainer: training requires a train_dataset.")
-
-        train_dataset = self.train_dataset
-        data_collator = self.data_collator #NOTE: Using the default collator from the base class.
-        
+        data_collator = self.data_collator
         ## NOTE:commented out code from the base class
-        #if is_datasets_available() and isinstance(train_dataset, datasets.Dataset):
-        #    train_dataset = self._remove_unused_columns(train_dataset, description="training")
-        #else:
-        #   data_collator = self._get_collator_with_removed_columns(data_collator, description="training")
-
-        dataloader_params = {
-            "batch_size": self._train_batch_size,
-            "collate_fn": data_collator,
-            "num_workers": self.args.dataloader_num_workers,
-            "pin_memory": self.args.dataloader_pin_memory,
-            "persistent_workers": self.args.dataloader_persistent_workers,
-        }
-
-        if not isinstance(train_dataset, torch.utils.data.IterableDataset):
-            dataloader_params["sampler"] = self._get_train_sampler() ## here we create a custom sampler inside this function, inside this function, the sampler is set to RandomSampler if accelerator_config={"use_seedable_sampler": False} 
-            #and if accelerator_config={"use_seedable_sampler": True} then SeedableRandomSampler (inside accelerate>data_loader.py, this SeedableRandomSampler is a subclass of RandomSampler and is required for distributed training). 
-            #(shuffle  CANNOT BE SET to true or false (Pytorch doesnt allow it) if a custom sampler is used..  the sampler is set to RandomSampler which will provide random indices inside __get_item__ function of the dataloader), 
-            # in a similar way, the _eval_sampler function has a SequentialSampler, regardless of the shuffle being true or false.
-            #"From pytorch documentation:  If sampler is specified, :attr:`shuffle` must not be specified."
-            dataloader_params["drop_last"] = self.args.dataloader_drop_last
-            dataloader_params["worker_init_fn"] = seed_worker
-            dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
-
-        return self.accelerator.prepare(DataLoader(train_dataset, **dataloader_params)) 
-    
-    ##overrides the one in the base class from transformers library
-    def get_eval_dataloader(self, eval_dataset: Optional[Union[str, Dataset]] = None) -> DataLoader:
-        """
-        Returns the evaluation [`~torch.utils.data.DataLoader`].
-
-        Parameters
-        ----------
-            eval_dataset (`str` or `torch.utils.data.Dataset`, *optional*):
-                If a `str`, will use `self.eval_dataset[eval_dataset]` as the evaluation dataset. If a `Dataset`, will override `self.eval_dataset` and must implement `__len__`. If it is a [`~datasets.Dataset`], columns not accepted by the `model.forward()` method are automatically removed.
-    
-        Returns
-        -------
-        DataLoader
-            Configured evaluation dataloader with sequential sampling.
-        """
-        if eval_dataset is None and self.eval_dataset is None:
-            raise ValueError("Trainer: evaluation requires an eval_dataset.")
-
-        # If we have persistent workers, don't do a fork bomb especially as eval datasets
-        # don't change during training
-        dataloader_key = eval_dataset if isinstance(eval_dataset, str) else "eval"
-        if (
-            hasattr(self, "_eval_dataloaders")
-            and dataloader_key in self._eval_dataloaders
-            and self.args.dataloader_persistent_workers
-        ):
-            return self.accelerator.prepare(self._eval_dataloaders[dataloader_key])
-
-        eval_dataset = (
-            self.eval_dataset[eval_dataset]
-            if isinstance(eval_dataset, str)
-            else eval_dataset
-            if eval_dataset is not None
-            else self.eval_dataset
-        )
-        data_collator = self.data_collator
-
-        ##commented out code from the base class
-        # if is_datasets_available() and isinstance(eval_dataset, datasets.Dataset):
-        #     eval_dataset = self._remove_unused_columns(eval_dataset, description="evaluation")
+        # if is_datasets_available() and isinstance(dataset, datasets.Dataset):
+        #     dataset = self._remove_unused_columns(dataset, description=description)
         # else:
-        #     data_collator = self._get_collator_with_removed_columns(data_collator, description="evaluation")
+        #     data_collator = self._get_collator_with_removed_columns(self.data_collator, description=description)
 
         dataloader_params = {
-            "batch_size": self.args.eval_batch_size,
+            "batch_size": batch_size,
             "collate_fn": data_collator,
             "num_workers": self.args.dataloader_num_workers,
             "pin_memory": self.args.dataloader_pin_memory,
             "persistent_workers": self.args.dataloader_persistent_workers,
         }
 
-        if not isinstance(eval_dataset, torch.utils.data.IterableDataset):
-            dataloader_params["sampler"] = self._get_eval_sampler(eval_dataset)
+        if not isinstance(dataset, torch.utils.data.IterableDataset):
+            if sampler_fn is not None:
+                dataloader_params["sampler"] = sampler_fn(dataset)
             dataloader_params["drop_last"] = self.args.dataloader_drop_last
             dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
+            if is_training:
+                dataloader_params["worker_init_fn"] = partial(
+                    seed_worker, num_workers=self.args.dataloader_num_workers, rank=self.args.process_index
+                )
 
-        # accelerator.free_memory() will destroy the references, so
-        # we need to store the non-prepared version
-        eval_dataloader = DataLoader(eval_dataset, **dataloader_params)
-        if self.args.dataloader_persistent_workers:
+        dataloader = self.accelerator.prepare(DataLoader(dataset, **dataloader_params))
+
+        # Store the prepared dataloader for subsequent evaluations if using persistent workers.
+        if dataloader_key is not None and self.args.dataloader_persistent_workers:
             if hasattr(self, "_eval_dataloaders"):
-                self._eval_dataloaders[dataloader_key] = eval_dataloader
+                self._eval_dataloaders[dataloader_key] = dataloader
             else:
-                self._eval_dataloaders = {dataloader_key: eval_dataloader}
+                self._eval_dataloaders = {dataloader_key: dataloader}
 
-        return self.accelerator.prepare(eval_dataloader)
-    
-     ##overrides the one in the base class from transformers library
-    def get_test_dataloader(self, test_dataset: Dataset) -> DataLoader:
-        """
-        Returns the test [`~torch.utils.data.DataLoader`].
+        return dataloader
 
-        Subclass and override this method if you want to inject some custom behavior.
-
-        Args:
-            test_dataset (`torch.utils.data.Dataset`, *optional*):
-                The test dataset to use. If it is a [`~datasets.Dataset`], columns not accepted by the
-                `model.forward()` method are automatically removed. It must implement `__len__`.
-        """
-        data_collator = self.data_collator
-
-        ##commented out code from the base class
-        # if is_datasets_available() and isinstance(test_dataset, datasets.Dataset):
-        #     test_dataset = self._remove_unused_columns(test_dataset, description="test")
-        # else:
-        #     data_collator = self._get_collator_with_removed_columns(data_collator, description="test")
-
-        dataloader_params = {
-            "batch_size": self.args.eval_batch_size,
-            "collate_fn": data_collator,
-            "num_workers": self.args.dataloader_num_workers,
-            "pin_memory": self.args.dataloader_pin_memory,
-            "persistent_workers": self.args.dataloader_persistent_workers,
-        }
-
-        if not isinstance(test_dataset, torch.utils.data.IterableDataset):
-            dataloader_params["sampler"] = self._get_eval_sampler(test_dataset)
-            dataloader_params["drop_last"] = self.args.dataloader_drop_last
-            dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
-
-        # We use the same batch_size as for eval.
-        return self.accelerator.prepare(DataLoader(test_dataset, **dataloader_params))
     ##custom function, not inside transformers library
     def _forward_model_train(self, model, inputs):
         """
@@ -521,6 +452,7 @@ class Trainer(Trainer_):
         return prediction
 
     ##overrides the one in the base class from transformers library
+    # ! heavily modified compared to the base class
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None): 
         """
         Compute training loss.
@@ -547,50 +479,103 @@ class Trainer(Trainer_):
         
         # Get labels for the current rollout step
         labels = inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1]]
+
+        input_frames = inputs["input_data"]
         
-        if not self._collect_detailed_losses: #for fixed weighting of train_loss components
+        # Check if we should collect detailed losses at this step
+        should_collect_losses = (
+            self._collect_detailed_losses and 
+            self.state.global_step % self._loss_history_interval == 0
+        )
+        
+        
+        if not should_collect_losses:
             loss = self.loss_fn(
                 model=model,
                 predictions=prediction,
                 labels=labels,
+                input_frames=input_frames,
                 return_detailed=False
             )
         else: #for adaptive weighting of train_loss components
+            # Check if we should collect gradients at this step
+            should_collect_grads = (
+                self._collect_gradients and 
+                self.state.global_step % self._grad_history_interval == 0
+            )
+
             loss, detailed = self.loss_fn(
                 model=model,
                 predictions=prediction,
                 labels=labels,
+                input_frames=input_frames,
                 return_detailed=True,
-                preserve_component_grads=self._collect_gradients
+                preserve_component_grads=should_collect_grads
             )
 
             if not hasattr(self, '_detailed_loss_accumulator'):
                 self._detailed_loss_accumulator = {}
 
-            if self._collect_gradients and not hasattr(self, '_gradient_accumulator'):
+            if should_collect_grads and not hasattr(self, '_gradient_accumulator'):
                 self._gradient_accumulator = {}
             
             for component_name, component_detailed in detailed.items():
                 # Extract loss value
-                loss_value = component_detailed.get('total', component_detailed) if isinstance(component_detailed, dict) else component_detailed
+                loss_value = component_detailed.get('total', component_detailed)
                 
-                # Register gradient hooks if needed
-                if self._collect_gradients and torch.is_tensor(loss_value) and loss_value.requires_grad:
+                # Register gradient hooks if needed (only when collecting gradients)
+                if should_collect_grads and loss_value.requires_grad:
                     loss_value.retain_grad()
                     self._register_gradient_hook(component_name, loss_value)
 
                 # Convert to detached GPU tensor
-                loss_scalar = loss_value.detach() if torch.is_tensor(loss_value) else torch.tensor(float(loss_value), device=loss.device)
+                loss_scalar = loss_value.detach()
                 
-                # Accumulate training loss
+                # Accumulate training loss for total
                 if component_name not in self._detailed_loss_accumulator:
                     self._detailed_loss_accumulator[component_name] = []
                 self._detailed_loss_accumulator[component_name].append(loss_scalar)
                 
+                # Optionally accumulate per-channel losses
+                if self._weight_per_channel and 'per_channel' in component_detailed:
+                    per_channel_value = component_detailed['per_channel']
+                    
+                    # Iterate over each channel index
+                    for ch_idx in range(per_channel_value.numel()):
+                        ch_scalar = per_channel_value[ch_idx]
+                        per_channel_key = f"{component_name}/channel_{ch_idx}"
+                        
+                        if per_channel_key not in self._detailed_loss_accumulator:
+                            self._detailed_loss_accumulator[per_channel_key] = []
+                        
+                        # Accumulate the detached scalar
+                        per_channel_detached = ch_scalar.detach()
+                        self._detailed_loss_accumulator[per_channel_key].append(per_channel_detached)
+                        
+                        # Register gradient hooks for each channel scalar if needed
+                        if should_collect_grads and ch_scalar.requires_grad:
+                            ch_scalar.retain_grad()
+                            self._register_gradient_hook(per_channel_key, ch_scalar)
+                    
+                    # Optionally accumulate per-component losses
+                    if self._weight_sub_components and 'per_component' in component_detailed:
+                        per_component_dict = component_detailed['per_component']
+                        for sub_component_name, sub_component_value in per_component_dict.items():
+                            sub_component_key = f"{component_name}/{sub_component_name}"
+                            if sub_component_key not in self._detailed_loss_accumulator:
+                                self._detailed_loss_accumulator[sub_component_key] = []
+                            
+                            sub_component_detached = sub_component_value.detach() if torch.is_tensor(sub_component_value) else torch.tensor(float(sub_component_value), device=loss.device)
+                            self._detailed_loss_accumulator[sub_component_key].append(sub_component_detached)
+                            
+                            # Register gradient hooks for per-component if needed
+                            if should_collect_grads and sub_component_value.requires_grad:
+                                sub_component_value.retain_grad()
+                                self._register_gradient_hook(sub_component_key, sub_component_value)
             
         return (loss, prediction) if return_outputs else loss
 
-
+    ##custom function, not inside transformers library
     def _register_gradient_hook(self, component_name: str, component_loss: torch.Tensor):
         """
         Store component loss for later gradient computation w.r.t. model parameters.
@@ -599,61 +584,150 @@ class Trainer(Trainer_):
         if not hasattr(self, '_component_losses_for_grad'):
             self._component_losses_for_grad = {}
         self._component_losses_for_grad[component_name] = component_loss
-
-    def _compute_component_gradient_norms(self):
+    
+    ##custom function, not inside transformers library
+    def _get_params_for_grad_stats(self, model):
         """
-        Compute gradient norms of each component w.r.t. model parameters.
+        Get the parameters to use for gradient statistics computation.
+        
+        Returns an iterable of (name, param) tuples based on configuration:
+        - If grad_stats_last_layer_only is False: returns all parameters
+        - If grad_stats_layer_pattern is specified: returns parameters matching the pattern
+        - Otherwise: returns the last N parameters (default N=2 for weight and bias of final layer)
+        
+        Parameters
+        ----------
+        model : torch.nn.Module
+            The model whose parameters to filter.
+            
+        Returns
+        -------
+        List[Tuple[str, torch.nn.Parameter]]
+            List of (name, parameter) tuples to use for gradient statistics.
+        """
+        all_params = list(model.named_parameters())
+        
+        if not self._grad_stats_last_layer_only:
+            # Use all parameters
+            return all_params
+        
+        if self._grad_stats_layer_pattern is not None:
+            # Filter by pattern (e.g., "output", "head", "final")
+            pattern = self._grad_stats_layer_pattern.lower()
+            filtered = [(name, param) for name, param in all_params if pattern in name.lower()]
+            if filtered:
+                return filtered
+            else:
+                logger.warning(
+                    f"No parameters matched pattern '{self._grad_stats_layer_pattern}'. "
+                    f"Falling back to last {self._grad_stats_num_last_params} parameters."
+                )
+        
+        # Use last N parameters
+        n = min(self._grad_stats_num_last_params, len(all_params))
+        return all_params[-n:]
+
+    def _compute_component_gradient_stats(self):
+        """
+        Compute gradient statistics of each component w.r.t. model parameters.
+        Stats are controlled by self._grad_stat_names (e.g., ["norm", "var", "max"]).
         """
         if not hasattr(self, '_component_losses_for_grad'):
             return
-        
+
+        if not getattr(self, "_grad_stat_names", None):
+            return
+
         if not hasattr(self, '_gradient_accumulator'):
             self._gradient_accumulator = {}
-        
+
+        stat_names = set(self._grad_stat_names)
         model = self.model
+
+        # Get filtered parameters for gradient statistics
+        params_for_stats = self._get_params_for_grad_stats(model)
         
         # Store current gradients if any exist
         saved_grads = {}
         for name, param in model.named_parameters():
             if param.grad is not None:
                 saved_grads[name] = param.grad.clone()
-        
+
         for component_name, component_loss in self._component_losses_for_grad.items():
             # Zero gradients
             model.zero_grad(set_to_none=True)
-            
+
             # Compute gradient of this component w.r.t. parameters
             component_loss.backward(retain_graph=True)
-            
-            # Compute total gradient norm across parameters
+
+            # Accumulators
             total_norm_sq = 0.0
-            for param in model.parameters():
-                if param.grad is not None:
-                    total_norm_sq += param.grad.norm(2).item() ** 2
-            
-            grad_norm = total_norm_sq ** 0.5
-            
-            # Store as GPU tensor (consistent with loss handling)
+            max_abs = 0.0
+            sum_vals = 0.0
+            sum_sq = 0.0
+            count = 0
+
+            # Only iterate over filtered parameters for statistics
+            for name, param in params_for_stats:
+                if param.grad is None:
+                    continue
+                g = param.grad.detach()
+
+                if "norm" in stat_names:
+                    # Use sum of squares to avoid extra sqrt each param
+                    total_norm_sq += float(g.pow(2).sum().item())
+
+                if "max" in stat_names:
+                    max_abs = max(max_abs, float(g.abs().max().item()))
+
+                if "var" in stat_names:
+                    sum_vals += float(g.sum().item())
+                    sum_sq += float(g.pow(2).sum().item())
+                    count += g.numel()
+
+            # Prepare component entry
             if component_name not in self._gradient_accumulator:
-                self._gradient_accumulator[component_name] = []
-            
-            # Convert to tensor on same device as component_loss
-            grad_norm_tensor = torch.tensor(grad_norm, device=component_loss.device)
-            self._gradient_accumulator[component_name].append(grad_norm_tensor)
-        
+                self._gradient_accumulator[component_name] = {}
+
+            device = component_loss.device
+
+            if "norm" in stat_names:
+                grad_norm = total_norm_sq ** 0.5
+                self._gradient_accumulator[component_name].setdefault("norm", []).append(
+                    torch.tensor(grad_norm, device=device)
+                )
+
+            if "max" in stat_names:
+                self._gradient_accumulator[component_name].setdefault("max", []).append(
+                    torch.tensor(max_abs, device=device)
+                )
+
+            if "var" in stat_names:
+                if count > 0:
+                    mean = sum_vals / count
+                    var = max((sum_sq / count) - (mean ** 2), 0.0)
+                else:
+                    var = 0.0
+                self._gradient_accumulator[component_name].setdefault("var", []).append(
+                    torch.tensor(var, device=device)
+                )
+
         # Restore previous gradients
         model.zero_grad(set_to_none=True)
         for name, param in model.named_parameters():
             if name in saved_grads:
                 param.grad = saved_grads[name]
-        
+
         # Clear stored component losses
         self._component_losses_for_grad = {}
 
 
     # Overriden from the base class in transformers library
     def training_step(
-        self, model: nn.Module, inputs: dict[str, Union[torch.Tensor, Any]], num_items_in_batch=None
+        self, 
+        model: nn.Module, 
+        inputs: dict[str, Union[torch.Tensor, Any]], 
+        num_items_in_batch=None
     ) -> torch.Tensor:
         """
         Perform a training step on a batch of inputs.
@@ -672,68 +746,84 @@ class Trainer(Trainer_):
         Return:
             `torch.Tensor`: The tensor with training loss on this batch.
         """
-        model.train()
-        if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
-            self.optimizer.train()
+        # Prepare buffers for context parallelism
 
-        inputs = self._prepare_inputs(inputs)
-        if is_sagemaker_mp_enabled():
-            loss_mb = smp_forward_backward(model, inputs, self.args.gradient_accumulation_steps)
-            return loss_mb.reduce_mean().detach().to(self.args.device)
+        cp_context, inputs = self._prepare_context_parallel_inputs(model, inputs)
 
-        #loss here is the CompositeLoss scalar, which initiates the backward pass.
-        with self.compute_loss_context_manager():
-            loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+        # Context manager is no-op if CP isn't enabled
+        with cp_context():
+            model.train()
+            if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
+                self.optimizer.train()
 
-        # Added: compute component gradient norms if needed
-        if self._collect_gradients:
-            self._compute_component_gradient_norms()
+            inputs = self._prepare_inputs(inputs)
+            if is_sagemaker_mp_enabled():
+                loss_mb = smp_forward_backward(model, inputs, self.args.gradient_accumulation_steps)
+                return loss_mb.reduce_mean().detach().to(self.args.device)
 
-        del inputs
-        if (
-            self.args.torch_empty_cache_steps is not None
-            and self.state.global_step % self.args.torch_empty_cache_steps == 0
-        ):
-            if is_torch_xpu_available():
-                torch.xpu.empty_cache()
-            elif is_torch_mlu_available():
-                torch.mlu.empty_cache()
-            elif is_torch_musa_available():
-                torch.musa.empty_cache()
-            elif is_torch_npu_available():
-                torch.npu.empty_cache()
-            elif is_torch_mps_available(min_version="2.0"):
-                torch.mps.empty_cache()
-            elif is_torch_hpu_available():
-                logger.warning(
-                    "`torch_empty_cache_steps` is set but HPU device/backend does not support empty_cache()."
-                )
+            #loss here is the CompositeLoss scalar, which initiates the backward pass.
+            with self.compute_loss_context_manager():
+                loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+
+            should_collect_grads = (
+                self._collect_gradients and 
+                self.state.global_step % self._grad_history_interval == 0
+            )
+
+            # Added: (Not in base class) compute component gradient stats if needed
+            if should_collect_grads:
+                self._compute_component_gradient_stats()
+
+            del inputs
+            if (
+                self.args.torch_empty_cache_steps is not None
+                and self.state.global_step % self.args.torch_empty_cache_steps == 0
+            ):
+                if is_torch_xpu_available():
+                    torch.xpu.empty_cache()
+                elif is_torch_mlu_available():
+                    torch.mlu.empty_cache()
+                elif is_torch_musa_available():
+                    torch.musa.empty_cache()
+                elif is_torch_npu_available():
+                    torch.npu.empty_cache()
+                elif is_torch_mps_available():
+                    torch.mps.empty_cache()
+                elif is_torch_hpu_available():
+                    logger.warning(
+                        "`torch_empty_cache_steps` is set but HPU device/backend does not support empty_cache()."
+                    )
+                else:
+                    torch.cuda.empty_cache()
+
+            kwargs = {}
+
+            # For LOMO optimizers you need to explicitly use the learning rate
+            if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
+                kwargs["learning_rate"] = self._get_learning_rate()
+
+            if self.args.n_gpu > 1:
+                loss = loss.mean()  # mean() to average on multi-gpu parallel training
+
+            if self.use_apex:
+                from apex import amp
+
+                with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                    scaled_loss.backward()
             else:
-                torch.cuda.empty_cache()
+                # Finally we need to normalize the loss for reporting if GA loss bug is not fixed during compute loss
+                if (
+                    not self.model_accepts_loss_kwargs or num_items_in_batch is None
+                ) and self.compute_loss_func is None:
+                    # If the model does not accept loss kwargs, we need to normalize the loss by the number of gradient accumulation steps
+                    loss = loss / self.current_gradient_accumulation_steps
 
-        kwargs = {}
+                # Turning off loss scaling w.r.t. gradient accumulation when DeepSpeed is enabled
+                # https://github.com/huggingface/transformers/pull/35808
+                if self.accelerator.distributed_type == DistributedType.DEEPSPEED:
+                    kwargs["scale_wrt_gas"] = False
 
-        # For LOMO optimizers you need to explicitly use the learnign rate
-        if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
-            kwargs["learning_rate"] = self._get_learning_rate()
-
-        if self.args.n_gpu > 1:
-            loss = loss.mean()  # mean() to average on multi-gpu parallel training
-
-        if self.use_apex:
-            with amp.scale_loss(loss, self.optimizer) as scaled_loss:
-                scaled_loss.backward()
-        else:
-            # Finally we need to normalize the loss for reporting
-            if not self.model_accepts_loss_kwargs and self.compute_loss_func is None:
-                loss = loss / self.args.gradient_accumulation_steps
-
-            # Turning off loss scaling w.r.t. gradient accumulation when DeepSpeed is enabled
-            # https://github.com/huggingface/transformers/pull/35808
-            if self.accelerator.distributed_type == DistributedType.DEEPSPEED:
-                kwargs["scale_wrt_gas"] = False
-
-            self.accelerator.backward(loss, **kwargs)
+                self.accelerator.backward(loss, **kwargs)
 
             return loss.detach()
 
@@ -762,7 +852,7 @@ class Trainer(Trainer_):
         prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_features"]["filter_out_channels"]), *spatial_dims)
         return prediction
     
-    #NOTE: There are two functions for eval_loss: 
+    #NOTE: There are two functions for eval_loss (both not inside transformers library): 
     # 1) compute_eval_loss, one which computes the mse loss of each window of the batch, takes the mean across the batch and assigns the same scalar value to all entries of the batch. 
     # 2) compute_eval_without_loss, no window loss is computed, the predictions are accumulated as the batches get processed and loss is computed inside compute_metrics inside run.py
     def compute_eval_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
@@ -1041,6 +1131,7 @@ class Trainer(Trainer_):
         # Return either the full tensor (B, S, T, C, *spatial*) or the last prediction
         return predictions if self.output_all_steps else prediction.detach()
 
+    ## overrides the one in the base class from transformers library
     def _inner_training_loop(
         self, batch_size=None, args=None, resume_from_checkpoint=None, trial=None, ignore_keys_for_eval=None
     ):
@@ -1071,7 +1162,8 @@ class Trainer(Trainer_):
         # number of training epochs: num_train_epochs
         # number of training steps per epoch: num_update_steps_per_epoch
         # total number of training steps to execute: max_steps
-        total_train_batch_size = self._train_batch_size * args.gradient_accumulation_steps * args.world_size
+        total_train_batch_size = self.get_total_train_batch_size(args)
+
         (
             num_train_epochs,
             num_update_steps_per_epoch,
@@ -1105,6 +1197,11 @@ class Trainer(Trainer_):
 
         delay_optimizer_creation = is_sagemaker_mp_enabled() or self.is_fsdp_xla_enabled or self.is_fsdp_enabled
 
+        # Can't delay optimizer creation when using FSDP2: https://github.com/huggingface/accelerate/blob/3f636d626063ffcf9a337c7d3624d61b7d187d59/src/accelerate/accelerator.py#L1404
+        is_fsdp2 = self.is_fsdp_enabled and (getattr(self.accelerator.state.fsdp_plugin, "fsdp_version", 1) == 2)
+        if is_fsdp2:
+            delay_optimizer_creation = False
+
         # We need to reset the scheduler, as its parameters may be different on subsequent calls
         if self._created_lr_scheduler:
             self.lr_scheduler = None
@@ -1136,7 +1233,7 @@ class Trainer(Trainer_):
         # as the model is wrapped, don't use `accelerator.prepare`
         # this is for unhandled cases such as
         # FSDP-XLA, SageMaker MP/DP, DataParallel, IPEX
-        use_accelerator_prepare = True if model is self.model else False
+        use_accelerator_prepare = model is self.model
 
         if use_accelerator_prepare and self.is_fsdp_enabled:
             # In case of auto_find_batch_size=True
@@ -1158,12 +1255,17 @@ class Trainer(Trainer_):
                 if self.use_apex:
                     model = self.accelerator.prepare(self.model)
                 else:
-                    model, self.optimizer = self.accelerator.prepare(self.model, self.optimizer)
+                    # We should avoid accelerate preparing the model in TP case since we dont need it as it is handled by transformers from_pretrained and also it goes into DDP based preparation.
+                    if self.is_tp_enabled:
+                        self.optimizer = self.accelerator.prepare(self.optimizer)
+                    else:
+                        model, self.optimizer = self.accelerator.prepare(self.model, self.optimizer)
             else:
                 # to handle cases wherein we pass "DummyScheduler" such as when it is specified in DeepSpeed config.
                 model, self.optimizer, self.lr_scheduler = self.accelerator.prepare(
                     self.model, self.optimizer, self.lr_scheduler
                 )
+
         elif self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
             # In this case we are in DDP + LOMO, which should be supported
             self.optimizer = self.accelerator.prepare(self.optimizer)
@@ -1246,17 +1348,18 @@ class Trainer(Trainer_):
         self.state.init_training_references(self, max_steps, num_train_epochs, trial)
 
         # tr_loss is a tensor to avoid synchronization of TPUs through .item()
-        tr_loss = torch.tensor(0.0).to(args.device)
+        tr_loss = torch.tensor(0.0, device=args.device)
         # _total_loss_scalar is updated everytime .item() has to be called on tr_loss and stores the sum of all losses
         self._total_loss_scalar = 0.0
         self._globalstep_last_logged = self.state.global_step
         model.zero_grad()
         grad_norm: Optional[float] = None
+        learning_rate = None
         self.control = self.callback_handler.on_train_begin(args, self.state, self.control)
-
+        
         if args.eval_on_start:
             self._evaluate(trial, ignore_keys_for_eval, skip_scheduler=True)
-
+        
         for epoch in range(epochs_trained, num_train_epochs):
             epoch_dataloader = train_dataloader
             if hasattr(epoch_dataloader, "set_epoch"):
@@ -1271,6 +1374,7 @@ class Trainer(Trainer_):
                 if len_dataloader is not None
                 else args.max_steps * args.gradient_accumulation_steps
             )
+            
             self.control = self.callback_handler.on_epoch_begin(args, self.state, self.control)
 
             if epoch == epochs_trained and resume_from_checkpoint is not None and steps_trained_in_current_epoch == 0:
@@ -1287,146 +1391,205 @@ class Trainer(Trainer_):
             step = -1
             epoch_iterator = iter(epoch_dataloader)
             # We chunkify the epoch iterator into gradient accumulation steps `n` batches
-            remainder = num_examples % args.gradient_accumulation_steps
+            remainder = steps_in_epoch % args.gradient_accumulation_steps
             if remainder == 0:
                 remainder = args.gradient_accumulation_steps
             update_step = -1
-            total_updates = steps_in_epoch // args.gradient_accumulation_steps + 1
-            if args.gradient_accumulation_steps == 1:
-                total_updates -= 1
-            for _ in range(total_updates):
-                update_step += 1
-                num_batches = args.gradient_accumulation_steps if update_step != (total_updates - 1) else remainder
-                batch_samples, num_items_in_batch = self.get_batch_samples(epoch_iterator, num_batches, args.device)
-                for i, inputs in enumerate(batch_samples):
-                    step += 1
-                    do_sync_step = (step + 1) % args.gradient_accumulation_steps == 0 or (step + 1) == steps_in_epoch
-                    # Since we perform prefetching, we need to manually set sync_gradients
-                    self.accelerator.gradient_state._set_sync_gradients(do_sync_step)
+            total_updates = steps_in_epoch // args.gradient_accumulation_steps + int(
+                remainder < args.gradient_accumulation_steps
+            )
+            def trace_handler(p):
+                print(p.key_averages().table(sort_by="self_cuda_time_total", row_limit=30))
+                p.export_chrome_trace("./trace.json")
 
-                    if self.args.include_num_input_tokens_seen:
-                        main_input_name = getattr(self.model, "main_input_name", "input_ids")
-                        if main_input_name not in inputs:
-                            logger.warning(
-                                "Tried to track the number of tokens seen, however the current model is "
-                                "not configured properly to know what item is the input. To fix this, add "
-                                "a `main_input_name` attribute to the model class you are using."
+            profile_training_cfg = self.train_config.get("profile_training", {})
+            profile_training_enabled = bool(profile_training_cfg.get("enabled", False))
+            profile_wait = int(profile_training_cfg.get("wait", 0))
+            profile_warmup = int(profile_training_cfg.get("warmup", 150))
+            profile_active = int(profile_training_cfg.get("active_steps", 30))
+            profile_repeat = int(profile_training_cfg.get("repeat", 1))
+            profiler_context = (
+                torch.profiler.profile(
+                    activities=[torch.profiler.ProfilerActivity.CPU, 
+                                torch.profiler.ProfilerActivity.CUDA, 
+                                torch.profiler.ProfilerActivity.XPU], 
+                    record_shapes=False, 
+                    schedule=torch.profiler.schedule(
+                        wait=profile_wait,
+                        warmup=profile_warmup,
+                        active=profile_active,
+                        repeat=profile_repeat,
+                    ),
+                    on_trace_ready=trace_handler,
+                    profile_memory=True,
+                    with_stack=True
+                )
+                if profile_training_enabled
+                else contextlib.nullcontext()
+            )
+
+            with profiler_context as prof:
+                for _ in range(total_updates):
+                    update_step += 1
+                    num_batches = args.gradient_accumulation_steps if update_step != (total_updates - 1) else remainder
+                    batch_samples, num_items_in_batch = self.get_batch_samples(epoch_iterator, num_batches, args.device)
+                    # Store the number of batches for current gradient accumulation
+                    # This is used to correctly scale the loss when the last accumulation step has fewer batches
+                    self.current_gradient_accumulation_steps = len(batch_samples)
+                    for i, inputs in enumerate(batch_samples):
+                        step += 1
+                        do_sync_step = (step + 1) % args.gradient_accumulation_steps == 0 or (step + 1) == steps_in_epoch
+                        # Since we perform prefetching, we need to manually set sync_gradients
+                        self.accelerator.gradient_state._set_sync_gradients(do_sync_step)
+
+                        if self.args.include_num_input_tokens_seen:
+                            main_input_name = getattr(self.model, "main_input_name", "input_ids")
+                            if main_input_name not in inputs:
+                                logger.warning(
+                                    "Tried to track the number of tokens seen, however the current model is "
+                                    "not configured properly to know what item is the input. To fix this, add "
+                                    "a `main_input_name` attribute to the model class you are using."
+                                )
+                            else:
+                                input_tokens = inputs[main_input_name].numel()
+                                input_tokens = torch.tensor(input_tokens, device=self.args.device, dtype=torch.int64)
+                                self.state.num_input_tokens_seen += self.accelerator.gather(input_tokens).sum().item()
+                        if rng_to_sync:
+                            self._load_rng_state(resume_from_checkpoint)
+                            rng_to_sync = False
+                        
+                        # Skip past any already trained steps if resuming training
+                        if steps_trained_in_current_epoch > 0:
+                            steps_trained_in_current_epoch -= 1
+                            if steps_trained_progress_bar is not None:
+                                steps_trained_progress_bar.update(1)
+                            if steps_trained_in_current_epoch == 0:
+                                self._load_rng_state(resume_from_checkpoint)
+                            continue
+                        elif steps_trained_progress_bar is not None:
+                            steps_trained_progress_bar.close()
+                            steps_trained_progress_bar = None
+                        
+                        if step % args.gradient_accumulation_steps == 0:
+                            self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
+
+                        # We explicitly want to avoid relying on `accelerator.accumulate` for generation training
+                        context = (
+                            functools.partial(self.accelerator.no_sync, model=model)
+                            if i != len(batch_samples) - 1
+                            and self.accelerator.distributed_type != DistributedType.DEEPSPEED
+                            else contextlib.nullcontext
+                        )
+                        with context():
+                            tr_loss_step = self.training_step(model, inputs, num_items_in_batch)
+
+                        if (
+                            args.logging_nan_inf_filter
+                            and not is_torch_xla_available()
+                            and (torch.isnan(tr_loss_step) or torch.isinf(tr_loss_step))
+                        ):
+                            # if loss is nan or inf simply add the average of previous logged losses
+                            tr_loss = tr_loss + tr_loss / (1 + self.state.global_step - self._globalstep_last_logged)
+                        else:
+                            if tr_loss.device != tr_loss_step.device:
+                                raise ValueError(
+                                    f"Calculated loss must be on the original device: {tr_loss.device} but device in use is {tr_loss_step.device}"
+                                )
+                            tr_loss = tr_loss + tr_loss_step
+
+                        self.current_flos += float(self.floating_point_ops(inputs))
+
+                        if do_sync_step:
+                            # Since we perform prefetching, we need to manually set sync_gradients to True
+                            self.accelerator.gradient_state._set_sync_gradients(True)
+
+                            # Gradient clipping
+                            if args.max_grad_norm is not None and args.max_grad_norm > 0:
+                                if is_sagemaker_mp_enabled() and args.fp16:
+                                    _grad_norm = self.optimizer.clip_master_grads(args.max_grad_norm)
+                                elif self.use_apex:
+                                    from apex import amp
+
+                                    # Revert to normal clipping otherwise, handling Apex or full precision
+                                    _grad_norm = nn.utils.clip_grad_norm_(
+                                        amp.master_params(self.optimizer),
+                                        args.max_grad_norm,
+                                    )
+                                else:
+                                    grad_norm_context = contextlib.nullcontext
+                                    if self.is_tp_enabled:
+                                        from torch.distributed._tensor.experimental import implicit_replication
+
+                                        grad_norm_context = implicit_replication
+                                    with grad_norm_context():
+                                        _grad_norm = self.accelerator.clip_grad_norm_(
+                                            model.parameters(),
+                                            args.max_grad_norm,
+                                        )
+
+                                if (
+                                    is_accelerate_available()
+                                    and self.accelerator.distributed_type == DistributedType.DEEPSPEED
+                                ):
+                                    grad_norm = model.get_global_grad_norm()
+                                    # In some cases the grad norm may not return a float
+                                    if hasattr(grad_norm, "item"):
+                                        grad_norm = grad_norm.item()
+                                else:
+                                    grad_norm = _grad_norm
+
+                            self.control = self.callback_handler.on_pre_optimizer_step(args, self.state, self.control)
+
+                            context = contextlib.nullcontext
+                            if self.is_tp_enabled:
+                                from torch.distributed._tensor.experimental import implicit_replication
+
+                                context = implicit_replication
+
+                            with context():
+                                self.optimizer.step()
+
+                            self.control = self.callback_handler.on_optimizer_step(args, self.state, self.control)
+
+                            # get leaning rate before update
+                            learning_rate = self._get_learning_rate()
+
+                            if not self.accelerator.optimizer_step_was_skipped:
+                                # Delay optimizer scheduling until metrics are generated
+                                if not isinstance(self.lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                                    self.lr_scheduler.step()
+
+                            model.zero_grad()
+                            self.state.global_step += 1
+                            self.state.epoch = epoch + (step + 1 + steps_skipped) / steps_in_epoch
+                            self.control = self.callback_handler.on_step_end(args, self.state, self.control)
+                            self._maybe_log_save_evaluate(
+                                tr_loss,
+                                grad_norm,
+                                model,
+                                trial,
+                                epoch,
+                                ignore_keys_for_eval,
+                                start_time,
+                                learning_rate=learning_rate,
                             )
                         else:
-                            input_tokens = inputs[main_input_name].numel()
-                            input_tokens = torch.tensor(input_tokens, device=self.args.device, dtype=torch.int64)
-                            self.state.num_input_tokens_seen += (
-                                self.accelerator.gather(input_tokens).sum().cpu().item()
-                            )
-                    if rng_to_sync:
-                        self._load_rng_state(resume_from_checkpoint)
-                        rng_to_sync = False
+                            self.control = self.callback_handler.on_substep_end(args, self.state, self.control)
 
-                    # Skip past any already trained steps if resuming training
-                    if steps_trained_in_current_epoch > 0:
-                        steps_trained_in_current_epoch -= 1
-                        if steps_trained_progress_bar is not None:
-                            steps_trained_progress_bar.update(1)
-                        if steps_trained_in_current_epoch == 0:
-                            self._load_rng_state(resume_from_checkpoint)
-                        continue
-                    elif steps_trained_progress_bar is not None:
-                        steps_trained_progress_bar.close()
-                        steps_trained_progress_bar = None
-
-                    if step % args.gradient_accumulation_steps == 0:
-                        self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
-
-                    # We explicitly want to avoid relying on `accelerator.accumulate` for generation training
-                    context = (
-                        functools.partial(self.accelerator.no_sync, model=model)
-                        if i != len(batch_samples) - 1
-                        and self.accelerator.distributed_type != DistributedType.DEEPSPEED
-                        else contextlib.nullcontext
-                    )
-                    with context():
-                        tr_loss_step = self.training_step(model, inputs, num_items_in_batch)
-
-                    if (
-                        args.logging_nan_inf_filter
-                        and not is_torch_xla_available()
-                        and (torch.isnan(tr_loss_step) or torch.isinf(tr_loss_step))
-                    ):
-                        # if loss is nan or inf simply add the average of previous logged losses
-                        tr_loss = tr_loss + tr_loss / (1 + self.state.global_step - self._globalstep_last_logged)
-                    else:
-                        if tr_loss.device != tr_loss_step.device:
-                            raise ValueError(
-                                f"Calculated loss must be on the original device: {tr_loss.device} but device in use is {tr_loss_step.device}"
-                            )
-                        tr_loss = tr_loss + tr_loss_step
-
-                    self.current_flos += float(self.floating_point_ops(inputs))
-
-                    if do_sync_step:
-                        # Since we perform prefetching, we need to manually set sync_gradients to True
-                        self.accelerator.gradient_state._set_sync_gradients(True)
-
-                        # Gradient clipping
-                        if args.max_grad_norm is not None and args.max_grad_norm > 0:
-                            if is_sagemaker_mp_enabled() and args.fp16:
-                                _grad_norm = self.optimizer.clip_master_grads(args.max_grad_norm)
-                            elif self.use_apex:
-                                # Revert to normal clipping otherwise, handling Apex or full precision
-                                _grad_norm = nn.utils.clip_grad_norm_(
-                                    amp.master_params(self.optimizer),
-                                    args.max_grad_norm,
-                                )
-                            else:
-                                _grad_norm = self.accelerator.clip_grad_norm_(
-                                    model.parameters(),
-                                    args.max_grad_norm,
-                                )
-
-                            if (
-                                is_accelerate_available()
-                                and self.accelerator.distributed_type == DistributedType.DEEPSPEED
-                            ):
-                                grad_norm = model.get_global_grad_norm()
-                                # In some cases the grad norm may not return a float
-                                if hasattr(grad_norm, "item"):
-                                    grad_norm = grad_norm.item()
-                            else:
-                                grad_norm = _grad_norm
-
-                        self.control = self.callback_handler.on_pre_optimizer_step(args, self.state, self.control)
-
-                        self.optimizer.step()
-
-                        self.control = self.callback_handler.on_optimizer_step(args, self.state, self.control)
-
-                        if not self.accelerator.optimizer_step_was_skipped:
-                            # Delay optimizer scheduling until metrics are generated
-                            if not isinstance(self.lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                                self.lr_scheduler.step()
-
-                        model.zero_grad()
-                        self.state.global_step += 1
-                        self.state.epoch = epoch + (step + 1 + steps_skipped) / steps_in_epoch
-                        self.control = self.callback_handler.on_step_end(args, self.state, self.control)
-                        self._maybe_log_save_evaluate(
-                            tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time
-                        )
-                    else:
-                        self.control = self.callback_handler.on_substep_end(args, self.state, self.control)
-
-                    # PyTorch/XLA relies on the data loader to insert the mark_step for
-                    # each step. Since we are breaking the loop early, we need to manually
-                    # insert the mark_step here.
+                        # PyTorch/XLA relies on the data loader to insert the mark_step for
+                        # each step. Since we are breaking the loop early, we need to manually
+                        # insert the mark_step here.
+                        if self.control.should_epoch_stop or self.control.should_training_stop:
+                            if is_torch_xla_available():
+                                xm.mark_step()
+                            break
+                    if profile_training_enabled:
+                        prof.step() #to save the profile
+                    # We also need to break out of the nested loop
                     if self.control.should_epoch_stop or self.control.should_training_stop:
                         if is_torch_xla_available():
                             xm.mark_step()
                         break
-                # We also need to break out of the nested loop
-                if self.control.should_epoch_stop or self.control.should_training_stop:
-                    if is_torch_xla_available():
-                        xm.mark_step()
-                    break
             if step < 0:
                 logger.warning(
                     "There seems not to be a single sample in your epoch_iterator, stopping training at step"
@@ -1436,9 +1599,13 @@ class Trainer(Trainer_):
                 self.control.should_training_stop = True
 
             self.control = self.callback_handler.on_epoch_end(args, self.state, self.control)
-            self._maybe_log_save_evaluate(tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time)
+            
+            if (epoch+1)%self.num_epochs_between_eval==0:
+                self._maybe_log_save_evaluate(
+                    tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time, learning_rate=learning_rate
+                )
 
-            # Modify the callbacks if the curriculum block changed based on the epoch
+            #! Modify the callbacks if the curriculum block changed based on the epoch (not in the base class).
             # using epoch instead of self.state.epoch because there is a possibility that self.state.epoch is fractional.
             if ((epoch + 1) in self.curriculum_start_epochs) and ((epoch + 1) < num_train_epochs):
                 next_block = self._get_train_strategy_block_for_epoch(epoch + 1)
@@ -1447,15 +1614,23 @@ class Trainer(Trainer_):
                 loss_weighting_strategy_next_block = create_loss_weighting_strategy(train_loss_dict_next_block)
 
                 if loss_weighting_strategy_next_block is not None:
-                    use_gradients = get_loss_weighting_strategy_entry(
+                    grad_stats = get_loss_weighting_strategy_entry(
                         train_loss_dict_next_block.train_loss_weighting_strategy.type
-                    ).get("use_gradients", False)
+                    ).get("grad_stats", [])
+                    use_gradients = bool(grad_stats)
 
                     self._collect_detailed_losses = True
                     self._collect_gradients = use_gradients
 
+                    self._grad_stat_names = grad_stats
+
+                    self._weight_per_channel = train_loss_dict_next_block.train_loss_weighting_strategy.get("weight_per_channel", False)
+                    self._weight_sub_components = train_loss_dict_next_block.train_loss_weighting_strategy.get("weight_sub_components", False)
+                    self._loss_history_interval = train_loss_dict_next_block.train_loss_weighting_strategy.get("loss_history_interval", 1)
+                    self._grad_history_interval = train_loss_dict_next_block.train_loss_weighting_strategy.get("grad_history_interval", 1)
+
                     loss_stats_callback_next_block = LossStatisticsCallback(
-                        collect_train_losses=True, collect_gradients=use_gradients, trainer=self
+                        collect_train_losses=True, grad_stats=grad_stats, collect_gradients=use_gradients, trainer=self
                     )
                     loss_source = train_loss_dict_next_block.train_loss_weighting_strategy.get("loss_source", "train")
                     adaptive_weight_callback_next_block = AdaptiveWeightCallback(
@@ -1464,6 +1639,7 @@ class Trainer(Trainer_):
                         trainer=self,
                         loss_source=loss_source,
                         use_gradients=use_gradients,
+                        grad_stats=grad_stats,
                         curriculum_start_epochs=self.curriculum_start_epochs
                     )
 
@@ -1498,10 +1674,15 @@ class Trainer(Trainer_):
                     self._collect_detailed_losses = False
                     self._collect_gradients = False
 
+                    self._grad_stat_names = []
+
+                    self._weight_per_channel = False
+                    self._weight_sub_components = False
+                    self._loss_history_interval = 1
+                    self._grad_history_interval = 1
+
                 self.loss_fn = self.get_loss_fn(train_loss_dict_next_block)
                 self.eval_loss_fn = self.get_loss_fn(validation_loss_dict_next_block)
-
-
 
             if DebugOption.TPU_METRICS_DEBUG in self.args.debug:
                 if is_torch_xla_available():
@@ -1514,18 +1695,18 @@ class Trainer(Trainer_):
                     )
             if self.control.should_training_stop:
                 break
-
         if args.past_index and hasattr(self, "_past"):
             # Clean the state at the end of training
             delattr(self, "_past")
-
+        
         logger.info("\n\nTraining completed. Do not forget to share your model on huggingface.co/models =)\n\n")
         if args.load_best_model_at_end and self.state.best_model_checkpoint is not None:
             # Wait for everyone to get here so we are sure the model has been saved by process 0.
             if is_torch_xla_available():
                 xm.rendezvous("load_best_model_at_end")
             elif args.parallel_mode == ParallelMode.DISTRIBUTED:
-                dist.barrier()
+                pass
+                #*dist.barrier() (!commented to avoidproblems with intel XPUs)
             elif is_sagemaker_mp_enabled():
                 smp.barrier()
 
@@ -1563,11 +1744,12 @@ class Trainer(Trainer_):
                     logger.info(f"Deleting older checkpoint [{checkpoint}] due to args.save_total_limit")
                     shutil.rmtree(checkpoint, ignore_errors=True)
         
-        # Only rank 0 runs end-of-train callbacks; others wait at barriers.
-        self.accelerator.wait_for_everyone()
-        if self.accelerator.is_main_process:
-            self.control = self.callback_handler.on_train_end(args, self.state, self.control)
-        self.accelerator.wait_for_everyone()
+        #! Only rank 0 runs end-of-train callbacks; others wait at barriers (! this isnot in the base class).
+        #self.accelerator.wait_for_everyone()
+        #if self.accelerator.is_main_process:
+        self.control = self.callback_handler.on_train_end(args, self.state, self.control)
+        #self.accelerator.wait_for_everyone()
+        
         # Wait for the checkpoint to be uploaded.
         self._finish_current_push()
 
@@ -1578,6 +1760,7 @@ class Trainer(Trainer_):
 
         return TrainOutput(self.state.global_step, train_loss, metrics)
     
+    #custom function, not inside transformers library
     def last_evaluation_loop(
         self,
         dataloader: DataLoader,
@@ -1587,6 +1770,14 @@ class Trainer(Trainer_):
         metric_key_prefix: str = "eval",
     ) -> EvalLoopOutput:
         "This function is just for plotting, and is done solely by rank 0"
+
+        RANK = int(os.environ.get("RANK", -1))
+        IS_MAIN_PROCESS = RANK in [-1, 0]
+
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            torch.xpu.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         args = self.args
 
@@ -1604,14 +1795,16 @@ class Trainer(Trainer_):
 
         batch_size = self.args.eval_batch_size
 
-        logger.info(f"\n***** Running the LAST {description} for plotting from the best checkpoint *****")
-        if has_length(dataloader):
-            logger.info(f"  Num examples = {self.num_examples(dataloader)}")
-        else:
-            logger.info("  Num examples: Unknown")
-        logger.info(f"  Batch size = {batch_size}")
+        if IS_MAIN_PROCESS:
+            logger.info(f"\n***** Running the LAST {description} for plotting from the best checkpoint *****")
+            if has_length(dataloader):
+                logger.info(f"  Num examples = {self.num_examples(dataloader)}")
+            else:
+                logger.info("  Num examples: Unknown")
+            logger.info(f"  Batch size = {batch_size}")
 
-        model.eval()
+        if hasattr(model, "eval") and callable(model.eval):
+            model.eval()
         if hasattr(self.optimizer, "eval") and callable(self.optimizer.eval):
             self.optimizer.eval()
 
@@ -1619,21 +1812,68 @@ class Trainer(Trainer_):
         # Do this before wrapping.
         eval_dataset = getattr(dataloader, "dataset", None)
 
-        if args.past_index >= 0:
-            self._past = None
-
         # Initialize containers
+        collect_full_eval_tensors = True if description == "Prediction" else False
         all_losses = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
-        all_preds = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
-        all_labels = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
-        all_inputs = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
-        all_conditioning_inputs = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+        all_preds = (
+            EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+            if collect_full_eval_tensors
+            else None
+        )
+        all_labels = (
+            EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+            if collect_full_eval_tensors
+            else None
+        )
+        all_inputs = (
+            EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+            if collect_full_eval_tensors
+            else None
+        )
+        all_conditioning_inputs = (
+            EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+            if collect_full_eval_tensors
+            else None
+        )
+        example_logits = None
+        example_labels = None
+        example_inputs = None
+        example_conditioning_inputs = None
 
         metrics = None
         eval_set_kwargs = {}
 
         # Will be useful when we have an iterable dataset so don't know its length.
         observed_num_examples = 0
+
+        log_channels = self.data_config.get("log_transform_channels") or []
+        dim = self.data_config.get("dimension")
+        channel_axis = -2 if dim == 1 else (-3 if dim == 2 else -4)
+        channel_names = getattr(eval_dataset, "output_channels")
+        norm_stats = self.data_config.get("data_normalization_stats")
+        norm_strategy = self.data_config.get("data_normalization_strategy")
+
+        def _apply_log_inverse(arr, log_channels, channel_names, norm_stats, norm_strategy, channel_axis):
+            for ch_name in log_channels:
+                if (
+                    ch_name not in channel_names
+                    or norm_stats is None
+                    or norm_strategy is None
+                ):
+                    continue
+                stats_key = f"log_{ch_name}"
+                if stats_key not in norm_stats or ch_name not in norm_stats:
+                    continue
+                ch_idx = channel_names.index(ch_name)
+                slicer = [slice(None)] * arr.ndim
+                slicer[channel_axis] = ch_idx
+                log_space = re_normalize_data(arr[tuple(slicer)], norm_stats[stats_key], norm_strategy)
+                physical_space = torch.exp(log_space)
+                physical_space_normalized = normalize_data(
+                    physical_space, norm_stats[ch_name], norm_strategy
+                )
+                arr[tuple(slicer)] = physical_space_normalized
+            return arr
 
         # Main evaluation loop
         for step, inputs in enumerate(dataloader):
@@ -1662,44 +1902,69 @@ class Trainer(Trainer_):
 
             # Update containers
             if losses is not None:
+                losses = self.gather_function(losses.repeat(batch_size))
                 all_losses.add(losses)
-            if inputs_decode is not None:
-                if not self.args.batch_eval_metrics or description == "Prediction":
-                    all_inputs.add(inputs_decode)
-            if conditioning_input_decode is not None:
-                if not self.args.batch_eval_metrics or description == "Prediction":
-                    all_conditioning_inputs.add(conditioning_input_decode)
+            if collect_full_eval_tensors and inputs_decode is not None:
+                inputs_decode = self.gather_function(inputs_decode)
+                #if not self.args.batch_eval_metrics or description == "Prediction":
+                all_inputs.add(inputs_decode)
+            if collect_full_eval_tensors and conditioning_input_decode is not None:
+                conditioning_input_decode = self.gather_function(conditioning_input_decode)
+                #if not self.args.batch_eval_metrics or description == "Prediction":
+                all_conditioning_inputs.add(conditioning_input_decode)
             if logits is not None:
-                if not self.args.batch_eval_metrics or description == "Prediction":
-                    all_preds.add(logits)
+                logits = _apply_log_inverse(logits, log_channels, channel_names, norm_stats, norm_strategy, channel_axis)
+                if collect_full_eval_tensors:
+                    gathered_logits = self.gather_function(logits)
+                #if not self.args.batch_eval_metrics or description == "Prediction":
+                    all_preds.add(gathered_logits)
             if labels is not None:
-                if not self.args.batch_eval_metrics or description == "Prediction":
-                    all_labels.add(labels)
+                labels = _apply_log_inverse(labels, log_channels, channel_names, norm_stats, norm_strategy, channel_axis)
+                if collect_full_eval_tensors:
+                    gathered_labels = self.gather_function(labels)
+                #if not self.args.batch_eval_metrics or description == "Prediction":
+                    all_labels.add(gathered_labels)
 
             self.control = self.callback_handler.on_prediction_step(args, self.state, self.control)
 
-            if self.args.batch_eval_metrics:
-                #not implemented
-                pass
-
+            # if self.args.batch_eval_metrics:
+            #     #not implemented
+            #     pass
+            is_last_step = self.accelerator.gradient_state.end_of_dataloader
+            if not collect_full_eval_tensors and is_last_step and IS_MAIN_PROCESS:
+                #just choosing the first example from the last batch to plot
+                example_logits = logits[-1:].detach().cpu().numpy()
+                example_labels = labels[-1:].detach().cpu().numpy()
+                example_inputs = inputs_decode[-1:].detach().cpu().numpy()
+                example_conditioning_inputs = conditioning_input_decode[-1:].detach().cpu().numpy() if conditioning_input_decode is not None else None
+            
             # Gather all tensors and put them back on the CPU if we have done enough accumulation steps.
-            elif args.eval_accumulation_steps is not None and (step + 1) % args.eval_accumulation_steps == 0:
+            if collect_full_eval_tensors and args.eval_accumulation_steps is not None and (step + 1) % args.eval_accumulation_steps == 0:
                 all_losses.to_cpu_and_numpy()
                 all_preds.to_cpu_and_numpy()
                 all_labels.to_cpu_and_numpy()
                 all_inputs.to_cpu_and_numpy()
                 all_conditioning_inputs.to_cpu_and_numpy()
-                del losses, logits, labels, inputs
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                if torch.xpu.is_available():
-                    torch.xpu.empty_cache()
+                if not self.args.batch_eval_metrics:
+                    del losses, logits, labels, inputs
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    if torch.xpu.is_available():
+                        torch.xpu.empty_cache()
 
-        all_losses = all_losses.get_arrays()
-        all_preds = all_preds.get_arrays()
-        all_labels = all_labels.get_arrays()
-        all_inputs = all_inputs.get_arrays()
-        all_conditioning_inputs = all_conditioning_inputs.get_arrays()
+        # After all calls to `.gather_function`, reset to `gather_for_metrics`:
+        self.gather_function = self.accelerator.gather_for_metrics
+        if args.past_index and hasattr(self, "_past"):
+            # Clean the state at the end of the evaluation loop
+            delattr(self, "_past")
+
+        all_losses = all_losses.get_arrays() if collect_full_eval_tensors else None
+        all_preds = all_preds.get_arrays() if collect_full_eval_tensors else example_logits
+        all_labels = all_labels.get_arrays() if collect_full_eval_tensors else example_labels
+        all_inputs = all_inputs.get_arrays() if collect_full_eval_tensors else example_inputs
+        all_conditioning_inputs = (
+            all_conditioning_inputs.get_arrays() if collect_full_eval_tensors else example_conditioning_inputs
+        )
         # Number of samples
         if has_length(eval_dataset):
             num_samples = len(eval_dataset)
@@ -1724,6 +1989,7 @@ class Trainer(Trainer_):
 
         return EvalLoopOutput(predictions=all_preds, label_ids=all_labels, metrics=metrics, num_samples=num_samples), all_inputs, all_conditioning_inputs
 
+    #custom function, not inside transformers library, for plotting the best checkpoint.
     def last_evaluate(
         self,
         eval_dataset: Optional[Union[Dataset, dict[str, Dataset]]] = None,
@@ -1804,6 +2070,7 @@ class Trainer(Trainer_):
             self.output_all_steps = True
     
     ##overrides the one in the base class from transformers library
+    #* introduced compute_eval_loss and compute_eval_without_loss in this function which are not in the base class.
     def prediction_step( 
         self,
         model: nn.Module,
@@ -1894,7 +2161,7 @@ class Trainer(Trainer_):
                         loss, outputs = self.compute_eval_loss( 
                             model, inputs, return_outputs=True
                         ) #return_output is true only when doing eval or inference.. By default it is false
-                    loss = loss.mean().detach() #mean() is used when: self.output_all_steps = True which results in loss being a tensor of shape (num_rollout_steps+1,) and we take the mean
+                    loss = loss.detach().mean() #mean() is used when: self.output_all_steps = True which results in loss being a tensor of shape (num_rollout_steps+1,) and we take the mean
 
                     if isinstance(outputs, dict): 
                         logits = tuple( 
@@ -1916,9 +2183,6 @@ class Trainer(Trainer_):
                         )
                     else:
                         logits = outputs
-                    # TODO: this needs to be fixed and made cleaner later.
-                    if self.args.past_index >= 0: #self.args.past_index = -1 by default
-                        self._past = outputs[self.args.past_index - 1]
 
         if prediction_loss_only: #prediction_loss_only is True if compute_metrics is not provided
             return (loss, None, None)
@@ -1959,6 +2223,15 @@ class Trainer(Trainer_):
         EvalLoopOutput
             Evaluation results including predictions, labels, and metrics.
         """
+        RANK = int(os.environ.get("RANK", -1))
+        IS_MAIN_PROCESS = RANK in [-1, 0]
+
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            torch.xpu.empty_cache()
+            #print("XPU cache emptied before evaluation, rank: ", RANK, flush=True)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            #print("CUDA cache emptied before evaluation, rank: ", RANK, flush=True)
         args = self.args
 
         prediction_loss_only = prediction_loss_only if prediction_loss_only is not None else args.prediction_loss_only
@@ -1973,7 +2246,8 @@ class Trainer(Trainer_):
             start_time = time.time()
             model = (
                 self.accelerator.prepare(model)
-                if self.is_deepspeed_enabled or (self.is_fsdp_enabled and self.accelerator.mixed_precision != "fp8")
+                if self.is_deepspeed_enabled
+                or (self.is_fsdp_enabled and self.accelerator.mixed_precision != "fp8" and not self.args.torch_compile)
                 else self.accelerator.prepare_model(model, evaluation_mode=True)
             )
             self.model_preparation_time = round(time.time() - start_time, 4)
@@ -1999,8 +2273,6 @@ class Trainer(Trainer_):
 
         batch_size = self.args.eval_batch_size
 
-        RANK = int(os.environ.get("LOCAL_RANK", -1))
-        IS_MAIN_PROCESS = RANK in [-1, 0]
         if IS_MAIN_PROCESS:
             logger.info(f"\n***** Running {description} *****")
             if has_length(dataloader):
@@ -2009,7 +2281,8 @@ class Trainer(Trainer_):
                 logger.info("  Num examples: Unknown")
             logger.info(f"  Batch size = {batch_size}")
 
-        model.eval()
+        if hasattr(model, "eval") and callable(model.eval):
+            model.eval()
         if hasattr(self.optimizer, "eval") and callable(self.optimizer.eval):
             self.optimizer.eval()
 
@@ -2017,25 +2290,82 @@ class Trainer(Trainer_):
         # Do this before wrapping.
         eval_dataset = getattr(dataloader, "dataset", None)
 
-        if args.past_index >= 0:
-            self._past = None
-
+        collect_full_eval_tensors = True if (description == "Prediction" or not self.args.batch_eval_metrics) else False
+        #* Description is "Prediction" only when doing inference.
         # Initialize containers
-        all_losses = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
-        all_preds = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
-        all_labels = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
-        all_inputs = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
-        all_conditioning_inputs = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+        all_losses = EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100) if collect_full_eval_tensors else None
+        all_preds = (
+            EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+            if collect_full_eval_tensors
+            else None
+        )
+        all_labels = (
+            EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+            if collect_full_eval_tensors
+            else None
+        )
+        all_inputs = (
+            EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+            if collect_full_eval_tensors
+            else None
+        )
+        all_conditioning_inputs = (
+            EvalLoopContainer(self.args.eval_do_concat_batches, padding_index=-100)
+            if collect_full_eval_tensors
+            else None
+        )
 
+        example_logits = None
+        example_labels = None
+        example_inputs = None
+        example_conditioning_inputs = None
+        
         metrics = None
         eval_set_kwargs = {}
 
         # Will be useful when we have an iterable dataset so don't know its length.
         observed_num_examples = 0
+
+        #! not in the base class
+        # Renormalize log-transformed channels in predictions and labels using log statistics to obtain log-transformed channels in physical units.
+        # Then take the exponential of the log-transformed channels in physical units to obtain the channels in physical units.
+        # Finally, normalize the channels in physical units using the original statistics to get the channels in normalized (physical) units.
+        log_channels = self.data_config.get("log_transform_channels") or []
+        dim = self.data_config.get("dimension")
+        channel_axis = -2 if dim == 1 else (-3 if dim == 2 else -4)
+        channel_names = getattr(eval_dataset, "output_channels")
+        norm_stats = self.data_config.get("data_normalization_stats")
+        norm_strategy = self.data_config.get("data_normalization_strategy")
+        
+        def _apply_log_inverse(arr, log_channels, channel_names, norm_stats, norm_strategy, channel_axis):
+            for ch_name in log_channels:
+                if (
+                    ch_name not in channel_names
+                    or norm_stats is None
+                    or norm_strategy is None
+                ):
+                    continue
+                stats_key = f"log_{ch_name}"
+                if stats_key not in norm_stats or ch_name not in norm_stats:
+                    continue
+                ch_idx = channel_names.index(ch_name)
+                slicer = [slice(None)] * arr.ndim
+                slicer[channel_axis] = ch_idx
+                log_space = re_normalize_data(  #Ex: Here we obtain log(Density) in physical units 
+                    arr[tuple(slicer)], norm_stats[stats_key], norm_strategy
+                )
+                physical_space = torch.exp(log_space) #Ex: Here we obtain Density in physical units
+                physical_space_normalized = normalize_data(
+                    physical_space, norm_stats[ch_name], norm_strategy #Ex: Here we normalize Density 
+                )
+                arr[tuple(slicer)] = physical_space_normalized #Ex: Here we store the normalized Density
+            return arr
         #########################################################
         # Main evaluation loop
         #########################################################
+        #print length of dataloader
         for step, inputs in enumerate(dataloader):
+            #print(f"Step {step} of {len(dataloader)}")
             # Update the observed num examples
             observed_batch_size = find_batch_size(inputs)
             if observed_batch_size is not None:
@@ -2064,33 +2394,31 @@ class Trainer(Trainer_):
                 losses = self.gather_function(losses.repeat(batch_size)) 
                 #NOTE: repeat is used to ensure that each window of the batch owns the same loss value.
                 all_losses.add(losses)
-            if inputs_decode is not None:
-                inputs_decode = self.accelerator.pad_across_processes(inputs_decode, dim=1, pad_index=-100)
+            if collect_full_eval_tensors and inputs_decode is not None:
+                #inputs_decode = self.accelerator.pad_across_processes(inputs_decode, dim=1, pad_index=-100)
                 inputs_decode = self.gather_function(inputs_decode)
-                if not self.args.batch_eval_metrics or description == "Prediction":
-                    all_inputs.add(inputs_decode)
+                #if not self.args.batch_eval_metrics or description == "Prediction":
+                all_inputs.add(inputs_decode)
             #NOTE: The following is added on top of the base class
             #########################################################
-            if conditioning_input_decode is not None:
-                conditioning_input_decode = self.accelerator.pad_across_processes(conditioning_input_decode, dim=1, pad_index=-100)
+            if collect_full_eval_tensors and conditioning_input_decode is not None:
+                #conditioning_input_decode = self.accelerator.pad_across_processes(conditioning_input_decode, dim=1, pad_index=-100)
                 conditioning_input_decode = self.gather_function(conditioning_input_decode)
-                if not self.args.batch_eval_metrics or description == "Prediction":
-                    all_conditioning_inputs.add(conditioning_input_decode)
+                #if not self.args.batch_eval_metrics or description == "Prediction":
+                all_conditioning_inputs.add(conditioning_input_decode)
             #########################################################
-            if labels is not None:
-                # Pad labels here, preparing for preprocess_logits_for_metrics in next logits block.
-                labels = self.accelerator.pad_across_processes(labels, dim=1, pad_index=-100)
             if logits is not None:
-                logits = self.accelerator.pad_across_processes(logits, dim=1, pad_index=-100)
-                if self.preprocess_logits_for_metrics is not None:
-                    logits = self.preprocess_logits_for_metrics(logits, labels)
-                logits = self.gather_function(logits)
-                if not self.args.batch_eval_metrics or description == "Prediction":
-                    all_preds.add(logits)
+                logits = _apply_log_inverse(logits, log_channels, channel_names, norm_stats, norm_strategy, channel_axis)
+                if collect_full_eval_tensors:
+                    gathered_logits = self.gather_function(logits)
+                    #if not self.args.batch_eval_metrics or description == "Prediction":
+                    all_preds.add(gathered_logits)
             if labels is not None:
-                labels = self.gather_function(labels)
-                if not self.args.batch_eval_metrics or description == "Prediction":
-                    all_labels.add(labels)
+                labels = _apply_log_inverse(labels, log_channels, channel_names, norm_stats, norm_strategy, channel_axis)
+                if collect_full_eval_tensors:
+                    gathered_labels = self.gather_function(labels)
+                    #if not self.args.batch_eval_metrics or description == "Prediction":
+                    all_labels.add(gathered_labels)
 
             self.control = self.callback_handler.on_prediction_step(args, self.state, self.control)
 
@@ -2098,13 +2426,21 @@ class Trainer(Trainer_):
                 if self.compute_metrics is not None and logits is not None and labels is not None:
                     is_last_step = self.accelerator.gradient_state.end_of_dataloader
                     batch_kwargs = {}
-                    batch_kwargs["losses"] = losses if "loss" in args.include_for_metrics else None
-                    batch_kwargs["inputs"] = inputs if "inputs" in args.include_for_metrics else None
+                    # batch_kwargs["losses"] = losses if "loss" in args.include_for_metrics else None
+                    # batch_kwargs["inputs"] = inputs if "inputs" in args.include_for_metrics else None
+                    # batch_kwargs["conditioning_inputs"] = conditioning_input_decode if "conditioning_inputs" in args.include_for_metrics else None
                     #NOTE: inputs is a dict which has the input_data and conditioning_input_data
                     metrics = self.compute_metrics(
                         EvalPrediction(predictions=logits, label_ids=labels, **batch_kwargs),
                         compute_result=is_last_step,
                     )
+                    #just one example to plot
+                    if not collect_full_eval_tensors and is_last_step and IS_MAIN_PROCESS:
+                        #just choosing the first example from the last batch to plot
+                        example_logits = logits[-1:].detach().cpu().numpy()
+                        example_labels = labels[-1:].detach().cpu().numpy()
+                        example_inputs = inputs_decode[-1:].detach().cpu().numpy()
+                        example_conditioning_inputs = conditioning_input_decode[-1:].detach().cpu().numpy() if conditioning_input_decode is not None else None
 
                 del losses, logits, labels, inputs
                 if torch.cuda.is_available():
@@ -2113,18 +2449,19 @@ class Trainer(Trainer_):
                     torch.xpu.empty_cache()
 
             # Gather all tensors and put them back on the CPU if we have done enough accumulation steps.
-            elif args.eval_accumulation_steps is not None and (step + 1) % args.eval_accumulation_steps == 0:
+            if collect_full_eval_tensors and args.eval_accumulation_steps is not None and (step + 1) % args.eval_accumulation_steps == 0:
                 all_losses.to_cpu_and_numpy()
                 all_preds.to_cpu_and_numpy()
                 all_labels.to_cpu_and_numpy()
                 all_inputs.to_cpu_and_numpy()
                 all_conditioning_inputs.to_cpu_and_numpy()
-
-                del losses, logits, labels, inputs
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                if torch.xpu.is_available():
-                    torch.xpu.empty_cache()
+        
+                if not self.args.batch_eval_metrics:
+                    del losses, logits, labels, inputs
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    if torch.xpu.is_available():
+                        torch.xpu.empty_cache()
 
         # After all calls to `.gather_function`, reset to `gather_for_metrics`:
         self.gather_function = self.accelerator.gather_for_metrics
@@ -2133,11 +2470,19 @@ class Trainer(Trainer_):
             delattr(self, "_past")
 
         # Gather all remaining tensors and put them back on the CPU
-        all_losses = all_losses.get_arrays() #all_losses.shape = torch.Size([B*(steps+1) , ]) 
-        all_preds = all_preds.get_arrays() #all_preds.shape = torch.Size([B*(steps+1), n_eval_rollouts+1, label_seq_length, C_output, x_resolution, y_resolution, ...]) 
-        all_labels = all_labels.get_arrays() #all_labels.shape = torch.Size([B*(steps+1), (n_eval_rollouts+1)*label_seq_length, C_output, x_resolution, y_resolution, ...]) 
-        all_inputs = all_inputs.get_arrays() #all_inputs.shape = torch.Size([B*(steps+1), input_seq_length, C_input, x_resolution, y_resolution, ...]) 
-        all_conditioning_inputs = all_conditioning_inputs.get_arrays() #all_conditioning_inputs.shape = torch.Size([B*(steps+1), conditioning_seq_length, C_conditioning, x_resolution, y_resolution, ...]) 
+        all_losses = all_losses.get_arrays() if all_losses is not None else None #all_losses.shape = torch.Size([B*(steps+1) , ]) 
+        all_preds = (
+            all_preds.get_arrays() if collect_full_eval_tensors else example_logits
+        ) #all_preds.shape = torch.Size([B*(steps+1), n_eval_rollouts+1, label_seq_length, C_output, x_resolution, y_resolution, ...]) 
+        all_labels = (
+            all_labels.get_arrays() if collect_full_eval_tensors else example_labels
+        ) #all_labels.shape = torch.Size([B*(steps+1), (n_eval_rollouts+1)*label_seq_length, C_output, x_resolution, y_resolution, ...]) 
+        all_inputs = (
+            all_inputs.get_arrays() if collect_full_eval_tensors else example_inputs
+        ) #all_inputs.shape = torch.Size([B*(steps+1), input_seq_length, C_input, x_resolution, y_resolution, ...]) 
+        all_conditioning_inputs = (
+            all_conditioning_inputs.get_arrays() if collect_full_eval_tensors else example_conditioning_inputs
+        ) #all_conditioning_inputs.shape = torch.Size([B*(steps+1), conditioning_seq_length, C_conditioning, x_resolution, y_resolution, ...]) 
 
         # Number of samples
         if has_length(eval_dataset):
@@ -2154,7 +2499,7 @@ class Trainer(Trainer_):
         if num_samples == 0 and observed_num_examples > 0:
             num_samples = observed_num_examples
 
-        # Metrics!
+        # Metrics! (to be removed in future versions)
         if (
             self.compute_metrics is not None
             and all_preds is not None
@@ -2167,6 +2512,7 @@ class Trainer(Trainer_):
             metrics = self.compute_metrics(
                 EvalPrediction(predictions=all_preds, label_ids=all_labels, **eval_set_kwargs)
             )
+        
         elif metrics is None:
             metrics = {}
 
@@ -2189,7 +2535,7 @@ class Trainer(Trainer_):
             metrics[f"{metric_key_prefix}_{key}"] = metrics.pop(key)
 
         return EvalLoopOutput(predictions=all_preds, label_ids=all_labels, metrics=metrics, num_samples=num_samples), all_inputs, all_conditioning_inputs
-        ##NOTE: all_inputs is the additional return argument compared to the evaluation_loop() function in the base class.
+        #* all_inputs and all_conditioning_inputs are the additional return arguments compared to the evaluation_loop() function in the base class.
 
     ### overrides the one in the base class from transformers library
     def evaluate(
@@ -2238,11 +2584,10 @@ class Trainer(Trainer_):
 
         start_time = time.time()
 
-        eval_loop = self.prediction_loop if self.args.use_legacy_prediction_loop else self.evaluation_loop
         #########################################################
         #NOTE: Main evaluation loop
         eval_loop_start_time = time.time()
-        output, input, conditioning_input = eval_loop(
+        output, input, conditioning_input = self.evaluation_loop(
             eval_dataloader,
             description="Evaluation",
             # No point gathering the predictions if there are no metrics, otherwise we defer to
@@ -2253,6 +2598,7 @@ class Trainer(Trainer_):
         )
         # Record the wall-clock duration of the evaluation loop (in seconds)
         output.metrics[f"{metric_key_prefix}_eval_loop_time"] = round(time.time() - eval_loop_start_time, 4)
+        #print(f"eval_loop_time: {output.metrics[f'{metric_key_prefix}_eval_loop_time']}")
         #########################################################
         total_batch_size = self.args.eval_batch_size * self.args.world_size
         if f"{metric_key_prefix}_jit_compilation_time" in output.metrics:
@@ -2305,7 +2651,7 @@ class Trainer(Trainer_):
             self.state,
             self.control,
             output.metrics,
-            # NOTE: kwargs added to be used in PlotOnEvalAndSaveCallback()
+            #! kwargs added to be used in PlotOnEvalAndSaveCallback() (not in the base class).
             predictions=output.predictions,
             labels=output.label_ids,
             inputs=input,
@@ -2320,7 +2666,7 @@ class Trainer(Trainer_):
         )
 
         self._memory_tracker.stop_and_update_metrics(output.metrics)
-        #NOTE: stop training if NaN is encountered in the loss and set the control flags to False.
+        #! stop training if NaN is encountered in the loss and set the control flags to False (not in the base class).
         if self.control.should_training_stop_due_to_nan and self.state.epoch<self.train_config['num_train_epochs']:
             self.control.should_evaluate = False
             self.control.should_save = False
@@ -2329,6 +2675,7 @@ class Trainer(Trainer_):
         return output.metrics
 
     ### overrides the one in the base class from transformers library
+    # * no change compared to the base class
     def _evaluate(self, trial, ignore_keys_for_eval, skip_scheduler=False):
         """
         Internal evaluation method with learning rate scheduler support.
@@ -2367,6 +2714,7 @@ class Trainer(Trainer_):
                 ) from exc
         return metrics
 
+    ### overrides the one in the base class from transformers library
     def predict(
         self, test_dataset: Dataset, ignore_keys: Optional[list[str]] = None, metric_key_prefix: str = "test"
     ) -> PredictionOutput:
@@ -2402,9 +2750,6 @@ class Trainer(Trainer_):
             - metrics (`Dict[str, float]`, *optional*): The potential dictionary of metrics (if the dataset contained
               labels).
         """
-        # memory metrics - must set up as early as possible
-        self._memory_tracker.start()
-
         callbacks_backup = list(getattr(self.callback_handler, "callbacks", []))
         # Remove both HF's WandB callback and the custom one if present
         try:
@@ -2417,11 +2762,12 @@ class Trainer(Trainer_):
             pass
 
         try:
+            # memory metrics - must set up as early as possible
+            self._memory_tracker.start()
             test_dataloader = self.get_test_dataloader(test_dataset)
             start_time = time.time()
 
-            eval_loop = self.prediction_loop if self.args.use_legacy_prediction_loop else self.evaluation_loop
-            output, input, conditioning_input = eval_loop(
+            output, input, conditioning_input = self.evaluation_loop(
                 test_dataloader, description="Prediction", ignore_keys=ignore_keys, metric_key_prefix=metric_key_prefix
             )
             total_batch_size = self.args.eval_batch_size * self.args.world_size
@@ -2448,7 +2794,9 @@ class Trainer(Trainer_):
                 self.callback_handler.callbacks = callbacks_backup
 
     ### overrides the one in the base class from transformers library
-    def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time):
+    def _maybe_log_save_evaluate(
+        self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time, learning_rate=None
+        ):
         """
         Handle logging, saving, and evaluation during training with custom plotting support.
 
@@ -2480,22 +2828,14 @@ class Trainer(Trainer_):
 
             # reset tr_loss to zero
             tr_loss -= tr_loss
-            #NOTE: Implemented scientific notation for logs (improvement over base class)
-            #logs["loss"] = round(tr_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
-            loss_value = tr_loss_scalar / (self.state.global_step - self._globalstep_last_logged)
-            # Format the loss in scientific notation with 4-digit precision (e.g. 1.2345e-04)
-            # Convert back to float so W&B logs a numeric value while retaining 4-digit scientific notation.
-            #logs["loss"] = float(f"{loss_value:.4e}")
-            logs["loss"] = loss_value
+
+            logs["loss"] = tr_loss_scalar / (self.state.global_step - self._globalstep_last_logged)
             if grad_norm is not None:
-                # logs["grad_norm"] = grad_norm.detach().item() if isinstance(grad_norm, torch.Tensor) else grad_norm
-                grad_norm_value = grad_norm.detach().item() if isinstance(grad_norm, torch.Tensor) else grad_norm
-                #logs["grad_norm"] = float(f"{grad_norm_value:.4e}")
-                logs["grad_norm"] = grad_norm_value
-            # logs["learning_rate"] = self._get_learning_rate()
-            learning_rate_value = self._get_learning_rate()
-            #logs["learning_rate"] = float(f"{learning_rate_value:.4e}")
-            logs["learning_rate"] = learning_rate_value
+                logs["grad_norm"] = grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm
+            if learning_rate is not None:
+                logs["learning_rate"] = learning_rate
+            else:
+                logs["learning_rate"] = self._get_learning_rate()
 
             self._total_loss_scalar += tr_loss_scalar
             self._globalstep_last_logged = self.state.global_step
@@ -2504,14 +2844,14 @@ class Trainer(Trainer_):
             self.log(logs, start_time) #NOTE: logs into wandb for training
         
         metrics = None
-        RANK = int(os.environ.get("LOCAL_RANK", -1))
+        RANK = int(os.environ.get("RANK", -1))
         IS_MAIN_PROCESS = RANK in [-1, 0]
 
         if self.control.should_evaluate:
             metrics = self._evaluate(trial, ignore_keys_for_eval) 
             if IS_MAIN_PROCESS:
                 logger.info(f"Model checkpointing is done based on: eval_{self.args.metric_for_best_model}")
-            ##NOTE: added predictions, labels, inputs as additional return arguments compared to the base class.
+            #* added predictions, labels, inputs as additional return arguments compared to the base class.
             is_new_best_metric = self._determine_best_metric(metrics=metrics, trial=trial)
 
             if self.args.save_strategy == SaveStrategy.BEST:
@@ -2544,8 +2884,8 @@ class Trainer(Trainer_):
             self._save_checkpoint(model, trial)
             self.control = self.callback_handler.on_save(self.args, self.state, self.control)
 
-        RANK = int(os.environ.get("LOCAL_RANK", -1))
-        if self.control.should_plot and (RANK == 0 or RANK == -1):  
+        #RANK = int(os.environ.get("RANK", -1))
+        if self.control.should_plot and (IS_MAIN_PROCESS):  
             self.control = self.callback_handler.on_plot(self.args, self.state, self.control, is_new_best_metric=is_new_best_metric)
     
     # Override the _save_checkpoint method to include loss configuration saving
@@ -2607,7 +2947,7 @@ class Trainer(Trainer_):
                         comp_name = component.get('name', component['type'])
                         if comp_name in weight_dict:
                             component['current_weights'] = _tensorize_for_json(weight_dict[comp_name])
-                
+            
                 # Save
                 with open(loss_config_path, 'w') as f:
                     json.dump(current_train_strategy_dict , f, indent=2)
@@ -2617,7 +2957,7 @@ class Trainer(Trainer_):
             except Exception as e:
                 logger.warning(f"Failed to save loss_config: {e}")
     
-    ### overrides the one in the base class from transformers library
+    ### overrides the one in the base class from transformers library (NOTE: Not updated yet to 4.56.0 version of the base class)
     def _hp_search_setup(self, trial: Union["optuna.Trial", dict[str, Any]]):
         """
         Set up hyperparameter search with nested configuration support.
@@ -2689,7 +3029,7 @@ class Trainer(Trainer_):
                         pass
                 setattr(self.args, final_part, value_for_args)
         #NOTE:add trial number to self.args, which will be passed to WandbCallback 
-        RANK = int(os.environ.get("LOCAL_RANK", -1))
+        RANK = int(os.environ.get("RANK", -1))
         IS_MAIN_PROCESS = RANK in [-1, 0]
 
         if hasattr(trial, "number"):
@@ -2915,6 +3255,7 @@ class Trainer(Trainer_):
             # Do not interrupt hyper-parameter search if logging fails; just warn.
             logger.warning(f"Failed to save data_config.json: {exc}")
 
+    ### overrides the one in the base class from transformers library (NOTE: Not updated yet to 4.56.0 version of the base class)
     def hyperparameter_search(
         self,
         hp_space: Optional[Callable[["optuna.Trial"], dict[str, float]]] = None,

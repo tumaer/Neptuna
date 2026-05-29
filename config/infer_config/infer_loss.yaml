@@ -1,0 +1,47 @@
+loss:
+  components:
+    # Same components as training but with weight=1.0 for unweighted comparison
+    - type: RMSE
+      weight: 1.0
+    - type: RMSE
+      name: VRMSE
+      config_file: vrmse
+      weight: 1.0
+    - type: RMSE
+      name: NRMSE
+      config_file: nrmse
+      weight: 1.0
+    - type: MAE
+      weight: 1.0
+    - type: MSE
+      weight: 1.0
+    - type: PearsonCorrelationLoss
+      weight: 1.0
+    - type: H1SemiNorm
+      weight: 1.0
+    - type: H2SemiNorm
+      weight: 1.0
+    - type: MultilevelWaveletLoss
+      weight: 1.0
+    - type: WaveletBinnedRMSE
+      name: HighFreqRMSE
+      weight: 1.0
+      config_file: high_freq_rmse
+    - type: WaveletBinnedRMSE
+      name: MidFreqRMSE
+      config_file: mid_freq_rmse
+      weight: 1.0
+    - type: WaveletBinnedRMSE
+      name: LowFreqRMSE
+      config_file: low_freq_rmse
+      weight: 1.0
+    - type: InterfaceRMSE # Threshold
+      weight: 1.0
+      config_file: interface_rmse_default # irmse_r22
+    - type: ShockRMSE # Threshold
+      weight: 1.0
+    - type: SSIM
+      weight: 1.0
+    - type: MSSSIM
+      weight: 1.0
+    - type: IntegralConservationRMSE # Set components in respective config file

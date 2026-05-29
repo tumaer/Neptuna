@@ -23,6 +23,9 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     This function mutates the input configuration in-place, performing several
     essential preprocessing steps before training can begin:
 
+    0. If train_type is finetune: replace ``model_config`` from the checkpoint's
+       ``config.json`` and ``data_config`` from ``data_config.json`` in the parent
+       folder of ``finetune_checkpoint_path``.
     1. Derive output directory path when not specified
     2. Populate grid resolution from dataset if missing
     3. Compute normalization statistics if not provided
@@ -62,6 +65,54 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     Channel filtering is performed using keyword matching where channel names
     are included if they start with any of the specified filter keywords.
     """
+
+    # ------------------------------------------------------------------
+    # 0) Finetune: replace cfg["model_config"] from checkpoint config.json
+    #    and cfg["data_config"] from data_config.json in the parent directory
+    #    of finetune_checkpoint_path (e.g. .../run/checkpoint-5 -> .../run/data_config.json)
+    # ------------------------------------------------------------------
+    train_type = cfg["train_config"]["train_type_config"].get("train_type", "train_from_scratch")
+    if train_type == "finetune":
+        checkpoint_path = cfg["train_config"]["train_type_config"]["finetune_checkpoint_path"]
+        checkpoint_path = os.path.abspath(checkpoint_path)
+        checkpoint_config_path = os.path.join(checkpoint_path, "config.json")
+        with open(checkpoint_config_path, "r", encoding="utf-8") as f:
+            checkpoint_model_config = json.load(f)
+
+        checkpoint_model_config["model_name"] = str(
+            checkpoint_model_config["architectures"][0]
+        )
+        checkpoint_model_config["model_checkpoint_path"] = checkpoint_path
+        OmegaConf.update(
+            cfg,
+            "model_config",
+            checkpoint_model_config,
+            merge=False,
+            force_add=True,
+        )
+
+        data_config_path = os.path.join(os.path.dirname(checkpoint_path), "data_config.json")
+        if not os.path.isfile(data_config_path):
+            raise FileNotFoundError(
+                "Finetuning requires data_config.json in the directory above "
+                f"finetune_checkpoint_path; missing: {data_config_path}"
+            )
+        with open(data_config_path, "r", encoding="utf-8") as f:
+            checkpoint_data_config = json.load(f)
+        OmegaConf.update(
+            cfg,
+            "data_config",
+            checkpoint_data_config,
+            merge=False,
+            force_add=True,
+        )
+
+        # Ensure the instantiated model matches the *target* dataset (e.g. 3D fine-tune).
+        # The checkpoint's config.json may be 2D; we override with the loaded data_config.
+        if "dimension" in checkpoint_data_config:
+            OmegaConf.update(cfg, "model_config.dimension", checkpoint_data_config["dimension"], merge=False, force_add=True)
+        # if "grid_resolution" in checkpoint_data_config:
+        #     OmegaConf.update(cfg, "model_config.grid_resolution", checkpoint_data_config["grid_resolution"], merge=False, force_add=True)
 
     # ------------------------------------------------------------------
     # 1) Output directory
@@ -117,7 +168,7 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
             residual_config=cfg["data_config"]["residual_config"],
             filter_groups=cfg["data_config"]["filter_features"]["train_filter_groups"] ,
             filter_frames=cfg["data_config"]["filter_features"]["train_filter_frames"],
-            frame_stride=cfg["data_config"]["sequence_info"][2],
+            frame_stride=1,
             on_fly_stats=True,
             num_workers=4,
             log_transform_channels=cfg["data_config"]["log_transform_channels"],
@@ -125,7 +176,18 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
         print(f"compute_statistics took {time.perf_counter() - _t_start:.2f} seconds")
         cfg["data_config"]["data_normalization_stats"] = stats
     else:
-        raw_keys = list(cfg["data_config"]["data_normalization_stats"].keys())
+        #if cfg["data_config"]['log_transform_channels'] is not None, then the data_normalization_stats should contain the statistics for the log-transformed channels
+        if cfg["data_config"]["log_transform_channels"] is not None:
+            for ch_name in cfg["data_config"]["log_transform_channels"]:
+                ch_name = f"log_{ch_name}"
+                if ch_name not in cfg["data_config"]["data_normalization_stats"]:
+                    raise ValueError(f"Statistics for the log-transformed channel {ch_name} are not provided in the data_normalization_stats dictionary.")
+        # Exclude log-transformed channels; downstream logic expects raw names
+        raw_keys = [
+            k
+            for k in cfg["data_config"]["data_normalization_stats"].keys()
+            if not k.startswith("log_")
+        ]
         # Collapse residual keys: if both "foo" and "foo_residual" exist, keep only "foo"
         channel_names = []
         for k in raw_keys:
@@ -209,7 +271,7 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
         if cfg["data_config"]["conditioning_features"].get("parameter_min_max_stats") is None:
             h5_dir = cfg["data_config"]["dataset_directory_path"]
             h5_paths_params = [
-                os.path.join(h5_dir, fname) for fname in os.listdir(h5_dir) if fname.endswith(".h5")
+                os.path.join(h5_dir, fname) for fname in os.listdir(h5_dir) if fname.endswith("train.h5")
             ]
 
             if len(h5_paths_params) == 0:
@@ -218,12 +280,13 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
                 )
 
             param_ranges = compute_parameter_statistics(h5_paths_params)
-            cfg['data_config']['conditioning_features']['num_cond_params'] = len(param_ranges)
             cfg["data_config"]["conditioning_features"]["parameter_min_max_stats"] = param_ranges
         else:
             # --- Basic schema validation of user-supplied stats ---------
             user_stats = cfg["data_config"]["conditioning_features"]["parameter_min_max_stats"]
             for idx, stat_dict in user_stats.items():
+                if idx == "max_number_of_parameters":
+                    continue
                 if not {
                     "min",
                     "max",
@@ -239,7 +302,7 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     # NOTE: filter_in_channels has also the conditioning_in_channels (if any)
     filter_in_keywords = cfg["data_config"]["filter_features"]["filter_in_channels"]
     filtered_in_channels = (
-        [n for n in channel_names if any(n.startswith(k) for k in filter_in_keywords)]
+        [k for k in filter_in_keywords if k in channel_names]
         if filter_in_keywords
         else channel_names
     )
@@ -257,7 +320,7 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
 
     filter_out_keywords = cfg["data_config"]["filter_features"]["filter_out_channels"]
     filtered_out_channels = (
-        [n for n in channel_names if any(n.startswith(k) for k in filter_out_keywords)]
+        [k for k in filter_out_keywords if k in channel_names]
         if filter_out_keywords
         else channel_names
     )
@@ -464,6 +527,7 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
         try:
             registry_entry = get_loss_entry(loss_type)
             default_config = registry_entry["default_config"]
+            config_base_path = registry_entry["config_path"]
         except (KeyError, ValueError):
             # Loss type not in registry or no default config
             return
@@ -478,7 +542,7 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
         # Load defaults (if available)
         defaults_metric = OmegaConf.create({})
         if config_file is not None:
-            config_path = f"config/train_strategy_config/{config_file}.yaml"
+            config_path = f"config/train_strategy_config/{config_base_path}{config_file}.yaml"
             if os.path.exists(config_path):
                 try:
                     defaults_metric = OmegaConf.load(config_path)

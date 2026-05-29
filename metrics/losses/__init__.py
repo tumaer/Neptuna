@@ -1,5 +1,5 @@
-from .l1_loss import L1Loss
-from .l2_loss import L2Loss
+from .mae import MAE
+from .mse import MSE
 from .ssim import SSIM
 from .ms_ssim import MSSSIM
 from .pearson_correlation_loss import PearsonCorrelationLoss
@@ -10,13 +10,16 @@ from .multilevel_wavelet_loss import MultilevelWaveletLoss
 from .wavelet_binned_rmse import WaveletBinnedRMSE
 from .integral_conservation_rmse import IntegralConservationRMSE
 from .rmse import RMSE
-from .vrmse import VRMSE
-from .nrmse import NRMSE
 from .interface_rmse import InterfaceRMSE
+from .mean_relative_error import MeanRelativeError
+from .negativity_loss import NegativityLoss
+from .shock_rmse import ShockRMSE
+from .pde_residual_loss import PDEResidualLoss
+from .droplet_outer_radius import DropletOuterRadius
 
 __all__ = [
-    'L1Loss',
-    'L2Loss',
+    'MAE',
+    'MSE',
     'SSIM',
     'MSSSIM',
     'PearsonCorrelationLoss',
@@ -27,7 +30,10 @@ __all__ = [
     'WaveletBinnedRMSE',
     'IntegralConservationRMSE',
     'RMSE',
-    'VRMSE',
-    'NRMSE',
-    "InterfaceRMSE",
+    'InterfaceRMSE',
+    'MeanRelativeError',
+    'NegativityLoss',
+    'ShockRMSE',
+    'PDEResidualLoss',
+    'DropletOuterRadius',
 ]

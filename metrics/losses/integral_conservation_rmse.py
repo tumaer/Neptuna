@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from abc import ABC, abstractmethod
 import torch
 from torch import nn
-from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 
 # Inspired by cRMSE and bRMSE from the paper by Takamoto et al.,
 # 'PDEBENCH: An Extensive Benchmark for Scientific Machine Learning'
@@ -12,7 +12,7 @@ from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_nor
 @dataclass
 class BoundaryPatch:
     """Describes a boundary face on a regular Cartesian grid."""
-    name: str           # e.g. "x_min", "x_max", "y_min", "y_max"
+    name: str           # e.g. "west", "east", "south", "north"
     axis: int           # spatial axis: 0 (x), 1 (y), 2 (z)
     side: str           # "min" or "max"
     normal_sign: float  # -1.0 for min face, +1.0 for max face
@@ -101,11 +101,83 @@ class IntegralConservationRMSE(LossComponent):
         boundary_keys: Optional[Sequence[str]] = None,
         use_boundary_fluxes: bool = False,
         quantity_weights: Optional[Dict[str, float]] = None,
-        normalization: Literal['none', 'magnitude', 'variance'] = 'none',
-        reference_quantities: Optional[Dict[str, float]] = None,
+        components: Optional[List[Dict[str, Union[str, float]]]] = None,
+        normalization: Literal['none', 'range', 'variance', 'std', 'norm', 'root_norm'] = 'none',
         eps: float = 1e-8,
+        field_keys: Optional[Dict[str, str]] = None,
     ):
+        if components is not None and (conserved_keys or boundary_keys or quantity_weights):
+            raise ValueError(
+                "IntegralConservationRMSE: specify either 'components' or the "
+                "legacy conserved_keys/boundary_keys/quantity_weights, not both."
+            )
+
+        component_weights: Optional[Dict[str, float]] = None
+        component_names: Optional[List[str]] = None
+        boundary_patch_whitelist: Optional[Dict[str, Tuple[str, ...]]] = None
+
+        if components is not None:
+            if not isinstance(components, list) or len(components) == 0:
+                raise ValueError("IntegralConservationRMSE: 'components' must be a non-empty list.")
+
+            d = data_dim if data_dim is not None else 2
+            axis_labels = _axis_labels_from_dim(d)
+            valid_patches = {
+                _patch_name(a, side) for a in axis_labels for side in ("min", "max")
+            }
+
+            component_weights = {}
+            component_names = []
+            domain_keys: List[str] = []
+            boundary_keys_list: List[str] = []
+            boundary_patch_map: Dict[str, List[str]] = {}
+
+            for comp in components:
+                if "name" not in comp:
+                    raise ValueError("IntegralConservationRMSE: each component must have a 'name'.")
+                comp_name = str(comp["name"])
+                comp_weight = float(comp.get("weight", 1.0))
+
+                parts = comp_name.split("/")
+                if parts[0] == "domain" and len(parts) == 2:
+                    q_key = parts[1]
+                    if q_key not in domain_keys:
+                        domain_keys.append(q_key)
+                elif parts[0] == "boundary" and len(parts) == 3:
+                    if not use_boundary_fluxes:
+                        raise ValueError(
+                            f"IntegralConservationRMSE: boundary component '{comp_name}' requires "
+                            "use_boundary_fluxes=True."
+                        )
+                    q_key = parts[1]
+                    patch = parts[2]
+                    if patch not in valid_patches:
+                        raise ValueError(
+                            f"IntegralConservationRMSE: invalid boundary patch '{patch}' "
+                            f"for data_dim={d}. Valid: {sorted(valid_patches)}"
+                        )
+                    if q_key not in boundary_keys_list:
+                        boundary_keys_list.append(q_key)
+                    boundary_patch_map.setdefault(q_key, []).append(patch)
+                else:
+                    raise ValueError(
+                        "IntegralConservationRMSE: component name must be 'domain/<key>' or "
+                        "'boundary/<key>/<patch>'."
+                    )
+
+                component_weights[comp_name] = comp_weight
+                component_names.append(comp_name)
+
+            conserved_keys = domain_keys
+            boundary_keys = boundary_keys_list
+            boundary_patch_whitelist = {
+                k: tuple(v) for k, v in boundary_patch_map.items()
+            }
+
         # Convert quantity_weights to WeightSchedule format
+        if component_weights is not None:
+            quantity_weights = component_weights
+
         if isinstance(weight, (int, float)):
             weight = WeightSchedule(
                 base_weight=float(weight),
@@ -129,16 +201,20 @@ class IntegralConservationRMSE(LossComponent):
         self.eps = eps
         self.last_components: Dict[str, torch.Tensor] = {}
         self.normalization = normalization
-
-        ref_quantities = reference_quantities or {}
-        self.ref_rho = ref_quantities.get('density', 1.0)
-        self.ref_u = ref_quantities.get('velocity', 1.0)
-        self.ref_p = ref_quantities.get('pressure', 1.0)
-        self.ref_L = ref_quantities.get('length', 1.0)
-        self.ref_T = ref_quantities.get('temperature', 1.0)
-        self.ref_E = ref_quantities.get('energy', self.ref_p)
-
-        self.characteristic_scales = self._build_characteristic_scales()
+        self._component_names = component_names
+        self._boundary_patch_whitelist = boundary_patch_whitelist
+        
+        # Set up field key mappings with defaults
+        default_field_keys = {
+            'density': 'Density',
+            'velocity_x': 'Velocity_X',
+            'velocity_y': 'Velocity_Y',
+            'velocity_z': 'Velocity_Z',
+            'pressure': 'Pressure',
+            'energy': 'Energy',
+            'vorticity': 'Vorticity',
+        }
+        self.field_keys = {**default_field_keys, **(field_keys or {})}
 
         # Build registries
         self._domain_quantity_registry: Dict[str, DomainQuantity] = (
@@ -168,61 +244,15 @@ class IntegralConservationRMSE(LossComponent):
                     )
                 self.boundary_flux_quantities.append(self._boundary_flux_registry[key])
 
-    def _build_characteristic_scales(self) -> Dict[str, float]:
-        """
-        Build characteristic scales for each conserved quantity type.
-        
-        Based on dimensional analysis:
-        - mass: ρ * L^d (where d is spatial dimension)
-        - momentum: ρ * u * L^d
-        - kinetic_energy: ρ * u^2 * L^d
-        - energy: E * L^d (or p * L^d)
-        - enstrophy: (u/L)^2 * L^d = u^2 / L^(2-d)
-        - divergence: (u/L)^2 * L^d = u^2 / L^(2-d)
-        
-        For boundary fluxes (per unit time):
-        - mass flux: ρ * u * L^(d-1)
-        - momentum flux: ρ * u^2 * L^(d-1)  or  p * L^(d-1)
-        - energy flux: E * u * L^(d-1)  or  p * u * L^(d-1)
-        """
-        scales = {}
-        
-        # Get spatial dimension
-        d = self.data_dim if self.data_dim is not None else 2
-        L_d = self.ref_L ** d
-        L_d_minus_1 = self.ref_L ** (d - 1)
-        
-        # Domain quantities
-        scales["mass"] = self.ref_rho * L_d
-        scales["Px"] = self.ref_rho * self.ref_u * L_d
-        scales["Py"] = self.ref_rho * self.ref_u * L_d
-        scales["Pz"] = self.ref_rho * self.ref_u * L_d
-        scales["kinetic_energy"] = self.ref_rho * (self.ref_u ** 2) * L_d
-        scales["energy"] = self.ref_E * L_d
-        scales["enstrophy"] = (self.ref_u ** 2) / (self.ref_L ** (2 - d))
-        scales["divergence"] = (self.ref_u ** 2) / (self.ref_L ** (2 - d))
-        
-        # Boundary fluxes
-        scales["mass_flux"] = self.ref_rho * self.ref_u * L_d_minus_1
-        scales["Px_flux"] = max(
-            self.ref_rho * (self.ref_u ** 2) * L_d_minus_1,
-            self.ref_p * L_d_minus_1
-        )
-        scales["Py_flux"] = scales["Px_flux"]
-        scales["Pz_flux"] = scales["Px_flux"]
-        scales["energy_flux"] = max(
-            self.ref_E * self.ref_u * L_d_minus_1,
-            self.ref_p * self.ref_u * L_d_minus_1
-        )
-        
-        return scales
-
     def forward(
         self,
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-        return_detailed: bool = False
+        input_frames: Optional[torch.Tensor],
+        return_detailed: bool = False,
+        keep_bc_dims: bool = False,
+        preserve_component_grads: bool = False,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         # Denormalize fields
         pred_fields = self.norm_helper.denormalize_to_fields(predictions)
@@ -237,39 +267,85 @@ class IntegralConservationRMSE(LossComponent):
             domain_pred,
             domain_true,
             prefix="domain",
+            keep_bc_dims=keep_bc_dims,
         )
 
         # Compute boundary fluxes if enabled
         boundary_loss_dict: Dict[str, torch.Tensor] = {}
         if self.use_boundary_fluxes and len(self.boundary_keys) > 0:
+            if any(k not in domain_true for k in self.boundary_keys):
+                extra_domain = self._compute_domain_conserved_for_keys(
+                    true_fields,
+                    [k for k in self.boundary_keys if k not in domain_true],
+                )
+                if extra_domain:
+                    domain_true = {**domain_true, **extra_domain}
+
             flux_pred = self._compute_boundary_fluxes(pred_fields)
             flux_true = self._compute_boundary_fluxes(true_fields)
             boundary_loss_dict = self._compute_cRMSE_boundary_dict(
                 flux_pred,
                 flux_true,
+                domain_true,
+                keep_bc_dims=keep_bc_dims,
             )
 
         # All components contain raw normalized differences
         all_components = {**domain_loss_dict, **boundary_loss_dict}
+
+        component_weight_keys = list(self.weight_schedule.component_weights.keys())
+        if component_weight_keys:
+            missing = [k for k in component_weight_keys if k not in all_components]
+            extra = [k for k in all_components.keys() if k not in self.weight_schedule.component_weights]
+            if missing or extra:
+                raise ValueError(
+                    "IntegralConservationRMSE: component weights must match outputs. "
+                    f"Missing: {missing}, Extra: {extra}"
+                )
         
         # Store detailed components (raw differences)
         self.last_components = {k: v.detach() for k, v in all_components.items()}
 
-        # Aggregate: compute MSE = mean(weighted_components^2)
-        total_squared = torch.zeros((), device=predictions.device, dtype=predictions.dtype)
+        # Keep batch and component dims (for rollout metrics)
+        if keep_bc_dims:
+            if component_weight_keys:
+                component_order = component_weight_keys
+            elif self._component_names is not None:
+                component_order = list(self._component_names)
+            else:
+                component_order = sorted(all_components.keys())
+
+            per_component = []
+            for name in component_order:
+                value = all_components[name]
+                if value.ndim == 0:
+                    value = value.expand(predictions.shape[0])
+                elif value.ndim != 1 or value.shape[0] != predictions.shape[0]:
+                    raise ValueError(
+                        f"IntegralConservationRMSE: component '{name}' has incompatible shape {tuple(value.shape)}."
+                    )
+
+                q_weight = self.weight_schedule.get_loss_component_weight(name)
+                q_weight_tensor = torch.tensor(
+                    q_weight,
+                    device=value.device,
+                    dtype=value.dtype,
+                )
+                weighted_value = self.weight_schedule.base_weight * torch.sqrt(q_weight_tensor) * value
+                per_component.append(weighted_value)
+
+            per_component_tensor = torch.stack(per_component, dim=1)
+
+            return per_component_tensor
+        else:
+            total_squared = torch.zeros((), device=predictions.device, dtype=predictions.dtype)
+
         for name, value in all_components.items():
             q_weight = self.weight_schedule.get_loss_component_weight(name)
             total_squared = total_squared + q_weight * (value ** 2)
 
-        # Take square root to get RMSE
+        # Take square root to get RMSE (per-sample if keep_bc_dims)
         total = torch.sqrt(total_squared + self.eps)
-
-        total = apply_batch_wise_normalization(
-            total,
-            labels,
-            self.normalization,
-            self.eps
-        )
         
         # Apply base weight
         weighted_total = self.weight_schedule.base_weight * total
@@ -277,8 +353,21 @@ class IntegralConservationRMSE(LossComponent):
         if not return_detailed:
             return weighted_total
 
-        # Build detailed breakdown (raw differences)
-        detailed = {name: value.detach() for name, value in all_components.items()}
+        # Build detailed breakdown with weighted components
+        detailed_components: Dict[str, torch.Tensor] = {}
+        for name, value in all_components.items():
+            q_weight = self.weight_schedule.get_loss_component_weight(name)
+            q_weight_tensor = torch.tensor(
+                q_weight,
+                device=value.device,
+                dtype=value.dtype,
+            )
+            weighted_value = self.weight_schedule.base_weight * torch.sqrt(q_weight_tensor) * value
+            detailed_components[name] = weighted_value if preserve_component_grads else weighted_value.detach()
+
+        detailed = {
+            "per_component": detailed_components
+        }
 
         return weighted_total, detailed
 
@@ -293,26 +382,51 @@ class IntegralConservationRMSE(LossComponent):
         - energy: ∫ E dV
         - enstrophy: ∫ 0.5 |ω|² dV
         - divergence: ∫ |∇·u|² dV
+        - center_of_gravity_x/y/z: ∫ x_i ρ dV / ∫ ρ dV
         """
         registry: Dict[str, DomainQuantity] = {}
 
-        registry["mass"] = TotalMass(density_key="Density")
-        registry["Px"] = MomentumComponent(direction="x")
-        registry["Py"] = MomentumComponent(direction="y")
-        registry["Pz"] = MomentumComponent(direction="z")
-        registry["kinetic_energy"] = KineticEnergy()
+        density_key = self.field_keys['density']
+        vel_x_key = self.field_keys['velocity_x']
+        vel_y_key = self.field_keys['velocity_y']
+        vel_z_key = self.field_keys['velocity_z']
+        energy_key = self.field_keys['energy']
 
-        registry["energy"] = TotalEnergy(
-        energy_key="Energy",
-        density_key="Density",
-        pressure_key="Pressure",
-        vel_keys=("Velocity_X", "Velocity_Y"),
-        gamma=getattr(self, "gamma", 1.4),
-        name="energy",
+        registry["mass"] = TotalMass(density_key=density_key)
+        registry["Px"] = MomentumComponent(direction="x", density_key=density_key, vel_key=vel_x_key)
+        registry["Py"] = MomentumComponent(direction="y", density_key=density_key, vel_key=vel_y_key)
+        registry["Pz"] = MomentumComponent(direction="z", density_key=density_key, vel_key=vel_z_key)
+        
+        vel_keys = (vel_x_key, vel_y_key, vel_z_key)[:self.data_dim or 2]
+        registry["kinetic_energy"] = KineticEnergy(
+            density_key=density_key,
+            vel_keys=vel_keys,
         )
 
+        axis_labels = _axis_labels_from_dim(self.data_dim or 2)
+        for axis_label in axis_labels:
+            key = f"center_of_gravity_{axis_label}"
+            registry[key] = CenterOfGravityAxis(
+                axis_label=axis_label,
+                density_key=density_key,
+                name=key,
+            )
+
+        registry["energy"] = TotalEnergy(
+            energy_key=energy_key,
+            name="energy",
+        )
+
+        enstrophy_spacings = None
+        if hasattr(self, "dx") and hasattr(self, "dy"):
+            if hasattr(self, "dz") and (self.data_dim or 2) >= 3:
+                enstrophy_spacings = [self.dx, self.dy, self.dz]
+            else:
+                enstrophy_spacings = [self.dx, self.dy]
+
         registry["enstrophy"] = Enstrophy(
-            vort_key="Vorticity",
+            vel_keys=vel_keys,
+            spacings=enstrophy_spacings,
             name="enstrophy",
         )
 
@@ -325,7 +439,7 @@ class IntegralConservationRMSE(LossComponent):
                 spacings = [self.dx, self.dy]
 
         registry["divergence"] = DivergenceMeasure(
-            vel_keys=("Velocity_X", "Velocity_Y"),
+            vel_keys=(vel_x_key, vel_y_key),
             spacings=spacings,
             name="divergence",
         )
@@ -343,34 +457,45 @@ class IntegralConservationRMSE(LossComponent):
         """
         registry: Dict[str, BoundaryFluxQuantity] = {}
 
-        vel_keys = ("Velocity_X", "Velocity_Y", "Velocity_Z")[:self.data_dim or 2]
+        density_key = self.field_keys['density']
+        vel_x_key = self.field_keys['velocity_x']
+        vel_y_key = self.field_keys['velocity_y']
+        vel_z_key = self.field_keys['velocity_z']
+        pressure_key = self.field_keys['pressure']
+        energy_key = self.field_keys['energy']
+        
+        vel_keys = (vel_x_key, vel_y_key, vel_z_key)[:self.data_dim or 2]
+        
+        # Check if pressure is available in field_names
+        if self.field_names is not None and pressure_key not in self.field_names:
+            pressure_key = None
 
         registry["mass"] = MassFlux(
-            density_key="Density",
+            density_key=density_key,
             vel_keys=vel_keys,
             name="mass",
         )
         registry["Px"] = MomentumFluxComponent(
             direction="x",
-            density_key="Density",
-            pressure_key="Pressure",
+            density_key=density_key,
+            pressure_key=pressure_key,
             vel_keys=vel_keys,
         )
         registry["Py"] = MomentumFluxComponent(
             direction="y",
-            density_key="Density",
-            pressure_key="Pressure",
+            density_key=density_key,
+            pressure_key=pressure_key,
             vel_keys=vel_keys,
         )
         registry["Pz"] = MomentumFluxComponent(
             direction="z",
-            density_key="Density",
-            pressure_key="Pressure",
+            density_key=density_key,
+            pressure_key=pressure_key,
             vel_keys=vel_keys,
         )
         registry["energy"] = EnergyFlux(
-            energy_key="Energy",
-            pressure_key="Pressure",
+            energy_key=energy_key,
+            pressure_key=pressure_key,
             vel_keys=vel_keys,
             name="energy",
         )
@@ -405,8 +530,56 @@ class IntegralConservationRMSE(LossComponent):
         for q in self.domain_quantities:
             if not all(f in fields for f in q.required_fields):
                 missing = [f for f in q.required_fields if f not in fields]
-                print(f"Warning: skipping '{q.name}', missing fields: {missing}")
+                raise ValueError(
+                    f"IntegralConservationRMSE: missing fields for '{q.name}': {missing}"
+                )
+
+            series = q(fields, dv)  # (B, T)
+            out[q.name] = series
+
+        return out
+
+    def _compute_domain_conserved_for_keys(
+        self,
+        fields: Dict[str, torch.Tensor],
+        keys: Sequence[str],
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Compute domain-integrated quantities for specific keys.
+
+        Parameters
+        ----------
+        fields : dict of str -> Tensor
+            Each tensor has shape (B, T, *spatial).
+        keys : sequence of str
+            Quantity keys to compute.
+
+        Returns
+        -------
+        dict of str -> Tensor
+            Maps quantity_name to time series of shape (B, T).
+        """
+        if not keys:
+            return {}
+
+        sample = next(iter(fields.values()))
+        dv = torch.as_tensor(
+            getattr(self, "cell_volume", 1.0),
+            dtype=sample.dtype,
+            device=sample.device,
+        )
+
+        out: Dict[str, torch.Tensor] = {}
+        for key in keys:
+            if key not in self._domain_quantity_registry:
                 continue
+
+            q = self._domain_quantity_registry[key]
+            if not all(f in fields for f in q.required_fields):
+                missing = [f for f in q.required_fields if f not in fields]
+                raise ValueError(
+                    f"IntegralConservationRMSE: missing fields for '{q.name}': {missing}"
+                )
 
             series = q(fields, dv)  # (B, T)
             out[q.name] = series
@@ -443,22 +616,29 @@ class IntegralConservationRMSE(LossComponent):
             spacings = [1.0] * n_spatial
 
         # Define boundary patches
-        axis_names = ["x", "y", "z"]
+        axis_labels = _axis_labels_from_dim(n_spatial)
         patches: List[BoundaryPatch] = []
-        for axis in range(n_spatial):
-            a_name = axis_names[axis]
-            patches.append(BoundaryPatch(name=f"{a_name}_min", axis=axis, side="min", normal_sign=-1.0))
-            patches.append(BoundaryPatch(name=f"{a_name}_max", axis=axis, side="max", normal_sign=+1.0))
+        for axis, a_name in enumerate(axis_labels):
+            patches.append(BoundaryPatch(name=_patch_name(a_name, "min"), axis=axis, side="min", normal_sign=-1.0))
+            patches.append(BoundaryPatch(name=_patch_name(a_name, "max"), axis=axis, side="max", normal_sign=+1.0))
 
         out: Dict[str, Dict[str, torch.Tensor]] = {}
 
         for flux_quantity in self.boundary_flux_quantities:
             if not all(f in fields for f in flux_quantity.required_fields):
                 missing = [f for f in flux_quantity.required_fields if f not in fields]
-                print(f"Warning: skipping '{flux_quantity.name}', missing: {missing}")
-                continue
+                raise ValueError(
+                    f"IntegralConservationRMSE: missing fields for '{flux_quantity.name}': {missing}"
+                )
 
-            patch_fluxes = flux_quantity(fields, patches, spacings)
+            flux_patches = patches
+            if self._boundary_patch_whitelist is not None:
+                allowed = self._boundary_patch_whitelist.get(flux_quantity.name, ())
+                if allowed:
+                    allowed_set = set(allowed)
+                    flux_patches = [p for p in patches if p.name in allowed_set]
+
+            patch_fluxes = flux_quantity(fields, flux_patches, spacings)
             out[flux_quantity.name] = patch_fluxes
 
         return out
@@ -468,11 +648,12 @@ class IntegralConservationRMSE(LossComponent):
         series_pred: Dict[str, torch.Tensor],
         series_true: Dict[str, torch.Tensor],
         prefix: str = "",
+        keep_bc_dims: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
-        Compute dimensionless normalized raw difference for each quantity.
+        Compute label-normalized raw difference for each quantity.
 
-        error_normalized = (pred - true) / characteristic_scale
+        error_normalized = (pred - true) / (true + eps)
 
         Parameters
         ----------
@@ -500,18 +681,7 @@ class IntegralConservationRMSE(LossComponent):
             pred = series_pred[key]
             true = series_true[key]
 
-            diff = self._mean_diff(pred, true)
-            
-            # Get characteristic scale for this quantity
-            char_scale = self.characteristic_scales.get(key, 1.0)
-            char_scale_tensor = torch.tensor(
-                char_scale,
-                device=pred.device,
-                dtype=pred.dtype
-            )
-            
-            # Nondimensionalize
-            scaled = diff / (char_scale_tensor + self.eps)
+            scaled = self._mean_normalized_diff(pred, true, keep_bc_dims=keep_bc_dims)
 
             name = f"{prefix}/{key}" if prefix else key
             loss_dict[name] = scaled
@@ -522,9 +692,11 @@ class IntegralConservationRMSE(LossComponent):
         self,
         flux_pred: Dict[str, Dict[str, torch.Tensor]],
         flux_true: Dict[str, Dict[str, torch.Tensor]],
+        domain_true: Dict[str, torch.Tensor],
+        keep_bc_dims: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
-        Compute dimensionless normalized raw difference for boundary fluxes.
+        Compute label-normalized raw difference for boundary fluxes.
 
         Parameters
         ----------
@@ -544,30 +716,20 @@ class IntegralConservationRMSE(LossComponent):
             if q_key not in flux_pred or q_key not in flux_true:
                 continue
 
-            # Get characteristic scale for this flux quantity
-            flux_scale_key = f"{q_key}_flux"
-            char_scale = self.characteristic_scales.get(
-                flux_scale_key,
-                self.characteristic_scales.get(q_key, 1.0)
-            )
+            domain_series = domain_true.get(q_key)
 
             for patch_name, true_series in flux_true[q_key].items():
                 if patch_name not in flux_pred[q_key]:
                     continue
 
                 pred_series = flux_pred[q_key][patch_name]
-                
-                diff = self._mean_diff(pred_series, true_series)
-                
-                # Convert scale to tensor
-                char_scale_tensor = torch.tensor(
-                    char_scale,
-                    device=pred_series.device,
-                    dtype=pred_series.dtype
+
+                scaled = self._mean_normalized_diff_with_denom(
+                    pred_series,
+                    true_series,
+                    denom_series=domain_series,
+                    keep_bc_dims=keep_bc_dims,
                 )
-                
-                # Nondimensionalize
-                scaled = diff / (char_scale_tensor + self.eps)
 
                 name = f"boundary/{q_key}/{patch_name}"
                 loss_dict[name] = scaled
@@ -578,15 +740,99 @@ class IntegralConservationRMSE(LossComponent):
     def _mean_diff(
         pred: torch.Tensor,
         true: torch.Tensor,
+        keep_bc_dims: bool = False,
     ) -> torch.Tensor:
-        """Compute mean difference over all dimensions."""
+        """Compute mean absolute difference over all non-batch dimensions."""
         diff = pred - true
-        return torch.mean(torch.abs(diff))
+        if keep_bc_dims:
+            reduce_dims = list(range(1, diff.ndim))
+        else:
+            reduce_dims = list(range(0, diff.ndim))
+        return torch.mean(torch.abs(diff), dim=reduce_dims)
+
+    def _mean_normalized_diff(
+        self,
+        pred: torch.Tensor,
+        true: torch.Tensor,
+        keep_bc_dims: bool = False,
+    ) -> torch.Tensor:
+        """Compute mean absolute relative difference over all non-batch dims."""
+        diff = pred - true
+        denom = torch.abs(true)
+        rel = torch.abs(diff) / (denom + self.eps)
+        if keep_bc_dims:
+            reduce_dims = list(range(1, rel.ndim))
+        else:
+            reduce_dims = list(range(0, rel.ndim))
+        return torch.mean(rel, dim=reduce_dims)
+
+    def _mean_normalized_diff_with_denom(
+        self,
+        pred: torch.Tensor,
+        true: torch.Tensor,
+        denom_series: Optional[torch.Tensor] = None,
+        keep_bc_dims: bool = False,
+    ) -> torch.Tensor:
+        """Compute mean absolute relative difference using an external denominator series."""
+        diff = pred - true
+        if denom_series is None:
+            denom = torch.abs(true)
+        else:
+            denom = torch.abs(denom_series)
+
+        rel = torch.abs(diff) / (denom + self.eps)
+        if keep_bc_dims:
+            reduce_dims = list(range(1, rel.ndim))
+        else:
+            reduce_dims = list(range(0, rel.ndim))
+        return torch.mean(rel, dim=reduce_dims)
 
 
 # ------------------------------------------------------------------
 # Helper functions
 # ------------------------------------------------------------------
+
+def _axis_labels_from_dim(n_spatial: int) -> List[str]:
+    """
+    Return axis labels in tensor order (Z, Y, X).
+    1D -> ["x"], 2D -> ["y", "x"], 3D -> ["z", "y", "x"].
+    """
+    if n_spatial == 1:
+        return ["x"]
+    if n_spatial == 2:
+        return ["y", "x"]
+    if n_spatial == 3:
+        return ["z", "y", "x"]
+    raise ValueError(f"Unsupported spatial dim: {n_spatial}")
+
+
+def _patch_name(axis_label: str, side: str) -> str:
+    """
+    Convert axis + side to compass/top-bottom names.
+    x: west/east, y: south/north, z: bottom/top.
+    """
+    side_map = {
+        "x": {"min": "west", "max": "east"},
+        "y": {"min": "south", "max": "north"},
+        "z": {"min": "bottom", "max": "top"},
+    }
+    if axis_label not in side_map or side not in side_map[axis_label]:
+        raise ValueError(f"Invalid axis/side: {axis_label}/{side}")
+    return side_map[axis_label][side]
+
+
+def _vel_key_for_axis(vel_keys: Sequence[str], axis_label: str) -> str:
+    """
+    Map axis label to the corresponding velocity key.
+    vel_keys is in (x, y, z) order.
+    """
+    label_order = ("x", "y", "z")
+    key_map = {label: vel_keys[i] for i, label in enumerate(label_order[: len(vel_keys)])}
+    if axis_label not in key_map:
+        raise ValueError(
+            f"Velocity key for axis '{axis_label}' not available in {list(vel_keys)}."
+        )
+    return key_map[axis_label]
 
 def integrate_over_domain(field: torch.Tensor, dv: torch.Tensor) -> torch.Tensor:
     """
@@ -644,6 +890,54 @@ class TotalMass(DomainQuantity):
     ) -> torch.Tensor:
         rho = fields[self.density_key]
         return integrate_over_domain(rho, dv)
+
+
+class CenterOfGravityAxis(DomainQuantity):
+    """Center of gravity along a single axis from density: x̄_i = ∫ x_i ρ dV / ∫ ρ dV"""
+
+    def __init__(
+        self,
+        axis_label: str,
+        density_key: str = "Density",
+        name: Optional[str] = None,
+        eps: float = 1e-12,
+    ):
+        if axis_label not in ("x", "y", "z"):
+            raise ValueError(f"CenterOfGravityAxis: invalid axis '{axis_label}'.")
+        axis_name = name or f"center_of_gravity_{axis_label}"
+        super().__init__(name=axis_name, required_fields=[density_key])
+        self.axis_label = axis_label
+        self.density_key = density_key
+        self.eps = eps
+
+    def __call__(
+        self,
+        fields: Dict[str, torch.Tensor],
+        dv: torch.Tensor,
+    ) -> torch.Tensor:
+        rho = fields[self.density_key]
+        n_spatial = rho.ndim - 2
+        axis_labels = _axis_labels_from_dim(n_spatial)
+        if self.axis_label not in axis_labels:
+            raise ValueError(
+                f"CenterOfGravityAxis: axis '{self.axis_label}' not available for "
+                f"n_spatial={n_spatial}."
+            )
+
+        axis_index = axis_labels.index(self.axis_label)
+        dim = 2 + axis_index
+        size = rho.shape[dim]
+
+        coords = torch.arange(size, device=rho.device, dtype=rho.dtype)
+
+        shape = [1, 1] + [1] * n_spatial
+        shape[2 + axis_index] = size
+        coord_grid = coords.view(*shape)
+
+        weighted = rho * coord_grid
+        numerator = integrate_over_domain(weighted, dv)
+        denominator = integrate_over_domain(rho, dv)
+        return numerator / (denominator + self.eps)
 
 
 class MomentumComponent(DomainQuantity):
@@ -708,75 +1002,101 @@ class KineticEnergy(DomainQuantity):
 
 
 class Enstrophy(DomainQuantity):
-    """Domain-integrated enstrophy: Ω = ∫ 0.5 |ω|² dV"""
+    """
+    Domain-integrated enstrophy: Ω = ∫ 0.5 |ω|² dV.
 
-    def __init__(self, vort_key: str = "Vorticity", name: str = "enstrophy"):
-        super().__init__(name=name, required_fields=[vort_key])
-        self.vort_key = vort_key
+    Vorticity ω is computed from velocity using central finite differences
+    with periodic boundaries (via torch.roll), similar to the finite
+    difference approach used in H1 semi-norm utilities.
+    """
+
+    def __init__(
+        self,
+        vel_keys: Sequence[str] = ("Velocity_X", "Velocity_Y", "Velocity_Z"),
+        spacings: Optional[Sequence[float]] = None,
+        name: str = "enstrophy",
+    ):
+        super().__init__(name=name, required_fields=list(vel_keys))
+        self.vel_keys = tuple(vel_keys)
+        self.spacings = tuple(spacings) if spacings is not None else None
+
+    @staticmethod
+    def _central_diff(u: torch.Tensor, dim: int, dx: float) -> torch.Tensor:
+        u_plus = torch.roll(u, shifts=-1, dims=dim)
+        u_minus = torch.roll(u, shifts=1, dims=dim)
+        return (u_plus - u_minus) / (2.0 * dx)
 
     def __call__(self, fields: Dict[str, torch.Tensor], dv: torch.Tensor) -> torch.Tensor:
-        omega = fields[self.vort_key]
-        enstrophy_density = 0.5 * omega**2
+        n_spatial = len(self.vel_keys)
+        if n_spatial not in (1, 2, 3):
+            raise ValueError(
+                f"Enstrophy: unsupported velocity dimensionality {n_spatial}."
+            )
+
+        spacings = (
+            list(self.spacings)
+            if self.spacings is not None
+            else [1.0] * n_spatial
+        )
+        if len(spacings) != n_spatial:
+            raise ValueError(
+                f"Enstrophy: len(spacings)={len(spacings)} must match "
+                f"len(vel_keys)={n_spatial}."
+            )
+
+        # In 1D, vorticity is identically zero.
+        if n_spatial == 1:
+            u = fields[self.vel_keys[0]]
+            omega_sq = torch.zeros_like(u)
+
+        elif n_spatial == 2:
+            u = fields[self.vel_keys[0]]  # x-component
+            v = fields[self.vel_keys[1]]  # y-component
+            dx, dy = spacings
+
+            dv_dx = self._central_diff(v, dim=2, dx=dx)
+            du_dy = self._central_diff(u, dim=3, dx=dy)
+            omega_z = dv_dx - du_dy
+            omega_sq = omega_z**2
+
+        else:  # n_spatial == 3
+            u = fields[self.vel_keys[0]]  # x-component
+            v = fields[self.vel_keys[1]]  # y-component
+            w = fields[self.vel_keys[2]]  # z-component
+            dx, dy, dz = spacings
+
+            dw_dy = self._central_diff(w, dim=3, dx=dy)
+            dv_dz = self._central_diff(v, dim=4, dx=dz)
+            du_dz = self._central_diff(u, dim=4, dx=dz)
+            dw_dx = self._central_diff(w, dim=2, dx=dx)
+            dv_dx = self._central_diff(v, dim=2, dx=dx)
+            du_dy = self._central_diff(u, dim=3, dx=dy)
+
+            omega_x = dw_dy - dv_dz
+            omega_y = du_dz - dw_dx
+            omega_z = dv_dx - du_dy
+            omega_sq = omega_x**2 + omega_y**2 + omega_z**2
+
+        enstrophy_density = 0.5 * omega_sq
         return integrate_over_domain(enstrophy_density, dv)
 
 
 class TotalEnergy(DomainQuantity):
     """
     Domain-integrated total energy: E_tot = ∫ E dV
-
-    Two modes:
-    1. If energy_key provided: directly integrate that field
-    2. Otherwise: reconstruct from primitives (ρ, p, u) using ideal gas EOS:
-       E = ρ e_internal + 0.5 ρ |u|²
-       where e_internal = p / [(γ-1) ρ]
     """
 
     def __init__(
         self,
-        energy_key: Optional[str] = "Energy",
-        density_key: str = "Density",
-        pressure_key: str = "Pressure",
-        vel_keys: Sequence[str] = ("Velocity_X", "Velocity_Y"),
-        gamma: Optional[float] = None,
+        energy_key: str = "Energy",
         name: str = "energy",
     ):
-        required = []
-        if energy_key is not None:
-            required.append(energy_key)
-        else:
-            required.extend([density_key, pressure_key, *vel_keys])
-            if gamma is None:
-                raise ValueError(
-                    "TotalEnergy: gamma must be provided when energy_key is None."
-                )
-
-        super().__init__(name=name, required_fields=required)
-
+        super().__init__(name=name, required_fields=[energy_key])
         self.energy_key = energy_key
-        self.density_key = density_key
-        self.pressure_key = pressure_key
-        self.vel_keys = tuple(vel_keys)
-        self.gamma = gamma
 
     def __call__(self, fields: Dict[str, torch.Tensor], dv: torch.Tensor) -> torch.Tensor:
-        if self.energy_key is not None:
-            E = fields[self.energy_key]
-            return integrate_over_domain(E, dv)
-
-        # Reconstruct from primitives
-        rho = fields[self.density_key]
-        p = fields[self.pressure_key]
-
-        speed_sq = 0.0
-        for vk in self.vel_keys:
-            v = fields[vk]
-            speed_sq = speed_sq + v**2
-
-        gamma = self.gamma
-        e_internal = p / ((gamma - 1.0) * rho)
-        E_density = rho * e_internal + 0.5 * rho * speed_sq
-
-        return integrate_over_domain(E_density, dv)
+        E = fields[self.energy_key]
+        return integrate_over_domain(E, dv)
 
 
 class DivergenceMeasure(DomainQuantity):
@@ -855,15 +1175,17 @@ class MassFlux(BoundaryFluxQuantity):
         rho = fields[self.density_key]
         n_spatial = rho.ndim - 2
         vel_keys = self.vel_keys[:n_spatial]
+        axis_labels = _axis_labels_from_dim(n_spatial)
 
         results: Dict[str, torch.Tensor] = {}
 
         for patch in patches:
             axis = patch.axis
             dim = 2 + axis
+            axis_label = axis_labels[axis]
 
             # u·n = n_sign * u_axis  (normal aligned with axis)
-            u_axis = fields[vel_keys[axis]]
+            u_axis = fields[_vel_key_for_axis(vel_keys, axis_label)]
             un = patch.normal_sign * u_axis
 
             flux_density = rho * un
@@ -896,15 +1218,18 @@ class MomentumFluxComponent(BoundaryFluxQuantity):
         self,
         direction: str,
         density_key: str = "Density",
-        pressure_key: str = "Pressure",
+        pressure_key: Optional[str] = "Pressure",
         vel_keys: Sequence[str] = ("Velocity_X", "Velocity_Y", "Velocity_Z"),
     ):
         assert direction in ("x", "y", "z")
         name = f"P{direction}"
-        required = [density_key, pressure_key, *vel_keys]
+        required = [density_key, *vel_keys]
+        if pressure_key is not None:
+            required.append(pressure_key)
         super().__init__(name=name, required_fields=required)
 
         self.index = {"x": 0, "y": 1, "z": 2}[direction]
+        self.direction_label = direction
         self.density_key = density_key
         self.pressure_key = pressure_key
         self.vel_keys = tuple(vel_keys)
@@ -916,27 +1241,33 @@ class MomentumFluxComponent(BoundaryFluxQuantity):
         spacings: Sequence[float],
     ) -> Dict[str, torch.Tensor]:
         rho = fields[self.density_key]
-        p = fields[self.pressure_key]
+        p = None
+        if self.pressure_key is not None and self.pressure_key in fields:
+            p = fields[self.pressure_key]
         n_spatial = rho.ndim - 2
 
         vel_keys = self.vel_keys[:n_spatial]
+        axis_labels = _axis_labels_from_dim(n_spatial)
         results: Dict[str, torch.Tensor] = {}
 
         for patch in patches:
             axis = patch.axis
             dim = 2 + axis
+            axis_label = axis_labels[axis]
 
             # u·n
-            u_axis = fields[vel_keys[axis]]
+            u_axis = fields[_vel_key_for_axis(vel_keys, axis_label)]
             un = patch.normal_sign * u_axis
 
             # u_i (component being tracked)
-            u_i = fields[vel_keys[self.index]]
+            u_i = fields[_vel_key_for_axis(vel_keys, self.direction_label)]
 
             # n_i (component of normal in direction i)
-            n_i = patch.normal_sign if self.index == axis else 0.0
+            n_i = patch.normal_sign if self.direction_label == axis_label else 0.0
 
-            flux_density = rho * u_i * un + p * n_i
+            flux_density = rho * u_i * un
+            if p is not None:
+                flux_density = flux_density + p * n_i
 
             sl = [slice(None)] * flux_density.ndim
             sl[dim] = 0 if patch.side == "min" else -1
@@ -979,13 +1310,15 @@ class EnergyFlux(BoundaryFluxQuantity):
         n_spatial = E.ndim - 2
 
         vel_keys = self.vel_keys[:n_spatial]
+        axis_labels = _axis_labels_from_dim(n_spatial)
         results: Dict[str, torch.Tensor] = {}
 
         for patch in patches:
             axis = patch.axis
             dim = 2 + axis
+            axis_label = axis_labels[axis]
 
-            u_axis = fields[vel_keys[axis]]
+            u_axis = fields[_vel_key_for_axis(vel_keys, axis_label)]
             un = patch.normal_sign * u_axis
 
             flux_density = (E + p) * un

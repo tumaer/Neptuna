@@ -1,3 +1,7 @@
+"""
+Copied and adpated from https://github.com/lululxvi/deeponet
+"""
+
 from itertools import product
 import torch
 import torch.nn as nn

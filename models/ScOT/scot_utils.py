@@ -1,5 +1,5 @@
 from utils.model_utils import PretrainedConfig
-from transformers.models.swinv2.modeling_swinv2 import (
+from models.ScOT.swinv2_utils import (
     Swinv2Attention,
     Swinv2DropPath,
     Swinv2Intermediate,
@@ -7,6 +7,7 @@ from transformers.models.swinv2.modeling_swinv2 import (
     window_reverse,
     window_partition,
 )
+from transformers.activations import ACT2FN
 from transformers.utils import ModelOutput
 from dataclasses import dataclass
 import torch
@@ -296,7 +297,6 @@ class ScOTEmbeddings(nn.Module):
 
         return embeddings, output_dimensions # [16, 1024, 48], (32, 32)
 
-
 class ScOTLayer(nn.Module):
     def __init__(
         self,
@@ -327,7 +327,6 @@ class ScOTLayer(nn.Module):
             ),
         )
         
-
         self.layernorm_before = CustomNorm(config=config, num_channels=dim, array_length=3, channel_at_last_position=True)
         self.drop_path = Swinv2DropPath(drop_path) if drop_path > 0.0 else nn.Identity() # 0 -> Identity
         self.intermediate = Swinv2Intermediate(config, dim) # Linear, activation
@@ -379,17 +378,56 @@ class ScOTLayer(nn.Module):
             )
             else target_shift_size[0]
         )
+    
+    # def get_attn_mask(self, height, width, dtype): # creates a spatial maks indicating window partitioning
+    #     # Use cached attention mask when possible
+    #     cache_key = (height, width, self.shift_size, self.window_size, dtype) # 32, 32, 0, 16
+    #     if cache_key in self.attn_mask_cache: # {}
+    #         return self.attn_mask_cache[cache_key]
 
-    def get_attn_mask(self, height, width, dtype): # creates a spatial maks indicating window partitioning
+
+    #     if self.shift_size > 0:
+    #         # calculate attention mask for shifted window multihead self attention # maks out attention across different windows
+    #         img_mask = torch.zeros((1, height, width, 1), dtype=dtype) # 1, 32, 32, 1
+    #         height_slices = ( # partition feature map into different regions
+    #             slice(0, -self.window_size), # everything apart from lower window size
+    #             slice(-self.window_size, -self.shift_size), # 8 between lower 8 and rest
+    #             slice(-self.shift_size, None), # lower 8
+    #         )
+    #         width_slices = (
+    #             slice(0, -self.window_size),
+    #             slice(-self.window_size, -self.shift_size),
+    #             slice(-self.shift_size, None),
+    #         )
+    #         count = 0 # label each sub-region of feature map with unique integer
+    #         for height_slice in height_slices:
+    #             for width_slice in width_slices:
+    #                 img_mask[:, height_slice, width_slice, :] = count
+    #                 count += 1
+
+    #         mask_windows = window_partition(img_mask, self.window_size) # 4, 16, 16, 1
+    #         mask_windows = mask_windows.view(-1, self.window_size * self.window_size) # 4, 256
+    #         attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2) # 4, 256, 256 # for each each window, compute pairwise difference between region labels
+    #         # if two token same label -> 0 -> attend to each other # else (different labels) -> non 0 -> not attend
+    #         attn_mask = attn_mask.masked_fill(
+    #             attn_mask != 0, float(-100.0)
+    #         ).masked_fill(attn_mask == 0, float(0.0)) # keep 0, convert non-0 to large negative number to kill attention in softmax
+    #     else:
+    #         attn_mask = None
+            
+    #     # Cache the result
+    #     self.attn_mask_cache[cache_key] = attn_mask
+    #     return attn_mask
+
+    def get_attn_mask(self, height, width, dtype, device): # creates a spatial maks indicating window partitioning
         # Use cached attention mask when possible
-        cache_key = (height, width, self.shift_size, self.window_size, dtype) # 32, 32, 0, 16
+        cache_key = (height, width, self.shift_size, self.window_size, dtype, str(device)) # 32, 32, 0, 16
         if cache_key in self.attn_mask_cache: # {}
             return self.attn_mask_cache[cache_key]
 
-
         if self.shift_size > 0:
             # calculate attention mask for shifted window multihead self attention # maks out attention across different windows
-            img_mask = torch.zeros((1, height, width, 1), dtype=dtype) # 1, 32, 32, 1
+            img_mask = torch.zeros((1, height, width, 1), dtype=dtype, device=device) # 1, 32, 32, 1
             height_slices = ( # partition feature map into different regions
                 slice(0, -self.window_size), # everything apart from lower window size
                 slice(-self.window_size, -self.shift_size), # 8 between lower 8 and rest
@@ -476,10 +514,15 @@ class ScOTLayer(nn.Module):
         )# 64, 256, 48
         
         # Get attention mask (cached when possible)
-        attn_mask = self.get_attn_mask(height_pad, width_pad, dtype=hidden_states.dtype) # mask ensures that attention stays within shifted windows
+        attn_mask = self.get_attn_mask(
+            height_pad,
+            width_pad,
+            dtype=hidden_states.dtype,
+            device=hidden_states_windows.device,
+        ) # mask ensures that attention stays within shifted windows
         if attn_mask is not None:
             attn_mask = attn_mask.to(hidden_states_windows.device)
-            
+        
         attention_outputs = self.attention( # forward pass through Swinv2Attention
             hidden_states_windows, # 64, 256, 48
             attn_mask, # None

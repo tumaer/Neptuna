@@ -71,6 +71,7 @@ def fetch_loss_metric(data_config, loss_dict) -> CompositeLoss:
     field_names = data_config.filter_features.filter_out_channels
     norm_stats = data_config.data_normalization_stats
     norm_strategy = data_config.data_normalization_strategy
+    log_transform_channels = data_config.log_transform_channels if hasattr(data_config, "log_transform_channels") else []
     is_residual = False
     
     for component_cfg in loss_dict.components:
@@ -80,7 +81,8 @@ def fetch_loss_metric(data_config, loss_dict) -> CompositeLoss:
             field_names,
             norm_stats,
             norm_strategy,
-            is_residual
+            is_residual,
+            log_transform_channels
         )
         loss_components.append(loss_component)
     
@@ -93,7 +95,8 @@ def _create_loss_component(
     field_names: List[str],
     norm_stats: Dict,
     norm_strategy: str,
-    is_residual: bool
+    is_residual: bool,
+    log_transform_channels: List[str]
 ) -> LossComponent:
     """
     Recursively create a loss component, handling nested composites.
@@ -101,7 +104,7 @@ def _create_loss_component(
     loss_type = component_cfg.type
     
     # Handle nested composite
-    if loss_type == "CompositeLoss":
+    if loss_type in ("CompositeLoss", "NestedCompositeLoss"):
         name = component_cfg.get("name", "NestedComposite")
         weight = create_loss_weight_schedule(component_cfg)
         
@@ -115,7 +118,8 @@ def _create_loss_component(
                     field_names,
                     norm_stats,
                     norm_strategy,
-                    is_residual
+                    is_residual,
+                    log_transform_channels
                 )
                 sub_components.append(sub_comp)
         
@@ -124,6 +128,7 @@ def _create_loss_component(
             norm_strategy=norm_strategy,
             channel_names=field_names,
             is_residual=is_residual,
+            log_transform_channels=log_transform_channels
         )
         
         return NestedCompositeLoss(
@@ -140,6 +145,7 @@ def _create_loss_component(
     loss_class = registry_entry["class"]
     default_name = registry_entry["default_name"]
     default_config = registry_entry["default_config"]
+    config_base_path = registry_entry["config_path"]
     
     name = component_cfg.get("name", default_name)
     weight = create_loss_weight_schedule(component_cfg)
@@ -149,6 +155,7 @@ def _create_loss_component(
         norm_strategy=norm_strategy,
         channel_names=field_names,
         is_residual=is_residual,
+        log_transform_channels=log_transform_channels
     )
     
     # Load metric-specific config
@@ -157,10 +164,10 @@ def _create_loss_component(
         metric_params = OmegaConf.to_container(
             component_cfg.metric_params, resolve=True
         )
-    else:
+    else: 
         config_file = component_cfg.get("config_file", default_config)
         if config_file is not None:
-            config_path = f"config/train_strategy_config/{config_file}.yaml"
+            config_path = f"config/train_strategy_config/{config_base_path}{config_file}.yaml"
             try:
                 metric_config = OmegaConf.load(config_path)
                 metric_params = OmegaConf.to_container(metric_config, resolve=True)
@@ -252,28 +259,20 @@ def _override_loss_weights_recursively(component_cfg, num_channels: int):
             _override_loss_weights_recursively(sub_component, num_channels)
 
 
-def fetch_infer_loss_dict(cfg):
+def fetch_infer_loss_dict(data_cfg):
     """
     Loads infer loss config and overrides timestep_weights and channel_weights.
     Inference requires the loss object to be initialized with per-channel and timestep
     weighting in order to compute rollout metrics (compute_metrics_for_n_rollouts)
     """
-    eval_loss_config_path = "./config/train_strategy_config/infer_loss.yaml" #TODO: avoid hardcoding "infer_loss.yaml".
+    eval_loss_config_path = "./config/infer_config/infer_loss.yaml" #TODO: avoid hardcoding "infer_loss.yaml".
     eval_loss_cfg = OmegaConf.load(eval_loss_config_path)
 
-    num_channels = len(cfg.data_config.filter_features.filter_out_channels)
+    num_channels = len(data_cfg.filter_features.filter_out_channels)
     
     for component in eval_loss_cfg.loss.components:
         _override_loss_weights_recursively(component, num_channels)
     
     return eval_loss_cfg.loss
-
-#TODO: remove this
-# def fetch_train_loss_dict(cfg):
-#     return cfg.loss_config.train_loss
-
-# #TODO: remove this
-# def fetch_eval_loss_dict(cfg):
-#     return cfg.loss_config.validation_loss
 
     

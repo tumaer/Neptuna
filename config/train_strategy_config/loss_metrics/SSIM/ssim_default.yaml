@@ -3,7 +3,7 @@ sigma: 1.5
 K1: 0.01
 K2: 0.03
 L: 1
-keep_batch_dim: False
+keep_bc_dims: False
 padding: null
 ensemble_kernel: True
 normalization: none

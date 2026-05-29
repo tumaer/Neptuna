@@ -292,14 +292,19 @@ def _discover_metadata(first_h5_path: str, filter_groups: List[str] | None = Non
     return channel_names, problem_dimension
 
 
-def _parse_numeric_token(token: str) -> float:
+def _parse_numeric_token(token: str) -> float | None:
     """Extract a floating point number from an arbitrary string token.
 
     The token often contains a parameter name followed by its value, e.g.
     "Re1000" → 1000.0 or "M0.6" → 0.6.  This helper searches the first
     numeric substring (including optional sign and exponent) and converts it
-    to *float*.  If no numeric substring is found a *ValueError* is raised.
+    to *float*. Tokens that end with ``NaN`` are treated as placeholders and
+    ignored (returns ``None``). If no numeric substring is found a
+    *ValueError* is raised.
     """
+    if token.endswith("NaN"):
+        return np.nan
+
     match = re.search(r"[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?", token)
     if match:
         return float(match.group(0))
@@ -310,7 +315,7 @@ def compute_parameter_statistics(
     h5_paths: List[str],
     delimiter: str = "_",
     eps: float = 1e-12,
-) -> Tuple[np.ndarray, Dict[int, Dict[str, float]]]:
+) -> Dict[int, Dict[str, float]]:
     """Compute min-max normalised simulation parameters encoded in group names.
 
     The parameters are encoded directly in the HDF5 group names using a delimiter (default: ``_``).
@@ -336,13 +341,10 @@ def compute_parameter_statistics(
 
     Returns
     -------
-    Tuple[np.ndarray, Dict[int, Dict[str, float]]]
-        1. ``normalized_params`` – A 2-D ``np.ndarray`` with shape
-           *(N_groups, N_parameters)* containing the normalised parameters for
-           every discovered group **in the order encountered**.
-        2. ``param_ranges`` – A dictionary mapping the *parameter index* (int)
-           to a ``{"min": float, "max": float}`` dictionary describing the
-           range that was used for normalisation.
+    Dict[int, Dict[str, float]]
+        ``param_ranges`` – A dictionary mapping the *parameter index* (int) to
+        a ``{"min": float, "max": float}`` dictionary describing the range
+        computed from all groups.
 
     Notes
     -----
@@ -366,7 +368,15 @@ def compute_parameter_statistics(
                 tokens = grp_name.split(delimiter)
                 values: List[float] = []
                 for tok in tokens:
-                    values.append(_parse_numeric_token(tok))
+                    # Keep only parameter-like tokens that contain both
+                    # alphabetic characters and numeric characters, plus NaN tokens.
+                    has_letters_and_digits = bool(
+                        re.search(r"[A-Za-z]", tok) and re.search(r"\d", tok)
+                    )
+                    if not (has_letters_and_digits or "NaN" in tok):
+                        continue
+                    parsed_value = _parse_numeric_token(tok)
+                    values.append(parsed_value)
                 raw_params.append(values)
 
     if len(raw_params) == 0:
@@ -374,18 +384,18 @@ def compute_parameter_statistics(
 
     # Ensure parameter dimensionality is consistent
     n_params = len(raw_params[0])
-    if not all(len(p) == n_params for p in raw_params):
-        raise ValueError(
-            "Inconsistent number of parameters detected across group names."
-        )
+    # if not all(len(p) == n_params for p in raw_params):
+    #     raise ValueError(
+    #         "Inconsistent number of parameters detected across group names."
+    #     )
 
     raw_arr = np.asarray(raw_params, dtype=np.float64)  # (N, P)
 
     # ------------------------------------------------------------------
-    # Min-max normalisation per parameter dimension
+    # Min-max statistics per parameter dimension (ignoring missing entries)
     # ------------------------------------------------------------------
-    mins = raw_arr.min(axis=0)
-    maxs = raw_arr.max(axis=0)
+    mins = np.nanmin(raw_arr, axis=0)
+    maxs = np.nanmax(raw_arr, axis=0)
 
     # denom = maxs - mins
     # denom[denom == 0.0] = eps  # avoid divide-by-zero for constant parameters
@@ -396,10 +406,11 @@ def compute_parameter_statistics(
     param_ranges: Dict[int, Dict[str, float]] = {
         idx: {"min": float(mins[idx]), "max": float(maxs[idx])} for idx in range(n_params)
     }
+    param_ranges["max_number_of_parameters"] = raw_arr.shape[-1]
 
     return param_ranges
 
-
+# Deprecated function (will be removed in future)
 def compute_statistics(
     h5_paths: List[str],
     residual_config: Dict[str, bool] | None = None,
@@ -407,6 +418,7 @@ def compute_statistics(
     filter_frames: List[int] | None = None,
     frame_stride: int = 1,
     on_fly_stats: bool = False,
+    log_transform_channels: List[str] | None = None,
 ) -> Tuple[Dict[str, Dict[str, float]], List[str], int]:
     """
     Compute comprehensive statistics for HDF5 datasets with optional residual analysis.
@@ -515,6 +527,8 @@ def compute_statistics(
     if len(h5_paths) == 0:
         raise ValueError("h5_paths list is empty.")
 
+    log_channels_set = set(log_transform_channels or [])
+
     # --------------------------------------------------------------
     # Discover metadata (channel names and spatial dimensionality)
     # --------------------------------------------------------------
@@ -538,10 +552,16 @@ def compute_statistics(
 
     # Aggregators for raw channels (created now but populated later)
     aggregators: Dict[str, _StatsAggregator] = {name: _StatsAggregator() for name in channel_names}
+    # Pre-create log-channel aggregators for channels marked for log transform
+    for name in channel_names:
+        if name in log_channels_set:
+            aggregators[f"log_{name}"] = _StatsAggregator()
 
     # Optional aggregators for residuals, keyed by "<channel>_residual"
     residual_aggregators: Dict[str, _StatsAggregator] | None = None
     if residual_config is not None:
+        if log_channels_set:
+            raise ValueError("Residual computation for log-transformed channels is not implemented yet.")
         add_pred = residual_config.get("add_predicted_value", False)
         add_base = residual_config.get("add_base_value", False)
 
@@ -561,6 +581,9 @@ def compute_statistics(
     collected_residual: Dict[str, List[np.ndarray]] | None = None
     if not on_fly_stats:
         collected_data = {name: [] for name in channel_names}
+        for name in channel_names:
+            if name in log_channels_set:
+                collected_data[f"log_{name}"] = []
         if residual_aggregators is not None:
             collected_residual = {k: [] for k in residual_aggregators.keys()}
 
@@ -615,14 +638,28 @@ def compute_statistics(
 
                         if key not in aggregators:
                             aggregators[key] = _StatsAggregator()
+                            if key in log_channels_set:
+                                aggregators[f"log_{key}"] = _StatsAggregator()
 
                         if on_fly_stats:
                             aggregators[key].add(channel_data)
+                            if key in log_channels_set:
+                                if np.any(channel_data <= 0):
+                                    raise ValueError(f"Channel {key} contains negative or zero values. Cannot apply log transform.")
+                                log_key = f"log_{key}"
+                                log_channel_data = np.log(channel_data)
+                                aggregators[log_key].add(log_channel_data)
                             if residual_data is not None:
                                 res_key = f"{key}_residual"
                                 residual_aggregators[res_key].add(residual_data[:, ch])
                         else:
                             collected_data[key].append(channel_data)
+                            if key in log_channels_set:
+                                if np.any(channel_data <= 0):
+                                    raise ValueError(f"Channel {key} contains negative or zero values. Cannot apply log transform.")
+                                log_key = f"log_{key}"
+                                log_channel_data = np.log(channel_data)
+                                collected_data[log_key].append(log_channel_data)
                             if residual_data is not None:
                                 res_key = f"{key}_residual"
                                 collected_residual[res_key].append(residual_data[:, ch])
@@ -695,7 +732,7 @@ def _process_single_file(
     frame_stride: int,
     on_fly_stats: bool,
     log_transform_channels: List[str] | None = None,
-) -> Dict[str, _StatsAggregator]:
+) -> tuple[Dict[str, _StatsAggregator], int]:
     """Compute per-channel aggregators for *one* HDF5 file (worker)."""
 
     log_channels_set = set(log_transform_channels or [])
@@ -708,6 +745,10 @@ def _process_single_file(
         return {}
 
     aggs: Dict[str, _StatsAggregator] = {n: _StatsAggregator() for n in channel_names}
+    # Pre-create log-channel aggregators for any channel marked for log transform
+    for n in channel_names:
+        if n in log_channels_set:
+            aggs[f"log_{n}"] = _StatsAggregator()
     residual_aggs: Dict[str, _StatsAggregator] | None = None
     if residual_config is not None:
         residual_aggs = {f"{n}_residual": _StatsAggregator() for n in channel_names}
@@ -715,10 +756,12 @@ def _process_single_file(
     epsilon = 1e-10
 
     with h5py.File(path, "r") as f:
+        groups_processed = 0
         for grp_name in f:
             if filter_groups is not None and grp_name not in filter_groups:
                 continue
             grp = f[grp_name]
+            groups_processed += 1
             for field_name in grp:
                 field = grp[field_name]
                 ch_dim = field.shape[1]
@@ -736,6 +779,7 @@ def _process_single_file(
                         end_idx = field.shape[0] - 1
                     frame_slice = slice(start_idx, end_idx + 1, frame_stride)
                 else:
+                    #by default, process all frames of a trajectory with the variable 'frame_stride' 
                     frame_slice = slice(None, None, frame_stride if frame_stride != 1 else None)
 
                 data = field[frame_slice]
@@ -750,15 +794,26 @@ def _process_single_file(
                     # Apply log transform BEFORE computing statistics
                     # ============================================================
                     if key in log_channels_set:
-                        channel_data = np.log(np.maximum(channel_data, epsilon))
+                        # Raise an error if the channel data contains negative values
+                        if np.any(channel_data <= 0):
+                            raise ValueError(f"Channel {key} contains negative or zero values. Cannot apply log transform.")
+                        # add a new key to the aggregator with the log-transformed data
+                        log_key = f"log_{key}"
+                        log_channel_data = np.log(channel_data)
+                        #add is the function to add the statistics to the aggregator
+                        aggs[log_key].add(log_channel_data)
+                        #channel_data = np.log(np.maximum(channel_data, epsilon))
                     
                     # Add to aggregator
                     aggs[key].add(channel_data)
                     
                     # ============================================================
-                    # Handle residuals
+                    # Handle residuals (TODO: Implement residual stats computation for log-transformed channels)
                     # ============================================================
                     if residual_aggs is not None and data.shape[0] > 1:
+                        # if the log_channel_set is not empty, raise an error
+                        if log_channels_set:
+                            raise ValueError("Residual computation for log-transformed channels is not implemented yet.")
                         res_key = f"{key}_residual"
                         
                         if key in log_channels_set:
@@ -777,7 +832,7 @@ def _process_single_file(
     if residual_aggs is not None:
         aggs.update(residual_aggs)
 
-    return aggs
+    return aggs, groups_processed
 
 
 def _merge_aggregator_dicts(a: Dict[str, _StatsAggregator], b: Dict[str, _StatsAggregator]) -> Dict[str, _StatsAggregator]:
@@ -810,7 +865,7 @@ def compute_statistics_parallel(
     if len(h5_paths) == 0:
         raise ValueError("h5_paths list is empty.")
 
-    log_channels_set = set(log_transform_channels or [])
+    #log_channels_set = set(log_transform_channels or [])
 
     # ------------------------------------------------------------------
     # Discover metadata once (first file that fits the filters)
@@ -821,6 +876,8 @@ def compute_statistics_parallel(
     for p in h5_paths:
         try:
             channel_names, problem_dim = _discover_metadata(p, filter_groups)
+            #remove the channels that start with 'log_', we just need the statistics for the log trnsformed channel.
+            channel_names = [ch for ch in channel_names if not ch.startswith("log_")]
             metadata_found = True
             break
         except ValueError:
@@ -836,20 +893,95 @@ def compute_statistics_parallel(
     # Launch workers
     # ------------------------------------------------------------------
     import itertools as _it
+    from concurrent.futures import as_completed
+    try:
+        from tqdm.auto import tqdm as _tqdm  # type: ignore
+    except Exception:
+        _tqdm = None
 
-    with ProcessPoolExecutor(max_workers=num_workers) as pool:
-        agg_dicts = list(
-            pool.map(
-                _process_single_file,
-                h5_paths,
-                _it.repeat(residual_config),
-                _it.repeat(filter_groups),
-                _it.repeat(filter_frames),
-                _it.repeat(frame_stride),
-                _it.repeat(on_fly_stats),
-                _it.repeat(log_transform_channels),
+    # If we're effectively running one file, do a true per-group tqdm in-process
+    # (multiprocessing can't provide fine-grained progress without IPC and can
+    # be unstable with many concurrent HDF5 opens).
+    if len(h5_paths) == 1 or (num_workers is not None and num_workers <= 1):
+        path = h5_paths[0]
+        with h5py.File(path, "r") as f:
+            grp_names = [g for g in f.keys() if filter_groups is None or g in filter_groups]
+        if not grp_names:
+            raise ValueError(
+                "None of the provided HDF5 files contained any of the requested groups "
+                f"filter_groups={filter_groups}."
             )
-        )
+
+        done = grp_names
+        if _tqdm is not None:
+            done = _tqdm(done, total=len(grp_names), desc="Computing statistics", unit="group")
+
+        agg_dicts: list[Dict[str, _StatsAggregator]] = []
+        for g in done:
+            # reuse existing worker logic by restricting filter_groups to [g]
+            d, _n = _process_single_file(
+                path,
+                residual_config,
+                [g],
+                filter_frames,
+                frame_stride,
+                on_fly_stats,
+                log_transform_channels,
+            )
+            if d:
+                agg_dicts.append(d)
+    else:
+        # Multi-file parallelism (stable) with progress measured in groups.
+        # tqdm advances by the number of groups completed in each finished file.
+        group_counts: dict[str, int] = {}
+        total_groups = 0
+        for p in h5_paths:
+            try:
+                with h5py.File(p, "r") as f:
+                    if filter_groups is None:
+                        c = len(list(f.keys()))
+                    else:
+                        c = sum(1 for g in filter_groups if g in f)
+                group_counts[p] = c
+                total_groups += c
+            except OSError:
+                group_counts[p] = 0
+
+        if total_groups == 0:
+            raise ValueError(
+                "None of the provided HDF5 files contained any of the requested groups "
+                f"filter_groups={filter_groups}."
+            )
+
+        pbar = None
+        if _tqdm is not None:
+            pbar = _tqdm(total=total_groups, desc="Computing statistics", unit="group")
+
+        agg_dicts = []
+        with ProcessPoolExecutor(max_workers=num_workers) as pool:
+            futures = [
+                pool.submit(
+                    _process_single_file,
+                    p,
+                    residual_config,
+                    filter_groups,
+                    filter_frames,
+                    frame_stride,
+                    on_fly_stats,
+                    log_transform_channels,
+                )
+                for p in h5_paths
+            ]
+
+            for fut in as_completed(futures):
+                d, n_groups = fut.result()
+                if d:
+                    agg_dicts.append(d)
+                if pbar is not None:
+                    pbar.update(n_groups)
+
+        if pbar is not None:
+            pbar.close()
 
     # ------------------------------------------------------------------
     # Merge aggregator dictionaries
@@ -920,7 +1052,7 @@ def normalize_data(arr: np.ndarray, stats: Dict[str, float], strategy: str) -> n
     np.ndarray
         Normalized array (new copy).
     """
-    eps = 1e-12  # small constant to prevent divide-by-zero
+    eps = 1e-12 # small constant to prevent divide-by-zero
 
     if strategy == "z_normalization":
         return (arr - stats["mean"]) / (stats["std"]  + eps)

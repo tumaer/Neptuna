@@ -49,7 +49,7 @@ from typing import Tuple, List, Optional
 import matplotlib.cm as cm
 from matplotlib.patches import Patch
 import math
-
+from omegaconf import OmegaConf
 
 def preprocess_for_plotting(
     inputs: np.ndarray,
@@ -142,6 +142,7 @@ def preprocess_for_plotting(
             raise ValueError(f"Stats for input channel {ch_name} are unavailable.")
         stats = norm_stats[ch_name]
         if "mask" not in ch_name.lower():
+            #inputs has a shape (N, T_in, C, *spatial_dims)
             inputs_renormed[:, :, c_idx] = re_normalize_data(inputs[:, :, c_idx], stats, norm_strategy)
 
     if conditioning_inputs is not None:
@@ -260,8 +261,9 @@ class LayoutCalculator(ABC):
         self.slice_config = slice_config or Slice3DConfig()
     
     @abstractmethod
-    def calculate(self, spatial_shape: tuple, num_sections: int, 
-                  num_time_steps: int, ndim: int) -> dict:
+    def calculate(self, spatial_shape: tuple, num_sections: int,
+                  num_time_steps: int, ndim: int,
+                  channel_count: int = 1) -> dict:
         """Calculate layout parameters.
         
         Returns
@@ -271,7 +273,8 @@ class LayoutCalculator(ABC):
         """
         pass
     
-    def _get_visual_dimensions(self, spatial_shape: tuple, ndim: int) -> Tuple[float, float]:
+    def _get_visual_dimensions(self, spatial_shape: tuple, ndim: int,
+                               channel_count: int = 1) -> Tuple[float, float]:
         """Calculate visual dimensions of plot content based on data aspect ratio.
         
         For 3D data, accounts for the complete grid of slices.
@@ -317,21 +320,27 @@ class LayoutCalculator(ABC):
                 is_vertical = isinstance(self, VerticalLayoutCalculator)
                 
                 if is_vertical:
-                    # Vertical layout: slices stack vertically
-                    # Width: single slice width (channels side-by-side handled by renderer)
-                    # Height: all slices stacked + internal spacing
+                    # Vertical layout: slices stack vertically and channels are
+                    # laid out side-by-side inside each plot cell.
+                    wspace_inches = single_slice_width * 0.15
                     hspace_inches = single_slice_height * 0.25
-                    visual_width = single_slice_width
+                    visual_width = (
+                        channel_count * single_slice_width +
+                        max(channel_count - 1, 0) * wspace_inches
+                    )
                     visual_height = (num_slices * single_slice_height + 
                                 (num_slices - 1) * hspace_inches)
                 else:
-                    # Horizontal layout: slices side-by-side
-                    # Width: all slices in a row + internal spacing
-                    # Height: single row height
+                    # Horizontal layout: slices side-by-side while channels are
+                    # stacked vertically inside each plot cell.
                     wspace_inches = single_slice_width * 0.15
+                    hspace_inches = single_slice_height * 0.25
                     visual_width = (num_slices * single_slice_width + 
                                 (num_slices - 1) * wspace_inches)
-                    visual_height = single_slice_height
+                    visual_height = (
+                        channel_count * single_slice_height +
+                        max(channel_count - 1, 0) * hspace_inches
+                    )
                 
             else:
                 visual_width = self.config.base_visual_size * self.slice_config.num_slices
@@ -346,11 +355,14 @@ class LayoutCalculator(ABC):
 class VerticalLayoutCalculator(LayoutCalculator):
     """Layout calculator for vertical orientation (time as rows)."""
     
-    def calculate(self, spatial_shape: tuple, num_columns: int, 
-                  num_rows: int, ndim: int, is_timestamp: List[bool] = None) -> dict:
+    def calculate(self, spatial_shape: tuple, num_columns: int,
+                  num_rows: int, ndim: int, is_timestamp: List[bool] = None,
+                  channel_count: int = 1) -> dict:
         
         # Get visual dimensions from data shape
-        visual_width, visual_height = self._get_visual_dimensions(spatial_shape, ndim)
+        visual_width, visual_height = self._get_visual_dimensions(
+            spatial_shape, ndim, channel_count=channel_count
+        )
         
         # Colorbar is horizontal (below each plot)
         colorbar_space = self.config.colorbar_thickness + self.config.colorbar_gap
@@ -402,11 +414,14 @@ class VerticalLayoutCalculator(LayoutCalculator):
 class HorizontalLayoutCalculator(LayoutCalculator):
     """Layout calculator for horizontal orientation (time as columns)."""
     
-    def calculate(self, spatial_shape: tuple, num_rows: int, 
-                  num_columns: int, ndim: int, is_timestamp: List[bool] = None) -> dict:
+    def calculate(self, spatial_shape: tuple, num_rows: int,
+                  num_columns: int, ndim: int, is_timestamp: List[bool] = None,
+                  channel_count: int = 1) -> dict:
         
         # Get visual dimensions from data shape
-        visual_width, visual_height = self._get_visual_dimensions(spatial_shape, ndim)
+        visual_width, visual_height = self._get_visual_dimensions(
+            spatial_shape, ndim, channel_count=channel_count
+        )
         
         # Colorbar is horizontal (below each plot)
         colorbar_space = self.config.colorbar_thickness + self.config.colorbar_gap
@@ -485,17 +500,16 @@ class Renderer1D(DataRenderer):
 
 
 class Renderer2D(DataRenderer):
-    """Renderer for 2D data with automatic aspect ratio handling."""
+    """Renderer for 2D data with rectangular-domain-safe aspect handling."""
     
     def render(self, ax: plt.Axes, data: np.ndarray, channel_names: List[str],
                vmin: Optional[np.ndarray] = None, vmax: Optional[np.ndarray] = None,
                cbar_config: Optional[ColorbarConfig] = None) -> Optional[List[plt.Axes]]:
         
         C = data.shape[0]
-        h, w = data[0].shape
         
-        # Use 'auto' aspect to let axes determine aspect from data
-        aspect = 'auto'
+        # Preserve geometric proportions so rectangular domains are not stretched.
+        aspect = 'equal'
         
         use_vlims = vmin is not None and vmax is not None
         
@@ -638,7 +652,7 @@ class Renderer3D(DataRenderer):
                     else:
                         sub_ax = fig.add_subplot(gs[s_idx, c])
                     
-                    im = sub_ax.imshow(slice_data, cmap="coolwarm", aspect='auto',
+                    im = sub_ax.imshow(slice_data, cmap="coolwarm", aspect='equal',
                                       origin='lower', **_safe_vlims(c))
                     
                     # Title: show channel and slice position
@@ -672,7 +686,7 @@ class Renderer3D(DataRenderer):
                     else:
                         sub_ax = fig.add_subplot(gs[c, s_idx])
                     
-                    im = sub_ax.imshow(slice_data, cmap="coolwarm", aspect='auto',
+                    im = sub_ax.imshow(slice_data, cmap="coolwarm", aspect='equal',
                                       origin='lower', **_safe_vlims(c))
                     
                     # Title: show channel name and slice position
@@ -764,23 +778,22 @@ class GridStructureBuilder:
             titles.append("Conditioning")
             is_timestamp.append(False)
         
-        # Output sections with timestamps after targets
+        # Output sections with timestamps before predictions
         cols_per_field = 4 if self.include_relative_error else 3
         error_labels = (["Prediction", "Target", "Abs Error", "Rel Error"] 
                     if self.include_relative_error 
                     else ["Prediction", "Target", "Abs Error"])
         
         for ch_name in self.output_channels:
+            # Add timestamp column before predictions
+            widths.append(1)
+            titles.append("Time")
+            is_timestamp.append(True)
+            
             for i, label in enumerate(error_labels):
                 widths.append(1)
                 titles.append(f"{ch_name}\n{label}")
                 is_timestamp.append(False)
-                
-                # Add timestamp column after Target
-                if label == "Target":
-                    widths.append(1)
-                    titles.append("Time")
-                    is_timestamp.append(True)
         
         return widths, titles, is_timestamp
     
@@ -815,22 +828,21 @@ class GridStructureBuilder:
                 titles.append(f"Conditioning\n{ch_name}")
                 is_timestamp.append(False)
         
-        # Output rows with timestamps after targets
+        # Output rows with timestamps before predictions
         error_labels = (["Prediction", "Target", "Abs Error", "Rel Error"] 
                        if self.include_relative_error 
                        else ["Prediction", "Target", "Abs Error"])
         
         for ch_name in self.output_channels:
+            # Add timestamp row before predictions
+            heights.append(1)
+            titles.append("Time")
+            is_timestamp.append(True)
+            
             for label in error_labels:
                 heights.append(1)
                 titles.append(f"{ch_name}\n{label}")
                 is_timestamp.append(False)
-                
-                # Add timestamp row after Target
-                if label == "Target":
-                    heights.append(1)
-                    titles.append("Time")
-                    is_timestamp.append(True)
         
         return heights, titles, is_timestamp
 
@@ -967,6 +979,10 @@ class BasePlotter(ABC):
             pred_step = step - T_in + 1
             return f"t + {self.stride * pred_step}"
 
+    def _get_pred_time_label(self, pred_step: int) -> str:
+        """Generate time label for prediction steps (start at t + stride)."""
+        return f"t + {self.stride * (pred_step + 1)}"
+
     def _add_title_section(self, fig, gs, idx: int, N: int, spatial_shape: tuple,
                            T_in: int, C: int, T_pred: int) -> None:
         """Add title section to figure."""
@@ -1017,6 +1033,15 @@ class BasePlotter(ABC):
         # Add train config
         if self.train_info is not None:
             footer_lines.append("TRAIN CONFIG:\n" + self.train_info + "\n")
+
+        # Add train strategy config (loss config without validation_loss)
+        loss_cfg = self.metadata.get("loss_config") if isinstance(self.metadata, dict) else None
+        if loss_cfg is not None:
+            try:
+                loss_cfg_str = str(loss_cfg)
+            except Exception:
+                loss_cfg_str = repr(loss_cfg)
+            footer_lines.append("TRAIN STRATEGY CONFIG:\n" + loss_cfg_str + "\n")
         
         # Add scheduler config
         if self.scheduler_info is not None:
@@ -1093,7 +1118,13 @@ class VerticalPlotter(BasePlotter):
             total_cols = len(col_widths)
             layout_calculator = self._create_layout_calculator()
             layout_params = layout_calculator.calculate(
-                spatial_shape, total_cols, nrows, self.ndim, is_timestamp
+                spatial_shape, total_cols, nrows, self.ndim, is_timestamp,
+                channel_count=max(
+                    len(self.input_channel_names),
+                    len(self.output_channel_names),
+                    len(self.conditioning_channel_names) if self.conditioning_channel_names else 0,
+                    1,
+                ),
             )
             
             # Create figure with absolute positioning
@@ -1207,13 +1238,13 @@ class VerticalPlotter(BasePlotter):
             gs_col = col_gs_indices[col_idx]
             time_ax = fig.add_subplot(gs[row_gs_idx, gs_col])
             time_ax.axis('off')
-            time_ax.text(0.5, 0.5, self._get_time_label(row, T_in),
-                        ha='center', va='center', fontsize=12, weight='bold')
             col_idx += 1
             
             # Plot input
             if row < T_in:
                 gs_col = col_gs_indices[col_idx]
+                time_ax.text(0.5, 0.5, self._get_time_label(row, T_in),
+                        ha='center', va='center', fontsize=12, weight='bold')
                 self._plot_cell(fig, gs, row_gs_idx, gs_col, 1,
                             inp[row], self.input_channel_names,
                             vmins, vmaxs, layout_params)
@@ -1224,6 +1255,8 @@ class VerticalPlotter(BasePlotter):
                 if row < T_in:
                     cond_inp = self.conditioning_input_array[fig.example_idx]
                     gs_col = col_gs_indices[col_idx]
+                    time_ax.text(0.5, 0.5, self._get_time_label(row, T_in),
+                        ha='center', va='center', fontsize=12, weight='bold')
                     self._plot_cell(fig, gs, row_gs_idx, gs_col, 1,
                                 cond_inp[row], self.conditioning_channel_names,
                                 None, None, layout_params)
@@ -1249,12 +1282,21 @@ class VerticalPlotter(BasePlotter):
     def _plot_predictions_vertical(self, fig, gs, row_idx, col_gs_indices, col_widths,
                                 start_col_idx, pred, tgt, abs_err, rel_err, 
                                 vmins, vmaxs, layout_params, current_time_step, T_in):
-        """Plot prediction/target/error columns with timestamps after targets."""
+        """Plot prediction/target/error columns with timestamps before predictions."""
         col_idx = start_col_idx
         is_timestamp = fig.is_timestamp
         
         if self.ndim == 2:
             for c_idx, ch_name in enumerate(self.output_channel_names):
+                # Timestamp before prediction
+                if col_idx < len(is_timestamp) and is_timestamp[col_idx]:
+                    gs_col = col_gs_indices[col_idx]
+                    time_ax = fig.add_subplot(gs[row_idx, gs_col])
+                    time_ax.axis('off')
+                    time_ax.text(0.5, 0.5, self._get_pred_time_label(current_time_step),
+                                ha='center', va='center', fontsize=12, weight='bold')
+                    col_idx += 1
+                
                 # Prediction
                 gs_col = col_gs_indices[col_idx]
                 self._plot_cell(fig, gs, row_idx, gs_col, 1,
@@ -1268,15 +1310,6 @@ class VerticalPlotter(BasePlotter):
                             tgt[c_idx:c_idx+1], [ch_name],
                             vmins[c_idx:c_idx+1], vmaxs[c_idx:c_idx+1], layout_params)
                 col_idx += 1
-                
-                # Timestamp after target
-                if col_idx < len(is_timestamp) and is_timestamp[col_idx]:
-                    gs_col = col_gs_indices[col_idx]
-                    time_ax = fig.add_subplot(gs[row_idx, gs_col])
-                    time_ax.axis('off')
-                    time_ax.text(0.5, 0.5, self._get_time_label(current_time_step, T_in),
-                                ha='center', va='center', fontsize=12, weight='bold')
-                    col_idx += 1
                 
                 # Absolute error
                 gs_col = col_gs_indices[col_idx]
@@ -1293,21 +1326,21 @@ class VerticalPlotter(BasePlotter):
                                 None, None, layout_params)
                     col_idx += 1
         else:  # 1D
+            # Timestamp before prediction
+            if col_idx < len(is_timestamp) and is_timestamp[col_idx]:
+                gs_col = col_gs_indices[col_idx]
+                time_ax = fig.add_subplot(gs[row_idx, gs_col])
+                time_ax.axis('off')
+                time_ax.text(0.5, 0.5, self._get_pred_time_label(current_time_step),
+                            ha='center', va='center', fontsize=12, weight='bold')
+                col_idx += 1
+            
             for i, data in enumerate([pred, tgt, abs_err] + ([rel_err] if self.include_relative_error else [])):
                 gs_col = col_gs_indices[col_idx]
                 self._plot_cell(fig, gs, row_idx, gs_col, 1,
                             data, self.output_channel_names,
                             None, None, layout_params)
                 col_idx += 1
-                
-                # Add timestamp after target (i == 1)
-                if i == 1 and col_idx < len(is_timestamp) and is_timestamp[col_idx]:
-                    gs_col = col_gs_indices[col_idx]
-                    time_ax = fig.add_subplot(gs[row_idx, gs_col])
-                    time_ax.axis('off')
-                    time_ax.text(0.5, 0.5, self._get_time_label(current_time_step, T_in),
-                                ha='center', va='center', fontsize=12, weight='bold')
-                    col_idx += 1
         
         return col_idx
 
@@ -1359,7 +1392,13 @@ class HorizontalPlotter(BasePlotter):
             total_rows = len(row_heights)
             layout_calculator = self._create_layout_calculator()
             layout_params = layout_calculator.calculate(
-                spatial_shape, total_rows, max_time_steps, self.ndim, is_timestamp
+                spatial_shape, total_rows, max_time_steps, self.ndim, is_timestamp,
+                channel_count=max(
+                    len(self.input_channel_names),
+                    len(self.output_channel_names),
+                    len(self.conditioning_channel_names) if self.conditioning_channel_names else 0,
+                    1,
+                ),
             )
             
             # Create figure
@@ -1399,21 +1438,20 @@ class HorizontalPlotter(BasePlotter):
             titles.append("Conditioning")
             is_timestamp.append(False)
         
-        # Output rows with timestamps after targets
+        # Output rows with timestamps before predictions
         error_labels = (["Prediction", "Target", "Abs Error", "Rel Error"] 
                     if self.include_relative_error 
                     else ["Prediction", "Target", "Abs Error"])
+        
+        # Add timestamp row before predictions
+        heights.append(1)
+        titles.append("Time")
+        is_timestamp.append(True)
         
         for label in error_labels:
             heights.append(1)
             titles.append(label)
             is_timestamp.append(False)
-            
-            # Add timestamp row after Target
-            if label == "Target":
-                heights.append(1)
-                titles.append("Time")
-                is_timestamp.append(True)
         
         return heights, titles, is_timestamp
     
@@ -1469,12 +1507,12 @@ class HorizontalPlotter(BasePlotter):
         self._add_dims_section(fig, gs, idx, N, spatial_shape, T_in, C, T_pred)
         
         # Add time column headers
-        for col in range(max_time_steps):
+        for col in range(T_in):
             col_gs_idx = 2 + col * 2
             header_ax = fig.add_subplot(gs[1, col_gs_idx])
             header_ax.axis('off')
             header_ax.text(0.5, 0.5, self._get_time_label(col, T_in), 
-                        ha='center', va='center', fontsize=18, weight='bold')
+                        ha='center', va='center', fontsize=14, weight='bold')
         
         # Add row titles
         row_gs_indices = []
@@ -1585,12 +1623,21 @@ class HorizontalPlotter(BasePlotter):
     def _plot_predictions_horizontal(self, fig, gs, row_gs_indices, start_row_idx,
                                     col_gs_idx, pred, tgt, abs_err, rel_err,
                                     vmins, vmaxs, layout_params, current_time_step, T_in):
-        """Plot prediction/target/error rows with timestamps after targets."""
+        """Plot prediction/target/error rows with timestamps before predictions."""
         row_idx = start_row_idx
         is_timestamp = fig.is_timestamp
         
         if self.ndim == 2:
             for c_idx, ch_name in enumerate(self.output_channel_names):
+                # Timestamp before prediction
+                if row_idx < len(is_timestamp) and is_timestamp[row_idx]:
+                    gs_row = row_gs_indices[row_idx]
+                    time_ax = fig.add_subplot(gs[gs_row, col_gs_idx])
+                    time_ax.axis('off')
+                    time_ax.text(0.5, 0.5, self._get_pred_time_label(current_time_step),
+                                ha='center', va='center', fontsize=14, weight='bold')
+                    row_idx += 1
+                
                 # Prediction
                 gs_row = row_gs_indices[row_idx]
                 self._plot_cell(fig, gs, gs_row, col_gs_idx, 1,
@@ -1604,15 +1651,6 @@ class HorizontalPlotter(BasePlotter):
                             tgt[c_idx:c_idx+1], [ch_name],
                             vmins[c_idx:c_idx+1], vmaxs[c_idx:c_idx+1], layout_params)
                 row_idx += 1
-                
-                # Timestamp after target
-                if row_idx < len(is_timestamp) and is_timestamp[row_idx]:
-                    gs_row = row_gs_indices[row_idx]
-                    time_ax = fig.add_subplot(gs[gs_row, col_gs_idx])
-                    time_ax.axis('off')
-                    time_ax.text(0.5, 0.5, self._get_time_label(current_time_step, T_in),
-                                ha='center', va='center', fontsize=12, weight='bold')
-                    row_idx += 1
                 
                 # Absolute error
                 gs_row = row_gs_indices[row_idx]
@@ -1629,6 +1667,15 @@ class HorizontalPlotter(BasePlotter):
                                 None, None, layout_params)
                     row_idx += 1
         else:  # 1D
+            # Timestamp before prediction
+            if row_idx < len(is_timestamp) and is_timestamp[row_idx]:
+                gs_row = row_gs_indices[row_idx]
+                time_ax = fig.add_subplot(gs[gs_row, col_gs_idx])
+                time_ax.axis('off')
+                time_ax.text(0.5, 0.5, self._get_pred_time_label(current_time_step),
+                            ha='center', va='center', fontsize=12, weight='bold')
+                row_idx += 1
+            
             data_list = [pred, tgt, abs_err]
             if self.include_relative_error:
                 data_list.append(rel_err)
@@ -1639,15 +1686,6 @@ class HorizontalPlotter(BasePlotter):
                             data, self.output_channel_names,
                             None, None, layout_params)
                 row_idx += 1
-                
-                # Add timestamp after target (i == 1)
-                if i == 1 and row_idx < len(is_timestamp) and is_timestamp[row_idx]:
-                    gs_row = row_gs_indices[row_idx]
-                    time_ax = fig.add_subplot(gs[gs_row, col_gs_idx])
-                    time_ax.axis('off')
-                    time_ax.text(0.5, 0.5, self._get_time_label(current_time_step, T_in),
-                                ha='center', va='center', fontsize=12, weight='bold')
-                    row_idx += 1
         
         return row_idx
     
@@ -1672,7 +1710,7 @@ def create_plotter(orientation: str = 'vertical', **kwargs) -> BasePlotter:
 
 
 
-def plot_rollout_metrics(step_metrics: dict, output_channel_names: list[str], save_dir: str, title: str | None = None, filename: str = "rollout_metrics.png", plot_type: str = "per_step", sequence_info: list[int] | tuple[int, int, int] | None = None) -> None:
+def plot_rollout_metrics(step_metrics: dict, output_channel_names: list[str], save_dir: str, mode: str = "ic_start", title: str | None = None, filename: str = "rollout_metrics.png", plot_type: str = "per_step", sequence_info: list[int] | tuple[int, int, int] | None = None, num_examples: int | None = None) -> None:
     """Plot per-metric curves over time steps for IC-start evaluations.
 
     Parameters
@@ -1708,12 +1746,18 @@ def plot_rollout_metrics(step_metrics: dict, output_channel_names: list[str], sa
     if plot_type not in {"cumulative", "per_step"}:
         raise ValueError("plot_type must be 'cumulative' or 'per_step'")
 
-    # Create a subplot grid: rows = num_metrics, cols = 2 (rollout | timestep)
-    fig, axes = plt.subplots(num_metrics, 2, figsize=(14, max(3 * num_metrics, 4)), squeeze=False)
+    # Create a subplot grid:
+    # - IC start: rows = num_metrics, cols = 2 (rollout | timestep)
+    # - Random start: rows = num_metrics, cols = 1 (rollout only)
+    show_timestep_metrics = mode != "random_start"
+    ncols = 2 if show_timestep_metrics else 1
+    fig_width = 14 if show_timestep_metrics else 8
+    fig, axes = plt.subplots(num_metrics, ncols, figsize=(fig_width, max(3 * num_metrics, 4)), squeeze=False)
     # Column titles
     if num_metrics > 0:
         axes[0, 0].set_title("Rollout step metrics", fontsize=12)
-        axes[0, 1].set_title("Timestep metrics", fontsize=12)
+        if show_timestep_metrics:
+            axes[0, 1].set_title("Timestep metrics", fontsize=12)
 
     # Prepare legends (overall label)
     overall_label = "overall"
@@ -1730,7 +1774,7 @@ def plot_rollout_metrics(step_metrics: dict, output_channel_names: list[str], sa
 
     for row_idx, (metric_name, stats) in enumerate(step_metrics.items()):
         ax_rollout = axes[row_idx, 0]
-        ax_timestep = axes[row_idx, 1]
+        ax_timestep = axes[row_idx, 1] if show_timestep_metrics else None
 
         # ---------------------
         # Left column: Rollout
@@ -1764,53 +1808,59 @@ def plot_rollout_metrics(step_metrics: dict, output_channel_names: list[str], sa
         # ----------------------
         # Right column: Timestep
         # ----------------------
-        if timestep_mean_key in stats and timestep_std_key in stats:
-            means_t = stats[timestep_mean_key]  # (T_flat, C+1)
-            stds_t = stats[timestep_std_key]    # (T_flat, C+1)
-            Tflat, total_cols_t = means_t.shape
-            num_channels_t = total_cols_t - 1
-            channel_legends_t = list(output_channel_names) if num_channels_t == len(output_channel_names) else [f"ch_{i}" for i in range(num_channels_t)]
-            #starts from index 0 so if input_steps=4: 0,1,2,3 then x_t starts from 4
-            x_t = (input_steps - 1 + np.arange(1, Tflat + 1))*stride
+        if show_timestep_metrics:
+            if timestep_mean_key in stats and timestep_std_key in stats:
+                means_t = stats[timestep_mean_key]  # (T_flat, C+1)
+                stds_t = stats[timestep_std_key]    # (T_flat, C+1)
+                Tflat, total_cols_t = means_t.shape
+                num_channels_t = total_cols_t - 1
+                channel_legends_t = list(output_channel_names) if num_channels_t == len(output_channel_names) else [f"ch_{i}" for i in range(num_channels_t)]
+                #starts from index 0 so if input_steps=4: 0,1,2,3 then x_t starts from 4
+                x_t = (input_steps - 1 + np.arange(1, Tflat + 1))*stride
 
-            for c in range(num_channels_t):
-                m = means_t[:, c]
-                s = stds_t[:, c]
-                line, = ax_timestep.plot(x_t, m, label=channel_legends_t[c], linewidth=1.5, alpha=0.95)
-                ax_timestep.scatter(x_t, m, s=18, color=line.get_color(), edgecolors="none", zorder=3)
-                ax_timestep.fill_between(x_t, m - s, m + s, color=line.get_color(), alpha=0.15)
-            
-            m_overall_t = means_t[:, -1]
-            s_overall_t = stds_t[:, -1]
-            ax_timestep.plot(x_t, m_overall_t, label=overall_label, linewidth=2.0, color="black")
-            ax_timestep.scatter(x_t, m_overall_t, s=24, color="black", edgecolors="none", zorder=3)
-            ax_timestep.fill_between(x_t, m_overall_t - s_overall_t, m_overall_t + s_overall_t, color="black", alpha=0.12)
-            # Ensure uniform x-ticks at 'stride' between x_t[0] and x_t[-1], and also include 0
-            try:
-                xmin, xmax = ax_timestep.get_xlim()
-                if xmin > 0:
-                    ax_timestep.set_xlim(left=0)
-                if len(x_t) > 0:
-                    start_tick = float(x_t[0])
-                    end_tick = float(x_t[-1])
-                    step = float(stride) if float(stride) > 0 else max(1.0, end_tick - start_tick)
-                    uniform_ticks = np.arange(start_tick, end_tick + 0.5 * step, step)
-                    ticks_with_zero = np.unique(np.append(uniform_ticks, 0.0))
-                    ax_timestep.set_xticks(ticks_with_zero)
-            except Exception:
-                pass
-            ax_timestep.set_xlabel("time step")
-            ax_timestep.set_ylabel(metric_name)
-            ax_timestep.grid(True, linestyle=":", alpha=0.6)
-            ax_timestep.legend(fontsize=8, ncols=min(4, num_channels_t + 1))
-        else:
-            ax_timestep.text(0.5, 0.5, f"No timestep metrics for '{metric_name}'", ha="center", va="center")
-            ax_timestep.axis("off")
+                for c in range(num_channels_t):
+                    m = means_t[:, c]
+                    s = stds_t[:, c]
+                    line, = ax_timestep.plot(x_t, m, label=channel_legends_t[c], linewidth=1.5, alpha=0.95)
+                    ax_timestep.scatter(x_t, m, s=18, color=line.get_color(), edgecolors="none", zorder=3)
+                    ax_timestep.fill_between(x_t, m - s, m + s, color=line.get_color(), alpha=0.15)
+                
+                m_overall_t = means_t[:, -1]
+                s_overall_t = stds_t[:, -1]
+                ax_timestep.plot(x_t, m_overall_t, label=overall_label, linewidth=2.0, color="black")
+                ax_timestep.scatter(x_t, m_overall_t, s=24, color="black", edgecolors="none", zorder=3)
+                ax_timestep.fill_between(x_t, m_overall_t - s_overall_t, m_overall_t + s_overall_t, color="black", alpha=0.12)
+                # Ensure uniform x-ticks at 'stride' between x_t[0] and x_t[-1], and also include 0
+                try:
+                    xmin, xmax = ax_timestep.get_xlim()
+                    if xmin > 0:
+                        ax_timestep.set_xlim(left=0)
+                    if len(x_t) > 0:
+                        start_tick = float(x_t[0])
+                        end_tick = float(x_t[-1])
+                        step = float(stride) if float(stride) > 0 else max(1.0, end_tick - start_tick)
+                        uniform_ticks = np.arange(start_tick, end_tick + 0.5 * step, step)
+                        ticks_with_zero = np.unique(np.append(uniform_ticks, 0.0))
+                        ax_timestep.set_xticks(ticks_with_zero)
+                except Exception:
+                    pass
+                ax_timestep.set_xlabel("time step")
+                ax_timestep.set_ylabel(metric_name)
+                ax_timestep.grid(True, linestyle=":", alpha=0.6)
+                ax_timestep.legend(fontsize=8, ncols=min(4, num_channels_t + 1))
+            else:
+                ax_timestep.text(0.5, 0.5, f"No timestep metrics for '{metric_name}'", ha="center", va="center")
+                ax_timestep.axis("off")
 
     if title:
         title_str = title
+        title_suffix_parts = []
         if sequence_info is not None:
-            title_str = f"{title}\nsequence_info={sequence_info}"
+            title_suffix_parts.append(f"sequence_info={sequence_info}")
+        if num_examples is not None:
+            title_suffix_parts.append(f"# Windows={num_examples}")
+        if title_suffix_parts:
+            title_str = f"{title}\n" + ", ".join(title_suffix_parts)
         fig.suptitle(title_str, fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, 0.98))
 
@@ -1893,7 +1943,6 @@ def plot_multi_run_rollout_metrics(
     save_dir: str,
     title: str | None = None,
     filename: str = "all_runs_rollout_timestep_metrics.png",
-    sequence_info: list[int] | tuple[int, int, int] | None = None,
     runs_sequence_info: dict | None = None,
 ) -> None:
     """Overlay per-metric rollout and timestep curves from multiple runs in one figure.
@@ -1909,9 +1958,6 @@ def plot_multi_run_rollout_metrics(
         Figure title.
     filename : str
         Output filename.
-    sequence_info : List[int] | Tuple[int, int, int] | None
-        Default sequence configuration [input_steps, output_steps, stride] used when a run
-        does not supply its own configuration.
     runs_sequence_info : Optional[dict[str, list[int] | tuple[int, int, int]]]
         Optional mapping from run label to its sequence configuration; when provided,
         each run's timestep x-axis is computed using its own configuration.
@@ -1939,8 +1985,8 @@ def plot_multi_run_rollout_metrics(
     axes[0, 1].set_title("Timestep metrics", fontsize=12)
 
     # Default x-axis scaling for timesteps (used if a run-specific value is absent)
-    default_input_steps = sequence_info[0] if sequence_info is not None else 1
-    default_stride = sequence_info[2] if sequence_info is not None else 1
+    default_input_steps = 1
+    default_stride = 1
 
     # Track one handle per run for a global legend
     run_label_to_handle: dict[str, any] = {}
@@ -2595,92 +2641,156 @@ def calculate_and_save_results_all_channels(
     if not all_metric_names:
         return
     
+    def _get_metric_component_names(metric_name: str) -> list[str] | None:
+        for run_metrics in runs_step_metrics.values():
+            if metric_name not in run_metrics:
+                continue
+            stats = run_metrics.get(metric_name, {})
+            if isinstance(stats, dict):
+                names = stats.get("names") or stats.get("component_names")
+                if isinstance(names, list) and len(names) > 0:
+                    return names
+        return None
+
     # Build column headers
-    # For each metric and each channel (+ overall), we have mean and std
+    # Arrange overall metrics interleaved by metric, then per-component/per-channel metrics interleaved by metric
     column_headers = ["run_name"]
+    # Overall columns grouped by metric
     for metric_name in all_metric_names:
-        # Per-channel columns
-        for ch_name in output_channel_names:
-            column_headers.append(f"{metric_name}_{ch_name}_mean")
-            column_headers.append(f"{metric_name}_{ch_name}_std")
-        # Overall column
         column_headers.append(f"{metric_name}_overall_mean")
         column_headers.append(f"{metric_name}_overall_std")
+    # Per-channel/component columns grouped by metric within each component/channel
+    for metric_name in all_metric_names:
+        component_names = _get_metric_component_names(metric_name)
+        effective_names = component_names if component_names is not None else output_channel_names
+        for name in effective_names:
+            column_headers.append(f"{metric_name}_{name}_mean")
+            column_headers.append(f"{metric_name}_{name}_std")
     
-    # Collect data for each run
-    rows = []
-    for run_name, run_metrics in runs_step_metrics.items():
-        row = {"run_name": run_name}
+    # Collect data for the single run (expected to be exactly one)
+    run_name, run_metrics = next(iter(runs_step_metrics.items()))
+    row = {"run_name": run_name}
+    
+    for metric_name in all_metric_names:
+        metric_component_names = None
+        if metric_name in run_metrics:
+            stats = run_metrics.get(metric_name, {})
+            if isinstance(stats, dict):
+                metric_component_names = stats.get("names") or stats.get("component_names")
+                if not isinstance(metric_component_names, list):
+                    metric_component_names = None
+
+        effective_names = metric_component_names if metric_component_names is not None else output_channel_names
+
+        if metric_name not in run_metrics:
+            # Fill with None/empty if metric not present
+            row[f"{metric_name}_overall_mean"] = None
+            row[f"{metric_name}_overall_std"] = None
+            for ch_name in effective_names:
+                row[f"{metric_name}_{ch_name}_mean"] = None
+                row[f"{metric_name}_{ch_name}_std"] = None
+            continue
         
-        for metric_name in all_metric_names:
-            if metric_name not in run_metrics:
-                # Fill with None/empty if metric not present
-                for ch_name in output_channel_names:
-                    row[f"{metric_name}_{ch_name}_mean"] = None
-                    row[f"{metric_name}_{ch_name}_std"] = None
-                row[f"{metric_name}_overall_mean"] = None
-                row[f"{metric_name}_overall_std"] = None
-                continue
+        stats = run_metrics[metric_name]
+        means = stats.get("per_rollout_step_mean", None)
+        stds = stats.get("per_rollout_step_std", None)
+        
+        if means is None or stds is None:
+            row[f"{metric_name}_overall_mean"] = None
+            row[f"{metric_name}_overall_std"] = None
+            for ch_name in effective_names:
+                row[f"{metric_name}_{ch_name}_mean"] = None
+                row[f"{metric_name}_{ch_name}_std"] = None
+            continue
+        
+        # means and stds have shape (R, C+1)
+        # Columns 0..C-1 are per-channel, column -1 is overall
+        R, total_cols = means.shape
+        num_channels = total_cols - 1
+        
+        # Overall statistics (last column)
+        overall_means = means[:, -1] # overall_means has shape (R,)
+        overall_stds = stds[:, -1] # overall_stds has shape (R,)
+        
+        # Mean of means of rollout steps
+        overall_mean_avg = float(np.mean(overall_means))
+
+        # Pooled std of rollout steps
+        overall_pooled_std = float(
+            np.sqrt(
+                np.sum(overall_stds**2 + (overall_means - overall_mean_avg)**2)
+                / (len(overall_means)) #len(overall_means) is the number of rollout steps
+            )
+        )
+        
+        row[f"{metric_name}_overall_mean"] = overall_mean_avg
+        row[f"{metric_name}_overall_std"] = overall_pooled_std
+        
+        # Per-channel statistics after overall
+        for c_idx in range(min(num_channels, len(effective_names))):
+            ch_name = effective_names[c_idx]
+            channel_means = means[:, c_idx]  # channel_means has shape (R,)
+            channel_stds = stds[:, c_idx]    # channel_stds has shape (R,)
             
-            stats = run_metrics[metric_name]
-            means = stats.get("per_rollout_step_mean", None)
-            stds = stats.get("per_rollout_step_std", None)
+            # Mean of means of rollout steps
+            mean_avg = float(np.mean(channel_means))
             
-            if means is None or stds is None:
-                for ch_name in output_channel_names:
-                    row[f"{metric_name}_{ch_name}_mean"] = None
-                    row[f"{metric_name}_{ch_name}_std"] = None
-                row[f"{metric_name}_overall_mean"] = None
-                row[f"{metric_name}_overall_std"] = None
-                continue
-            
-            # means and stds have shape (R, C+1)
-            # Columns 0..C-1 are per-channel, column -1 is overall
-            R, total_cols = means.shape
-            num_channels = total_cols - 1
-            
-            # Per-channel statistics
-            for c_idx in range(min(num_channels, len(output_channel_names))):
-                ch_name = output_channel_names[c_idx]
-                channel_means = means[:, c_idx]  # shape (R,)
-                channel_stds = stds[:, c_idx]    # shape (R,)
-                
-                # Mean of means
-                mean_avg = float(np.mean(channel_means))
-                
-                # Pooled std
-                pooled_std = float(
-                    np.sqrt(
-                        np.sum(channel_stds**2 + (channel_means - mean_avg)**2)
-                        / (len(channel_means) + 1)
-                    )
-                )
-                
-                row[f"{metric_name}_{ch_name}_mean"] = mean_avg
-                row[f"{metric_name}_{ch_name}_std"] = pooled_std
-            
-            # Overall statistics (last column)
-            overall_means = means[:, -1]
-            overall_stds = stds[:, -1]
-            
-            overall_mean_avg = float(np.mean(overall_means))
-            overall_pooled_std = float(
+            # Pooled std of rollout steps
+            pooled_std = float(
                 np.sqrt(
-                    np.sum(overall_stds**2 + (overall_means - overall_mean_avg)**2)
-                    / (len(overall_means) + 1)
+                    np.sum(channel_stds**2 + (channel_means - mean_avg)**2)
+                    / (len(channel_means)) #len(channel_means) is the number of rollout steps
                 )
             )
             
-            row[f"{metric_name}_overall_mean"] = overall_mean_avg
-            row[f"{metric_name}_overall_std"] = overall_pooled_std
-        
-        rows.append(row)
+            row[f"{metric_name}_{ch_name}_mean"] = mean_avg
+            row[f"{metric_name}_{ch_name}_std"] = pooled_std
+    
+    rows = [row]
     
     # Write to CSV
     out_path = os.path.join(save_dir, filename)
-    with open(out_path, 'w', newline='') as csvfile:
+    prev_column_headers = None
+    if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+        #write out once again the column headers if the column headers are not the same as the previous ones
+        with open(out_path, "r", newline="") as existing_csv:
+            reader = csv.reader(existing_csv)
+            prev_row = next(reader, None)
+            if prev_row:
+                prev_column_headers = [col.strip() for col in prev_row]
+    write_header = prev_column_headers is None or list(prev_column_headers) != list(column_headers)
+    with open(out_path, 'a', newline='') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=column_headers)
-        writer.writeheader()
+        if write_header:
+            writer.writeheader()
         writer.writerows(rows)
     
     print(f"Saved rollout metrics to {out_path}")
+
+def strip_validation_loss(loss_cfg):
+    """
+    Return a loss config copy with all "validation_loss" blocks removed.
+    Handles dict/list/OmegaConf configs and nested curriculum blocks.
+    """
+    if loss_cfg is None:
+        return None
+
+    if OmegaConf.is_config(loss_cfg):
+        loss_cfg = OmegaConf.to_container(loss_cfg, resolve=True)
+
+    def _strip(obj):
+        if isinstance(obj, dict):
+            cleaned = {}
+            for key, value in obj.items():
+                if key == "validation_loss":
+                    continue
+                if key == "curriculum" and isinstance(value, list):
+                    cleaned[key] = [_strip(block) for block in value]
+                else:
+                    cleaned[key] = _strip(value)
+            return cleaned
+        if isinstance(obj, list):
+            return [_strip(item) for item in obj]
+        return obj
+
+    return _strip(loss_cfg)

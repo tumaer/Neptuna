@@ -3,7 +3,7 @@ import torch.nn as nn
 import ptwt
 
 from typing import Literal, Optional, List, Dict, Union, Tuple
-from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 
 # Based on paper by L. Prandtl et al.,
 # 'Wavelet-Based Loss for High-Frequency Interface Dynamics',
@@ -34,7 +34,7 @@ class MultilevelWaveletLoss(LossComponent):
         mode_spatial: str = "reflect",
         mode_temporal: str = "reflect",
         reduction: str = "mean",
-        normalization: Literal['none', 'magnitude', 'variance'] = 'none',
+        normalization: Literal['none', 'range', 'variance', 'std', 'norm', 'root_norm'] = 'none',
     ):
         super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_helper=norm_helper)
         assert reduction in ("mean", "sum")
@@ -54,7 +54,10 @@ class MultilevelWaveletLoss(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-        return_detailed: bool = False
+        input_frames: Optional[torch.Tensor],
+        return_detailed: bool = False,
+        keep_bc_dims: bool = False,
+        preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         predictions, labels: (B, T, C, *spatial)
@@ -70,32 +73,41 @@ class MultilevelWaveletLoss(LossComponent):
         # Get weight tensor with proper broadcasting
         weight_tensor = self.weight_schedule.get_loss_weight(original_shape).to(predictions.device)
         
-        # Apply weights to inputs (scale by sqrt to preserve wavelet properties)
-        weight_sqrt = torch.sqrt(weight_tensor)
-        predictions_weighted = predictions * weight_sqrt
-        labels_weighted = labels * weight_sqrt
+        B, T, C = predictions.shape[:3]
+        per_bc = []
+        for b in range(B):
+            per_c = []
+            for c in range(C):
+                pred_bc = predictions[b:b+1, :, c:c+1, ...]
+                label_bc = labels[b:b+1, :, c:c+1, ...]
 
-        # spatial wavelet loss (over spatial dimensions only)
-        Lws = self._wavelet_loss_spatial(predictions_weighted, labels_weighted)
+                Lws = self._wavelet_loss_spatial(pred_bc, label_bc)
+                Lwt = self._wavelet_loss_temporal(pred_bc, label_bc)
+                total_bc = (Lws + self.beta * Lwt) * base
+                per_c.append(total_bc)
+            per_bc.append(torch.stack(per_c, dim=0))
+        loss_bc = torch.stack(per_bc, dim=0)  # (B, C)
 
-        # temporal wavelet loss (over time dimension only)
-        Lwt = self._wavelet_loss_temporal(predictions_weighted, labels_weighted)
+        # Apply weights after loss so weighting only affects aggregation
+        reduce_dims = tuple(range(3, weight_tensor.ndim))
+        weight_tc = weight_tensor.mean(dim=reduce_dims) if reduce_dims else weight_tensor
+        weight_bc = weight_tc.mean(dim=1)  if weight_tc.ndim > 2 else weight_tc  # (B, C)
+        loss_bc = loss_bc * weight_bc
 
-        # total (weighted)
-        total = (Lws + self.beta * Lwt) * base
-
-        total = apply_batch_wise_normalization(
-            total,
-            labels,
-            self.normalization,
-            self.eps
-        )
+        if keep_bc_dims:
+            total = loss_bc
+        else:
+            total = loss_bc.mean() if self.reduction == "mean" else loss_bc.sum()
         
         if not return_detailed:
             return total
         
-        # Wavelet loss doesn't support detailed breakdown due to non-linear aggregation
-        return total, {}
+        detailed: Dict[str, torch.Tensor] = {}
+
+        per_channel = loss_bc.mean(dim=0) if self.reduction == "mean" else loss_bc.sum(dim=0)
+        detailed['per_channel'] = per_channel if preserve_component_grads else per_channel.detach()
+
+        return total, detailed
 
 
     def _reduce(self, x: torch.Tensor) -> torch.Tensor:

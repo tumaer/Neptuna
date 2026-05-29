@@ -50,6 +50,7 @@ def make_datasets(cfg: DictConfig, mode: str = "train"):
         conditioning_in_channels=data_cfg["conditioning_features"]["conditioning_in_channels"],
         include_conditioning_parameters=False if data_cfg["conditioning_features"]["conditioning_method"] is None else True,
         parameter_min_max_stats=data_cfg["conditioning_features"]["parameter_min_max_stats"],
+        conditioning_parameter_names=data_cfg["conditioning_features"].get("conditioning_parameter_names", None),
         filter_out_channels=data_cfg["filter_features"]["filter_out_channels"],
         data_normalization_stats=data_cfg["data_normalization_stats"],
         data_normalization_strategy=data_cfg["data_normalization_strategy"],

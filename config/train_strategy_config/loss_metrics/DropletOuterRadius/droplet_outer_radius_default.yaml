@@ -1,0 +1,15 @@
+density_key: Density
+edge: west
+metric_mode: rmse   # mae or rmse
+clamp_negative_predictions: true
+epsilon: 1.0e-8
+
+# DropletOuterRadius metric (mirrors legacy LaserDroplet outer-radius)
+#
+# Requires density channel and 2D data shaped as (B, T, C, H, W).
+# Radius proxy is extracted by detecting transitions in density and converted 
+# to normalized radius by dividing by the inferred edge-axis length.
+#
+# Edge convention:
+#   west/east  -> x-min / x-max boundary
+#   south/north -> y-min / y-max boundary

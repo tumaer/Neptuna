@@ -3,8 +3,8 @@ from .loss_framework import (
     CompositeLoss,
 )
 from .losses import (
-    L1Loss,
-    L2Loss,
+    MAE,
+    MSE,
     SSIM,
     MSSSIM,
     PearsonCorrelationLoss,
@@ -15,9 +15,12 @@ from .losses import (
     WaveletBinnedRMSE,
     IntegralConservationRMSE,
     RMSE,
-    VRMSE,
-    NRMSE,
     InterfaceRMSE,
+    MeanRelativeError,
+    NegativityLoss,
+    ShockRMSE,
+    PDEResidualLoss,
+    DropletOuterRadius,
 )
 
 from .weighting_strategies import (
@@ -25,13 +28,17 @@ from .weighting_strategies import (
     ResidualBasedAttention,
     SoftAdapt,
     BalancedResidualDecayRate,
+    GradNorm,
+    InverseDirichlet,
+    LearningRateAnnealing,
+    LogOnly,
 )
 
 __all__ = [
     'LossComponent',
     'CompositeLoss',
-    'L1Loss',
-    'L2Loss',
+    'MAE',
+    'MSE',
     'SSIM',
     'MSSSIM',
     'PearsonCorrelationLoss',
@@ -42,11 +49,18 @@ __all__ = [
     'WaveletBinnedRMSE',
     'IntegralConservationRMSE',
     'RMSE',
-    'VRMSE',
-    'NRMSE',
     'ReLoBRaLo',
     'ResidualBasedAttention',
     'SoftAdapt',
     'BalancedResidualDecayRate',
     'InterfaceRMSE',
+    'MeanRelativeError',
+    'NegativityLoss',
+    'ShockRMSE',
+    'PDEResidualLoss',
+    'DropletOuterRadius',
+    'GradNorm',
+    'InverseDirichlet',
+    'LearningRateAnnealing',
+    'LogOnly',
 ]

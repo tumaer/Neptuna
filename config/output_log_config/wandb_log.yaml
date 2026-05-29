@@ -5,7 +5,7 @@ logging:
   wandb_project: 'test-project'
   wandb_run_name: null
   disable_progress_bar: True
-  wandb_api_key: bda71f2f2826f164e8f3027ae7b80c680e35ae94
+  wandb_api_key: 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
   wandb_offline: False
   # if wandb is already setup and logged into the machine, then api key is obtained as follows:
   # python -c "import wandb; print(wandb.Api().api_key)"

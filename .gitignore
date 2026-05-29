@@ -25,6 +25,7 @@ wandb/
 *.csv
 data_config.json
 config.json
+config_with_comments.json
 model.safetensors
 rng_state.pth
 trainer_state.json
@@ -33,3 +34,5 @@ bash_folder
 sample_inference
 temporary
 loss_debug.py
+loss_config.json
+*.pth

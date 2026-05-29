@@ -1,0 +1,6 @@
+reference_key: null
+alpha: 0.9
+min_weight: 0.0
+max_weight: 1e6
+epsilon: 1e-12
+freeze_reference_weight: true

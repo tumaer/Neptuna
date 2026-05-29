@@ -46,7 +46,6 @@ from typing import List, Optional, Tuple, Type, Union
 from omegaconf import OmegaConf
 from torch import nn
 import math
-import numpy as np
 from abc import abstractmethod
 
 
@@ -133,22 +132,22 @@ class PretrainedConfig(PretrainedConfig_):
 
     def __init__(
         self,
-        in_channels: int = 1,       # Number of input_channels
-        out_channels: int = 1,      # Number of output channels
-        dimension: int = 1,
-        grid_resolution: Union[int, List[int], Tuple[int]] = [160], # Input and Output spatial size (required )
-        sequence_info: Optional[List[int]] = [1,1,1],
-        coord_features: bool = True,
-        latent_channels: int = 32,
-        include_input_seq_len: bool = True,
-        norm: str = 'identity',
+        in_channels: int=1,       # Number of input_channels
+        out_channels: int=1,      # Number of output channels
+        dimension: int=1,
+        grid_resolution: Union[int, List[int], Tuple[int]]=[160], # Input and Output spatial size (required )
+        sequence_info: Optional[List[int]]=[1, 1, 1],
+        latent_channels: int=-1,
+        norm: str = 'none',
         conditioning_method: Optional[str] = None,
         num_cond_params: int = 0,
         conditioning_mlp: bool = False,
         conditioning_hidden_size: Optional[int] = None,
-        conditioning_activation: str = 'gelu',
+        conditioning_activation: str = 'none',
         conditioning_init: str = None,
         norm_layer_eps: float = 1e-5,
+        coord_features: bool = False,
+        include_input_seq_len: bool = True,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -173,7 +172,7 @@ class PretrainedConfig(PretrainedConfig_):
         self.conditioning_init = conditioning_init
         self.norm = norm
         self.norm_layer_eps = norm_layer_eps
-        if norm not in ['layer', 'batch', 'group', 'identity']:
+        if norm not in ['layer', 'batch', 'group', 'identity', 'none']:
             raise ValueError(f'{norm} norm is not in the specified list of allowed norms')
 
         self.coord_features = coord_features
@@ -601,7 +600,7 @@ class AdaNorm_SE_per_param(ConditioningLayer):
         def sinusoidal_embedding(param, dim, max_period=10000):
             # Taken from https://github.com/pdearena/pdearena
             half = dim // 2
-            freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half).to(
+            freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32, device=param.device) / half).to(
                 device=param.device
             )
             args = param[:, None].float() * freqs[None, :]
@@ -658,7 +657,7 @@ class AdaNorm_LSE(ConditioningLayer):
     def conditioning_param_embedding(self, x, cond_params):
         def sinusoidal_embedding(cond_params: torch.Tensor, dim, max_period=10000):
             half = dim // 2
-            freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half).to(
+            freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32, device=cond_params.device) / half).to(
                 device=cond_params.device
             )
             args = cond_params.float() * freqs

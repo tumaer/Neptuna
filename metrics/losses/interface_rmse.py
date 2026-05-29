@@ -1,14 +1,16 @@
 from typing import Dict, List, Optional, Tuple, Union
 import torch
 from torch import nn
-from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 
 
 class InterfaceRMSE(LossComponent):
     """
-    Interface RMSE loss: computes RMSE for density field only within a specified range.
+    Interface RMSE loss: computes RMSE for all fields within a density-defined interface region.
     
     Useful for focusing on interface regions between fluids with sharp density jumps.
+    The interface mask is derived from the density field and then applied to errors
+    from all channels/fields.
 
     Based on IRMSE concept from "Bubbleformer: Forecasting Boiling with Transformers"
     https://arxiv.org/abs/2507.21244
@@ -97,7 +99,10 @@ class InterfaceRMSE(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-        return_detailed: bool = False
+        input_frames: Optional[torch.Tensor],
+        return_detailed: bool = False,
+        keep_bc_dims: bool = False,
+        preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         Compute interface RMSE loss.
@@ -110,40 +115,43 @@ class InterfaceRMSE(LossComponent):
             
         Returns:
             If return_detailed=False: scalar loss tensor.
-            If return_detailed=True: (loss, detailed_dict) where detailed_dict contains:
-                - 'mask_fraction': fraction of cells in interface region
-                - 'unweighted_rmse': RMSE before weighting (normalized)
-                - 'physical_rmse': RMSE in physical units
+            If return_detailed=True: (loss, detailed_dict).
         """
         # Extract density field (normalized)
-        pred_density_norm = self._extract_density(predictions)
         true_density_norm = self._extract_density(labels)
         
         # Create soft mask for interface region (using normalized range)
         mask = self._create_interface_mask(true_density_norm)
+        mask_bc = mask.unsqueeze(2)  # (B, T, 1, *spatial), broadcast over channels
         
-        # Compute masked squared error in normalized space
-        squared_error_norm = (pred_density_norm - true_density_norm) ** 2
-        masked_squared_error = squared_error_norm * mask
-        
-        # Compute mean over masked regions
-        mask_sum = mask.sum()
-        if mask_sum > self.eps:
-            unweighted_rmse_norm = torch.sqrt(masked_squared_error.sum() / mask_sum)
+        # Compute squared error in normalized space
+        squared_error_norm = (predictions - labels) ** 2
+
+        norm_error = self.norm_helper.normalize_error(
+                squared_error_norm,
+                labels,
+                self.data_dim,
+                self.normalization,
+                self.eps
+            )
+
+        masked_squared_error = norm_error * mask_bc
+
+        # Compute per-sample RMSE over masked regions (time + spatial reduction)
+        reduce_dims = [1] + list(range(3, masked_squared_error.ndim))
+        num = masked_squared_error.sum(dim=reduce_dims)
+        denom = mask_bc.sum(dim=reduce_dims)
+
+        per_sample_rmse_norm = torch.sqrt(num / (denom + self.eps))
+        if keep_bc_dims:
+            # Keep batch and channel dims
+            unweighted_rmse_norm = per_sample_rmse_norm  # (B, C)
         else:
-            # Fallback: no interface cells found, return zero loss
-            unweighted_rmse_norm = torch.zeros((), device=predictions.device, dtype=predictions.dtype)
-        
-        # Apply per-batch normalization if requested
-        normalized_rmse = apply_batch_wise_normalization(
-            unweighted_rmse_norm,
-            labels,
-            self.normalization,
-            self.eps
-        )
+            # Aggregate over batch and channels
+            unweighted_rmse_norm = per_sample_rmse_norm.mean()
         
         # Apply weight schedule
-        weighted_rmse = self.weight_schedule.base_weight * normalized_rmse
+        weighted_rmse = self.weight_schedule.base_weight * unweighted_rmse_norm
         
         if not return_detailed:
             return weighted_rmse

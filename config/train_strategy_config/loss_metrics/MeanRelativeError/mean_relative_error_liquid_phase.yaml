@@ -1,0 +1,6 @@
+reduction: mean
+epsilon: 1e-8
+normalization: none
+value_thresholds:
+  Density: [500.0, 1500.0]
+  Pressure: null

@@ -4,7 +4,7 @@ import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 from typing import Literal, Optional, List, Dict, Union, Tuple
 
 # Adapted from mssim.pytorch:
@@ -24,10 +24,10 @@ class SSIM(LossComponent):
         K1=0.01,
         K2=0.03,
         L=1,
-        keep_batch_dim=False,
+        keep_bc_dims=False,
         padding=None,
         ensemble_kernel=True,
-        normalization: Literal['none', 'magnitude', 'variance'] = 'none',
+        normalization: Literal['none', 'range', 'variance', 'std', 'norm', 'root_norm'] = 'none',
         epsilon: float = 1e-8
     ):
         """Calculate the mean SSIM (MSSIM) between two 4D tensors.
@@ -42,7 +42,7 @@ class SSIM(LossComponent):
             K1: SSIM stability constant. Defaults to 0.01.
             K2: SSIM stability constant. Defaults to 0.03.
             L: Dynamic range of pixel values. Defaults to 1.
-            keep_batch_dim: Whether to preserve batch dimension. Defaults to False.
+            keep_bc_dims: Whether to preserve batch dimension. Defaults to False.
             padding: Gaussian filter padding. If None, uses window_size//2. Defaults to None.
             ensemble_kernel: Whether to fuse cascaded 1D kernels into one kernel. Defaults to True.
 
@@ -57,7 +57,7 @@ class SSIM(LossComponent):
         self.window_size = window_size
         self.C1 = (K1 * L) ** 2  # equ 7 in ref1
         self.C2 = (K2 * L) ** 2  # equ 7 in ref1
-        self.keep_batch_dim = keep_batch_dim
+        self.keep_bc_dims = keep_bc_dims
         self.normalization = normalization
         self.epsilon = epsilon
 
@@ -76,7 +76,10 @@ class SSIM(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-        return_detailed: bool = False
+        input_frames: Optional[torch.Tensor],
+        return_detailed: bool = False,
+        keep_bc_dims: bool = False,
+        preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """Calculate the mean SSIM (MSSIM) between two 3d/4d/5d tensors.
 
@@ -95,43 +98,46 @@ class SSIM(LossComponent):
         # Get weight tensor with proper broadcasting
         weight_tensor = self.weight_schedule.get_loss_weight(original_shape).to(predictions.device)
         
-        # Apply weights to inputs (scale by sqrt to preserve SSIM properties)
-        # Since SSIM involves squared terms, scaling inputs by sqrt(w) gives
-        # final weighting of w in the squared error components
-        weight_sqrt = torch.sqrt(weight_tensor)
-        predictions_weighted = predictions * weight_sqrt
-        labels_weighted = labels * weight_sqrt
-        
         # Reshape to (B*T, C, spatial_dims...)
-        predictions_weighted = predictions_weighted.reshape(B * T, C, *spatial_dims)
-        labels_weighted = labels_weighted.reshape(B * T, C, *spatial_dims)
+        predictions_weighted = predictions.reshape(B * T, C, *spatial_dims)
+        labels_weighted = labels.reshape(B * T, C, *spatial_dims)
         
-        if predictions_weighted.type() != self.gaussian_filter.gaussian_window.type():
-            predictions_weighted = predictions_weighted.type_as(self.gaussian_filter.gaussian_window)
-        if labels_weighted.type() != self.gaussian_filter.gaussian_window.type():
-            labels_weighted = labels_weighted.type_as(self.gaussian_filter.gaussian_window)
+        # Ensure filter buffers match predictions device/dtype (avoid moving predictions to CPU)
+        gaussian_window = self.gaussian_filter.gaussian_window
+        if gaussian_window.device != predictions.device or gaussian_window.dtype != predictions.dtype:
+            self.gaussian_filter = self.gaussian_filter.to(device=predictions.device, dtype=predictions.dtype)
+            gaussian_window = self.gaussian_filter.gaussian_window
 
-        ssim_value = self.ssim(predictions_weighted, labels_weighted)
-        loss = (1.0 - ssim_value) * self.weight
-        
-        loss = apply_batch_wise_normalization(
-            loss,
-            labels,
-            self.normalization,
-            self.epsilon
-        )
+        ssim_bt_c = self.ssim(predictions_weighted, labels_weighted, keep_bc_dims=True)
+
+        # Apply weights after SSIM so weighting only affects aggregation
+        reduce_dims = tuple(list(range(3, weight_tensor.ndim)))
+        weight_tc = weight_tensor.mean(dim=reduce_dims)
+        loss_bt_c = (1.0 - ssim_bt_c).view(B,T,C) * weight_tc
+
+        if keep_bc_dims:
+            # loss_bt_c is (B*T, C) -> reshape and aggregate over T to get (B, C)
+            loss = loss_bt_c.mean(dim=1)
+        else:
+            # full reduction over batch, time, and channel
+            loss = loss_bt_c.mean()
 
         if not return_detailed:
             return loss
-        
-        # SSIM doesn't support detailed breakdown due to non-linear aggregation
-        return loss, {}
 
-    def ssim(self, x, y):
+        detailed: Dict[str, torch.Tensor] = {}
+
+        per_channel_loss = loss_bt_c.mean(dim=(0, 1))  # (C,)
+        detailed['per_channel'] = per_channel_loss if preserve_component_grads else per_channel_loss.detach()
+
+        return loss, detailed
+
+    def ssim(self, x, y, keep_bc_dims: bool = False):
         ssim, _ = self._ssim(x, y)
 
-        if self.keep_batch_dim:
-            return ssim.flatten(1).mean(-1)
+        if keep_bc_dims:
+            # keep channel dim; reduce over spatial only
+            return ssim.flatten(2).mean(-1)
         else:
             return ssim.mean()
 

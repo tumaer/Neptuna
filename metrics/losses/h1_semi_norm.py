@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Literal, Optional, List, Any, Union, Dict, Tuple
-from ..loss_framework import LossComponent, WeightSchedule, apply_batch_wise_normalization, NormalizationHelper
+from ..loss_framework import LossComponent, WeightSchedule, NormalizationHelper
 import matplotlib.pyplot as plt
 
 # Filter kernels adapted from Kornia
@@ -33,7 +33,7 @@ class H1SemiNorm(LossComponent):
         field_names: List[str] = None,
         mode: Literal['sobel', 'diff'] = 'diff',
         reduction: str = 'mean',
-        normalization: Literal['none', 'magnitude', 'variance'] = 'none',
+        normalization: Literal['none', 'range', 'variance', 'std', 'norm', 'root_norm'] = 'none',
         epsilon: float = 1e-8
     ):
         super().__init__(weight=weight, name=name, data_dim=data_dim, field_names=field_names, norm_helper=norm_helper)
@@ -81,7 +81,10 @@ class H1SemiNorm(LossComponent):
         model: nn.Module,
         predictions: torch.Tensor,
         labels: torch.Tensor,
-        return_detailed: bool = False
+        input_frames: Optional[torch.Tensor],
+        return_detailed: bool = False,
+        keep_bc_dims: bool = False,
+        preserve_component_grads: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """
         Compute Sobolev loss.
@@ -94,6 +97,7 @@ class H1SemiNorm(LossComponent):
         Returns:
             Weighted scalar loss value
         """
+
         # Compute gradients
         pred_grads = self._compute_gradients(predictions)
         target_grads = self._compute_gradients(labels)
@@ -114,31 +118,38 @@ class H1SemiNorm(LossComponent):
         elif ndim == 3:
             # grad_diff shape: (B, F, C, 3, D, H, W) - sum over 3 gradient directions
             unweighted = (grad_diff ** 2).sum(dim=3)
-        
+
+        norm_error = self.norm_helper.normalize_error(
+                unweighted,
+                labels,
+                self.data_dim,
+                self.normalization,
+                self.epsilon
+            )
+
         # Average over spatial dimensions to get (B, F, C)
-        spatial_dims = tuple(range(3, unweighted.ndim))
-        unweighted = unweighted.mean(dim=spatial_dims)
+        spatial_dims = tuple(range(3, norm_error.ndim))
+        unweighted = norm_error.mean(dim=spatial_dims)
         
         # Get weight tensor with proper broadcasting
         weight_tensor = self.weight_schedule.get_loss_weight(unweighted.shape).to(predictions.device)
         
-        unweighted = apply_batch_wise_normalization(
-            unweighted,
-            labels,
-            self.normalization,
-            self.epsilon
-        )
-
         # Apply weights element-wise
         weighted = unweighted * weight_tensor
         
-        # Reduce to scalar
-        if self.reduction == 'mean':
-            total_loss = weighted.mean()
-        elif self.reduction == 'sum':
-            total_loss = weighted.sum()
+        # Reduce to scalar or per-batch vector
+        if keep_bc_dims:
+            if self.reduction == 'sum':
+                total_loss = weighted.sum(dim=1)
+            else:
+                total_loss = weighted.mean(dim=1)
         else:
-            total_loss = weighted.mean()
+            if self.reduction == 'mean':
+                total_loss = weighted.mean()
+            elif self.reduction == 'sum':
+                total_loss = weighted.sum()
+            else:
+                total_loss = weighted.mean()
         
         if not return_detailed:
             return total_loss
@@ -146,11 +157,14 @@ class H1SemiNorm(LossComponent):
         # Build detailed breakdown
         detailed = {}
         
+        # Conditionally detach based on preserve_component_grads
+        weighted_for_detailed = weighted if preserve_component_grads else weighted.detach()
+        
         # Per-timestep: average over batch and channels
-        detailed['per_timestep'] = weighted.mean(dim=(0, 2)).detach()
+        detailed['per_timestep'] = weighted_for_detailed.mean(dim=(0, 2))
         
         # Per-channel: average over batch and frames
-        detailed['per_channel'] = weighted.mean(dim=(0, 1)).detach()
+        detailed['per_channel'] = weighted_for_detailed.mean(dim=(0, 1))
         
         return total_loss, detailed
 

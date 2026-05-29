@@ -3,10 +3,11 @@
 # Paper: https://arxiv.org/abs/2405.19101
 
 import math
-from transformers import PreTrainedModel
-from transformers.models.swinv2.modeling_swinv2 import (
-    Swinv2EncoderOutput,
-)
+from transformers.modeling_utils import PreTrainedModel
+# from transformers import PreTrainedModel
+# from transformers.models.swinv2.modeling_swinv2 import (
+#     Swinv2EncoderOutput,
+# )
 import torch
 from torch import nn, Tensor
 from typing import Optional, Union, Tuple, List
@@ -15,6 +16,42 @@ from utils.grid_utils import twod_meshgrid
 from .scot_utils import ScOTOutput, ScOTEmbeddings, ScOTPatchRecovery, ScOTPatchMerging, ScOTPatchUnmerging, ScOTLayer, ConvNeXtBlock, ResNetBlock
 from utils.model_utils import CustomNorm
 from .scot_utils import ScOTConfig
+from dataclasses import dataclass
+from .generic import ModelOutput
+@dataclass
+# Copied from transformers.models.swin.modeling_swin.SwinEncoderOutput with Swin->Swinv2
+class Swinv2EncoderOutput(ModelOutput):
+    """
+    Swinv2 encoder's outputs, with potential hidden states and attentions.
+
+    Args:
+        last_hidden_state (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
+            Sequence of hidden-states at the output of the last layer of the model.
+        hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+            Tuple of `torch.FloatTensor` (one for the output of the embeddings + one for the output of each stage) of
+            shape `(batch_size, sequence_length, hidden_size)`.
+
+            Hidden-states of the model at the output of each layer plus the initial embedding outputs.
+        attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
+            Tuple of `torch.FloatTensor` (one for each stage) of shape `(batch_size, num_heads, sequence_length,
+            sequence_length)`.
+
+            Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
+            heads.
+        reshaped_hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+            Tuple of `torch.FloatTensor` (one for the output of the embeddings + one for the output of each stage) of
+            shape `(batch_size, hidden_size, height, width)`.
+
+            Hidden-states of the model at the output of each layer plus the initial embedding outputs reshaped to
+            include the spatial dimensions.
+    """
+
+    last_hidden_state: torch.FloatTensor = None
+    hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
+    attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
+    reshaped_hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
+
+
 class ScOTEncodeStage(nn.Module):
     def __init__(
         self,
@@ -223,15 +260,16 @@ class ScOTEncoder(nn.Module):
         self.config = config
         if self.config.pretrained_window_sizes is not None: # used to support pretrained window masks
             pretrained_window_sizes = config.pretrained_window_sizes
-        drop_rates_encode_decode = torch.linspace( # Create linearly increasing sequence of drop probabilities ranging from 0 to drop_path_rate
-            0, config.drop_path_rate, 2 * sum(config.depths) # twice the number of total blocks bc of encoder AND decoder
-        ) # drop_path_rate = 0.0; depths = [4, 4, 4, 4]
+        total_blocks = 2 * sum(config.depths)
+        # Alternative to torch.linspace: same linear schedule built in Python.
+        if total_blocks <= 1:
+            drop_rates_encode_decode = [0.0]
+        else:
+            step = float(config.drop_path_rate) / float(total_blocks - 1)
+            drop_rates_encode_decode = [i * step for i in range(total_blocks)]
         # 2 * (4 + 4 + 4 + 4) = 32 (total blocks in encoder AND decoder) -> array of 0s of length 32
 
-        dpr = [ # array (instead of tensor) of the encoder part of drop_rates_encode_decode
-            x.item()
-            for x in drop_rates_encode_decode[: drop_rates_encode_decode.shape[0] // 2] # only first half (encoder) for drop path rates
-        ]
+        dpr = drop_rates_encode_decode[: len(drop_rates_encode_decode) // 2]
         self.layers = nn.ModuleList(
             [
                 ScOTEncodeStage(
@@ -352,13 +390,14 @@ class ScOTDecoder(nn.Module):
         self.config = config
         if self.config.pretrained_window_sizes is not None:
             pretrained_window_sizes = config.pretrained_window_sizes # (0, 0, 0, 0)
-        drop_rates_encode_decode = torch.linspace(
-            0, config.drop_path_rate, 2 * sum(config.depths) # same as for encoder
-        )
-        dpr = [
-            x.item()
-            for x in drop_rates_encode_decode[drop_rates_encode_decode.shape[0] // 2 :] # only second parth (decoder) used for drop path rates
-        ]
+        total_blocks = 2 * sum(config.depths)
+        # Alternative to torch.linspace: same linear schedule built in Python.
+        if total_blocks <= 1:
+            drop_rates_encode_decode = [0.0]
+        else:
+            step = float(config.drop_path_rate) / float(total_blocks - 1)
+            drop_rates_encode_decode = [i * step for i in range(total_blocks)]
+        dpr = drop_rates_encode_decode[len(drop_rates_encode_decode) // 2 :]
         self.layers = nn.ModuleList(
             [
                 ScOTDecodeStage(
@@ -475,7 +514,6 @@ class ScOTDecoder(nn.Module):
             reshaped_hidden_states=all_reshaped_hidden_states,
         )
 
-    
 
 class ScOT(PreTrainedModel):
 
@@ -485,6 +523,7 @@ class ScOT(PreTrainedModel):
      
     def __init__(self, config):
         super().__init__(config)
+        super().post_init()
 
         self.dimension = config.dimension
 
@@ -552,15 +591,16 @@ class ScOT2D(PreTrainedModel):
             ]
         )
 
-    def _init_weights(self, module):
-        """Initialize the weights"""
-        if isinstance(module, (nn.Linear, nn.Conv2d)):
-            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
-            if module.bias is not None:
-                module.bias.data.zero_()
-        elif isinstance(module, nn.LayerNorm):
-            module.bias.data.zero_()
-            module.weight.data.fill_(1.0)
+    # # ? Was this done in Poseidon?
+    # def _init_weights(self, module):
+    #     """Initialize the weights"""
+    #     if isinstance(module, (nn.Linear, nn.Conv2d)):
+    #         module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+    #         if module.bias is not None:
+    #             module.bias.data.zero_()
+    #     elif isinstance(module, nn.LayerNorm):
+    #         module.bias.data.zero_()
+    #         module.weight.data.fill_(1.0)
 
     def get_input_embeddings(self):
         return self.embeddings.patch_embeddings
@@ -571,6 +611,45 @@ class ScOT2D(PreTrainedModel):
         for layer, heads in reversed(heads_to_prune.items()):
             self.decoder.layers[layer].attention.prune_heads(heads)
 
+    # ! copied from Transformers v 4.50.2 modeling_utils.py
+    def get_head_mask(
+        self, head_mask: Optional[Tensor], num_hidden_layers: int, is_attention_chunked: bool = False
+    ) -> Tensor:
+        """
+        Prepare the head mask if needed.
+
+        Args:
+            head_mask (`torch.Tensor` with shape `[num_heads]` or `[num_hidden_layers x num_heads]`, *optional*):
+                The mask indicating if we should keep the heads or not (1.0 for keep, 0.0 for discard).
+            num_hidden_layers (`int`):
+                The number of hidden layers in the model.
+            is_attention_chunked (`bool`, *optional*, defaults to `False`):
+                Whether or not the attentions scores are computed by chunks or not.
+
+        Returns:
+            `torch.Tensor` with shape `[num_hidden_layers x batch x num_heads x seq_length x seq_length]` or list with
+            `[None]` for each layer.
+        """
+        if head_mask is not None:
+            head_mask = self._convert_head_mask_to_5d(head_mask, num_hidden_layers)
+            if is_attention_chunked is True:
+                head_mask = head_mask.unsqueeze(-1)
+        else:
+            head_mask = [None] * num_hidden_layers
+
+        return head_mask
+    # ! copied from Transformers v 4.50.2 modeling_utils.py
+    def _convert_head_mask_to_5d(self, head_mask, num_hidden_layers):
+        """-> [num_hidden_layers x batch x num_heads x seq_length x seq_length]"""
+        if head_mask.dim() == 1:
+            head_mask = head_mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+            head_mask = head_mask.expand(num_hidden_layers, -1, -1, -1, -1)
+        elif head_mask.dim() == 2:
+            head_mask = head_mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1)  # We can specify head_mask for each layer
+        assert head_mask.dim() == 5, f"head_mask.dim != 5, instead {head_mask.dim()}"
+        head_mask = head_mask.to(dtype=self.dtype)  # switch to float if need + fp16 compatibility
+        return head_mask
+    
     def forward(
         self,
         input_data: Optional[torch.FloatTensor] = None,
