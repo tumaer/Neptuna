@@ -1,0 +1,11 @@
+wavelet: db2
+spatial_level: 3
+mode_spatial: reflect
+aggregate: weighted 
+level_weights:          # highest freq bin first
+  - 1.0                 # level 0 (finest scale)
+  - 0.0                 # level 1
+  - 0.0                 # level 2
+normalize_weights: true
+normalization: none
+epsilon: 1e-8
