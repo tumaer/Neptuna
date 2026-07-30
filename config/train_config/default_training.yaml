@@ -35,10 +35,11 @@ save_steps: 15 #only used if save_strategy is steps
 save_total_limit: 1 #Limits the total amount of checkpoints to the best two. Deletes the older checkpoints in the output_dir.
 save_only_model: False #If True, only save model weights (no optimizer/scheduler/trainer state)
 # Number of steps to accumulate predictions on GPU before moving to CPU
+# This option is relevant only when default_train_strategy.batch_eval_metrics=False
 eval_accumulation_steps: 16
-# Ratio of train.h5 dataset used for evaluation
+# Ratio of train.h5 dataset used for validation
 eval_split_ratio: 0.2
-# Number of rollouts to use for evaluation
+# Number of rollouts to use for validation
 n_eval_rollouts: 4
 # Plot after epochs, 
 # If a single float is provided, plotting will be done continously after this epoch is reached.

@@ -12,4 +12,4 @@ layer_scale_init_value: 1e-6
 
 # Framework-level normalization fields
 norm_layer_eps: 1e-5
-norm: 'batch' # layer, batch, group, identity
+norm: 'layer' # layer, batch, group, identity
