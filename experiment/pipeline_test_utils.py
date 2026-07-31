@@ -29,6 +29,7 @@ REQUIREMENTS = [
     "ptwt==1.0.1",                 # pulls PyWavelets; needed for the MLW metric
     "einops",                      # models/DPOT, imported via the model registry
     "optuna", "psutil", "wandb", "pyyaml", "tqdm", "colorlog",
+    "huggingface_hub>=0.34",       # downloads the mini dataset if it is not present
 ]
 
 # import name -> what needs it
@@ -39,6 +40,7 @@ NEEDED = {
     "ptwt": "MLW metric", "pywt": "MLW metric", "einops": "model registry",
     "optuna": "imported by bench.run", "psutil": "imported by bench.run",
     "wandb": "imported by utils.custom_callbacks", "yaml": "configs", "tqdm": "progress bars",
+    "huggingface_hub": "dataset download",
 }
 
 
@@ -285,6 +287,59 @@ def report_device(device, preference, num_train_epochs_hint=True):
                   "cannot use them. A CUDA-13 wheel needs driver >= 580;\n  CUDA-12 wheels "
                   "work on any 12.x driver. Install a matching torch from\n"
                   "  https://pytorch.org/get-started/locally/ .")
+
+
+HF_DATASET_REPO = "FluidVerse/2D_SDBA_small_sample"
+HF_DATASET_SIZE_GB = 1.4
+
+
+def ensure_dataset(repo_root, data_dir, hf_repo=HF_DATASET_REPO):
+    """Make sure `repo_root/data_dir` holds the mini set, downloading it if not.
+
+    The Hugging Face dataset repo stores the files under the same top-level folder name
+    used here, so `local_dir=repo_root` lands them at repo_root/data_dir directly.
+    Returns the dataset directory. Existing files are left untouched.
+    """
+    target = pathlib.Path(repo_root) / data_dir
+    wanted = ["train.h5", "test.h5"]
+    if all((target / f).is_file() for f in wanted):
+        return target
+
+    print(f"dataset not found at {target}")
+    print(f"  downloading {hf_repo} (~{HF_DATASET_SIZE_GB:.1f} GB) -> {repo_root}", flush=True)
+
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as e:
+        raise SystemExit(
+            f"huggingface_hub is not installed, so the dataset cannot be fetched: {e}\n"
+            f"Install it (`pip install huggingface_hub`) and re-run, or download "
+            f"https://huggingface.co/datasets/{hf_repo} manually into {repo_root}.")
+
+    try:
+        snapshot_download(
+            repo_id=hf_repo,
+            repo_type="dataset",
+            allow_patterns=f"{data_dir}/*",
+            local_dir=str(repo_root),
+        )
+    except Exception as e:                        # network, auth, disk, ...
+        raise SystemExit(
+            f"Downloading {hf_repo} failed: {e!r}\n"
+            "Fix the cause (network/proxy/disk space) and re-run - the download resumes -\n"
+            f"or fetch it manually:\n"
+            f"    huggingface-cli download {hf_repo} --repo-type dataset "
+            f"--include '{data_dir}/*' --local-dir {repo_root}")
+
+    still_missing = [f for f in wanted if not (target / f).is_file()]
+    if still_missing:
+        raise SystemExit(
+            f"The download completed but {', '.join(still_missing)} are still absent from "
+            f"{target}.\nCheck the layout of {hf_repo} and set DATA_DIR to the folder that "
+            "contains train.h5 and test.h5.")
+
+    print(f"dataset ready at {target}", flush=True)
+    return target
 
 
 def describe_h5(path):

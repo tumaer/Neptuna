@@ -6,9 +6,11 @@ it, and re-executes this script inside it.
 Usage
 -----
     python3 experiment/pipeline_test.py
-
 Requires pipeline_test_utils.py alongside it (environment bootstrap and helpers).
 
+The dataset 2D_SDBA_32train_8test (~1.4 GB) is expected at the root of the repo; if it is
+not there it is downloaded automatically from
+https://huggingface.co/datasets/FluidVerse/2D_SDBA_small_sample
 Ideally run on a CUDA GPU; CPU also works, but is much slower.
 
 Experiment summary
@@ -24,10 +26,6 @@ Experiment summary
              (MSE, H1SemiNorm, SSIM, InterfaceRMSE)
     Seed     one seed shared by every run, so the composite runs differ ONLY in their
              initial component weights
-
-IMPORTANT - SoftAdapt updates happen once per epoch (AdaptiveWeightCallback.on_epoch_end), and with keep_previous_until_ready=True the first update lands at the end of epoch 2.
-So the initial weights govern roughly the first 2 of 30 epochs, after which all three
-runs follow the same adaptive rule. The spread between them therefore measures sensitivity to initial loss weighting.
 """
 
 import multiprocessing
@@ -39,6 +37,7 @@ import sys
 from pipeline_test_utils import (
     bootstrap,
     describe_h5,
+    ensure_dataset,
     ensure_sqlite3,
     find_repo_root,
     report_device,
@@ -106,7 +105,7 @@ GPU_ID = 0                     # which CUDA GPU (`nvidia-smi` to pick a free one
 # One seed for every run: the composite variants are meant to differ ONLY in their
 # initial loss weights.
 SEED = 0
-NUM_TRAIN_EPOCHS = 0.2
+NUM_TRAIN_EPOCHS = 30
 BATCH_SIZE = 16
 LEARNING_RATE = 5e-4           # higher than the repo default (5e-5):
 EVAL_EVERY_STEPS = 250         # validation + checkpoint cadence
@@ -136,10 +135,9 @@ os.chdir(REPO_ROOT)
 sys.path.insert(0, str(REPO_ROOT))
 RESULTS.mkdir(parents=True, exist_ok=True)
 
-if not (REPO_ROOT / DATA_DIR / "train.h5").is_file():
-    raise SystemExit(
-        f"Dataset not found at {REPO_ROOT / DATA_DIR}.\n"
-        "Point DATA_DIR at the folder containing the mini set's train.h5 and test.h5.")
+# Downloads the mini set from Hugging Face into REPO_ROOT on first run; a no-op once
+# train.h5 and test.h5 are there.
+ensure_dataset(REPO_ROOT, DATA_DIR)
 
 ensure_sqlite3()
 
