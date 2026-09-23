@@ -9,7 +9,7 @@ loss:
       weight: 1.0
     - type: RMSE
       name: NRMSE
-      config_file: nrmse
+      config_file: nrmse_alt
       weight: 1.0
     - type: MAE
       weight: 1.0

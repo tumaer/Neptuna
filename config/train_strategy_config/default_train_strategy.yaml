@@ -3,11 +3,11 @@
 ########################################################
 
 # Total number of epochs to train.
-num_train_epochs: 0.15
+num_train_epochs: 128
 # Compute metrics batch-wise
 batch_eval_metrics: True
 # Run end-of-epoch evaluation every N epochs (**cannot be changed to steps**)
-num_epochs_between_eval: 1
+num_epochs_between_eval: 4
 # Metric for checkpointing the weights during validation.
 metric_for_best_model:     
   - type: RMSE
@@ -20,9 +20,15 @@ curriculum:
       components:
         - type: MSE
           weight: 1.0
-          name: "MSE_train"
       train_loss_weighting_strategy:
-        enabled: false 
+        enabled: false  # Set to true to enable
+        type: GradNorm
+        loss_source: 'train' 
+        grad_stats_last_layer_only: false
+        weight_sub_components: false
+        weight_per_channel: false
+        loss_history_interval: 10
+        grad_history_interval: 10
       
     validation_loss:
       components:
@@ -67,33 +73,6 @@ curriculum:
   #             weight: 0.7
   #           - type: MSE
   #             weight: 0.3
-  
-  
-  
-  # - name: block_2
-  #   start_epoch: 2
-  #   train_loss:
-  #     components:
-  #       - type: RMSE
-  #         weight: 0.5
-  #       - type: H1SemiNorm
-  #         weight: 0.5
-  #     train_loss_weighting_strategy:
-  #       enabled: false  # Set to true to enable
-  #       type: SoftAdapt
-  #       loss_source: 'eval' # 'train' OR 'eval'
-      
-  #   validation_loss: #TODO: Add loss components from train loss mertrics of this block in validation
-  #     components:
-  #       - type: WaveletBinnedRMSE
-  #         weight: 1.0
-  #       - type: PearsonCorrelationLoss
-  #         weight: 1.0
-  #       - type: RMSE
-  #         weight: 1.0
-  #       - type: H1SemiNorm
-  #         weight: 1.0
-
   # - name: block_3
   #   start_epoch: 4
   #   train_loss:
@@ -104,8 +83,7 @@ curriculum:
   #       enabled: false  # Set to true to enable
   #       #type: SoftAdapt
   #       #loss_source: 'eval' # 'train' OR 'eval'
-      
-  #   validation_loss: #TODO: Add loss components from train loss mertrics of this block in validation
+  #   validation_loss: 
   #     components:
   #       - type: VRMSE
   #         weight: 1.0

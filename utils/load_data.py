@@ -1106,16 +1106,24 @@ class TransientDataset(Dataset):
                     norm_params.extend([-1.0] * (max_num_params - len(norm_params)))
                 
                 self._group_to_cond_tensor[group_name] = torch.tensor(norm_params, dtype=torch.float32)
-            # Validate that all normalized conditioning parameters are in [0, 1].
-            out_of_range_groups = []
+            # Normalized conditioning parameters fall outside [0, 1] when a group lies beyond the
+            # training parameter range (-1.0 marks a missing parameter and is not out-of-distribution).
+            ood_groups = {}
             for group_name, cond_tensor in self._group_to_cond_tensor.items():
-                if torch.any(((cond_tensor < 0) & (cond_tensor != -1)) | (cond_tensor > 1)):
-                    out_of_range_groups.append(group_name)
-            if out_of_range_groups:
+                ood_mask = ((cond_tensor < 0) & (cond_tensor != -1)) | (cond_tensor > 1)
+                if torch.any(ood_mask):
+                    ood_groups[group_name] = torch.nonzero(ood_mask).flatten().tolist()
+            if ood_groups:
+                details = "\n".join(
+                    f"  {group_name} -> parameter indices {param_indices}"
+                    for group_name, param_indices in sorted(ood_groups.items())
+                )
                 warnings.warn(
                     "\033[93m"  # yellow
-                    "All values inside _group_to_cond_tensor must be between 0 and 1 with the exception of -1.0 which is used to indicate missing values. "
-                    f"Found out-of-range values for groups: {out_of_range_groups[:5]}"
+                    f"{len(ood_groups)}/{len(self._group_to_cond_tensor)} groups are out-of-distribution: their "
+                    "normalized conditioning parameters fall outside the [0, 1] training range. This is expected "
+                    "when evaluating on OOD data, but unintended during training:\n"
+                    f"{details}"
                     "\033[0m",
                     UserWarning,
                 )
