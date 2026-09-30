@@ -665,7 +665,7 @@ footer {
 
 @media (max-width: 1100px) {
     .model-pills { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 10px; justify-content: center; }
-    .model-pill-label { max-width: 200px }
+    .model-pill-label { max-width: 210px }
 }
 
 .model-pill-label {
@@ -673,6 +673,7 @@ footer {
     align-items: center;
     gap: 10px;
     padding: 6px 12px;
+    padding-right: 6px;
     border-radius: var(--radius-sm);
     background: var(--surface-subtle);
     border: 1px solid var(--glass-border);
@@ -704,6 +705,7 @@ footer {
     padding: 2px 8px;
     border-radius: 4px;
     color: var(--accent-cyan);
+    min-width: 45px;
 }
 
 .model-info .fineTune {
@@ -727,10 +729,18 @@ footer {
     border-color: var(--border-active-pill);
 }
 
+.model-toggles-bar .info {
+    font-size: 0.6rem;
+    background: var(--accent-glow);
+    padding: 2px 8px;
+    border-radius: 4px;
+    color: var(--accent-cyan);
+}
+
 /* Radar Workspace Grid */
 .radar-workspace {
     display: grid;
-    grid-template-columns: 1fr 230px;
+    grid-template-columns: 1fr 250px;
     gap: 24px;
     align-items: center;
     margin-top: 20px;

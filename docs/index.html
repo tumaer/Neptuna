@@ -157,10 +157,10 @@
                     interactions produce complex interface deformation, mixing, and multiscale dynamics. Developing reliable machine learning surrogates for these flows remains
                     challenging due to the simultaneous presence of compressibility, sharp discontinuities, and multiphase effects. In this work, we introduce the first large-scale
                     benchmark specifically designed for shock-driven compressible multiphase flows,
-                    comprising 2.4 TB of high-fidelity 2D and 3D datasets 1
+                    comprising 2.4 TB of high-fidelity 2D and 3D datasets
                     featuring shock-induced
                     bubble collapse and droplet breakup. We evaluate diverse surrogate model families
-                    on our benchmarking framework: Neptuna 2
+                    on our benchmarking framework: Neptuna
                     , including convolutional, spectral,
                     transformer-based, and pre-trained PDE foundation models. Beyond standard
                     MSE training, we investigate composite losses combining MSE with Sobolev,
@@ -237,7 +237,7 @@
                 <div class="results-radar-container">
                     <div class="radar-header">
                         <h3><img src="./assets/icons/chart-simple-solid-full.svg" alt="Chart Icon" class="section-icon"> Model Performance Comparison</h3>
-                        <p>Raw metric values are min-max normalized across all baseline models and training-loss strategies for each dataset, then inverted (1 - normalized value) so lower errors correspond to higher radar-chart scores.</p>
+                        <p>Raw metric values are min-max normalized across all baseline models and training-loss strategies for each dataset, then inverted (1 - normalized value) so lower errors correspond to higher radar-chart scores. The models were trained with a resolution of <b>256x256 in 2D</b> and <b>128x128x128 in 3D</b>, but we provide other resolutions in the HuggingFace repository.</p>
                     </div>
 
                     <!-- Training Strategy Multi-Select Toggle Panel -->
@@ -298,7 +298,7 @@
                             <div class="model-pills" id="modelPills">
                                 <!-- Dynamic Model Checkboxes -->
                             </div>
-                            <p class="strat-desc">Next to the model name, the sequence info is displayed in the format: [input frames, output frames, stride].</p>
+                            <p class="strat-desc"><b>Info:</b> <span class="info" title="Sequence Info">4, 1, 10</span> → 4 input snapshots, 1 predicted snapshot, with a stride of 10 frames between two consecutive snapshots.</p>
                         </div>
 
                     </div>

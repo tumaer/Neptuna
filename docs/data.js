@@ -106,15 +106,15 @@ const datasetsData = {
 // CONFIG & METADATA
 // -------------------------------------------------------------
 const models = [
-    { id: 'ConvNeXt',   name: 'ConvNeXt',   color: '#00959d', visible: true, info: "4, 1, 10", dimensions: "2D", fineTune: false },
-    { id: 'ConvNeXt3D',   name: 'ConvNeXt',   color: '#00959d', visible: true, info: "4, 1, 5", dimensions: "3D", fineTune: false },
-    { id: 'CNO',        name: 'CNO',        color: '#9d4edd', visible: true, info: "4, 1, 10", dimensions: "2D", fineTune: false },
-    { id: 'FFNO1',      name: 'FFNO',       color: '#10b935', visible: false, info: "4, 1, 10", dimensions: "2D", fineTune: false },
-    { id: 'FFNO2',      name: 'FFNO',       color: '#f59e0b', visible: false, info: "10, 1, 4", dimensions: "2D", fineTune: false },
-    { id: 'FFNO3D',      name: 'FFNO',       color: '#f59e0b', visible: false, info: "4, 1, 5", dimensions: "3D", fineTune: false },
-    { id: 'ScOT',       name: 'ScOT',       color: '#3b82f6', visible: false, info: "4, 1, 10", dimensions: "2D", fineTune: false },
-    { id: 'DPOT-M',     name: 'DPOT-M',     color: '#f43f5e', visible: false, info: "10, 1, 4", dimensions: "2D", fineTune: true },
-    { id: 'Poseidon-B', name: 'Poseidon-B', color: '#ca62b2', visible: false, info: "1, 1, 10", dimensions: "2D", fineTune: true }
+    { id: 'ConvNeXt',   name: 'ConvNeXt (50M)',   color: '#00959d', visible: true, info: "4, 1, 10", dimensions: "2D", fineTune: false },
+    { id: 'ConvNeXt3D',   name: 'ConvNeXt (10M)',   color: '#00959d', visible: true, info: "4, 1, 5", dimensions: "3D", fineTune: false },
+    { id: 'CNO',        name: 'CNO (50M)',        color: '#9d4edd', visible: true, info: "4, 1, 10", dimensions: "2D", fineTune: false },
+    { id: 'FFNO1',      name: 'FFNO (50M)',       color: '#10b935', visible: false, info: "4, 1, 10", dimensions: "2D", fineTune: false },
+    { id: 'FFNO2',      name: 'FFNO (50M)',       color: '#f59e0b', visible: false, info: "10, 1, 4", dimensions: "2D", fineTune: false },
+    { id: 'FFNO3D',      name: 'FFNO (10M)',       color: '#f59e0b', visible: false, info: "4, 1, 5", dimensions: "3D", fineTune: false },
+    { id: 'ScOT',       name: 'ScOT (50M)',       color: '#3b82f6', visible: false, info: "4, 1, 10", dimensions: "2D", fineTune: false },
+    { id: 'DPOT-M',     name: 'DPOT-M (122M)',     color: '#f43f5e', visible: false, info: "10, 1, 4", dimensions: "2D", fineTune: true },
+    { id: 'Poseidon-B', name: 'Poseidon-B (158M)', color: '#ca62b2', visible: false, info: "1, 1, 10", dimensions: "2D", fineTune: true }
 ];
 
 // Training Strategies with distinct visual line styles
