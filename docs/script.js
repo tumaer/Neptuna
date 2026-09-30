@@ -381,10 +381,6 @@ const loadPage = () => {
     const toggleBtn = document.getElementById('theme-toggle');
     const STORAGE_KEY = 'user-theme';
 
-    // 1. Determine initial theme: OS preference > Light default
-    const getPreferredTheme = () => {
-        return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-    };
 
     // 2. Apply theme state to root element & aria label
     const setTheme = (theme) => {
@@ -399,8 +395,8 @@ const loadPage = () => {
         }
     };
 
-    // Initialize immediately to prevent flash of unstyled content
-    setTheme(getPreferredTheme());
+    // Initialize with standard light theme
+    setTheme("light");
 
     // 3. Toggle listener
     if (toggleBtn) {
@@ -410,11 +406,6 @@ const loadPage = () => {
         setTheme(nextTheme);
         });
     }
-
-    // 4. Update automatically if OS theme changes and user hasn't explicitly set a preference
-    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
-        setTheme(e.matches ? 'dark' : 'light');
-    });
 
     const titleElement = document.getElementById('main-title'); // target your title
     const revealHeader = document.getElementById('reveal-header');
@@ -427,7 +418,6 @@ const loadPage = () => {
     };
 
     const observer2 = new IntersectionObserver(([entry]) => {
-        console.log("hi")
         // Reveal header only if the title is no longer visible AND has scrolled past the top
         const isPastTitle = !entry.isIntersecting && entry.boundingClientRect.top < 0;
 
