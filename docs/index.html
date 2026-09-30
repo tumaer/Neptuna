@@ -1,21 +1,354 @@
-<!-- docs/index.html -->
-
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CFD Bench</title>
+    <title>Neptuna: Machine Learning Framework for Benchmarking Complex Multiphase Flows</title>
+    <meta name="description" content="Neptuna: A Comprehensive Machine Learning Framework for Benchmarking Complex Multiphase Flows. Explore datasets, model performance, and evaluation metrics for shock-driven compressible multiphase flows.">
+    <link rel="icon" href="assets/images/favicon.png" type="image/x-icon">
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="style.css">
 
 </head>
-
 <body>
 
-    <h1>CFD Bench</h1>
-    <p>Welcome to the CFD Bench documentation!</p>
+    <!-- Ambient Glowing Orbs -->
+    <!-- <div class="ambient-glow glow-1"></div>
+    <div class="ambient-glow glow-2"></div>
+    <div class="ambient-glow glow-3"></div>
+    <div class="grid-overlay"></div> -->
 
+    <button id="theme-toggle" class="theme-toggle" aria-label="Switch to dark mode" title="Toggle theme">
+        <!-- Sun Icon (Shown in Dark Mode) -->
+        <svg class="theme-icon sun-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="4"/>
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+        </svg>
+        
+        <!-- Moon Icon (Shown in Light Mode) -->
+        <svg class="theme-icon moon-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
+        </svg>
+    </button>
 
+    <!-- Revealable Sticky Header -->
+    <header id="reveal-header" class="reveal-header">
+    <div class="reveal-header-container">
+        <span class="reveal-title"><img src="assets/images/neptuna_logo.png" alt="Neptuna Logo" class="header-logo"></span>
+        <!-- <a href="#top" class="btn-sm">Back to Top</a> -->
+         <p>A Comprehensive Machine Learning Framework for Benchmarking Shock Driven Compressible Multiphase Flows</p>
+    </div>
+    </header>
+
+    <div class="container">
+        
+        <!-- Frontpage / Hero Header -->
+        <header class="hero" id="top">
+            <div class="logo-container">
+                <img src="assets/images/neptuna_logo.png" alt="Neptuna Logo" class="logo">
+            </div>
+            
+            <h1 class="paper-title" id="main-title">
+                A Comprehensive Machine Learning Framework for Benchmarking <span class="highlight">Shock Driven Compressible Multiphase Flows</span>
+            </h1>
+
+            <div class="authors-list">
+                <a href="#" class="author-item">Harish Ramachandran<sup>1</sup></a>
+                <a href="#" class="author-item">Björn Kimpel<sup>1</sup></a>
+                <a href="#" class="author-item">Thomas Paula<sup>1</sup></a>
+                <a href="#" class="author-item">Josef Winter<sup>1</sup></a>
+                <a href="#" class="author-item">Steffen Schmidt<sup>1</sup></a>
+                <a href="#" class="author-item">Nikolaus Adams<sup>1,2</sup></a>
+            </div>
+
+            <div class="affiliations">
+                <sup>1</sup> Chair of Aerodynamics and Fluid Mechanics, Technical University of Munich, Germany <br><sup>2</sup> Munich Institute of Integrated Materials, Energy and Process Engineering, Technical University of Munich, Germany
+            </div>
+
+            <div class="links-group">
+                <a href="https://arxiv.org/pdf/2607.22280" class="btn-link btn-primary" target="_blank" rel="noopener noreferrer">
+                    <!-- <i class="fa-solid fa-file-pdf"></i> -->
+                    Read Paper
+                </a>
+                <a href="https://arxiv.org/abs/2607.22280" class="btn-link">
+                    <!-- <i class="fa-solid fa-book-open"></i> -->
+                    arXiv
+                </a>
+                <a href="https://github.com/tumaer/Neptuna" class="btn-link">
+                    <!-- <i class="fa-brands fa-github"></i> -->
+                    GitHub Code
+                </a>
+                <a href="https://huggingface.co/FluidVerse" class="btn-link">
+                    <!-- <span>🤗</span> -->
+                    Hugging Face
+                </a>
+            </div>
+        </header>
+
+        <!-- Impressive Figures Section -->
+        <section class="stats-section">
+            <div class="stats-grid">
+                
+                <div class="glass-card stat-card">
+                    <!-- <i class="fa-solid fa-database stat-icon"></i> -->
+                    <div class="stat-number" data-target="6">0</div>
+                    <div class="stat-label">Datasets</div>
+                </div>
+
+                <div class="glass-card stat-card">
+                    <!-- <i class="fa-solid fa-route stat-icon"></i> -->
+                    <div class="stat-number" data-target="1500" data-suffix="+">0</div>
+                    <div class="stat-label">Trajectories</div>
+                </div>
+
+                <div class="glass-card stat-card">
+                    <!-- <i class="fa-solid fa-diagram-project stat-icon"></i> -->
+                    <div class="stat-number" data-target="6">0</div>
+                    <div class="stat-label">Baselines</div>
+                </div>
+
+                <div class="glass-card stat-card">
+                    <!-- <i class="fa-solid fa-chart-line stat-icon"></i> -->
+                    <div class="stat-number" data-target="18">0</div>
+                    <div class="stat-label">Evaluation Metrics</div>
+                </div>
+
+            </div>
+        </section>
+
+        <!-- TL;DR Section -->
+        <section class="content-section">
+            <div class="glass-card section-box tldr-box">
+                <div class="section-header">
+                    <i class="fa-solid fa-bolt"></i>
+                    <h2 class="section-title">TL;DR</h2>
+                </div>
+                <p class="tldr-content">
+                    <ul class="tldr-list">
+                        <li><b>2.4 TB high-fidelity benchmark dataset</b> for shock-driven compressible multiphase flows, covering bubble collapse and droplet breakup in 2D and 3D.</li>
+                        <li><b>systematic benchmark of diverse surrogate models</b>, including convolutional, operatorbased, transformer-based, and pre-trained PDE foundation models.</li>
+                        <li>investigation of <b>physics- and structure-aware composite losses</b>, combining MSE with derivative-, interface-, and structure-focused terms and adaptive loss balancing.</li>
+                        <li><b>reliability-focused evaluation framework</b> extending beyond pointwise errors to spectral, structural, flow feature-focused, structure-aware and physics-informed metrics.</li>
+                    </ul>
+                </p>
+            </div>
+        </section>
+
+        <!-- Abstract Section -->
+        <section class="content-section">
+            <div class="glass-card section-box">
+                <div class="section-header">
+                    <i class="fa-solid fa-align-left"></i>
+                    <h2 class="section-title">Abstract</h2>
+                </div>
+                <p class="abstract-text">
+                    Compressible multiphase flows involving shocks and material interfaces arise in
+                    applications such as bubble collapse and droplet breakup, where strong nonlinear
+                    interactions produce complex interface deformation, mixing, and multiscale dynamics. Developing reliable machine learning surrogates for these flows remains
+                    challenging due to the simultaneous presence of compressibility, sharp discontinuities, and multiphase effects. In this work, we introduce the first large-scale
+                    benchmark specifically designed for shock-driven compressible multiphase flows,
+                    comprising 2.4 TB of high-fidelity 2D and 3D datasets 1
+                    featuring shock-induced
+                    bubble collapse and droplet breakup. We evaluate diverse surrogate model families
+                    on our benchmarking framework: Neptuna 2
+                    , including convolutional, spectral,
+                    transformer-based, and pre-trained PDE foundation models. Beyond standard
+                    MSE training, we investigate composite losses combining MSE with Sobolev,
+                    interface-aware, and structure-aware terms, together with adaptive loss balancing
+                    using SoftAdapt and GradNorm. Evaluation includes pointwise, spectral, featurefocused, structural, and physics-informed metrics. Results show that no single
+                    model performs best across all datasets and metrics, while composite losses significantly improve interface preservation and spectral fidelity. Among adaptive
+                    weighting strategies, SoftAdapt provides the most consistent improvements with
+                    almost no overhead compared to MSE-only training.
+                </p>
+            </div>
+        </section>
+
+        <!-- Dataset & Dynamic Results Block -->
+        <section class="content-section" id="dataset-results">
+            <div class="glass-card section-box">
+                
+                <div class="section-header">
+                    <i class="fa-solid fa-layer-group"></i>
+                    <h2 class="section-title">Datasets & Benchmark Results</h2>
+                </div>
+
+                <!-- Dataset Navigation Tabs -->
+                <div class="dataset-tabs" id="datasetTabs">
+                    <button class="tab-btn active" data-dataset="2D_SRBA_OOOO">
+                        <i class="fa-solid"></i> 2D_SRBA_OOOO
+                    </button>
+                    <button class="tab-btn" data-dataset="2D_SABW_OOOO">
+                        <i class="fa-solid"></i> 2D_SABW_OOOO
+                    </button>
+                    <button class="tab-btn" data-dataset="2D_SABW_SSOO">
+                        <i class="fa-solid"></i> 2D_SABW_SSOO
+                    </button>
+                    <button class="tab-btn" data-dataset="2D_SDBA_SSOO">
+                        <i class="fa-solid"></i> 2D_SDBA_SSOO
+                    </button>
+                    <button class="tab-btn" data-dataset="3D_SDBA_SSOOSS">
+                        <i class="fa-solid"></i> 3D_SDBA_SSOOSS
+                    </button>
+                    <button class="tab-btn" data-dataset="3D_SABW_SSOOSS">
+                        <i class="fa-solid"></i> 3D_SABW_SSOOSS
+                    </button>
+                </div>
+
+                <!-- Dataset Information Grid (Description + Video) -->
+                <div class="dataset-info-grid">
+                    <div class="dataset-details">
+                        <h3 class="dataset-name" id="dsTitle">Loading...</h3>
+                        <p class="dataset-desc" id="dsDesc">
+                            -
+                        </p>
+                        <div class="dataset-meta">
+                            <span class="meta-tag" id="dsResolution1"><i class="fa-solid fa-grid-2"></i> -</span>
+                            <span class="meta-tag" id="dsResolution2"><i class="fa-solid fa-grid-2"></i> -</span>
+                            <span class="meta-tag" id="dsTrajectories"><i class="fa-solid fa-film"></i> -</span>
+                            <span class="meta-tag" id="dsPhysics"><i class="fa-solid fa-atom"></i> -</span>
+                            <span class="meta-tag" id="dsDimensions"><i class="fa-solid fa-cube"></i> -</span>
+                        </div>
+                    </div>
+
+                    <div class="dataset-video-container">
+                        <video id="dsVideo" autoplay loop muted playsinline poster="">
+                            <source id="dsVideoSrc" src="https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4" type="video/mp4">
+                            Your browser does not support HTML5 video.
+                        </video>
+                        <!-- <div class="video-overlay-badge">
+                            <i class="fa-solid fa-circle-play"></i> Simulation Preview
+                        </div> -->
+                    </div>
+                </div>
+
+                <hr class="section-divider">
+
+                <!-- Radar Plot & Controls Container -->
+                <div class="results-radar-container">
+                    <div class="radar-header">
+                        <h3><i class="fa-solid fa-chart-simple"></i> Model Performance Comparison</h3>
+                        <p>Raw metric values are min-max normalized across all baseline models and training-loss strategies for each dataset, then inverted (1 - normalized value) so lower errors correspond to higher radar-chart scores.</p>
+                    </div>
+
+                    <!-- Training Strategy Multi-Select Toggle Panel -->
+                    <div class="strategy-panel">
+                        <h4><i class="fa-solid fa-sliders"></i> Training Strategies</h4>
+                        <p class="panel-sub">Toggle multiple strategies to overlay:</p>
+                        
+                        <div class="strategy-options" id="strategyOptions">
+                            <label class="strategy-card active" data-strat="MSE">
+                                <input type="checkbox" value="MSE" checked>
+                                <div class="strat-info">
+                                    <div class="strat-header">
+                                        <span class="strat-title">Standard</span>
+                                        <span class="line-style-badge dash-solid">―</span>
+                                    </div>
+                                    <span class="strat-desc">Training Metric: Fixed weight <br> MSE: 1.0</span>
+                                </div>
+                            </label>
+
+                            <label class="strategy-card active" data-strat="SoftAdapt">
+                                <input type="checkbox" value="SoftAdapt" checked>
+                                <div class="strat-info">
+                                    <div class="strat-header">
+                                        <span class="strat-title">SoftAdapt</span>
+                                        <span class="line-style-badge dash-dashed">--</span>
+                                    </div>
+                                    <!-- <span class="strat-desc">weighting based on metric1, metric2, metric4 and metric 5 with initial weight values [0.25, 0.25, 0.25, 0.25]</span> -->
+                                        <span class="strat-desc">Training Metric: Initial weight <br> MSE: 1.0, IRMSE: 1.0, SSIM: 0.5, H1: 2.0</span>
+                                </div>
+                            </label>
+
+                            <label class="strategy-card" data-strat="GradNorm">
+                                <input type="checkbox" value="GradNorm">
+                                <div class="strat-info">
+                                    <div class="strat-header">
+                                        <span class="strat-title">GradNorm</span>
+                                        <span class="line-style-badge dash-dotted">···</span>
+                                    </div>
+                                    <span class="strat-desc">Training Metric: Initial weight <br> MSE: 1.0, IRMSE: 1.0, SSIM: 0.5, H1: 2.0</span>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+
+                    
+
+                    <!-- Radar Layout: Chart + Side Strategy Toggle -->
+                    <div class="radar-workspace">
+                        
+                        <!-- Radar Chart Canvas -->
+                        <div class="chart-box">
+                            <canvas id="neptunaRadarCanvas"></canvas>
+                        </div>
+
+                        <!-- Model Visibility Toggles (Above Radar) -->
+                        <div class="model-toggles-bar">
+                            <span class="toggle-label"><i class="fa-solid fa-filter"></i> Models:</span>
+                            <div class="model-pills" id="modelPills">
+                                <!-- Dynamic Model Checkboxes -->
+                            </div>
+                            <p class="strat-desc">Next to the model name, the sequence info is displayed in the format: [input frames, output frames, stride].</p>
+                        </div>
+
+                    </div>
+                </div>
+
+                <div class="radar-footer">
+                    <p>Inference results for interpolation and extrapolation of shock mach number are presented in the appendix.</p>
+                </div>
+
+            </div>
+        </section>
+
+        <!-- Citation Section -->
+        <section class="content-section" id="citation">
+            <div class="glass-card section-box">
+                <div class="section-header">
+                    <i class="fa-solid fa-quote-right"></i>
+                    <h2 class="section-title">Citation</h2>
+                </div>
+                <p>If you use Neptuna or its benchmark datasets in your research, please cite our work:</p>
+                <div class="citation-code-block">
+                    <button class="copy-btn" id="copyCitationBtn" aria-label="Copy citation to clipboard">
+                        <i class="fa-regular fa-copy"></i>
+                        <span>Copy</span>
+                    </button>
+                    <pre><code id="citationText">@article{ramachandran2026neptunacomprehensivemachinelearning,
+      title={Neptuna: A Comprehensive Machine Learning Framework for Benchmarking Complex Multiphase Flows}, 
+      author={Harish Ramachandran and Björn Kimpel and Thomas Paula and Josef Winter and Steffen Schmidt and Nikolaus Adams},
+      year={2026},
+      eprint={2607.22280},
+      archivePrefix={arXiv},
+      primaryClass={physics.flu-dyn},
+      url={https://arxiv.org/abs/2607.22280}, 
+}</code></pre>
+                </div>
+            </div>
+        </section>
+
+        <!-- Footer -->
+        <footer>
+            <p>© 2026 Neptuna Framework Team • Plots are presented using Chart.js</p>
+        </footer>
+
+    </div>
+
+    <!-- Chart.js CDN for Radar Plot -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="data.js"></script>
+    <script src="script.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            loadPage()
+        });
+    </script>
+    
 </body>
-
 </html>
