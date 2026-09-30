@@ -120,7 +120,7 @@ const models = [
 // Training Strategies with distinct visual line styles
 const strategies = [
     { id: 'MSE',       name: 'MSE',       dash: [],      fillAlpha: 0.12, visible: true },
-    { id: 'SoftAdapt', name: 'SoftAdapt', dash: [6, 4],  fillAlpha: 0.05, visible: true },
+    { id: 'SoftAdapt', name: 'SoftAdapt', dash: [6, 4],  fillAlpha: 0.05, visible: false },
     { id: 'GradNorm',  name: 'GradNorm',  dash: [2, 3],  fillAlpha: 0.0,  visible: false }
 ];
 

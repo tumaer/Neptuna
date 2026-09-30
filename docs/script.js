@@ -1,4 +1,4 @@
-let currentDataset = 'bubbly';
+let currentDataset = '2D_SRBA_OOOO';
 let chartInstance = null;
 
 const loadPage = () => {
@@ -332,12 +332,12 @@ const loadPage = () => {
             let tmp = 0
             for (resolution of data.resolution) {
                 tmp += 1
-                document.getElementById(`dsResolution${tmp}`).innerHTML = `<i class="fa-solid fa-border-all"></i> ${resolution}`;
-                document.getElementById(`dsResolution${tmp}`).style.display = 'block';
+                document.getElementById(`dsResolution${tmp}`).innerHTML = `<img src="./assets/icons/border-all-solid-full.svg" alt="Border All Icon" class="section-icon"> ${resolution}`;
+                document.getElementById(`dsResolution${tmp}`).style.display = 'flex';
             }
-            document.getElementById('dsTrajectories').innerHTML = `<i class="fa-solid fa-film"></i> ${data.trajectories}`;
-            document.getElementById('dsPhysics').innerHTML = `<i class="fa-solid fa-wind"></i> ${data.physics}`;
-            document.getElementById('dsDimensions').innerHTML = `<i class="fa-solid fa-cube"></i> ${data.dimensions || 'N/A'}`;
+            document.getElementById('dsTrajectories').innerHTML = `<img src="./assets/icons/film-solid-full.svg" alt="Film Icon" class="section-icon"> ${data.trajectories}`;
+            document.getElementById('dsPhysics').innerHTML = `<img src="./assets/icons/wind-solid-full.svg" alt="Wind Icon" class="section-icon"> ${data.physics}`;
+            document.getElementById('dsDimensions').innerHTML = `<img src="./assets/icons/cube-solid-full.svg" alt="Cube Icon" class="section-icon"> ${data.dimensions || 'N/A'}`;
 
             // Update Video Source
             const video = document.getElementById('dsVideo');
@@ -356,7 +356,6 @@ const loadPage = () => {
     document.getElementById('copyCitationBtn')?.addEventListener('click', async function() {
         const citationText = document.getElementById('citationText').innerText;
         const button = this;
-        const icon = button.querySelector('i');
         const label = button.querySelector('span');
 
         try {
@@ -364,13 +363,11 @@ const loadPage = () => {
             
             // Success Feedback
             button.classList.add('copied');
-            icon.className = 'fa-solid fa-check';
             label.textContent = 'Copied!';
 
             // Reset after 2 seconds
             setTimeout(() => {
                 button.classList.remove('copied');
-                icon.className = 'fa-regular fa-copy';
                 label.textContent = 'Copy';
             }, 2000);
         } catch (err) {
@@ -384,10 +381,8 @@ const loadPage = () => {
     const toggleBtn = document.getElementById('theme-toggle');
     const STORAGE_KEY = 'user-theme';
 
-    // 1. Determine initial theme: localStorage > OS preference > Light default
+    // 1. Determine initial theme: OS preference > Light default
     const getPreferredTheme = () => {
-        const savedTheme = localStorage.getItem(STORAGE_KEY);
-        if (savedTheme) return savedTheme;
         return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     };
 
@@ -395,7 +390,6 @@ const loadPage = () => {
     const setTheme = (theme) => {
         updateChartTheme(theme)
         document.documentElement.setAttribute('data-theme', theme);
-        localStorage.setItem(STORAGE_KEY, theme);
         
         if (toggleBtn) {
         toggleBtn.setAttribute(
@@ -419,9 +413,7 @@ const loadPage = () => {
 
     // 4. Update automatically if OS theme changes and user hasn't explicitly set a preference
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
-        if (!localStorage.getItem(STORAGE_KEY)) {
         setTheme(e.matches ? 'dark' : 'light');
-        }
     });
 
     const titleElement = document.getElementById('main-title'); // target your title

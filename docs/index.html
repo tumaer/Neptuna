@@ -3,16 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Neptuna: Machine Learning Framework for Benchmarking Complex Multiphase Flows</title>
-    <meta name="description" content="Neptuna: A Comprehensive Machine Learning Framework for Benchmarking Complex Multiphase Flows. Explore datasets, model performance, and evaluation metrics for shock-driven compressible multiphase flows.">
+    <title>Neptuna</title>
+    <meta name="description" content="A Comprehensive Machine Learning Framework for Benchmarking Shock-Driven Compressible Multiphase Flows.">
+    <meta name="og:title" content="Neptuna">
+    <meta name="og:description" content="A Comprehensive Machine Learning Framework for Benchmarking Shock-Driven Compressible Multiphase Flows.">
+    <meta name="og:image" content="assets/images/icon.png">
+    <meta name="og:url" content="https://tumaer.github.io/Neptuna/">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Neptuna">
+    <meta name="twitter:description" content="A Comprehensive Machine Learning Framework for Benchmarking Shock-Driven Compressible Multiphase Flows.">
+    <meta name="twitter:image" content="assets/images/icon.png">
     <link rel="icon" href="assets/images/favicon.png" type="image/x-icon">
-    <!-- Google Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
-    <!-- FontAwesome for Icons -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- Custom CSS -->
+    <link rel="stylesheet" href="fonts.css">
     <link rel="stylesheet" href="style.css">
 
 </head>
@@ -126,7 +129,8 @@
         <section class="content-section">
             <div class="glass-card section-box tldr-box">
                 <div class="section-header">
-                    <i class="fa-solid fa-bolt"></i>
+                    <!-- <i class="fa-solid fa-bolt"></i> -->
+                     <img src="./assets/icons/bolt-solid-full.svg" alt="Bolt Icon" class="section-icon">
                     <h2 class="section-title">TL;DR</h2>
                 </div>
                 <p class="tldr-content">
@@ -144,7 +148,7 @@
         <section class="content-section">
             <div class="glass-card section-box">
                 <div class="section-header">
-                    <i class="fa-solid fa-align-left"></i>
+                    <img src="./assets/icons/align-left-solid-full.svg" alt="Align Left Icon" class="section-icon">
                     <h2 class="section-title">Abstract</h2>
                 </div>
                 <p class="abstract-text">
@@ -174,7 +178,7 @@
             <div class="glass-card section-box">
                 
                 <div class="section-header">
-                    <i class="fa-solid fa-layer-group"></i>
+                    <img src="./assets/icons/layer-group-solid-full.svg" alt="Layer Group Icon" class="section-icon">
                     <h2 class="section-title">Datasets & Benchmark Results</h2>
                 </div>
 
@@ -218,7 +222,7 @@
 
                     <div class="dataset-video-container">
                         <video id="dsVideo" autoplay loop muted playsinline poster="">
-                            <source id="dsVideoSrc" src="https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4" type="video/mp4">
+                            <source id="dsVideoSrc" src="" type="video/mp4">
                             Your browser does not support HTML5 video.
                         </video>
                         <!-- <div class="video-overlay-badge">
@@ -232,13 +236,13 @@
                 <!-- Radar Plot & Controls Container -->
                 <div class="results-radar-container">
                     <div class="radar-header">
-                        <h3><i class="fa-solid fa-chart-simple"></i> Model Performance Comparison</h3>
+                        <h3><img src="./assets/icons/chart-simple-solid-full.svg" alt="Chart Icon" class="section-icon"> Model Performance Comparison</h3>
                         <p>Raw metric values are min-max normalized across all baseline models and training-loss strategies for each dataset, then inverted (1 - normalized value) so lower errors correspond to higher radar-chart scores.</p>
                     </div>
 
                     <!-- Training Strategy Multi-Select Toggle Panel -->
                     <div class="strategy-panel">
-                        <h4><i class="fa-solid fa-sliders"></i> Training Strategies</h4>
+                        <h4><img src="./assets/icons/sliders-solid-full.svg" alt="Sliders Icon" class="section-icon"> Training Strategies</h4>
                         <p class="panel-sub">Toggle multiple strategies to overlay:</p>
                         
                         <div class="strategy-options" id="strategyOptions">
@@ -253,8 +257,8 @@
                                 </div>
                             </label>
 
-                            <label class="strategy-card active" data-strat="SoftAdapt">
-                                <input type="checkbox" value="SoftAdapt" checked>
+                            <label class="strategy-card" data-strat="SoftAdapt">
+                                <input type="checkbox" value="SoftAdapt">
                                 <div class="strat-info">
                                     <div class="strat-header">
                                         <span class="strat-title">SoftAdapt</span>
@@ -290,7 +294,7 @@
 
                         <!-- Model Visibility Toggles (Above Radar) -->
                         <div class="model-toggles-bar">
-                            <span class="toggle-label"><i class="fa-solid fa-filter"></i> Models:</span>
+                            <span class="toggle-label"><img src="./assets/icons/filter-solid-full.svg" alt="Filter Icon" class="section-icon"> Models:</span>
                             <div class="model-pills" id="modelPills">
                                 <!-- Dynamic Model Checkboxes -->
                             </div>
@@ -311,13 +315,14 @@
         <section class="content-section" id="citation">
             <div class="glass-card section-box">
                 <div class="section-header">
-                    <i class="fa-solid fa-quote-right"></i>
+                    <img src="./assets/icons/quote-right-solid-full.svg" alt="Citation Icon" class="section-icon">
                     <h2 class="section-title">Citation</h2>
                 </div>
                 <p>If you use Neptuna or its benchmark datasets in your research, please cite our work:</p>
                 <div class="citation-code-block">
                     <button class="copy-btn" id="copyCitationBtn" aria-label="Copy citation to clipboard">
-                        <i class="fa-regular fa-copy"></i>
+                        <img src="./assets/icons/copy-solid-full.svg" alt="Copy Icon" class="section-icon">
+                        <img src="./assets/icons/check-solid-full.svg" alt="Copy Icon" class="section-icon">
                         <span>Copy</span>
                     </button>
                     <pre><code id="citationText">@article{ramachandran2026neptunacomprehensivemachinelearning,
@@ -340,8 +345,7 @@
 
     </div>
 
-    <!-- Chart.js CDN for Radar Plot -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="assets/scripts/chart.umd.min.js"></script>
     <script src="data.js"></script>
     <script src="script.js"></script>
     <script>
