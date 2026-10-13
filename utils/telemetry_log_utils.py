@@ -30,6 +30,24 @@ def detect_runtime_backend() -> str:
     return "cpu"
 
 
+def _is_rocm() -> bool:
+    """True for ROCm builds of PyTorch (AMD GPUs are exposed via ``torch.cuda``)."""
+    return getattr(torch.version, "hip", None) is not None
+
+
+def _pci_key(domain, bus, device) -> str:
+    """Canonical ``dddd:bb:dd`` PCI key (function dropped) for device matching."""
+    return f"{int(domain):04x}:{int(bus):02x}:{int(device):02x}"
+
+
+def _pci_key_from_bdf(bdf: Optional[str]) -> Optional[str]:
+    """Parse a ``DDDD:BB:DD.F`` string (as printed by rocm-smi) into `_pci_key`."""
+    m = re.fullmatch(r"\s*([0-9a-fA-F]+):([0-9a-fA-F]+):([0-9a-fA-F]+)(?:\.[0-7])?\s*", str(bdf or ""))
+    if m is None:
+        return None
+    return _pci_key(int(m.group(1), 16), int(m.group(2), 16), int(m.group(3), 16))
+
+
 def get_rank_world() -> tuple[int, int]:
     """Return ``(rank, world_size)`` for the current process.
 
@@ -159,7 +177,8 @@ class RuntimeTelemetryScope:
             - Tracks elapsed wall time.
             - Captures peak process memory and accelerator memory where available.
             - Samples device utilization/power with best-effort backend-specific
-                sources (e.g., `nvidia-smi`, `xpu-smi`, `xpumcli`, `powermetrics`).
+                sources (e.g., `nvidia-smi`, `rocm-smi`, `xpu-smi`, `xpumcli`,
+                `powermetrics`).
             - Produces a rank-local structured report consumable by
                 `aggregate_runtime_report()`.
     """
@@ -195,6 +214,8 @@ class RuntimeTelemetryScope:
         self._gpu_samples = defaultdict(lambda: {"util": [], "power_w": []})
         self._mps_memory_samples_gb = []
         self._sample_loop_iterations = 0
+        # ROCm only: {pci_key: torch device index} for devices this rank samples.
+        self._rocm_targets: Optional[Dict[str, int]] = None
 
         # Internal provenance/debug notes. Kept internal unless explicitly
         # surfaced by callers.
@@ -275,6 +296,11 @@ class RuntimeTelemetryScope:
                 except Exception:
                     pass
 
+        if self.backend == "cuda" and _is_rocm() and self._rocm_targets is None:
+            # Resolve on the calling (main) thread: torch's current device is
+            # thread-local, so the sampler thread would always see device 0.
+            self._rocm_targets = self._resolve_rocm_targets()
+
         self._stop_event.clear()
         # Background sampler keeps runtime overhead low and decoupled from the
         # model forward path.
@@ -316,7 +342,10 @@ class RuntimeTelemetryScope:
         # Backend-specific sampling is intentionally split into dedicated
         # methods to isolate vendor/tooling differences.
         if self.backend == "cuda":
-            self._sample_cuda_util_power()
+            if _is_rocm():
+                self._sample_rocm_util_power()
+            else:
+                self._sample_cuda_util_power()
         elif self.backend == "xpu":
             self._sample_xpu_util_power()
         elif self.backend == "mps":
@@ -434,6 +463,79 @@ class RuntimeTelemetryScope:
 
         # UUID token path (e.g. GPU-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).
         return {"ids": set(), "uuids": {selected.lower()}}
+
+    def _resolve_rocm_targets(self) -> Dict[str, int]:
+        """Map PCI keys to torch device indices for the GPUs this rank reports.
+
+        Single-process: every visible device. Multi-process: the rank-local
+        device (LOCAL_RANK, else current_device). Matching by PCI address keeps
+        this correct under ROCR/HIP_VISIBLE_DEVICES masking, where rocm-smi card
+        numbers and torch indices need not agree.
+        """
+        try:
+            n_dev = int(torch.cuda.device_count())
+            if self.world_size > 1:
+                raw = os.environ.get("LOCAL_RANK", "").strip()
+                idx = int(raw) if raw.isdigit() else int(torch.cuda.current_device())
+                indices = [idx] if 0 <= idx < n_dev else [int(torch.cuda.current_device())]
+            else:
+                indices = list(range(n_dev))
+
+            targets = {}
+            for idx in indices:
+                props = torch.cuda.get_device_properties(idx)
+                key = _pci_key(props.pci_domain_id, props.pci_bus_id, props.pci_device_id)
+                targets[key] = idx
+            return targets
+        except Exception as exc:
+            self._append_note_once(f"Could not resolve ROCm device PCI addresses: {exc!r}")
+            return {}
+
+    def _sample_rocm_util_power(self):
+        # AMD GPUs report backend "cuda" under ROCm PyTorch, but nvidia-smi is
+        # absent; rocm-smi provides utilization and power instead. Output shape:
+        # {"card0": {"GPU use (%)": "97", "Average Graphics Package Power (W)":
+        #  "412.0", "PCI Bus": "0000:D1:00.0", ...}, ...}
+        if not self._rocm_targets:
+            return
+        if shutil.which("rocm-smi") is None:
+            self._append_note_once("rocm-smi not found on PATH; no ROCm util/power samples.")
+            return
+        cmd = ["rocm-smi", "--showuse", "--showpower", "--showbus", "--json"]
+        try:
+            out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True, timeout=5.0)
+            payload = json.loads(out)
+        except Exception:
+            return
+
+        for card, fields in payload.items():
+            if not str(card).startswith("card") or not isinstance(fields, dict):
+                continue
+            key = _pci_key_from_bdf(fields.get("PCI Bus"))
+            if key is None or key not in self._rocm_targets:
+                continue
+            gpu_id = str(self._rocm_targets[key])
+
+            util = _as_float_or_none(fields.get("GPU use (%)"))
+            # Field name differs across ROCm releases.
+            pwr = None
+            for name, value in fields.items():
+                if "Power" in name and "(W)" in name:
+                    pwr = _as_float_or_none(value)
+                    if pwr is not None:
+                        break
+
+            if util is not None:
+                self._gpu_samples[gpu_id]["util"].append(util)
+            if pwr is not None:
+                self._gpu_samples[gpu_id]["power_w"].append(pwr)
+
+        self._telemetry_info["utilization_source"] = "rocm-smi"
+        self._telemetry_info["power_source"] = "rocm-smi"
+        self._append_note_once(
+            "rocm-smi power is per package: on MI250X the primary GCD reports the "
+            "whole package (both GCDs) and the secondary GCD reports N/A (null)."
+        )
 
     def _append_note_once(self, message: str):
         if message not in self._telemetry_info["notes"]:

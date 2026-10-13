@@ -448,6 +448,32 @@ class StreamingRolloutMetrics:
             input_frames = input_frames[:valid_local]
         return preds, labels, input_frames
 
+    def _sync_accumulator_layout(self):
+        """
+        Make `_sum`/`_sumsq`/`_names` share the same keys and shapes on all ranks.
+
+        Gathers each rank's `{metric: {summary_kind: shape}}` layout, takes the
+        union and fills missing entries with zeros, so the subsequent
+        all_reduce calls match one-to-one across ranks.
+        """
+        local_layout = {
+            metric_name: {kind: tuple(np.shape(arr)) for kind, arr in kinds.items()}
+            for metric_name, kinds in self._sum.items()
+        }
+        gathered = [None] * dist.get_world_size()
+        dist.all_gather_object(gathered, (local_layout, self._names))
+
+        for layout, names in gathered:
+            for metric_name, kinds in layout.items():
+                self._sum.setdefault(metric_name, {})
+                self._sumsq.setdefault(metric_name, {})
+                for kind, shape in kinds.items():
+                    if kind not in self._sum[metric_name]:
+                        self._sum[metric_name][kind] = np.zeros(shape, dtype=np.float32)
+                        self._sumsq[metric_name][kind] = np.zeros(shape, dtype=np.float32)
+            for key, val in names.items():
+                self._names.setdefault(key, val)
+
     def _accumulate_metric_block(self, metric_name, metric_values, batch_n: int):
         """
         Update running first/second moments for one metric block.
@@ -557,32 +583,40 @@ class StreamingRolloutMetrics:
             preds_flat, labels_flat, input_frames_np, compute_result, eval_pred
         )
 
-        if preds_flat.shape[0] == 0:
-            # Can happen on some ranks for a short remainder.
-            return base_out if not compute_result else base_out
+        # A rank can end up with zero valid samples on the final remainder step
+        # (e.g. 60 samples over 8 ranks with batch size 1). It must NOT return
+        # early here: the other ranks are about to enter dist.all_reduce and
+        # would deadlock waiting for it. Skip the compute, keep going.
+        if preds_flat.shape[0] > 0:
+            batch_metrics = compute_metrics_for_n_rollouts(
+                preds=preds_flat,
+                targets=labels_flat,
+                outputs_per_rollout=outputs_per_rollout,
+                include_per_timestep=self.include_per_timestep,
+                loss_metric=self.loss_metric,
+                device=self.device,
+                input_frames=input_frames_np,
+            )
 
-        batch_metrics = compute_metrics_for_n_rollouts(
-            preds=preds_flat,
-            targets=labels_flat,
-            outputs_per_rollout=outputs_per_rollout,
-            include_per_timestep=self.include_per_timestep,
-            loss_metric=self.loss_metric,
-            device=self.device,
-            input_frames=input_frames_np,
-        )
+            batch_n = int(preds_flat.shape[0])
+            self._num_samples += float(batch_n)
 
-        batch_n = int(preds_flat.shape[0])
-        self._num_samples += float(batch_n)
-
-        for metric_name, metric_values in batch_metrics.items():
-            if isinstance(metric_values, dict):
-                self._accumulate_metric_block(metric_name, metric_values, batch_n=batch_n)
+            for metric_name, metric_values in batch_metrics.items():
+                if isinstance(metric_values, dict):
+                    self._accumulate_metric_block(metric_name, metric_values, batch_n=batch_n)
 
         if not compute_result:
             # Streaming mode: update state only.
             return base_out
 
-        if self._num_samples <= 0:
+        is_distributed = dist.is_available() and dist.is_initialized()
+        if is_distributed:
+            # Every rank must issue the same sequence of all_reduce calls with
+            # identical shapes, so agree on the accumulator layout first. Ranks
+            # missing an entry contribute zeros.
+            self._sync_accumulator_layout()
+
+        if self._num_samples <= 0 and not is_distributed:
             # Defensive guard for degenerate evals.
             out = dict(base_out)
             self.reset()
@@ -603,11 +637,19 @@ class StreamingRolloutMetrics:
             # Global sample count across ranks.
             dist.all_reduce(n_tensor, op=dist.ReduceOp.SUM)
         global_n = float(n_tensor.item())
+        if global_n <= 0:
+            # Consistent across ranks (global value), so safe to bail out here.
+            out = dict(base_out)
+            self.reset()
+            return out
 
         final_rollout_metrics = {}
-        for metric_name, metric_sum_dict in self._sum.items():
+        # Sorted iteration keeps the all_reduce order identical on every rank.
+        for metric_name in sorted(self._sum):
+            metric_sum_dict = self._sum[metric_name]
             final_rollout_metrics[metric_name] = {}
-            for summary_kind, local_sum in metric_sum_dict.items():
+            for summary_kind in sorted(metric_sum_dict):
+                local_sum = metric_sum_dict[summary_kind]
                 local_sumsq = self._sumsq[metric_name][summary_kind]
 
                 sum_tensor = torch.as_tensor(local_sum, dtype=torch.float32, device=reduce_device)
