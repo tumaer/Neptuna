@@ -2297,7 +2297,7 @@ def plot_rollout_metrics_bar_chart(
 
         # Condition-group colors
         unique_groups = sorted(set(run_group_labels.values()))
-        cmap = cm.get_cmap('tab10', len(unique_groups))
+        cmap = plt.get_cmap('tab10', len(unique_groups))
         group_colors = {g: cmap(i) for i, g in enumerate(unique_groups)}
 
         # Global y-limits (log scale) based on this metric only
@@ -2525,7 +2525,7 @@ def plot_rollout_metrics_bar_chart(
     # Build legends (reusing logic from before)
     # Condition-group colors (again)
     unique_groups = sorted(set(run_group_labels.values()))
-    cmap = plt.cm.get_cmap('tab10', len(unique_groups))
+    cmap = plt.get_cmap('tab10', len(unique_groups))
     group_colors = {g: cmap(i) for i, g in enumerate(unique_groups)}
 
     conditioning_varies = len(set(
