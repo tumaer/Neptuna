@@ -1,6 +1,20 @@
 
 from omegaconf import OmegaConf
 import os
+
+# Give each rank its own MIOpen kernel DB/cache. Otherwise all ranks (and other
+# users' jobs on shared dev-g nodes) hit the same /tmp/gfx90a*.ukdb sqlite file,
+# which fails with "Cannot open database file" -> miopenStatusInternalError.
+# Must run before torch/MIOpen is initialised; respects values set by the user.
+_miopen_dir = os.path.join(
+    "/tmp",
+    f"miopen_{os.environ.get('USER', 'user')}_{os.environ.get('SLURM_JOB_ID', os.getpid())}"
+    f"_rank{os.environ.get('LOCAL_RANK', 0)}",
+)
+os.makedirs(_miopen_dir, exist_ok=True)
+os.environ.setdefault("MIOPEN_USER_DB_PATH", _miopen_dir)
+os.environ.setdefault("MIOPEN_CUSTOM_CACHE_DIR", _miopen_dir)
+
 import glob
 import atexit
 from utils.load_data import fetch_dataset
